@@ -1,0 +1,89 @@
+{
+  "name": "Pressto-backend",
+  "version": "0.0.1",
+  "description": "Pressto project backend code",
+  "keywords": [
+    "loopback-application",
+    "loopback"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "engines": {
+    "node": "20 || 22 || 24"
+  },
+  "scripts": {
+    "build": "lb-tsc",
+    "build:watch": "lb-tsc --watch",
+    "lint": "npm run eslint && npm run prettier:check",
+    "lint:fix": "npm run eslint:fix && npm run prettier:fix",
+    "prettier:cli": "lb-prettier \"**/*.ts\" \"**/*.js\"",
+    "prettier:check": "npm run prettier:cli -- -l",
+    "prettier:fix": "npm run prettier:cli -- --write",
+    "eslint": "lb-eslint --report-unused-disable-directives .",
+    "eslint:fix": "npm run eslint -- --fix",
+    "pretest": "npm run rebuild",
+    "test": "lb-mocha --allow-console-logs \"dist/__tests__\"",
+    "posttest": "npm run lint",
+    "test:dev": "lb-mocha --allow-console-logs dist/__tests__/**/*.js && npm run posttest",
+    "docker:build": "docker build -t Pressto-backend .",
+    "docker:run": "docker run -p 3000:3000 -d Pressto-backend",
+    "premigrate": "npm run build",
+    "migrate": "node ./dist/migrate",
+    "preopenapi-spec": "npm run build",
+    "openapi-spec": "node ./dist/openapi-spec",
+    "prestart": "npm run rebuild",
+    "start": "node -r source-map-support/register .",
+    "clean": "lb-clean dist *.tsbuildinfo .eslintcache",
+    "rebuild": "npm run clean && npm run build",
+    "start:watch": "tsc-watch --target es2017 --outDir ./dist --onSuccess \"node .\"",
+    "start:debug": "node --inspect ./dist/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "author": "RakhKaran <132744751+RakhKaran@users.noreply.github.com>",
+  "license": "",
+  "files": [
+    "README.md",
+    "dist",
+    "src",
+    "!*/__tests__"
+  ],
+  "dependencies": {
+    "@loopback/authentication": "^12.0.8",
+    "@loopback/boot": "^8.0.3",
+    "@loopback/core": "^7.0.2",
+    "@loopback/repository": "^8.0.2",
+    "@loopback/rest": "^15.0.3",
+    "@loopback/rest-explorer": "^8.0.3",
+    "@loopback/security": "^0.12.7",
+    "@loopback/service-proxy": "^8.0.2",
+    "axios": "^1.13.2",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.2.3",
+    "isemail": "^3.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "loopback-connector-postgresql": "^8.0.3",
+    "multer": "^2.0.2",
+    "nodemailer": "^7.0.10",
+    "tslib": "^2.0.0",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@loopback/build": "^12.0.2",
+    "@loopback/eslint-config": "^16.0.0",
+    "@loopback/testlab": "^8.0.2",
+    "@types/axios": "^0.9.36",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/mime-types": "^3.0.1",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^16.18.126",
+    "@types/nodemailer": "^7.0.4",
+    "@types/uuid": "^10.0.0",
+    "eslint": "^8.57.1",
+    "source-map-support": "^0.5.21",
+    "tsc-watch": "^7.2.0",
+    "typescript": "~5.2.2"
+  }
+}
