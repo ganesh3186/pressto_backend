@@ -1,6 +1,6 @@
-import { Entity, model, property, hasMany } from '@loopback/repository';
-import { Roles } from './roles.model';
-import { UserRoles } from './user-roles.model';
+import {Entity, hasMany, model, property} from '@loopback/repository';
+import {Roles} from './roles.model';
+import {UserRoles} from './user-roles.model';
 
 @model({
   settings: {
@@ -10,17 +10,16 @@ import { UserRoles } from './user-roles.model';
     },
     indexes: {
       uniqueEmail: {
-        keys: { email: 1 },
-        options: { unique: true },
+        keys: {email: 1},
+        options: {unique: true},
       },
       uniquePhone: {
-        keys: { phone: 1 },
-        options: { unique: true },
+        keys: {phone: 1},
+        options: {unique: true},
       },
     },
   },
 })
-
 export class Users extends Entity {
   @property({
     type: 'string',
@@ -33,7 +32,7 @@ export class Users extends Entity {
   id: string;
 
   @property({
-    type: 'string'
+    type: 'string',
   })
   fullName?: string;
 
@@ -78,6 +77,11 @@ export class Users extends Entity {
   isActive?: boolean;
 
   @property({
+    type: 'number',
+  })
+  status?: number;
+
+  @property({
     type: 'boolean',
     default: false,
   })
@@ -100,7 +104,25 @@ export class Users extends Entity {
   })
   deletedAt?: Date;
 
-  @hasMany(() => Roles, { through: { model: () => UserRoles } })
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  createdBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  updatedBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  deletedBy?: string;
+
+  @hasMany(() => Roles, {through: {model: () => UserRoles}})
   roles: Roles[];
 
   constructor(data?: Partial<Users>) {
@@ -108,6 +130,6 @@ export class Users extends Entity {
   }
 }
 
-export interface UsersRelations { }
+export interface UsersRelations {}
 
 export type UsersWithRelations = Users & UsersRelations;

@@ -54,6 +54,11 @@ export class Roles extends Entity {
   isActive?: boolean;
 
   @property({
+    type: 'number',
+  })
+  status?: number;
+
+  @property({
     type: 'boolean',
     default: false,
   })
@@ -76,6 +81,24 @@ export class Roles extends Entity {
   })
   deletedAt?: Date;
 
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  createdBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  updatedBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  deletedBy?: string;
+
   @hasMany(() => Permissions, {through: {model: () => RolePermissions}})
   permissions: Permissions[];
 
@@ -87,6 +110,6 @@ export class Roles extends Entity {
   }
 }
 
-export interface RolesRelations { }
+export interface RolesRelations {}
 
 export type RolesWithRelations = Roles & RolesRelations;

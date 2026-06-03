@@ -62,6 +62,11 @@ export class RegistrationSessions extends Entity {
   isActive?: boolean;
 
   @property({
+    type: 'number',
+  })
+  status?: number;
+
+  @property({
     type: 'boolean',
     default: false,
   })
@@ -84,12 +89,30 @@ export class RegistrationSessions extends Entity {
   })
   deletedAt?: Date;
 
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  createdBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  updatedBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  deletedBy?: string;
+
   constructor(data?: Partial<RegistrationSessions>) {
     super(data);
   }
 }
 
-export interface RegistrationSessionsRelations { }
+export interface RegistrationSessionsRelations {}
 
-export type RegistrationSessionsWithRelations =
-  RegistrationSessions & RegistrationSessionsRelations;
+export type RegistrationSessionsWithRelations = RegistrationSessions &
+  RegistrationSessionsRelations;

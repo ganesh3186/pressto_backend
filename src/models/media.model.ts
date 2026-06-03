@@ -6,7 +6,7 @@ import {Entity, model, property} from '@loopback/repository';
       table: 'media',
       schema: 'public',
     },
-  }
+  },
 })
 export class Media extends Entity {
   @property({
@@ -21,31 +21,31 @@ export class Media extends Entity {
 
   @property({
     type: 'string',
-    required: true
+    required: true,
   })
   fileOriginalName: string;
 
   @property({
     type: 'string',
-    required: true
+    required: true,
   })
   fileName: string;
 
   @property({
     type: 'string',
-    required: true
+    required: true,
   })
   fileUrl: string;
 
   @property({
     type: 'string',
-    required: true
+    required: true,
   })
   fileLocation: string;
 
   @property({
     type: 'string',
-    required: true
+    required: true,
   })
   fileType: string;
 
@@ -54,6 +54,17 @@ export class Media extends Entity {
     default: false,
   })
   isUsed?: boolean;
+
+  @property({
+    type: 'boolean',
+    default: true,
+  })
+  isActive?: boolean;
+
+  @property({
+    type: 'number',
+  })
+  status?: number;
 
   @property({
     type: 'date',
@@ -66,6 +77,30 @@ export class Media extends Entity {
     defaultFn: 'now',
   })
   updatedAt?: Date;
+
+  @property({
+    type: 'date',
+  })
+  deletedAt?: Date;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  createdBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  updatedBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  deletedBy?: string;
+
   constructor(data?: Partial<Media>) {
     super(data);
   }

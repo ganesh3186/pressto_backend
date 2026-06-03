@@ -46,6 +46,11 @@ export class UserRoles extends Entity {
   isActive?: boolean;
 
   @property({
+    type: 'number',
+  })
+  status?: number;
+
+  @property({
     type: 'boolean',
     default: false,
   })
@@ -67,6 +72,25 @@ export class UserRoles extends Entity {
     type: 'date',
   })
   deletedAt?: Date;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  createdBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  updatedBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  deletedBy?: string;
+
   constructor(data?: Partial<UserRoles>) {
     super(data);
   }

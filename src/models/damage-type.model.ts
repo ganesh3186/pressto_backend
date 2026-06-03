@@ -3,18 +3,12 @@ import {Entity, model, property} from '@loopback/repository';
 @model({
   settings: {
     postgresql: {
-      table: 'role_permissions',
+      table: 'damage_type',
       schema: 'public',
-    },
-    indexes: {
-      uniqueRolePermission: {
-        keys: {rolesId: 1, permissionsId: 1},
-        options: {unique: true},
-      },
     },
   },
 })
-export class RolePermissions extends Entity {
+export class DamageType extends Entity {
   @property({
     type: 'string',
     id: true,
@@ -28,16 +22,18 @@ export class RolePermissions extends Entity {
   @property({
     type: 'string',
     required: true,
-    postgresql: {dataType: 'uuid'},
   })
-  rolesId: string;
+  name: string;
 
   @property({
     type: 'string',
-    required: true,
-    postgresql: {dataType: 'uuid'},
   })
-  permissionsId: string;
+  code?: string;
+
+  @property({
+    type: 'string',
+  })
+  description?: string;
 
   @property({
     type: 'boolean',
@@ -91,14 +87,13 @@ export class RolePermissions extends Entity {
   })
   deletedBy?: string;
 
-  constructor(data?: Partial<RolePermissions>) {
+  constructor(data?: Partial<DamageType>) {
     super(data);
   }
 }
 
-export interface RolePermissionsRelations {
+export interface DamageTypeRelations {
   // describe navigational properties here
 }
 
-export type RolePermissionsWithRelations = RolePermissions &
-  RolePermissionsRelations;
+export type DamageTypeWithRelations = DamageType & DamageTypeRelations;

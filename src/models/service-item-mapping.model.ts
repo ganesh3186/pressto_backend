@@ -3,18 +3,12 @@ import {Entity, model, property} from '@loopback/repository';
 @model({
   settings: {
     postgresql: {
-      table: 'role_permissions',
+      table: 'service_item_mapping',
       schema: 'public',
-    },
-    indexes: {
-      uniqueRolePermission: {
-        keys: {rolesId: 1, permissionsId: 1},
-        options: {unique: true},
-      },
     },
   },
 })
-export class RolePermissions extends Entity {
+export class ServiceItemMapping extends Entity {
   @property({
     type: 'string',
     id: true,
@@ -30,14 +24,20 @@ export class RolePermissions extends Entity {
     required: true,
     postgresql: {dataType: 'uuid'},
   })
-  rolesId: string;
+  serviceId: string;
 
   @property({
     type: 'string',
     required: true,
     postgresql: {dataType: 'uuid'},
   })
-  permissionsId: string;
+  itemId: string;
+
+  @property({
+    type: 'number',
+    postgresql: {dataType: 'numeric'},
+  })
+  basePrice?: number;
 
   @property({
     type: 'boolean',
@@ -91,14 +91,14 @@ export class RolePermissions extends Entity {
   })
   deletedBy?: string;
 
-  constructor(data?: Partial<RolePermissions>) {
+  constructor(data?: Partial<ServiceItemMapping>) {
     super(data);
   }
 }
 
-export interface RolePermissionsRelations {
+export interface ServiceItemMappingRelations {
   // describe navigational properties here
 }
 
-export type RolePermissionsWithRelations = RolePermissions &
-  RolePermissionsRelations;
+export type ServiceItemMappingWithRelations = ServiceItemMapping &
+  ServiceItemMappingRelations;

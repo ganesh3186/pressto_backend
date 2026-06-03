@@ -21,31 +21,31 @@ export class Otp extends Entity {
 
   @property({
     type: 'number',
-    required: true
+    required: true,
   })
   type: number; // 0 => phone, 1=> email
 
   @property({
     type: 'string',
-    required: true
+    required: true,
   })
   identifier: string;
 
   @property({
     type: 'number',
-    required: true
+    required: true,
   })
   attempts: number;
 
   @property({
     type: 'date',
-    required: true
+    required: true,
   })
   expiresAt: Date;
 
   @property({
     type: 'string',
-    required: true
+    required: true,
   })
   otp: string;
 
@@ -54,6 +54,17 @@ export class Otp extends Entity {
     default: true,
   })
   isUsed?: boolean;
+
+  @property({
+    type: 'boolean',
+    default: true,
+  })
+  isActive?: boolean;
+
+  @property({
+    type: 'number',
+  })
+  status?: number;
 
   @property({
     type: 'date',
@@ -66,6 +77,30 @@ export class Otp extends Entity {
     defaultFn: 'now',
   })
   updatedAt?: Date;
+
+  @property({
+    type: 'date',
+  })
+  deletedAt?: Date;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  createdBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  updatedBy?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  deletedBy?: string;
+
   constructor(data?: Partial<Otp>) {
     super(data);
   }
