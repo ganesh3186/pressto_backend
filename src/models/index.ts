@@ -1,5 +1,6 @@
 export * from './bag.model';
 export * from './brand.model';
+export * from './customer-label.model';
 export * from './color.model';
 export * from './damage-type.model';
 export * from './item-category.model';

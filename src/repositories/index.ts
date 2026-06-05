@@ -1,5 +1,6 @@
 export * from './bag.repository';
 export * from './brand.repository';
+export * from './customer-label.repository';
 export * from './color.repository';
 export * from './damage-type.repository';
 export * from './item-category.repository';
