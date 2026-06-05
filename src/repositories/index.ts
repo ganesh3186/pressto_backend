@@ -1,3 +1,4 @@
+export * from './bag.repository';
 export * from './brand.repository';
 export * from './color.repository';
 export * from './damage-type.repository';

@@ -1,3 +1,4 @@
+export * from './bag.model';
 export * from './brand.model';
 export * from './color.model';
 export * from './damage-type.model';
