@@ -1,4 +1,4 @@
-import {authenticate} from '@loopback/authentication';
+import { authenticate } from '@loopback/authentication';
 import {
   Count,
   CountSchema,
@@ -18,23 +18,23 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
-import {authorize} from '../authorization';
-import {ServiceProcessMapping} from '../models/service-process-mapping.model';
-import {ServiceProcessMappingRepository} from '../repositories/service-process-mapping.repository';
+import { authorize } from '../authorization';
+import { ServiceProcessMapping } from '../models/service-process-mapping.model';
+import { ServiceProcessMappingRepository } from '../repositories/service-process-mapping.repository';
 
 export class ServiceProcessMappingController {
   constructor(
     @repository(ServiceProcessMappingRepository)
     public serviceProcessMappingRepository: ServiceProcessMappingRepository,
-  ) {}
+  ) { }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @post('/service-process-mappings')
   @response(200, {
     description: 'ServiceProcessMapping model instance',
     content: {
-      'application/json': {schema: getModelSchemaRef(ServiceProcessMapping)},
+      'application/json': { schema: getModelSchemaRef(ServiceProcessMapping) },
     },
   })
   async create(
@@ -54,11 +54,11 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/service-process-mappings/count')
   @response(200, {
     description: 'ServiceProcessMapping model count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async count(
     @param.where(ServiceProcessMapping) where?: Where<ServiceProcessMapping>,
@@ -67,7 +67,7 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/service-process-mappings')
   @response(200, {
     description: 'Array of ServiceProcessMapping model instances',
@@ -89,17 +89,17 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/service-process-mappings')
   @response(200, {
     description: 'ServiceProcessMapping PATCH success count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async updateAll(
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(ServiceProcessMapping, {partial: true}),
+          schema: getModelSchemaRef(ServiceProcessMapping, { partial: true }),
         },
       },
     })
@@ -113,7 +113,7 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/service-process-mappings/{id}')
   @response(200, {
     description: 'ServiceProcessMapping model instance',
@@ -127,22 +127,22 @@ export class ServiceProcessMappingController {
   })
   async findById(
     @param.path.string('id') id: string,
-    @param.filter(ServiceProcessMapping, {exclude: 'where'})
+    @param.filter(ServiceProcessMapping, { exclude: 'where' })
     filter?: FilterExcludingWhere<ServiceProcessMapping>,
   ): Promise<ServiceProcessMapping> {
     return this.serviceProcessMappingRepository.findById(id, filter);
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/service-process-mappings/{id}')
-  @response(204, {description: 'ServiceProcessMapping PATCH success'})
+  @response(204, { description: 'ServiceProcessMapping PATCH success' })
   async updateById(
     @param.path.string('id') id: string,
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(ServiceProcessMapping, {partial: true}),
+          schema: getModelSchemaRef(ServiceProcessMapping, { partial: true }),
         },
       },
     })
@@ -154,25 +154,25 @@ export class ServiceProcessMappingController {
     );
   }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @put('/service-process-mappings/{id}')
-  @response(204, {description: 'ServiceProcessMapping PUT success'})
-  async replaceById(
-    @param.path.string('id') id: string,
-    @requestBody() serviceProcessMapping: ServiceProcessMapping,
-  ): Promise<void> {
-    await this.serviceProcessMappingRepository.replaceById(
-      id,
-      serviceProcessMapping,
-    );
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @put('/service-process-mappings/{id}')
+  // @response(204, {description: 'ServiceProcessMapping PUT success'})
+  // async replaceById(
+  //   @param.path.string('id') id: string,
+  //   @requestBody() serviceProcessMapping: ServiceProcessMapping,
+  // ): Promise<void> {
+  //   await this.serviceProcessMappingRepository.replaceById(
+  //     id,
+  //     serviceProcessMapping,
+  //   );
+  // }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @del('/service-process-mappings/{id}')
-  @response(204, {description: 'ServiceProcessMapping DELETE success'})
-  async deleteById(@param.path.string('id') id: string): Promise<void> {
-    await this.serviceProcessMappingRepository.deleteById(id);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @del('/service-process-mappings/{id}')
+  // @response(204, {description: 'ServiceProcessMapping DELETE success'})
+  // async deleteById(@param.path.string('id') id: string): Promise<void> {
+  //   await this.serviceProcessMappingRepository.deleteById(id);
+  // }
 }

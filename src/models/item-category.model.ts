@@ -6,6 +6,14 @@ import {Entity, model, property} from '@loopback/repository';
       table: 'item_category',
       schema: 'public',
     },
+    indexes: {
+      uniqueItemCategoryCode: {
+        keys: ['code'],
+        options: {
+          unique: true,
+        },
+      },
+    }
   },
 })
 export class ItemCategory extends Entity {
@@ -27,8 +35,9 @@ export class ItemCategory extends Entity {
 
   @property({
     type: 'string',
+    required: true
   })
-  code?: string;
+  code: string;
 
   @property({
     type: 'string',
@@ -40,11 +49,6 @@ export class ItemCategory extends Entity {
     default: true,
   })
   isActive?: boolean;
-
-  @property({
-    type: 'number',
-  })
-  status?: number;
 
   @property({
     type: 'boolean',
@@ -68,24 +72,6 @@ export class ItemCategory extends Entity {
     type: 'date',
   })
   deletedAt?: Date;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  createdBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  updatedBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  deletedBy?: string;
 
   constructor(data?: Partial<ItemCategory>) {
     super(data);

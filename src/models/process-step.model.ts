@@ -1,4 +1,4 @@
-import {Entity, model, property} from '@loopback/repository';
+import { Entity, model, property } from '@loopback/repository';
 
 @model({
   settings: {
@@ -6,6 +6,14 @@ import {Entity, model, property} from '@loopback/repository';
       table: 'process_step',
       schema: 'public',
     },
+    indexes: {
+      uniqueProcessStepCode: {
+        keys: ['code'],
+        options: {
+          unique: true,
+        },
+      },
+    }
   },
 })
 export class ProcessStep extends Entity {
@@ -27,13 +35,9 @@ export class ProcessStep extends Entity {
 
   @property({
     type: 'string',
+    required: true
   })
-  code?: string;
-
-  @property({
-    type: 'number',
-  })
-  sequence?: number;
+  code: string;
 
   @property({
     type: 'string',
@@ -45,11 +49,6 @@ export class ProcessStep extends Entity {
     default: true,
   })
   isActive?: boolean;
-
-  @property({
-    type: 'number',
-  })
-  status?: number;
 
   @property({
     type: 'boolean',
@@ -73,24 +72,6 @@ export class ProcessStep extends Entity {
     type: 'date',
   })
   deletedAt?: Date;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  createdBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  updatedBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  deletedBy?: string;
 
   constructor(data?: Partial<ProcessStep>) {
     super(data);

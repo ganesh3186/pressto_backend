@@ -1,4 +1,4 @@
-import {authenticate} from '@loopback/authentication';
+import { authenticate } from '@loopback/authentication';
 import {
   Count,
   CountSchema,
@@ -18,22 +18,22 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
-import {authorize} from '../authorization';
-import {DamageType} from '../models/damage-type.model';
-import {DamageTypeRepository} from '../repositories/damage-type.repository';
+import { authorize } from '../authorization';
+import { DamageType } from '../models/damage-type.model';
+import { DamageTypeRepository } from '../repositories/damage-type.repository';
 
 export class DamageTypeController {
   constructor(
     @repository(DamageTypeRepository)
     public damageTypeRepository: DamageTypeRepository,
-  ) {}
+  ) { }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @post('/damage-types')
   @response(200, {
     description: 'DamageType model instance',
-    content: {'application/json': {schema: getModelSchemaRef(DamageType)}},
+    content: { 'application/json': { schema: getModelSchemaRef(DamageType) } },
   })
   async create(
     @requestBody({
@@ -52,11 +52,11 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/damage-types/count')
   @response(200, {
     description: 'DamageType model count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async count(
     @param.where(DamageType) where?: Where<DamageType>,
@@ -65,7 +65,7 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/damage-types')
   @response(200, {
     description: 'Array of DamageType model instances',
@@ -73,7 +73,7 @@ export class DamageTypeController {
       'application/json': {
         schema: {
           type: 'array',
-          items: getModelSchemaRef(DamageType, {includeRelations: true}),
+          items: getModelSchemaRef(DamageType, { includeRelations: true }),
         },
       },
     },
@@ -85,17 +85,17 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/damage-types')
   @response(200, {
     description: 'DamageType PATCH success count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async updateAll(
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(DamageType, {partial: true}),
+          schema: getModelSchemaRef(DamageType, { partial: true }),
         },
       },
     })
@@ -106,34 +106,34 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/damage-types/{id}')
   @response(200, {
     description: 'DamageType model instance',
     content: {
       'application/json': {
-        schema: getModelSchemaRef(DamageType, {includeRelations: true}),
+        schema: getModelSchemaRef(DamageType, { includeRelations: true }),
       },
     },
   })
   async findById(
     @param.path.string('id') id: string,
-    @param.filter(DamageType, {exclude: 'where'})
+    @param.filter(DamageType, { exclude: 'where' })
     filter?: FilterExcludingWhere<DamageType>,
   ): Promise<DamageType> {
     return this.damageTypeRepository.findById(id, filter);
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/damage-types/{id}')
-  @response(204, {description: 'DamageType PATCH success'})
+  @response(204, { description: 'DamageType PATCH success' })
   async updateById(
     @param.path.string('id') id: string,
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(DamageType, {partial: true}),
+          schema: getModelSchemaRef(DamageType, { partial: true }),
         },
       },
     })
@@ -142,22 +142,22 @@ export class DamageTypeController {
     await this.damageTypeRepository.updateById(id, damageType);
   }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @put('/damage-types/{id}')
-  @response(204, {description: 'DamageType PUT success'})
-  async replaceById(
-    @param.path.string('id') id: string,
-    @requestBody() damageType: DamageType,
-  ): Promise<void> {
-    await this.damageTypeRepository.replaceById(id, damageType);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @put('/damage-types/{id}')
+  // @response(204, {description: 'DamageType PUT success'})
+  // async replaceById(
+  //   @param.path.string('id') id: string,
+  //   @requestBody() damageType: DamageType,
+  // ): Promise<void> {
+  //   await this.damageTypeRepository.replaceById(id, damageType);
+  // }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @del('/damage-types/{id}')
-  @response(204, {description: 'DamageType DELETE success'})
-  async deleteById(@param.path.string('id') id: string): Promise<void> {
-    await this.damageTypeRepository.deleteById(id);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @del('/damage-types/{id}')
+  // @response(204, {description: 'DamageType DELETE success'})
+  // async deleteById(@param.path.string('id') id: string): Promise<void> {
+  //   await this.damageTypeRepository.deleteById(id);
+  // }
 }

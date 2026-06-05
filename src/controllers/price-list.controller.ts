@@ -1,4 +1,4 @@
-import {authenticate} from '@loopback/authentication';
+import { authenticate } from '@loopback/authentication';
 import {
   Count,
   CountSchema,
@@ -18,22 +18,22 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
-import {authorize} from '../authorization';
-import {PriceList} from '../models/price-list.model';
-import {PriceListRepository} from '../repositories/price-list.repository';
+import { authorize } from '../authorization';
+import { PriceList } from '../models/price-list.model';
+import { PriceListRepository } from '../repositories/price-list.repository';
 
 export class PriceListController {
   constructor(
     @repository(PriceListRepository)
     public priceListRepository: PriceListRepository,
-  ) {}
+  ) { }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @post('/price-lists')
   @response(200, {
     description: 'PriceList model instance',
-    content: {'application/json': {schema: getModelSchemaRef(PriceList)}},
+    content: { 'application/json': { schema: getModelSchemaRef(PriceList) } },
   })
   async create(
     @requestBody({
@@ -52,11 +52,11 @@ export class PriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/price-lists/count')
   @response(200, {
     description: 'PriceList model count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async count(
     @param.where(PriceList) where?: Where<PriceList>,
@@ -65,7 +65,7 @@ export class PriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/price-lists')
   @response(200, {
     description: 'Array of PriceList model instances',
@@ -73,7 +73,7 @@ export class PriceListController {
       'application/json': {
         schema: {
           type: 'array',
-          items: getModelSchemaRef(PriceList, {includeRelations: true}),
+          items: getModelSchemaRef(PriceList, { includeRelations: true }),
         },
       },
     },
@@ -85,17 +85,17 @@ export class PriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/price-lists')
   @response(200, {
     description: 'PriceList PATCH success count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async updateAll(
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(PriceList, {partial: true}),
+          schema: getModelSchemaRef(PriceList, { partial: true }),
         },
       },
     })
@@ -106,34 +106,34 @@ export class PriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/price-lists/{id}')
   @response(200, {
     description: 'PriceList model instance',
     content: {
       'application/json': {
-        schema: getModelSchemaRef(PriceList, {includeRelations: true}),
+        schema: getModelSchemaRef(PriceList, { includeRelations: true }),
       },
     },
   })
   async findById(
     @param.path.string('id') id: string,
-    @param.filter(PriceList, {exclude: 'where'})
+    @param.filter(PriceList, { exclude: 'where' })
     filter?: FilterExcludingWhere<PriceList>,
   ): Promise<PriceList> {
     return this.priceListRepository.findById(id, filter);
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/price-lists/{id}')
-  @response(204, {description: 'PriceList PATCH success'})
+  @response(204, { description: 'PriceList PATCH success' })
   async updateById(
     @param.path.string('id') id: string,
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(PriceList, {partial: true}),
+          schema: getModelSchemaRef(PriceList, { partial: true }),
         },
       },
     })
@@ -142,22 +142,22 @@ export class PriceListController {
     await this.priceListRepository.updateById(id, priceList);
   }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @put('/price-lists/{id}')
-  @response(204, {description: 'PriceList PUT success'})
-  async replaceById(
-    @param.path.string('id') id: string,
-    @requestBody() priceList: PriceList,
-  ): Promise<void> {
-    await this.priceListRepository.replaceById(id, priceList);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @put('/price-lists/{id}')
+  // @response(204, {description: 'PriceList PUT success'})
+  // async replaceById(
+  //   @param.path.string('id') id: string,
+  //   @requestBody() priceList: PriceList,
+  // ): Promise<void> {
+  //   await this.priceListRepository.replaceById(id, priceList);
+  // }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @del('/price-lists/{id}')
-  @response(204, {description: 'PriceList DELETE success'})
-  async deleteById(@param.path.string('id') id: string): Promise<void> {
-    await this.priceListRepository.deleteById(id);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @del('/price-lists/{id}')
+  // @response(204, {description: 'PriceList DELETE success'})
+  // async deleteById(@param.path.string('id') id: string): Promise<void> {
+  //   await this.priceListRepository.deleteById(id);
+  // }
 }

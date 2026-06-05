@@ -1,4 +1,4 @@
-import {authenticate} from '@loopback/authentication';
+import { authenticate } from '@loopback/authentication';
 import {
   Count,
   CountSchema,
@@ -18,23 +18,23 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
-import {authorize} from '../authorization';
-import {ServiceItemMapping} from '../models/service-item-mapping.model';
-import {ServiceItemMappingRepository} from '../repositories/service-item-mapping.repository';
+import { authorize } from '../authorization';
+import { ServiceItemMapping } from '../models/service-item-mapping.model';
+import { ServiceItemMappingRepository } from '../repositories/service-item-mapping.repository';
 
 export class ServiceItemMappingController {
   constructor(
     @repository(ServiceItemMappingRepository)
     public serviceItemMappingRepository: ServiceItemMappingRepository,
-  ) {}
+  ) { }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @post('/service-item-mappings')
   @response(200, {
     description: 'ServiceItemMapping model instance',
     content: {
-      'application/json': {schema: getModelSchemaRef(ServiceItemMapping)},
+      'application/json': { schema: getModelSchemaRef(ServiceItemMapping) },
     },
   })
   async create(
@@ -54,11 +54,11 @@ export class ServiceItemMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/service-item-mappings/count')
   @response(200, {
     description: 'ServiceItemMapping model count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async count(
     @param.where(ServiceItemMapping) where?: Where<ServiceItemMapping>,
@@ -67,7 +67,7 @@ export class ServiceItemMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/service-item-mappings')
   @response(200, {
     description: 'Array of ServiceItemMapping model instances',
@@ -89,17 +89,17 @@ export class ServiceItemMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/service-item-mappings')
   @response(200, {
     description: 'ServiceItemMapping PATCH success count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async updateAll(
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(ServiceItemMapping, {partial: true}),
+          schema: getModelSchemaRef(ServiceItemMapping, { partial: true }),
         },
       },
     })
@@ -113,34 +113,34 @@ export class ServiceItemMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/service-item-mappings/{id}')
   @response(200, {
     description: 'ServiceItemMapping model instance',
     content: {
       'application/json': {
-        schema: getModelSchemaRef(ServiceItemMapping, {includeRelations: true}),
+        schema: getModelSchemaRef(ServiceItemMapping, { includeRelations: true }),
       },
     },
   })
   async findById(
     @param.path.string('id') id: string,
-    @param.filter(ServiceItemMapping, {exclude: 'where'})
+    @param.filter(ServiceItemMapping, { exclude: 'where' })
     filter?: FilterExcludingWhere<ServiceItemMapping>,
   ): Promise<ServiceItemMapping> {
     return this.serviceItemMappingRepository.findById(id, filter);
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/service-item-mappings/{id}')
-  @response(204, {description: 'ServiceItemMapping PATCH success'})
+  @response(204, { description: 'ServiceItemMapping PATCH success' })
   async updateById(
     @param.path.string('id') id: string,
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(ServiceItemMapping, {partial: true}),
+          schema: getModelSchemaRef(ServiceItemMapping, { partial: true }),
         },
       },
     })
@@ -149,22 +149,22 @@ export class ServiceItemMappingController {
     await this.serviceItemMappingRepository.updateById(id, serviceItemMapping);
   }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @put('/service-item-mappings/{id}')
-  @response(204, {description: 'ServiceItemMapping PUT success'})
-  async replaceById(
-    @param.path.string('id') id: string,
-    @requestBody() serviceItemMapping: ServiceItemMapping,
-  ): Promise<void> {
-    await this.serviceItemMappingRepository.replaceById(id, serviceItemMapping);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @put('/service-item-mappings/{id}')
+  // @response(204, {description: 'ServiceItemMapping PUT success'})
+  // async replaceById(
+  //   @param.path.string('id') id: string,
+  //   @requestBody() serviceItemMapping: ServiceItemMapping,
+  // ): Promise<void> {
+  //   await this.serviceItemMappingRepository.replaceById(id, serviceItemMapping);
+  // }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @del('/service-item-mappings/{id}')
-  @response(204, {description: 'ServiceItemMapping DELETE success'})
-  async deleteById(@param.path.string('id') id: string): Promise<void> {
-    await this.serviceItemMappingRepository.deleteById(id);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @del('/service-item-mappings/{id}')
+  // @response(204, {description: 'ServiceItemMapping DELETE success'})
+  // async deleteById(@param.path.string('id') id: string): Promise<void> {
+  //   await this.serviceItemMappingRepository.deleteById(id);
+  // }
 }

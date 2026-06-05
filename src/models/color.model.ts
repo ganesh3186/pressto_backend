@@ -6,6 +6,14 @@ import {Entity, model, property} from '@loopback/repository';
       table: 'color',
       schema: 'public',
     },
+    indexes: {
+      uniqueColorCode: {
+        keys: ['code'],
+        options: {
+          unique: true,
+        },
+      },
+    }
   },
 })
 export class Color extends Entity {
@@ -27,13 +35,9 @@ export class Color extends Entity {
 
   @property({
     type: 'string',
+    required: true
   })
-  code?: string;
-
-  @property({
-    type: 'string',
-  })
-  hexCode?: string;
+  code: string;
 
   @property({
     type: 'string',
@@ -45,12 +49,7 @@ export class Color extends Entity {
     default: true,
   })
   isActive?: boolean;
-
-  @property({
-    type: 'number',
-  })
-  status?: number;
-
+  
   @property({
     type: 'boolean',
     default: false,
@@ -73,24 +72,6 @@ export class Color extends Entity {
     type: 'date',
   })
   deletedAt?: Date;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  createdBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  updatedBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  deletedBy?: string;
 
   constructor(data?: Partial<Color>) {
     super(data);

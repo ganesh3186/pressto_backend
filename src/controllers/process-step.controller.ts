@@ -1,4 +1,4 @@
-import {authenticate} from '@loopback/authentication';
+import { authenticate } from '@loopback/authentication';
 import {
   Count,
   CountSchema,
@@ -18,22 +18,22 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
-import {authorize} from '../authorization';
-import {ProcessStep} from '../models/process-step.model';
-import {ProcessStepRepository} from '../repositories/process-step.repository';
+import { authorize } from '../authorization';
+import { ProcessStep } from '../models/process-step.model';
+import { ProcessStepRepository } from '../repositories/process-step.repository';
 
 export class ProcessStepController {
   constructor(
     @repository(ProcessStepRepository)
     public processStepRepository: ProcessStepRepository,
-  ) {}
+  ) { }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @post('/process-steps')
   @response(200, {
     description: 'ProcessStep model instance',
-    content: {'application/json': {schema: getModelSchemaRef(ProcessStep)}},
+    content: { 'application/json': { schema: getModelSchemaRef(ProcessStep) } },
   })
   async create(
     @requestBody({
@@ -52,11 +52,11 @@ export class ProcessStepController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/process-steps/count')
   @response(200, {
     description: 'ProcessStep model count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async count(
     @param.where(ProcessStep) where?: Where<ProcessStep>,
@@ -65,7 +65,7 @@ export class ProcessStepController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/process-steps')
   @response(200, {
     description: 'Array of ProcessStep model instances',
@@ -73,7 +73,7 @@ export class ProcessStepController {
       'application/json': {
         schema: {
           type: 'array',
-          items: getModelSchemaRef(ProcessStep, {includeRelations: true}),
+          items: getModelSchemaRef(ProcessStep, { includeRelations: true }),
         },
       },
     },
@@ -85,17 +85,17 @@ export class ProcessStepController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/process-steps')
   @response(200, {
     description: 'ProcessStep PATCH success count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async updateAll(
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(ProcessStep, {partial: true}),
+          schema: getModelSchemaRef(ProcessStep, { partial: true }),
         },
       },
     })
@@ -106,34 +106,34 @@ export class ProcessStepController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/process-steps/{id}')
   @response(200, {
     description: 'ProcessStep model instance',
     content: {
       'application/json': {
-        schema: getModelSchemaRef(ProcessStep, {includeRelations: true}),
+        schema: getModelSchemaRef(ProcessStep, { includeRelations: true }),
       },
     },
   })
   async findById(
     @param.path.string('id') id: string,
-    @param.filter(ProcessStep, {exclude: 'where'})
+    @param.filter(ProcessStep, { exclude: 'where' })
     filter?: FilterExcludingWhere<ProcessStep>,
   ): Promise<ProcessStep> {
     return this.processStepRepository.findById(id, filter);
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/process-steps/{id}')
-  @response(204, {description: 'ProcessStep PATCH success'})
+  @response(204, { description: 'ProcessStep PATCH success' })
   async updateById(
     @param.path.string('id') id: string,
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(ProcessStep, {partial: true}),
+          schema: getModelSchemaRef(ProcessStep, { partial: true }),
         },
       },
     })
@@ -142,26 +142,26 @@ export class ProcessStepController {
     await this.processStepRepository.updateById(id, processStep);
   }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @put('/process-steps/{id}')
-  @response(204, {description: 'ProcessStep PUT success'})
-  async replaceById(
-    @param.path.string('id') id: string,
-    @requestBody() processStep: ProcessStep,
-  ): Promise<void> {
-    await this.processStepRepository.replaceById(id, processStep);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @put('/process-steps/{id}')
+  // @response(204, {description: 'ProcessStep PUT success'})
+  // async replaceById(
+  //   @param.path.string('id') id: string,
+  //   @requestBody() processStep: ProcessStep,
+  // ): Promise<void> {
+  //   await this.processStepRepository.replaceById(id, processStep);
+  // }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @del('/process-steps/{id}')
-  @response(204, {description: 'ProcessStep DELETE success'})
-  async deleteById(@param.path.string('id') id: string): Promise<void> {
-    await this.processStepRepository.updateById(id, {
-      isDeleted: true,
-      isActive: false,
-      deletedAt: new Date() as any, // Cast to any if deletedAt explicitly expects string type
-    } as any); // Cast update payload to any if isDeleted/isActive are missing from ProcessStep model
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @del('/process-steps/{id}')
+  // @response(204, {description: 'ProcessStep DELETE success'})
+  // async deleteById(@param.path.string('id') id: string): Promise<void> {
+  //   await this.processStepRepository.updateById(id, {
+  //     isDeleted: true,
+  //     isActive: false,
+  //     deletedAt: new Date() as any, // Cast to any if deletedAt explicitly expects string type
+  //   } as any); // Cast update payload to any if isDeleted/isActive are missing from ProcessStep model
+  // }
 }

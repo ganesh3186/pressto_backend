@@ -1,4 +1,4 @@
-import {authenticate} from '@loopback/authentication';
+import { authenticate } from '@loopback/authentication';
 import {
   Count,
   CountSchema,
@@ -18,22 +18,22 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
-import {authorize} from '../authorization';
-import {ItemCategory} from '../models/item-category.model';
-import {ItemCategoryRepository} from '../repositories/item-category.repository';
+import { authorize } from '../authorization';
+import { ItemCategory } from '../models/item-category.model';
+import { ItemCategoryRepository } from '../repositories/item-category.repository';
 
 export class ItemCategoryController {
   constructor(
     @repository(ItemCategoryRepository)
     public itemCategoryRepository: ItemCategoryRepository,
-  ) {}
+  ) { }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @post('/item-categories')
   @response(200, {
     description: 'ItemCategory model instance',
-    content: {'application/json': {schema: getModelSchemaRef(ItemCategory)}},
+    content: { 'application/json': { schema: getModelSchemaRef(ItemCategory) } },
   })
   async create(
     @requestBody({
@@ -52,11 +52,11 @@ export class ItemCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/item-categories/count')
   @response(200, {
     description: 'ItemCategory model count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async count(
     @param.where(ItemCategory) where?: Where<ItemCategory>,
@@ -65,7 +65,7 @@ export class ItemCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/item-categories')
   @response(200, {
     description: 'Array of ItemCategory model instances',
@@ -73,7 +73,7 @@ export class ItemCategoryController {
       'application/json': {
         schema: {
           type: 'array',
-          items: getModelSchemaRef(ItemCategory, {includeRelations: true}),
+          items: getModelSchemaRef(ItemCategory, { includeRelations: true }),
         },
       },
     },
@@ -85,17 +85,17 @@ export class ItemCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/item-categories')
   @response(200, {
     description: 'ItemCategory PATCH success count',
-    content: {'application/json': {schema: CountSchema}},
+    content: { 'application/json': { schema: CountSchema } },
   })
   async updateAll(
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(ItemCategory, {partial: true}),
+          schema: getModelSchemaRef(ItemCategory, { partial: true }),
         },
       },
     })
@@ -106,34 +106,34 @@ export class ItemCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/item-categories/{id}')
   @response(200, {
     description: 'ItemCategory model instance',
     content: {
       'application/json': {
-        schema: getModelSchemaRef(ItemCategory, {includeRelations: true}),
+        schema: getModelSchemaRef(ItemCategory, { includeRelations: true }),
       },
     },
   })
   async findById(
     @param.path.string('id') id: string,
-    @param.filter(ItemCategory, {exclude: 'where'})
+    @param.filter(ItemCategory, { exclude: 'where' })
     filter?: FilterExcludingWhere<ItemCategory>,
   ): Promise<ItemCategory> {
     return this.itemCategoryRepository.findById(id, filter);
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/item-categories/{id}')
-  @response(204, {description: 'ItemCategory PATCH success'})
+  @response(204, { description: 'ItemCategory PATCH success' })
   async updateById(
     @param.path.string('id') id: string,
     @requestBody({
       content: {
         'application/json': {
-          schema: getModelSchemaRef(ItemCategory, {partial: true}),
+          schema: getModelSchemaRef(ItemCategory, { partial: true }),
         },
       },
     })
@@ -142,22 +142,22 @@ export class ItemCategoryController {
     await this.itemCategoryRepository.updateById(id, itemCategory);
   }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @put('/item-categories/{id}')
-  @response(204, {description: 'ItemCategory PUT success'})
-  async replaceById(
-    @param.path.string('id') id: string,
-    @requestBody() itemCategory: ItemCategory,
-  ): Promise<void> {
-    await this.itemCategoryRepository.replaceById(id, itemCategory);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @put('/item-categories/{id}')
+  // @response(204, {description: 'ItemCategory PUT success'})
+  // async replaceById(
+  //   @param.path.string('id') id: string,
+  //   @requestBody() itemCategory: ItemCategory,
+  // ): Promise<void> {
+  //   await this.itemCategoryRepository.replaceById(id, itemCategory);
+  // }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @del('/item-categories/{id}')
-  @response(204, {description: 'ItemCategory DELETE success'})
-  async deleteById(@param.path.string('id') id: string): Promise<void> {
-    await this.itemCategoryRepository.deleteById(id);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @del('/item-categories/{id}')
+  // @response(204, {description: 'ItemCategory DELETE success'})
+  // async deleteById(@param.path.string('id') id: string): Promise<void> {
+  //   await this.itemCategoryRepository.deleteById(id);
+  // }
 }

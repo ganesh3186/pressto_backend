@@ -1,4 +1,4 @@
-import {Entity, model, property} from '@loopback/repository';
+import { Entity, model, property } from '@loopback/repository';
 
 @model({
   settings: {
@@ -6,6 +6,14 @@ import {Entity, model, property} from '@loopback/repository';
       table: 'service',
       schema: 'public',
     },
+    indexes: {
+      uniqueServiceCode: {
+        keys: ['code'],
+        options: {
+          unique: true,
+        },
+      },
+    }
   },
 })
 export class Service extends Entity {
@@ -27,8 +35,9 @@ export class Service extends Entity {
 
   @property({
     type: 'string',
+    required: true
   })
-  code?: string;
+  code: string;
 
   @property({
     type: 'string',
@@ -36,25 +45,16 @@ export class Service extends Entity {
   description?: string;
 
   @property({
-    type: 'string',
-  })
-  serviceType?: string;
-
-  @property({
     type: 'number',
+    required: true
   })
-  estimatedDurationInHours?: number;
+  estimatedDurationInHours: number;
 
   @property({
     type: 'boolean',
     default: true,
   })
   isActive?: boolean;
-
-  @property({
-    type: 'number',
-  })
-  status?: number;
 
   @property({
     type: 'boolean',
@@ -81,19 +81,19 @@ export class Service extends Entity {
 
   @property({
     type: 'string',
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   createdBy?: string;
 
   @property({
     type: 'string',
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   updatedBy?: string;
 
   @property({
     type: 'string',
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   deletedBy?: string;
 
