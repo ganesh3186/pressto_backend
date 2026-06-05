@@ -8,24 +8,26 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
   patch,
   post,
-  put,
   requestBody,
   response,
 } from '@loopback/rest';
 import { authorize } from '../authorization';
 import { Service } from '../models/service.model';
 import { ServiceRepository } from '../repositories/service.repository';
+import { MediaService } from '../services/media.service';
+import { inject } from '@loopback/core';
 
 export class ServiceController {
   constructor(
     @repository(ServiceRepository)
     public serviceRepository: ServiceRepository,
+    @inject('service.media.service')
+    private mediaService: MediaService,
   ) { }
 
   @authenticate('jwt')
@@ -48,7 +50,11 @@ export class ServiceController {
     })
     service: Omit<Service, 'id'>,
   ): Promise<Service> {
-    return this.serviceRepository.create(service);
+    const newService = await this.serviceRepository.create(service);
+    if (newService.mediaId) {
+      await this.mediaService.updateMediaUsedStatus([newService.mediaId], true);
+    }
+    return newService;
   }
 
   @authenticate('jwt')
@@ -79,7 +85,12 @@ export class ServiceController {
   async find(
     @param.filter(Service) filter?: Filter<Service>,
   ): Promise<Service[]> {
-    return this.serviceRepository.find(filter);
+    return this.serviceRepository.find({
+      ...filter,
+      include: [
+        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
+      ]
+    });
   }
 
   @authenticate('jwt')
@@ -119,7 +130,12 @@ export class ServiceController {
     @param.filter(Service, { exclude: 'where' })
     filter?: FilterExcludingWhere<Service>,
   ): Promise<Service> {
-    return this.serviceRepository.findById(id, filter);
+    return this.serviceRepository.findById(id, {
+      ...filter,
+      include: [
+        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
+      ]
+    });
   }
 
   @authenticate('jwt')
@@ -135,9 +151,16 @@ export class ServiceController {
         },
       },
     })
-    service: Service,
+    service: Partial<Service>,
   ): Promise<void> {
+    const oldService = await this.serviceRepository.findById(id);
     await this.serviceRepository.updateById(id, service);
+    if (service.mediaId && oldService.mediaId !== service.mediaId) {
+      if (oldService.mediaId) {
+        await this.mediaService.updateMediaUsedStatus([oldService.mediaId], false);
+      }
+      await this.mediaService.updateMediaUsedStatus([service.mediaId], true);
+    }
   }
 
   // @authenticate('jwt')

@@ -1,4 +1,8 @@
-import {Entity, model, property} from '@loopback/repository';
+import { Entity, model, property, belongsTo, hasMany} from '@loopback/repository';
+import { Media } from './media.model';
+import {ItemCategory} from './item-category.model';
+import {Service} from './service.model';
+import {ServiceItemMapping} from './service-item-mapping.model';
 
 @model({
   settings: {
@@ -18,14 +22,6 @@ export class Item extends Entity {
     },
   })
   id: string;
-
-  @property({
-    type: 'string',
-    required: true,
-    postgresql: {dataType: 'uuid'},
-  })
-  itemCategoryId: string;
-
   @property({
     type: 'string',
     required: true,
@@ -42,10 +38,14 @@ export class Item extends Entity {
   })
   description?: string;
 
+  @belongsTo(() => Media)
+  mediaId: string;
+
   @property({
-    type: 'string',
+    type: 'boolean',
+    default: false,
   })
-  image?: string;
+  isMeasurement: boolean;
 
   @property({
     type: 'boolean',
@@ -98,6 +98,12 @@ export class Item extends Entity {
     postgresql: {dataType: 'uuid'},
   })
   deletedBy?: string;
+
+  @belongsTo(() => ItemCategory)
+  itemCategoryId: string;
+
+  @hasMany(() => Service, {through: {model: () => ServiceItemMapping}})
+  services: Service[];
 
   constructor(data?: Partial<Item>) {
     super(data);

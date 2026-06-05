@@ -1,14 +1,22 @@
-import { inject } from '@loopback/core';
+import { Constructor, inject } from '@loopback/core';
 import { DefaultCrudRepository } from '@loopback/repository';
 import { Brand, BrandRelations } from '../models/brand.model';
-import { presstoDataSource } from '../datasources';
-
-export class BrandRepository extends DefaultCrudRepository<
+import { PresstoDataSource } from '../datasources';
+import { TimeStampRepositoryMixin } from '../mixins/timestamp-repository-mixin';
+export class BrandRepository extends TimeStampRepositoryMixin<
   Brand,
   typeof Brand.prototype.id,
-  BrandRelations
-> {
-  constructor(@inject('datasources.pressto') dataSource: presstoDataSource) {
+  Constructor<
+    DefaultCrudRepository<
+      Brand,
+      typeof Brand.prototype.id,
+      BrandRelations
+    >
+  >
+>(DefaultCrudRepository) {
+  constructor(
+    @inject('datasources.pressto') dataSource: PresstoDataSource,
+  ) {
     super(Brand, dataSource);
   }
 }

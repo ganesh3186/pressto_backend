@@ -1,10 +1,17 @@
-import {Entity, model, property} from '@loopback/repository';
+import {Entity, model, property, belongsTo} from '@loopback/repository';
+import {Roles} from './roles.model';
 
 @model({
   settings: {
     postgresql: {
       table: 'service_process_mapping',
       schema: 'public',
+    },
+    indexes: {
+      uniqueServiceProcessMapping: {
+        keys: {serviceId: 1, processStepId: 1},
+        options: {unique: true},
+      },
     },
   },
 })
@@ -35,8 +42,15 @@ export class ServiceProcessMapping extends Entity {
 
   @property({
     type: 'number',
+    required: true
   })
-  sequence?: number;
+  sequence: number;
+
+  @property({
+    type: 'boolean',
+    default: false
+  })
+  isInitial: boolean;
 
   @property({
     type: 'boolean',
@@ -49,11 +63,6 @@ export class ServiceProcessMapping extends Entity {
     default: true,
   })
   isActive?: boolean;
-
-  @property({
-    type: 'number',
-  })
-  status?: number;
 
   @property({
     type: 'boolean',
@@ -78,23 +87,8 @@ export class ServiceProcessMapping extends Entity {
   })
   deletedAt?: Date;
 
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  createdBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  updatedBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  deletedBy?: string;
+  @belongsTo(() => Roles)
+  rolesId: string;
 
   constructor(data?: Partial<ServiceProcessMapping>) {
     super(data);

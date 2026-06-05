@@ -1,6 +1,6 @@
 import {Constructor, inject, Getter} from '@loopback/core';
 import {DefaultCrudRepository, repository, HasManyThroughRepositoryFactory} from '@loopback/repository';
-import {presstoDataSource} from '../datasources';
+import {PresstoDataSource} from '../datasources';
 import {Users, UsersRelations, Roles, UserRoles} from '../models';
 import {TimeStampRepositoryMixin} from '../mixins/timestamp-repository-mixin';
 import {UserRolesRepository} from './user-roles.repository';
@@ -24,7 +24,7 @@ export class UsersRepository extends TimeStampRepositoryMixin<
         >;
 
   constructor(
-    @inject('datasources.pressto') dataSource: presstoDataSource, @repository.getter('UserRolesRepository') protected userRolesRepositoryGetter: Getter<UserRolesRepository>, @repository.getter('RolesRepository') protected rolesRepositoryGetter: Getter<RolesRepository>,
+    @inject('datasources.pressto') dataSource: PresstoDataSource, @repository.getter('UserRolesRepository') protected userRolesRepositoryGetter: Getter<UserRolesRepository>, @repository.getter('RolesRepository') protected rolesRepositoryGetter: Getter<RolesRepository>,
   ) {
     super(Users, dataSource);
     this.roles = this.createHasManyThroughRepositoryFactoryFor('roles', rolesRepositoryGetter, userRolesRepositoryGetter,);

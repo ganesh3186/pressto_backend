@@ -8,24 +8,26 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
   patch,
   post,
-  put,
   requestBody,
   response,
 } from '@loopback/rest';
 import { authorize } from '../authorization';
 import { Item } from '../models/item.model';
 import { ItemRepository } from '../repositories/item.repository';
+import { MediaService } from '../services/media.service';
+import { inject } from '@loopback/core';
 
 export class ItemController {
   constructor(
     @repository(ItemRepository)
     public itemRepository: ItemRepository,
+    @inject('service.media.service')
+    private mediaService: MediaService,
   ) { }
 
   @authenticate('jwt')
@@ -48,7 +50,11 @@ export class ItemController {
     })
     item: Omit<Item, 'id'>,
   ): Promise<Item> {
-    return this.itemRepository.create(item);
+    const newItem = await this.itemRepository.create(item);
+    if (newItem.mediaId) {
+      await this.mediaService.updateMediaUsedStatus([newItem.mediaId], true);
+    }
+    return newItem;
   }
 
   @authenticate('jwt')
@@ -77,7 +83,12 @@ export class ItemController {
     },
   })
   async find(@param.filter(Item) filter?: Filter<Item>): Promise<Item[]> {
-    return this.itemRepository.find(filter);
+    return this.itemRepository.find({
+      ...filter,
+      include: [
+        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
+      ]
+    });
   }
 
   @authenticate('jwt')
@@ -116,7 +127,12 @@ export class ItemController {
     @param.path.string('id') id: string,
     @param.filter(Item, { exclude: 'where' }) filter?: FilterExcludingWhere<Item>,
   ): Promise<Item> {
-    return this.itemRepository.findById(id, filter);
+    return this.itemRepository.findById(id, {
+      ...filter,
+      include: [
+        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
+      ]
+    });
   }
 
   @authenticate('jwt')
@@ -130,9 +146,16 @@ export class ItemController {
         'application/json': { schema: getModelSchemaRef(Item, { partial: true }) },
       },
     })
-    item: Item,
+    item: Partial<Item>,
   ): Promise<void> {
+    const oldItem = await this.itemRepository.findById(id);
     await this.itemRepository.updateById(id, item);
+    if (item.mediaId && oldItem.mediaId !== item.mediaId) {
+      if (oldItem.mediaId) {
+        await this.mediaService.updateMediaUsedStatus([oldItem.mediaId], false);
+      }
+      await this.mediaService.updateMediaUsedStatus([item.mediaId], true);
+    }
   }
 
   // @authenticate('jwt')

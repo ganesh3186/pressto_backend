@@ -1,4 +1,4 @@
-import {Entity, model, property} from '@loopback/repository';
+import { Entity, model, property } from '@loopback/repository';
 
 @model({
   settings: {
@@ -6,6 +6,12 @@ import {Entity, model, property} from '@loopback/repository';
       table: 'service_item_mapping',
       schema: 'public',
     },
+    indexes: {
+      uniqueServiceItemMapping: {
+        keys: { serviceId: 1, itemId: 1 },
+        options: { unique: true },
+      },
+    }
   },
 })
 export class ServiceItemMapping extends Entity {
@@ -22,33 +28,29 @@ export class ServiceItemMapping extends Entity {
   @property({
     type: 'string',
     required: true,
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   serviceId: string;
 
   @property({
     type: 'string',
     required: true,
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   itemId: string;
 
   @property({
     type: 'number',
-    postgresql: {dataType: 'numeric'},
+    required: true,
+    postgresql: { dataType: 'numeric' },
   })
-  basePrice?: number;
+  basePrice: number;
 
   @property({
     type: 'boolean',
     default: true,
   })
   isActive?: boolean;
-
-  @property({
-    type: 'number',
-  })
-  status?: number;
 
   @property({
     type: 'boolean',
@@ -72,24 +74,6 @@ export class ServiceItemMapping extends Entity {
     type: 'date',
   })
   deletedAt?: Date;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  createdBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  updatedBy?: string;
-
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
-  deletedBy?: string;
 
   constructor(data?: Partial<ServiceItemMapping>) {
     super(data);

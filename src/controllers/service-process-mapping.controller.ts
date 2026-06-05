@@ -8,13 +8,11 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
   patch,
   post,
-  put,
   requestBody,
   response,
 } from '@loopback/rest';
@@ -50,6 +48,7 @@ export class ServiceProcessMappingController {
     })
     serviceProcessMapping: Omit<ServiceProcessMapping, 'id'>,
   ): Promise<ServiceProcessMapping> {
+    serviceProcessMapping.isInitial = serviceProcessMapping.sequence === 1;
     return this.serviceProcessMappingRepository.create(serviceProcessMapping);
   }
 
@@ -146,8 +145,14 @@ export class ServiceProcessMappingController {
         },
       },
     })
-    serviceProcessMapping: ServiceProcessMapping,
+    serviceProcessMapping: Partial<ServiceProcessMapping>,
   ): Promise<void> {
+    if (serviceProcessMapping.sequence !== undefined) {
+      const old = await this.serviceProcessMappingRepository.findById(id);
+      if (old.sequence !== serviceProcessMapping.sequence) {
+        serviceProcessMapping.isInitial = serviceProcessMapping.sequence === 1;
+      }
+    }
     await this.serviceProcessMappingRepository.updateById(
       id,
       serviceProcessMapping,

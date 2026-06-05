@@ -1,17 +1,25 @@
-import { inject } from '@loopback/core';
+import { Constructor, inject } from '@loopback/core';
 import { DefaultCrudRepository } from '@loopback/repository';
 import {
   PriceListItem,
   PriceListItemRelations,
 } from '../models/price-list-item.model';
-import { presstoDataSource } from '../datasources';
-
-export class PriceListItemRepository extends DefaultCrudRepository<
+import { PresstoDataSource } from '../datasources';
+import { TimeStampRepositoryMixin } from '../mixins/timestamp-repository-mixin';
+export class PriceListItemRepository extends TimeStampRepositoryMixin<
   PriceListItem,
   typeof PriceListItem.prototype.id,
-  PriceListItemRelations
-> {
-  constructor(@inject('datasources.pressto') dataSource: presstoDataSource) {
+  Constructor<
+    DefaultCrudRepository<
+      PriceListItem,
+      typeof PriceListItem.prototype.id,
+      PriceListItemRelations
+    >
+  >
+>(DefaultCrudRepository) {
+  constructor(
+    @inject('datasources.pressto') dataSource: PresstoDataSource,
+  ) {
     super(PriceListItem, dataSource);
   }
 }

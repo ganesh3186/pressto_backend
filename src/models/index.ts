@@ -19,3 +19,4 @@ export * from './stain.model';
 export * from './store-price-override.model';
 export * from './user-roles.model';
 export * from './users.model';
+export * from './service-category.model';

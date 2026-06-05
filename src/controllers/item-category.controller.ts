@@ -8,24 +8,26 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
   patch,
   post,
-  put,
   requestBody,
   response,
 } from '@loopback/rest';
 import { authorize } from '../authorization';
 import { ItemCategory } from '../models/item-category.model';
 import { ItemCategoryRepository } from '../repositories/item-category.repository';
+import { MediaService } from '../services/media.service';
+import { inject } from '@loopback/core';
 
 export class ItemCategoryController {
   constructor(
     @repository(ItemCategoryRepository)
     public itemCategoryRepository: ItemCategoryRepository,
+    @inject('service.media.service')
+    private mediaService: MediaService,
   ) { }
 
   @authenticate('jwt')
@@ -48,7 +50,11 @@ export class ItemCategoryController {
     })
     itemCategory: Omit<ItemCategory, 'id'>,
   ): Promise<ItemCategory> {
-    return this.itemCategoryRepository.create(itemCategory);
+    const newItemCategory = await this.itemCategoryRepository.create(itemCategory);
+    if (newItemCategory.mediaId) {
+      await this.mediaService.updateMediaUsedStatus([newItemCategory.mediaId], true);
+    }
+    return newItemCategory;
   }
 
   @authenticate('jwt')
@@ -81,7 +87,12 @@ export class ItemCategoryController {
   async find(
     @param.filter(ItemCategory) filter?: Filter<ItemCategory>,
   ): Promise<ItemCategory[]> {
-    return this.itemCategoryRepository.find(filter);
+    return this.itemCategoryRepository.find({
+      ...filter,
+      include: [
+        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
+      ]
+    });
   }
 
   @authenticate('jwt')
@@ -121,7 +132,12 @@ export class ItemCategoryController {
     @param.filter(ItemCategory, { exclude: 'where' })
     filter?: FilterExcludingWhere<ItemCategory>,
   ): Promise<ItemCategory> {
-    return this.itemCategoryRepository.findById(id, filter);
+    return this.itemCategoryRepository.findById(id, {
+      ...filter,
+      include: [
+        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
+      ]
+    });
   }
 
   @authenticate('jwt')
@@ -137,9 +153,16 @@ export class ItemCategoryController {
         },
       },
     })
-    itemCategory: ItemCategory,
+    itemCategory: Partial<ItemCategory>,
   ): Promise<void> {
+    const oldItemCategory = await this.itemCategoryRepository.findById(id);
     await this.itemCategoryRepository.updateById(id, itemCategory);
+    if (itemCategory.mediaId && oldItemCategory.mediaId !== itemCategory.mediaId) {
+      if (oldItemCategory.mediaId) {
+        await this.mediaService.updateMediaUsedStatus([oldItemCategory.mediaId], false);
+      }
+      await this.mediaService.updateMediaUsedStatus([itemCategory.mediaId], true);
+    }
   }
 
   // @authenticate('jwt')

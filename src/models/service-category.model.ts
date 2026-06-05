@@ -1,25 +1,23 @@
-import { Entity, model, property, belongsTo, hasMany} from '@loopback/repository';
-import { Media } from './media.model';
+import { Entity, model, property, hasMany} from '@loopback/repository';
 import {Service} from './service.model';
-import {ServiceProcessMapping} from './service-process-mapping.model';
 
 @model({
   settings: {
     postgresql: {
-      table: 'process_step',
+      table: 'service_category',
       schema: 'public',
     },
     indexes: {
-      uniqueProcessStepCode: {
+      uniqueServiceCategoryCode: {
         keys: ['code'],
         options: {
           unique: true,
         },
       },
-    }
+    },
   },
 })
-export class ProcessStep extends Entity {
+export class ServiceCategory extends Entity {
   @property({
     type: 'string',
     id: true,
@@ -46,9 +44,6 @@ export class ProcessStep extends Entity {
     type: 'string',
   })
   description?: string;
-
-  @belongsTo(() => Media)
-  mediaId: string;
 
   @property({
     type: 'boolean',
@@ -79,16 +74,19 @@ export class ProcessStep extends Entity {
   })
   deletedAt?: Date;
 
-  @hasMany(() => Service, {through: {model: () => ServiceProcessMapping}})
+  @hasMany(() => Service)
   services: Service[];
+  // Indexer property to allow additional data
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [prop: string]: any;
 
-  constructor(data?: Partial<ProcessStep>) {
+  constructor(data?: Partial<ServiceCategory>) {
     super(data);
   }
 }
 
-export interface ProcessStepRelations {
+export interface ServiceCategoryRelations {
   // describe navigational properties here
 }
 
-export type ProcessStepWithRelations = ProcessStep & ProcessStepRelations;
+export type ServiceCategoryWithRelations = ServiceCategory & ServiceCategoryRelations;

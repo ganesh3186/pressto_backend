@@ -1,14 +1,23 @@
-import { inject } from '@loopback/core';
+import { Constructor, inject } from '@loopback/core';
 import { DefaultCrudRepository } from '@loopback/repository';
 import { Stain, StainRelations } from '../models/stain.model';
-import { presstoDataSource } from '../datasources';
+import { PresstoDataSource } from '../datasources';
+import { TimeStampRepositoryMixin } from '../mixins/timestamp-repository-mixin';
 
-export class StainRepository extends DefaultCrudRepository<
+export class StainRepository extends TimeStampRepositoryMixin<
   Stain,
   typeof Stain.prototype.id,
-  StainRelations
-> {
-  constructor(@inject('datasources.pressto') dataSource: presstoDataSource) {
+  Constructor<
+    DefaultCrudRepository<
+      Stain,
+      typeof Stain.prototype.id,
+      StainRelations
+    >
+  >
+>(DefaultCrudRepository) {
+  constructor(
+    @inject('datasources.pressto') dataSource: PresstoDataSource,
+  ) {
     super(Stain, dataSource);
   }
 }

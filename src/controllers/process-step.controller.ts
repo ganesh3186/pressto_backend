@@ -21,11 +21,15 @@ import {
 import { authorize } from '../authorization';
 import { ProcessStep } from '../models/process-step.model';
 import { ProcessStepRepository } from '../repositories/process-step.repository';
+import { MediaService } from '../services/media.service';
+import { inject } from '@loopback/core';
 
 export class ProcessStepController {
   constructor(
     @repository(ProcessStepRepository)
     public processStepRepository: ProcessStepRepository,
+    @inject('service.media.service')
+    private mediaService: MediaService,
   ) { }
 
   @authenticate('jwt')
@@ -48,7 +52,11 @@ export class ProcessStepController {
     })
     processStep: Omit<ProcessStep, 'id'>,
   ): Promise<ProcessStep> {
-    return this.processStepRepository.create(processStep);
+    const newProcessStep = await this.processStepRepository.create(processStep);
+    if (newProcessStep.mediaId) {
+      await this.mediaService.updateMediaUsedStatus([newProcessStep.mediaId], true);
+    }
+    return newProcessStep;
   }
 
   @authenticate('jwt')
@@ -81,7 +89,12 @@ export class ProcessStepController {
   async find(
     @param.filter(ProcessStep) filter?: Filter<ProcessStep>,
   ): Promise<ProcessStep[]> {
-    return this.processStepRepository.find(filter);
+    return this.processStepRepository.find({
+      ...filter,
+      include: [
+        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
+      ]
+    });
   }
 
   @authenticate('jwt')
@@ -121,7 +134,12 @@ export class ProcessStepController {
     @param.filter(ProcessStep, { exclude: 'where' })
     filter?: FilterExcludingWhere<ProcessStep>,
   ): Promise<ProcessStep> {
-    return this.processStepRepository.findById(id, filter);
+    return this.processStepRepository.findById(id, {
+      ...filter,
+      include: [
+        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
+      ]
+    });
   }
 
   @authenticate('jwt')
@@ -139,7 +157,12 @@ export class ProcessStepController {
     })
     processStep: Partial<ProcessStep>,
   ): Promise<void> {
+    const oldProcessStep = await this.processStepRepository.findById(id);
     await this.processStepRepository.updateById(id, processStep);
+    if (processStep.mediaId && oldProcessStep.mediaId !== processStep.mediaId) {
+      await this.mediaService.updateMediaUsedStatus([oldProcessStep.mediaId], false);
+      await this.mediaService.updateMediaUsedStatus([processStep.mediaId], true);
+    }
   }
 
   // @authenticate('jwt')

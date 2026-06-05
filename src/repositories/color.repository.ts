@@ -1,14 +1,22 @@
-import { inject } from '@loopback/core';
+import { Constructor, inject } from '@loopback/core';
 import { DefaultCrudRepository } from '@loopback/repository';
 import { Color, ColorRelations } from '../models/color.model';
-import { presstoDataSource } from '../datasources';
-
-export class ColorRepository extends DefaultCrudRepository<
+import { PresstoDataSource } from '../datasources';
+import { TimeStampRepositoryMixin } from '../mixins/timestamp-repository-mixin';
+export class ColorRepository extends TimeStampRepositoryMixin<
   Color,
   typeof Color.prototype.id,
-  ColorRelations
-> {
-  constructor(@inject('datasources.pressto') dataSource: presstoDataSource) {
+  Constructor<
+    DefaultCrudRepository<
+      Color,
+      typeof Color.prototype.id,
+      ColorRelations
+    >
+  >
+>(DefaultCrudRepository) {
+  constructor(
+    @inject('datasources.pressto') dataSource: PresstoDataSource,
+  ) {
     super(Color, dataSource);
   }
 }

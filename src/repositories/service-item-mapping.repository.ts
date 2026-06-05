@@ -1,17 +1,25 @@
-import { inject } from '@loopback/core';
+import { Constructor, inject } from '@loopback/core';
 import { DefaultCrudRepository } from '@loopback/repository';
 import {
   ServiceItemMapping,
   ServiceItemMappingRelations,
 } from '../models/service-item-mapping.model';
-import { presstoDataSource } from '../datasources';
-
-export class ServiceItemMappingRepository extends DefaultCrudRepository<
+import { PresstoDataSource } from '../datasources';
+import { TimeStampRepositoryMixin } from '../mixins/timestamp-repository-mixin';
+export class ServiceItemMappingRepository extends TimeStampRepositoryMixin<
   ServiceItemMapping,
   typeof ServiceItemMapping.prototype.id,
-  ServiceItemMappingRelations
-> {
-  constructor(@inject('datasources.pressto') dataSource: presstoDataSource) {
+  Constructor<
+    DefaultCrudRepository<
+      ServiceItemMapping,
+      typeof ServiceItemMapping.prototype.id,
+      ServiceItemMappingRelations
+    >
+  >
+>(DefaultCrudRepository) {
+  constructor(
+    @inject('datasources.pressto') dataSource: PresstoDataSource,
+  ) {
     super(ServiceItemMapping, dataSource);
   }
 }

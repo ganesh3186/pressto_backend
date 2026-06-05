@@ -1,4 +1,6 @@
-import {Entity, model, property} from '@loopback/repository';
+import {Entity, model, property, belongsTo, hasMany} from '@loopback/repository';
+import {Media} from './media.model';
+import {Item} from './item.model';
 
 @model({
   settings: {
@@ -44,6 +46,9 @@ export class ItemCategory extends Entity {
   })
   description?: string;
 
+  @belongsTo(() => Media)
+  mediaId: string;
+
   @property({
     type: 'boolean',
     default: true,
@@ -72,6 +77,9 @@ export class ItemCategory extends Entity {
     type: 'date',
   })
   deletedAt?: Date;
+
+  @hasMany(() => Item)
+  items: Item[];
 
   constructor(data?: Partial<ItemCategory>) {
     super(data);

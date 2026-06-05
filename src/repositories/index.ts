@@ -19,3 +19,4 @@ export * from './stain.repository';
 export * from './store-price-override.repository';
 export * from './user-roles.repository';
 export * from './users.repository';
+export * from './service-category.repository';

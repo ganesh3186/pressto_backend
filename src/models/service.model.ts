@@ -1,4 +1,10 @@
-import { Entity, model, property } from '@loopback/repository';
+import { Entity, model, property, belongsTo, hasMany} from '@loopback/repository';
+import {ServiceCategory} from './service-category.model';
+import {Media} from './media.model';
+import {Item} from './item.model';
+import {ServiceItemMapping} from './service-item-mapping.model';
+import {ProcessStep} from './process-step.model';
+import {ServiceProcessMapping} from './service-process-mapping.model';
 
 @model({
   settings: {
@@ -81,21 +87,33 @@ export class Service extends Entity {
 
   @property({
     type: 'string',
-    postgresql: { dataType: 'uuid' },
+    postgresql: {dataType: 'uuid'},
   })
   createdBy?: string;
 
   @property({
     type: 'string',
-    postgresql: { dataType: 'uuid' },
+    postgresql: {dataType: 'uuid'},
   })
   updatedBy?: string;
 
   @property({
     type: 'string',
-    postgresql: { dataType: 'uuid' },
+    postgresql: {dataType: 'uuid'},
   })
   deletedBy?: string;
+
+  @belongsTo(() => Media)
+  mediaId: string;
+
+  @belongsTo(() => ServiceCategory)
+  serviceCategoryId: string;
+
+  @hasMany(() => Item, {through: {model: () => ServiceItemMapping}})
+  items: Item[];
+
+  @hasMany(() => ProcessStep, {through: {model: () => ServiceProcessMapping}})
+  processSteps: ProcessStep[];
 
   constructor(data?: Partial<Service>) {
     super(data);
