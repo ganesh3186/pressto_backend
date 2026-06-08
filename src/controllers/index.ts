@@ -1,6 +1,7 @@
 export * from './auth.controller';
 export * from './bag.controller';
 export * from './cluster.controller';
+export * from './customer-discount-group.controller';
 export * from './customer-label.controller';
 export * from './brand.controller';
 export * from './color.controller';
