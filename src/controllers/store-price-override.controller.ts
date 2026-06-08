@@ -150,15 +150,15 @@ export class StorePriceOverrideController {
     await this.storePriceOverrideRepository.updateById(id, storePriceOverride);
   }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @del('/store-price-overrides/{id}')
-  @response(204, {description: 'StorePriceOverride DELETE success'})
-  async deleteById(@param.path.string('id') id: string): Promise<void> {
-    await this.storePriceOverrideRepository.updateById(id, {
-      isDeleted: true,
-      isActive: false,
-      deletedAt: new Date() as any,
-    } as any);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @del('/store-price-overrides/{id}')
+  // @response(204, {description: 'StorePriceOverride DELETE success'})
+  // async deleteById(@param.path.string('id') id: string): Promise<void> {
+  //   await this.storePriceOverrideRepository.updateById(id, {
+  //     isDeleted: true,
+  //     isActive: false,
+  //     deletedAt: new Date() as any,
+  //   } as any);
+  // }
 }

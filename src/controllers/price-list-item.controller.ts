@@ -148,15 +148,15 @@ export class PriceListItemController {
     await this.priceListItemRepository.updateById(id, priceListItem);
   }
 
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  @del('/price-list-items/{id}')
-  @response(204, {description: 'PriceListItem DELETE success'})
-  async deleteById(@param.path.string('id') id: string): Promise<void> {
-    await this.priceListItemRepository.updateById(id, {
-      isDeleted: true,
-      isActive: false,
-      deletedAt: new Date() as any,
-    } as any);
-  }
+  // @authenticate('jwt')
+  // @authorize({roles: ['super_admin']})
+  // @del('/price-list-items/{id}')
+  // @response(204, {description: 'PriceListItem DELETE success'})
+  // async deleteById(@param.path.string('id') id: string): Promise<void> {
+  //   await this.priceListItemRepository.updateById(id, {
+  //     isDeleted: true,
+  //     isActive: false,
+  //     deletedAt: new Date() as any,
+  //   } as any);
+  // }
 }
