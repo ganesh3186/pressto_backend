@@ -31,6 +31,19 @@ export class AuthController {
     public otpService: OtpService,
   ) { }
 
+  private async generateUniqueUsername(email: string | undefined, fullName: string): Promise<string> {
+    const base = email
+      ? email.split('@')[0].toLowerCase()
+      : fullName.trim().toLowerCase().replace(/\s+/g, '.');
+    let username = base;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const existing = await this.usersRepository.findOne({ where: { username } });
+      if (!existing) return username;
+      username = `${base}${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+    throw new HttpErrors.InternalServerError('Could not generate a unique username');
+  }
+
   // ---------------------------------------Super Admin Registration------------------------------------
   @post('/auth/super-admin/register')
   async createSuperAdmin(
@@ -58,7 +71,7 @@ export class AuthController {
       phone: string;
       password: string;
     },
-  ): Promise<{ message: string }> {
+  ): Promise<{ message: string; username: string }> {
     // Check if super admin already exists
     const existingSuperAdmin = await this.rolesRepository.findOne({
       where: { value: 'super_admin' },
@@ -86,9 +99,13 @@ export class AuthController {
     // Hash password
     const hashedPassword = await this.hasher.hashPassword(credentials.password);
 
+    // Generate unique username from email prefix
+    const username = await this.generateUniqueUsername(credentials.email, credentials.fullName);
+
     // Create user
     const user = await this.usersRepository.create({
       fullName: credentials.fullName,
+      username,
       email: credentials.email,
       countryCode: credentials.countryCode || '+91',
       phone: credentials.phone,
@@ -115,7 +132,7 @@ export class AuthController {
       rolesId: superAdminRole.id,
     });
 
-    return { message: 'Super admin created successfully' };
+    return { message: 'Super admin created successfully', username };
   }
 
   // ---------------------------------------Login------------------------------------
@@ -126,9 +143,10 @@ export class AuthController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['email', 'password'],
+            required: ['password'],
             properties: {
               email: { type: 'string', format: 'email' },
+              username: { type: 'string' },
               password: { type: 'string' },
             },
           },
@@ -136,18 +154,27 @@ export class AuthController {
       },
     })
     credentials: {
-      email: string;
+      username?: string;
+      email?: string;
       password: string;
     },
   ): Promise<{ token: string; user: object }> {
-    // Find user by email
+    if (!credentials.email && !credentials.username) {
+      throw new HttpErrors.BadRequest('Either email or username is required');
+    }
+
+    // Find user by email or username
+    const where: object = credentials.email
+      ? { email: credentials.email }
+      : { username: credentials.username };
+
     const user = await this.usersRepository.findOne({
-      where: { email: credentials.email },
+      where,
       include: [{ relation: 'roles' }],
     });
 
     if (!user) {
-      throw new HttpErrors.Unauthorized('Invalid email or password');
+      throw new HttpErrors.Unauthorized('Invalid credentials');
     }
 
     if (!user.isActive) {
@@ -161,7 +188,7 @@ export class AuthController {
     );
 
     if (!isPasswordValid) {
-      throw new HttpErrors.Unauthorized('Invalid email or password');
+      throw new HttpErrors.Unauthorized('Invalid credentials');
     }
 
     // Generate JWT token
@@ -261,7 +288,7 @@ export class AuthController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['fullName', 'email', 'countryCode', 'phone', 'password'],
+            required: ['fullName', 'countryCode', 'phone', 'password'],
             properties: {
               fullName: { type: 'string' },
               email: { type: 'string', format: 'email' },
@@ -275,20 +302,18 @@ export class AuthController {
     })
     credentials: {
       fullName: string;
-      email: string;
+      email?: string;
       countryCode: string;
       phone: string;
       password: string;
     },
-  ): Promise<{ message: string }> {
+  ): Promise<{ message: string; username: string }> {
     // Check if email or phone already exists
+    const orConditions: object[] = [{ phone: credentials.phone }];
+    if (credentials.email) orConditions.push({ email: credentials.email });
+
     const existingUser = await this.usersRepository.findOne({
-      where: {
-        or: [
-          { email: credentials.email },
-          { phone: credentials.phone }
-        ]
-      }
+      where: { or: orConditions },
     });
 
     if (existingUser) {
@@ -298,10 +323,14 @@ export class AuthController {
     // Hash password
     const hashedPassword = await this.hasher.hashPassword(credentials.password);
 
+    // Generate unique username: email prefix if available, else fullName
+    const username = await this.generateUniqueUsername(credentials.email, credentials.fullName);
+
     // Create user
     const user = await this.usersRepository.create({
       fullName: credentials.fullName,
-      email: credentials.email,
+      username,
+      ...(credentials.email && { email: credentials.email }),
       countryCode: credentials.countryCode || '+91',
       phone: credentials.phone,
       password: hashedPassword,
@@ -327,7 +356,7 @@ export class AuthController {
       rolesId: clientRole.id,
     });
 
-    return { message: 'Client registered successfully' };
+    return { message: 'Client registered successfully', username };
   }
 
   // ---------------------------------------Forgot Password: Send OTP------------------------------------
@@ -368,7 +397,7 @@ export class AuthController {
       resetPasswordOtpExpires: expiry,
     });
 
-    await this.otpService.sendOtpEmail(user.email, otp);
+    await this.otpService.sendOtpEmail(user.email!, otp);
 
     return { message: 'If the email exists, an OTP will be sent.' };
   }

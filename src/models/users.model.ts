@@ -1,6 +1,6 @@
-import {Entity, hasMany, model, property} from '@loopback/repository';
-import {Roles} from './roles.model';
-import {UserRoles} from './user-roles.model';
+import { Entity, hasMany, model, property } from '@loopback/repository';
+import { Roles } from './roles.model';
+import { UserRoles } from './user-roles.model';
 
 @model({
   settings: {
@@ -9,13 +9,17 @@ import {UserRoles} from './user-roles.model';
       schema: 'public',
     },
     indexes: {
+      uniqueUsername: {
+        keys: { username: 1 },
+        options: { unique: true },
+      },
       uniqueEmail: {
-        keys: {email: 1},
-        options: {unique: true},
+        keys: { email: 1 },
+        options: { unique: true },
       },
       uniquePhone: {
-        keys: {phone: 1},
-        options: {unique: true},
+        keys: { phone: 1 },
+        options: { unique: true },
       },
     },
   },
@@ -38,9 +42,14 @@ export class Users extends Entity {
 
   @property({
     type: 'string',
-    required: true,
+    required: true
   })
-  email: string;
+  username: string;
+
+  @property({
+    type: 'string',
+  })
+  email?: string;
 
   @property({
     type: 'string',
@@ -106,23 +115,23 @@ export class Users extends Entity {
 
   @property({
     type: 'string',
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   createdBy?: string;
 
   @property({
     type: 'string',
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   updatedBy?: string;
 
   @property({
     type: 'string',
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   deletedBy?: string;
 
-  @hasMany(() => Roles, {through: {model: () => UserRoles}})
+  @hasMany(() => Roles, { through: { model: () => UserRoles } })
   roles: Roles[];
 
   constructor(data?: Partial<Users>) {
@@ -130,6 +139,6 @@ export class Users extends Entity {
   }
 }
 
-export interface UsersRelations {}
+export interface UsersRelations { }
 
 export type UsersWithRelations = Users & UsersRelations;
