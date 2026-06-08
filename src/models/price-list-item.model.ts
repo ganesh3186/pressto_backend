@@ -1,4 +1,7 @@
-import {Entity, model, property} from '@loopback/repository';
+import {Entity, model, property, belongsTo} from '@loopback/repository';
+import {PriceList} from './price-list.model';
+import {Service} from './service.model';
+import {Item} from './item.model';
 
 @model({
   settings: {
@@ -13,89 +16,48 @@ export class PriceListItem extends Entity {
     type: 'string',
     id: true,
     generated: false,
-    postgresql: {
-      dataType: 'uuid',
-    },
+    postgresql: {dataType: 'uuid'},
   })
   id: string;
 
-  @property({
-    type: 'string',
-    required: true,
-    postgresql: {dataType: 'uuid'},
-  })
+  @belongsTo(() => PriceList)
   priceListId: string;
 
-  @property({
-    type: 'string',
-    required: true,
-    postgresql: {dataType: 'uuid'},
-  })
+  @belongsTo(() => Service)
   serviceId: string;
 
-  @property({
-    type: 'string',
-    required: true,
-    postgresql: {dataType: 'uuid'},
-  })
+  @belongsTo(() => Item)
   itemId: string;
 
   @property({
     type: 'number',
+    required: true,
     postgresql: {dataType: 'numeric'},
   })
-  price?: number;
+  price: number;
 
-  @property({
-    type: 'boolean',
-    default: true,
-  })
+  @property({type: 'boolean', default: true})
   isActive?: boolean;
 
-  @property({
-    type: 'number',
-  })
-  status?: number;
-
-  @property({
-    type: 'boolean',
-    default: false,
-  })
+  @property({type: 'boolean', default: false})
   isDeleted?: boolean;
 
-  @property({
-    type: 'date',
-    defaultFn: 'now',
-  })
+  @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 
-  @property({
-    type: 'date',
-    defaultFn: 'now',
-  })
+  @property({type: 'date', defaultFn: 'now'})
   updatedAt?: Date;
 
-  @property({
-    type: 'date',
-  })
+  @property({type: 'date'})
   deletedAt?: Date;
 
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
   createdBy?: string;
 
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
   updatedBy?: string;
 
-  @property({
-    type: 'string',
-    postgresql: {dataType: 'uuid'},
-  })
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
   deletedBy?: string;
 
   constructor(data?: Partial<PriceListItem>) {
@@ -103,8 +65,6 @@ export class PriceListItem extends Entity {
   }
 }
 
-export interface PriceListItemRelations {
-  // describe navigational properties here
-}
+export interface PriceListItemRelations {}
 
 export type PriceListItemWithRelations = PriceListItem & PriceListItemRelations;
