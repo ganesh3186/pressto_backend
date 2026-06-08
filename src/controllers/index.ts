@@ -1,5 +1,6 @@
 export * from './auth.controller';
 export * from './bag.controller';
+export * from './cluster.controller';
 export * from './customer-label.controller';
 export * from './brand.controller';
 export * from './color.controller';
@@ -12,8 +13,10 @@ export * from './ping.controller';
 export * from './price-list-item.controller';
 export * from './price-list.controller';
 export * from './process-step.controller';
+export * from './region.controller';
 export * from './roles.controller';
 export * from './service-category.controller';
+export * from './store.controller';
 export * from './service-item-mapping.controller';
 export * from './service-process-mapping.controller';
 export * from './service.controller';

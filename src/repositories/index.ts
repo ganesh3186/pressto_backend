@@ -1,5 +1,6 @@
 export * from './bag.repository';
 export * from './brand.repository';
+export * from './cluster.repository';
 export * from './customer-label.repository';
 export * from './color.repository';
 export * from './damage-type.repository';
@@ -13,8 +14,10 @@ export * from './price-list.repository';
 export * from './process-step.repository';
 export * from './registration-sessions.repository';
 export * from './role-permissions.repository';
+export * from './region.repository';
 export * from './roles.repository';
 export * from './service-item-mapping.repository';
+export * from './store.repository';
 export * from './service-process-mapping.repository';
 export * from './service.repository';
 export * from './stain.repository';

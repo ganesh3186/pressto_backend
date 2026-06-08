@@ -1,4 +1,4 @@
-import {Entity, model, property} from '@loopback/repository';
+import { Entity, model, property } from '@loopback/repository';
 
 @model({
   settings: {
@@ -22,27 +22,27 @@ export class StorePriceOverride extends Entity {
   @property({
     type: 'string',
     required: true,
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   storeId: string;
 
   @property({
     type: 'string',
     required: true,
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   serviceId: string;
 
   @property({
     type: 'string',
     required: true,
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   itemId: string;
 
   @property({
     type: 'number',
-    postgresql: {dataType: 'numeric'},
+    postgresql: { dataType: 'numeric' },
   })
   overridePrice?: number;
 
@@ -82,19 +82,19 @@ export class StorePriceOverride extends Entity {
 
   @property({
     type: 'string',
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   createdBy?: string;
 
   @property({
     type: 'string',
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   updatedBy?: string;
 
   @property({
     type: 'string',
-    postgresql: {dataType: 'uuid'},
+    postgresql: { dataType: 'uuid' },
   })
   deletedBy?: string;
 

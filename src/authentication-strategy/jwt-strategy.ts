@@ -1,7 +1,7 @@
-import {AuthenticationStrategy} from '@loopback/authentication';
-import {inject} from '@loopback/core';
-import {HttpErrors, Request} from '@loopback/rest';
-import {UserProfile} from '@loopback/security';
+import { AuthenticationStrategy } from '@loopback/authentication';
+import { inject } from '@loopback/core';
+import { HttpErrors, Request } from '@loopback/rest';
+import { UserProfile } from '@loopback/security';
 import { JWTService } from '../services/jwt-service';
 
 export class JWTStrategy implements AuthenticationStrategy {
@@ -10,7 +10,7 @@ export class JWTStrategy implements AuthenticationStrategy {
   constructor(
     @inject('service.jwt.service')
     public jwtService: JWTService,
-  ) {}
+  ) { }
 
   async authenticate(request: Request): Promise<UserProfile | undefined> {
     const token = this.extractCredentials(request);

@@ -1,5 +1,6 @@
 export * from './bag.model';
 export * from './brand.model';
+export * from './cluster.model';
 export * from './customer-label.model';
 export * from './color.model';
 export * from './damage-type.model';
@@ -13,8 +14,10 @@ export * from './price-list.model';
 export * from './process-step.model';
 export * from './registration-sessions.model';
 export * from './role-permissions.model';
+export * from './region.model';
 export * from './roles.model';
 export * from './service-item-mapping.model';
+export * from './store.model';
 export * from './service-process-mapping.model';
 export * from './service.model';
 export * from './stain.model';
