@@ -23,6 +23,7 @@ export * from './service-process-mapping.repository';
 export * from './service.repository';
 export * from './stain.repository';
 export * from './store-price-override.repository';
+export * from './store-service-mapping.repository';
 export * from './user-roles.repository';
 export * from './users.repository';
 export * from './service-category.repository';

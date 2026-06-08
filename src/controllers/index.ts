@@ -23,3 +23,4 @@ export * from './service-process-mapping.controller';
 export * from './service.controller';
 export * from './stain.controller';
 export * from './store-price-override.controller';
+export * from './store-service-mapping.controller';
