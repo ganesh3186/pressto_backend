@@ -193,7 +193,7 @@ export class AuthController {
 
     // Generate JWT token
     const userProfile = this.userService.convertToUserProfile(user);
-    const token = await this.jwtService.generateToken({ ...userProfile, roles: ['client'] });
+    const token = await this.jwtService.generateToken({ ...userProfile, roles: [user.roles[0].value] });
 
     return {
       token,
@@ -203,7 +203,7 @@ export class AuthController {
         email: user.email,
         countryCode: user.countryCode,
         phone: user.phone,
-        roles: ['client'],
+        roles: [user.roles[0].value],
       },
     };
   }
