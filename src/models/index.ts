@@ -1,3 +1,6 @@
+export * from './additional-charge-master.model';
+export * from './additional-charge-scope.enum';
+export * from './additional-charge-type.enum';
 export * from './bag.model';
 export * from './brand.model';
 export * from './cluster.model';

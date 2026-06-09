@@ -1,3 +1,4 @@
+export * from './additional-charge-master.repository';
 export * from './bag.repository';
 export * from './brand.repository';
 export * from './cluster.repository';

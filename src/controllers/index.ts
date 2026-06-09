@@ -1,3 +1,4 @@
+export * from './additional-charge-master.controller';
 export * from './auth.controller';
 export * from './bag.controller';
 export * from './cluster.controller';
