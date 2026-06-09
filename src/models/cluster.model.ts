@@ -40,7 +40,7 @@ export class Cluster extends Entity {
     type: 'array',
     itemType: 'number',
     required: true,
-    postgresql: { dataType: 'integer[]' },
+    postgresql: { dataType: 'jsonb' },
   })
   pincodes: number[];
 

@@ -47,9 +47,6 @@ export class ClusterController {
     })
     cluster: Omit<Cluster, 'id'>,
   ): Promise<Cluster> {
-    console.log('cluster =>', cluster);
-    console.log('pincodes =>', cluster.pincodes);
-    console.log('type =>', typeof cluster.pincodes);
     return this.clusterRepository.create(cluster);
   }
 
