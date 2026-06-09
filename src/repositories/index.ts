@@ -1,4 +1,5 @@
 export * from './additional-charge-master.repository';
+export * from './gst-tax-configuration.repository';
 export * from './bag.repository';
 export * from './brand.repository';
 export * from './cluster.repository';
