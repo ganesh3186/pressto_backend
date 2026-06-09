@@ -88,7 +88,8 @@ export class ServiceController {
     return this.serviceRepository.find({
       ...filter,
       include: [
-        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
+        { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } },
+        { relation: 'serviceCategory', scope: { fields: { id: true, name: true } } }
       ]
     });
   }
