@@ -1,4 +1,6 @@
-import {Entity, model, property} from '@loopback/repository';
+import {Entity, hasMany, model, property} from '@loopback/repository';
+import {Roles} from './roles.model';
+import {RolePermissions} from './role-permissions.model';
 
 @model({
   settings: {
@@ -87,10 +89,15 @@ export class Permissions extends Entity {
   })
   deletedBy?: string;
 
+  @hasMany(() => Roles, {through: {model: () => RolePermissions}})
+  roles: Roles[];
+
   constructor(data?: Partial<Permissions>) {
     super(data);
   }
 }
 
-export interface PermissionsRelations {}
+export interface PermissionsRelations {
+  roles?: Roles[];
+}
 export type PermissionsWithRelations = Permissions & PermissionsRelations;

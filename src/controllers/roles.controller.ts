@@ -1,12 +1,11 @@
 import {authenticate} from '@loopback/authentication';
-import {
-  Filter,
-  repository,
-} from '@loopback/repository';
+import {Filter, FilterExcludingWhere, repository} from '@loopback/repository';
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
+  patch,
   post,
   requestBody,
   response,
@@ -19,7 +18,7 @@ export class RolesController {
   constructor(
     @repository(RolesRepository)
     public rolesRepository: RolesRepository,
-  ) { }
+  ) {}
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin']})
@@ -33,8 +32,8 @@ export class RolesController {
       content: {
         'application/json': {
           schema: getModelSchemaRef(Roles, {
-            title: 'NewRoles',
-            exclude: ['id'],
+            title: 'NewRole',
+            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },
@@ -44,17 +43,6 @@ export class RolesController {
     return this.rolesRepository.create(roles);
   }
 
-  // @get('/roles/count')
-  // @response(200, {
-  //   description: 'Roles model count',
-  //   content: {'application/json': {schema: CountSchema}},
-  // })
-  // async count(
-  //   @param.where(Roles) where?: Where<Roles>,
-  // ): Promise<Count> {
-  //   return this.rolesRepository.count(where);
-  // }
-
   @authenticate('jwt')
   @authorize({roles: ['super_admin']})
   @get('/roles')
@@ -62,88 +50,55 @@ export class RolesController {
     description: 'Array of Roles model instances',
     content: {
       'application/json': {
-        schema: {
-          type: 'array',
-          items: getModelSchemaRef(Roles, {includeRelations: true}),
-        },
+        schema: {type: 'array', items: getModelSchemaRef(Roles, {includeRelations: true})},
       },
     },
   })
-  async find(
-    @param.filter(Roles) filter?: Filter<Roles>,
-  ): Promise<Roles[]> {
-    return this.rolesRepository.find(filter);
+  async find(@param.filter(Roles) filter?: Filter<Roles>): Promise<Roles[]> {
+    return this.rolesRepository.find({
+      ...filter,
+      include: [{relation: 'permissions'}],
+    });
   }
 
-  // @patch('/roles')
-  // @response(200, {
-  //   description: 'Roles PATCH success count',
-  //   content: {'application/json': {schema: CountSchema}},
-  // })
-  // async updateAll(
-  //   @requestBody({
-  //     content: {
-  //       'application/json': {
-  //         schema: getModelSchemaRef(Roles, {partial: true}),
-  //       },
-  //     },
-  //   })
-  //   roles: Roles,
-  //   @param.where(Roles) where?: Where<Roles>,
-  // ): Promise<Count> {
-  //   return this.rolesRepository.updateAll(roles, where);
-  // }
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin']})
+  @get('/roles/{id}')
+  @response(200, {
+    description: 'Roles model instance',
+    content: {
+      'application/json': {schema: getModelSchemaRef(Roles, {includeRelations: true})},
+    },
+  })
+  async findById(
+    @param.path.string('id') id: string,
+    @param.filter(Roles, {exclude: 'where'}) filter?: FilterExcludingWhere<Roles>,
+  ): Promise<Roles> {
+    return this.rolesRepository.findById(id, {
+      ...filter,
+      include: [{relation: 'permissions'}],
+    });
+  }
 
-  // @get('/roles/{id}')
-  // @response(200, {
-  //   description: 'Roles model instance',
-  //   content: {
-  //     'application/json': {
-  //       schema: getModelSchemaRef(Roles, {includeRelations: true}),
-  //     },
-  //   },
-  // })
-  // async findById(
-  //   @param.path.string('id') id: string,
-  //   @param.filter(Roles, {exclude: 'where'}) filter?: FilterExcludingWhere<Roles>
-  // ): Promise<Roles> {
-  //   return this.rolesRepository.findById(id, filter);
-  // }
-
-  // @patch('/roles/{id}')
-  // @response(204, {
-  //   description: 'Roles PATCH success',
-  // })
-  // async updateById(
-  //   @param.path.string('id') id: string,
-  //   @requestBody({
-  //     content: {
-  //       'application/json': {
-  //         schema: getModelSchemaRef(Roles, {partial: true}),
-  //       },
-  //     },
-  //   })
-  //   roles: Roles,
-  // ): Promise<void> {
-  //   await this.rolesRepository.updateById(id, roles);
-  // }
-
-  // @put('/roles/{id}')
-  // @response(204, {
-  //   description: 'Roles PUT success',
-  // })
-  // async replaceById(
-  //   @param.path.string('id') id: string,
-  //   @requestBody() roles: Roles,
-  // ): Promise<void> {
-  //   await this.rolesRepository.replaceById(id, roles);
-  // }
-
-  // @del('/roles/{id}')
-  // @response(204, {
-  //   description: 'Roles DELETE success',
-  // })
-  // async deleteById(@param.path.string('id') id: string): Promise<void> {
-  //   await this.rolesRepository.deleteById(id);
-  // }
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin']})
+  @patch('/roles/{id}')
+  @response(204, {description: 'Roles PATCH success'})
+  async updateById(
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: getModelSchemaRef(Roles, {partial: true}),
+        },
+      },
+    })
+    roles: Partial<Roles>,
+  ): Promise<void> {
+    const existing = await this.rolesRepository.findById(id);
+    if (existing.isLocked) {
+      throw new HttpErrors.Forbidden('This role is locked and cannot be modified.');
+    }
+    await this.rolesRepository.updateById(id, roles);
+  }
 }
