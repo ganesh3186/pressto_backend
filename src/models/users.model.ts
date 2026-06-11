@@ -1,6 +1,7 @@
-import { Entity, hasMany, model, property } from '@loopback/repository';
-import { Roles } from './roles.model';
-import { UserRoles } from './user-roles.model';
+import {Entity, hasMany, model, property, belongsTo} from '@loopback/repository';
+import {Roles} from './roles.model';
+import {UserRoles} from './user-roles.model';
+import {Media} from './media.model';
 
 @model({
   settings: {
@@ -79,6 +80,9 @@ export class Users extends Entity {
   })
   resetPasswordOtpExpires?: Date;
 
+  @belongsTo(() => Media)
+  mediaId?: string;
+
   @property({
     type: 'boolean',
     default: true,
@@ -139,6 +143,8 @@ export class Users extends Entity {
   }
 }
 
-export interface UsersRelations { }
+export interface UsersRelations {
+  media?: Media;
+}
 
 export type UsersWithRelations = Users & UsersRelations;

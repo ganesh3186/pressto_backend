@@ -1,4 +1,5 @@
 export * from './additional-charge-master.controller';
+export * from './employee.controller';
 export * from './gst-tax-configuration.controller';
 export * from './auth.controller';
 export * from './bag.controller';
@@ -12,6 +13,7 @@ export * from './file-upload.controller';
 export * from './item-category.controller';
 export * from './item.controller';
 export * from './permissions.controller';
+export * from './profile.controller';
 export * from './ping.controller';
 export * from './price-list-item.controller';
 export * from './price-list.controller';

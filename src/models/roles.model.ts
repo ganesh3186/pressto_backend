@@ -55,6 +55,12 @@ export class Roles extends Entity {
 
   @property({
     type: 'boolean',
+    default: false,
+  })
+  loginAccess?: boolean;
+
+  @property({
+    type: 'boolean',
     default: true,
   })
   isActive?: boolean;
