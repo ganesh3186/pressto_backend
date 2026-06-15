@@ -58,7 +58,7 @@ export class CustomerSecurityDeposit extends Entity {
   @property({type: 'string'})
   remarks?: string;
 
-  @hasMany(() => CustomerSecurityDepositTransaction)
+  @hasMany(() => CustomerSecurityDepositTransaction, {keyTo: 'securityDepositId'})
   transactions: CustomerSecurityDepositTransaction[];
 
   @property({type: 'boolean', default: true})
