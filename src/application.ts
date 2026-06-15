@@ -19,6 +19,12 @@ import { JWTService } from './services/jwt-service';
 import { RbacService } from './services/rbac.service';
 import { MyUserService } from './services/user-service';
 import { MediaService } from './services/media.service';
+import { WalletService } from './services/wallet.service';
+import { SecurityDepositService } from './services/security-deposit.service';
+import { OtpService } from './services/otp.service';
+import { CustomerAddressService } from './services/customer-address.service';
+import { CustomerContactService } from './services/customer-contact.service';
+import { CustomerPhoneService } from './services/customer-phone.service';
 
 export { ApplicationConfig };
 
@@ -66,6 +72,12 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('service.user.service').toClass(MyUserService);
     this.bind('service.media.service').toClass(MediaService);
     this.bind(EmailManagerBindings.SEND_MAIL).toClass(EmailService);
+    this.bind('services.wallet').toClass(WalletService);
+    this.bind('services.security-deposit').toClass(SecurityDepositService);
+    this.bind('services.OtpService').toClass(OtpService);
+    this.bind('services.customer-address').toClass(CustomerAddressService);
+    this.bind('services.customer-contact').toClass(CustomerContactService);
+    this.bind('services.customer-phone').toClass(CustomerPhoneService);
   }
 
   protected configureFileUpload(destination?: string) {
