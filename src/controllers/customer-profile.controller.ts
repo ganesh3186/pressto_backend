@@ -1,0 +1,479 @@
+import {authenticate, AuthenticationBindings} from '@loopback/authentication';
+import {inject} from '@loopback/core';
+import {IsolationLevel, repository} from '@loopback/repository';
+import {
+  del,
+  get,
+  getModelSchemaRef,
+  HttpErrors,
+  param,
+  patch,
+  post,
+  requestBody,
+  response,
+} from '@loopback/rest';
+import {securityId, UserProfile} from '@loopback/security';
+import {PresstoDataSource} from '../datasources';
+import {
+  ContactRelationship,
+  Customer,
+  CustomerAddress,
+  CustomerContact,
+  CustomerPhone,
+} from '../models';
+import {
+  CustomerRepository,
+  CustomerSecurityDepositRepository,
+  UsersRepository,
+  WalletRepository,
+  WalletTransactionRepository,
+} from '../repositories';
+import {CustomerAddressService} from '../services/customer-address.service';
+import {CustomerContactService} from '../services/customer-contact.service';
+import {CustomerPhoneService} from '../services/customer-phone.service';
+
+export class CustomerProfileController {
+  constructor(
+    @repository(UsersRepository)
+    private usersRepository: UsersRepository,
+    @repository(CustomerRepository)
+    private customerRepository: CustomerRepository,
+    @repository(WalletRepository)
+    private walletRepository: WalletRepository,
+    @repository(WalletTransactionRepository)
+    private walletTransactionRepository: WalletTransactionRepository,
+    @repository(CustomerSecurityDepositRepository)
+    private securityDepositRepository: CustomerSecurityDepositRepository,
+    @inject('datasources.pressto')
+    private dataSource: PresstoDataSource,
+    @inject('services.customer-address')
+    private addressService: CustomerAddressService,
+    @inject('services.customer-contact')
+    private contactService: CustomerContactService,
+    @inject('services.customer-phone')
+    private phoneService: CustomerPhoneService,
+  ) {}
+
+  private async resolveCustomer(userId: string): Promise<Customer> {
+    const customer = await this.customerRepository.findOne({
+      where: {userId, isDeleted: false},
+    });
+    if (!customer) {
+      throw new HttpErrors.NotFound('Customer profile not found for this user.');
+    }
+    return customer;
+  }
+
+  private verifyOwnership(recordCustomerId: string, customerId: string): void {
+    if (recordCustomerId !== customerId) {
+      throw new HttpErrors.Forbidden('You do not have permission to modify this record.');
+    }
+  }
+
+  // ─── Profile ──────────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/profile/customer')
+  @response(200, {description: 'Customer profile'})
+  async getProfile(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<object> {
+    const userId = currentUser[securityId];
+
+    const customer = await this.customerRepository.findOne({
+      where: {userId, isDeleted: false},
+      include: [
+        {
+          relation: 'user',
+          scope: {
+            fields: {id: true, fullName: true, email: true, countryCode: true, phone: true, username: true, isActive: true},
+            include: [{relation: 'roles'}],
+          },
+        },
+      ],
+    });
+
+    if (!customer) throw new HttpErrors.NotFound('Customer profile not found.');
+
+    const [wallet, securityDeposit] = await Promise.all([
+      this.walletRepository.findOne({where: {customerId: customer.id}}),
+      this.securityDepositRepository.findOne({where: {customerId: customer.id}}),
+    ]);
+
+    return {...customer, wallet, securityDeposit};
+  }
+
+  @authenticate('jwt')
+  @patch('/profile/customer')
+  @response(204, {description: 'Customer profile updated'})
+  async updateProfile(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              // user-level — only what the customer owns
+              email: {type: 'string', format: 'email'},
+              countryCode: {type: 'string'},
+              phone: {type: 'string'},
+              // customer-level — personal info only, no admin fields
+              firstName: {type: 'string'},
+              lastName: {type: 'string'},
+              dateOfBirth: {type: 'string', format: 'date'},
+              gstNumber: {type: 'string'},
+              companyName: {type: 'string'},
+              // excluded: customerTypeId, customerGroupId, loyaltyPoints,
+              //           defaultDiscountType, defaultDiscountValue,
+              //           preferredStoreId, sensitivityScore, notes (all admin-only)
+            },
+          },
+        },
+      },
+    })
+    body: {
+      email?: string;
+      countryCode?: string;
+      phone?: string;
+      firstName?: string;
+      lastName?: string;
+      dateOfBirth?: string;
+      gstNumber?: string;
+      companyName?: string;
+    },
+  ): Promise<void> {
+    const userId = currentUser[securityId];
+    const customer = await this.resolveCustomer(userId);
+
+    const {email, countryCode, phone, firstName, lastName, dateOfBirth, ...customerRest} = body;
+
+    const userFields: Record<string, unknown> = {};
+    if (email !== undefined) userFields.email = email;
+    if (countryCode !== undefined) userFields.countryCode = countryCode;
+    if (phone !== undefined) userFields.phone = phone;
+    if (firstName !== undefined || lastName !== undefined) {
+      const newFirst = firstName ?? customer.firstName;
+      const newLast = lastName ?? customer.lastName;
+      userFields.fullName = `${newFirst} ${newLast}`;
+    }
+
+    const customerFields: Record<string, unknown> = {...customerRest};
+    if (firstName !== undefined) customerFields.firstName = firstName;
+    if (lastName !== undefined) customerFields.lastName = lastName;
+    if (dateOfBirth !== undefined) customerFields.dateOfBirth = new Date(dateOfBirth);
+
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      if (Object.keys(userFields).length > 0) {
+        await this.usersRepository.updateById(userId, userFields, {transaction: tx});
+      }
+      if (Object.keys(customerFields).length > 0) {
+        await this.customerRepository.updateById(customer.id, customerFields, {transaction: tx});
+      }
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
+  // ─── Wallet ───────────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/profile/customer/wallet')
+  @response(200, {description: 'Wallet balance and recent transactions'})
+  async getWallet(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<object> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+
+    const wallet = await this.walletRepository.findOne({where: {customerId: customer.id}});
+    if (!wallet) throw new HttpErrors.NotFound('Wallet not found.');
+
+    const recentTransactions = await this.walletTransactionRepository.find({
+      where: {walletId: wallet.id, isDeleted: false},
+      order: ['transactionDate DESC'],
+      limit: 20,
+    });
+
+    return {wallet, recentTransactions};
+  }
+
+  // ─── Security Deposit ─────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/profile/customer/security-deposit')
+  @response(200, {description: 'Security deposit info'})
+  async getSecurityDeposit(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<object> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+
+    const deposit = await this.securityDepositRepository.findOne({
+      where: {customerId: customer.id},
+    });
+    if (!deposit) throw new HttpErrors.NotFound('Security deposit record not found.');
+
+    return deposit;
+  }
+
+  // ─── Addresses ────────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/profile/customer/addresses')
+  @response(200, {description: 'Customer addresses', content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(CustomerAddress)}}}})
+  async getAddresses(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<CustomerAddress[]> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    return this.addressService.findAll(customer.id);
+  }
+
+  @authenticate('jwt')
+  @post('/profile/customer/addresses')
+  @response(200, {description: 'Address added', content: {'application/json': {schema: getModelSchemaRef(CustomerAddress)}}})
+  async addAddress(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['addressLine1', 'city', 'state', 'pincode'],
+            properties: {
+              addressType: {type: 'string'},
+              addressLine1: {type: 'string'},
+              addressLine2: {type: 'string'},
+              landmark: {type: 'string'},
+              city: {type: 'string'},
+              state: {type: 'string'},
+              country: {type: 'string'},
+              pincode: {type: 'string'},
+              latitude: {type: 'number'},
+              longitude: {type: 'number'},
+              isDefault: {type: 'boolean'},
+            },
+          },
+        },
+      },
+    })
+    body: Partial<CustomerAddress>,
+  ): Promise<CustomerAddress> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    return this.addressService.create(customer.id, body);
+  }
+
+  @authenticate('jwt')
+  @patch('/profile/customer/addresses/{id}')
+  @response(204, {description: 'Address updated'})
+  async updateAddress(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              addressType: {type: 'string'},
+              addressLine1: {type: 'string'},
+              addressLine2: {type: 'string'},
+              landmark: {type: 'string'},
+              city: {type: 'string'},
+              state: {type: 'string'},
+              country: {type: 'string'},
+              pincode: {type: 'string'},
+              latitude: {type: 'number'},
+              longitude: {type: 'number'},
+              isDefault: {type: 'boolean'},
+            },
+          },
+        },
+      },
+    })
+    body: Partial<CustomerAddress>,
+  ): Promise<void> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    const address = await this.addressService.findById(id);
+    this.verifyOwnership(address.customerId, customer.id);
+    await this.addressService.update(id, body);
+  }
+
+  @authenticate('jwt')
+  @del('/profile/customer/addresses/{id}')
+  @response(204, {description: 'Address deleted'})
+  async deleteAddress(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<void> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    const address = await this.addressService.findById(id);
+    this.verifyOwnership(address.customerId, customer.id);
+    await this.addressService.delete(id);
+  }
+
+  // ─── Contacts ─────────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/profile/customer/contacts')
+  @response(200, {description: 'Customer contacts', content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(CustomerContact)}}}})
+  async getContacts(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<CustomerContact[]> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    return this.contactService.findAll(customer.id);
+  }
+
+  @authenticate('jwt')
+  @post('/profile/customer/contacts')
+  @response(200, {description: 'Contact added', content: {'application/json': {schema: getModelSchemaRef(CustomerContact)}}})
+  async addContact(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['name', 'phone', 'relationship'],
+            properties: {
+              name: {type: 'string'},
+              phone: {type: 'string'},
+              email: {type: 'string', format: 'email'},
+              relationship: {type: 'string', enum: Object.values(ContactRelationship)},
+              isPrimary: {type: 'boolean'},
+            },
+          },
+        },
+      },
+    })
+    body: {name: string; phone: string; relationship: ContactRelationship; email?: string; isPrimary?: boolean},
+  ): Promise<CustomerContact> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    return this.contactService.create(customer.id, body);
+  }
+
+  @authenticate('jwt')
+  @patch('/profile/customer/contacts/{id}')
+  @response(204, {description: 'Contact updated'})
+  async updateContact(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              name: {type: 'string'},
+              phone: {type: 'string'},
+              email: {type: 'string', format: 'email'},
+              relationship: {type: 'string', enum: Object.values(ContactRelationship)},
+              isPrimary: {type: 'boolean'},
+            },
+          },
+        },
+      },
+    })
+    body: Partial<CustomerContact>,
+  ): Promise<void> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    const contact = await this.contactService.findById(id);
+    this.verifyOwnership(contact.customerId, customer.id);
+    await this.contactService.update(id, body);
+  }
+
+  @authenticate('jwt')
+  @del('/profile/customer/contacts/{id}')
+  @response(204, {description: 'Contact deleted'})
+  async deleteContact(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<void> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    const contact = await this.contactService.findById(id);
+    this.verifyOwnership(contact.customerId, customer.id);
+    await this.contactService.delete(id);
+  }
+
+  // ─── Alternate Phones ─────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/profile/customer/phones')
+  @response(200, {description: 'Customer alternate phones', content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(CustomerPhone)}}}})
+  async getPhones(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<CustomerPhone[]> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    return this.phoneService.findAll(customer.id);
+  }
+
+  @authenticate('jwt')
+  @post('/profile/customer/phones')
+  @response(200, {description: 'Phone added', content: {'application/json': {schema: getModelSchemaRef(CustomerPhone)}}})
+  async addPhone(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['countryCode', 'phone'],
+            properties: {
+              countryCode: {type: 'string', default: '+91'},
+              phone: {type: 'string'},
+              isPrimary: {type: 'boolean'},
+              isWhatsappNumber: {type: 'boolean'},
+            },
+          },
+        },
+      },
+    })
+    body: {countryCode: string; phone: string; isPrimary?: boolean; isWhatsappNumber?: boolean},
+  ): Promise<CustomerPhone> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    return this.phoneService.create(customer.id, body);
+  }
+
+  @authenticate('jwt')
+  @patch('/profile/customer/phones/{id}')
+  @response(204, {description: 'Phone updated'})
+  async updatePhone(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              countryCode: {type: 'string'},
+              phone: {type: 'string'},
+              isPrimary: {type: 'boolean'},
+              isWhatsappNumber: {type: 'boolean'},
+            },
+          },
+        },
+      },
+    })
+    body: Partial<CustomerPhone>,
+  ): Promise<void> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    const phone = await this.phoneService.findById(id);
+    this.verifyOwnership(phone.customerId, customer.id);
+    await this.phoneService.update(id, body);
+  }
+
+  @authenticate('jwt')
+  @del('/profile/customer/phones/{id}')
+  @response(204, {description: 'Phone deleted'})
+  async deletePhone(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<void> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    const phone = await this.phoneService.findById(id);
+    this.verifyOwnership(phone.customerId, customer.id);
+    await this.phoneService.delete(id);
+  }
+}
