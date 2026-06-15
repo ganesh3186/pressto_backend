@@ -80,6 +80,12 @@ export class Users extends Entity {
   })
   resetPasswordOtpExpires?: Date;
 
+  @property({type: 'string'})
+  loginOtp?: string;
+
+  @property({type: 'date'})
+  loginOtpExpires?: Date;
+
   @belongsTo(() => Media)
   mediaId?: string;
 
