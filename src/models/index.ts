@@ -46,3 +46,4 @@ export * from './contact-relationship.enum';
 export * from './customer-address.model';
 export * from './customer-contact.model';
 export * from './customer-phone.model';
+export * from './order-label.model';

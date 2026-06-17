@@ -39,3 +39,4 @@ export * from './customer-security-deposit-transaction.repository';
 export * from './customer-address.repository';
 export * from './customer-contact.repository';
 export * from './customer-phone.repository';
+export * from './order-label.repository';

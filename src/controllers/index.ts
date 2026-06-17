@@ -35,3 +35,4 @@ export * from './customer-address.controller';
 export * from './customer-contact.controller';
 export * from './customer-phone.controller';
 export * from './customer-profile.controller';
+export * from './order-label.controller';
