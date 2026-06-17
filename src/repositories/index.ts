@@ -40,3 +40,5 @@ export * from './customer-address.repository';
 export * from './customer-contact.repository';
 export * from './customer-phone.repository';
 export * from './order-label.repository';
+export * from './wallet-recharge-request.repository';
+export * from './security-deposit-topup-request.repository';
