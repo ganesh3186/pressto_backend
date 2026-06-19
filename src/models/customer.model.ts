@@ -1,5 +1,6 @@
 import {Entity, belongsTo, model, property} from '@loopback/repository';
 import {Users} from './users.model';
+import {CustomerLabel} from './customer-label.model';
 
 @model({
   settings: {
@@ -102,6 +103,9 @@ export class Customer extends Entity {
 
   @property({type: 'date'})
   deletedAt?: Date;
+
+  @belongsTo(() => CustomerLabel)
+  customerLabelId: string;
 
   constructor(data?: Partial<Customer>) {
     super(data);
