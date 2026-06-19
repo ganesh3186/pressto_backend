@@ -51,3 +51,5 @@ export * from './payment-mode.enum';
 export * from './payment-request-status.enum';
 export * from './wallet-recharge-request.model';
 export * from './security-deposit-topup-request.model';
+export * from './customer-family-group.model';
+export * from './customer-family-group-member.model';
