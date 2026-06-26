@@ -40,3 +40,5 @@ export * from './customer-recharge.controller';
 export * from './admin-customer-recharge.controller';
 export * from './customer-family-group.controller';
 export * from './admin-family-group.controller';
+export * from './order.controller';
+export * from './garment.controller';
