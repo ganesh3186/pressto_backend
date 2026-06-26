@@ -29,14 +29,14 @@ export class Region extends Entity {
   @property({type: 'string', required: true})
   code: string;
 
-  @property({type: 'string', required: true})
-  country: string;
+  @property({type: 'string', required: false})
+  country?: string;
 
   @property({type: 'string', required: true})
   state: string;
 
-  @property({type: 'string', required: true})
-  city: string;
+  @property({type: 'string', required: false})
+  city?: string;
 
   @property({type: 'string'})
   description?: string;

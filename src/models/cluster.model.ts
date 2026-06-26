@@ -39,10 +39,10 @@ export class Cluster extends Entity {
   @property({
     type: 'array',
     itemType: 'number',
-    required: true,
+    required: false,
     postgresql: { dataType: 'jsonb' },
   })
-  pincodes: number[];
+  pincodes?: number[];
 
   @property({ type: 'string' })
   description?: string;
