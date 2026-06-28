@@ -48,6 +48,13 @@ export class DamageTypeController {
     })
     damageType: Omit<DamageType, 'id'>,
   ): Promise<DamageType> {
+    const existing = await this.damageTypeRepository.find({ fields: { code: true } });
+    let maxNum = 0;
+    for (const d of existing) {
+      const match = d.code?.match(/^DMG(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    damageType.code = `DMG${String(maxNum + 1).padStart(3, '0')}`;
     return this.damageTypeRepository.create(damageType);
   }
 

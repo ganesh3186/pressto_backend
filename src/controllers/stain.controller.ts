@@ -48,6 +48,13 @@ export class StainController {
     })
     stain: Omit<Stain, 'id'>,
   ): Promise<Stain> {
+    const existing = await this.stainRepository.find({ fields: { code: true } });
+    let maxNum = 0;
+    for (const s of existing) {
+      const match = s.code?.match(/^STN(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    stain.code = `STN${String(maxNum + 1).padStart(3, '0')}`;
     return this.stainRepository.create(stain);
   }
 

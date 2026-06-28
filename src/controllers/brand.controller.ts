@@ -48,6 +48,13 @@ export class BrandController {
     })
     brand: Omit<Brand, 'id'>,
   ): Promise<Brand> {
+    const existing = await this.brandRepository.find({ fields: { code: true } });
+    let maxNum = 0;
+    for (const b of existing) {
+      const match = b.code?.match(/^BRD(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    brand.code = `BRD${String(maxNum + 1).padStart(3, '0')}`;
     return this.brandRepository.create(brand);
   }
 
