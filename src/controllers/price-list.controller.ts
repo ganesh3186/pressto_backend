@@ -8,7 +8,6 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
@@ -19,23 +18,19 @@ import {
 } from '@loopback/rest';
 import {authorize} from '../authorization';
 import {PriceList} from '../models/price-list.model';
-import {PriceListType} from '../models/price-list-type.enum';
 import {PriceListRepository} from '../repositories/price-list.repository';
-import {PriceListItemRepository} from '../repositories/price-list-item.repository';
 
 export class PriceListController {
   constructor(
     @repository(PriceListRepository)
     public priceListRepository: PriceListRepository,
-    @repository(PriceListItemRepository)
-    public priceListItemRepository: PriceListItemRepository,
   ) {}
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin']})
   @post('/price-lists')
   @response(200, {
-    description: 'PriceList model instance (with optional items)',
+    description: 'PriceList model instance',
     content: {'application/json': {schema: getModelSchemaRef(PriceList, {includeRelations: true})}},
   })
   async create(
@@ -44,51 +39,33 @@ export class PriceListController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['name', 'code', 'regionId', 'priceListType'],
+            required: ['name', 'regionId', 'percentage'],
             properties: {
               name: {type: 'string'},
-              code: {type: 'string'},
               regionId: {type: 'string', format: 'uuid'},
-              priceListType: {type: 'string', enum: Object.values(PriceListType)},
+              percentage: {type: 'number'},
               description: {type: 'string'},
               isActive: {type: 'boolean'},
-              items: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  required: ['serviceId', 'itemId', 'price'],
-                  properties: {
-                    serviceId: {type: 'string', format: 'uuid'},
-                    itemId: {type: 'string', format: 'uuid'},
-                    price: {type: 'number'},
-                  },
-                },
-              },
             },
           },
         },
       },
     })
-    body: Omit<PriceList, 'id'> & {items?: Array<{serviceId: string; itemId: string; price: number}>},
+    body: Omit<PriceList, 'id' | 'code'>,
   ): Promise<PriceList> {
-    const {items, ...priceListData} = body;
-    const priceList = await this.priceListRepository.create(priceListData);
+    const all = await this.priceListRepository.find({
+      fields: {code: true},
+      where: {code: {like: 'RPL%'}} as any,
+    });
+    const maxNum = all
+      .map(r => parseInt(r.code?.replace('RPL', '') || '0', 10))
+      .filter(n => !Number.isNaN(n))
+      .reduce((m, n) => Math.max(m, n), 0);
+    const code = `RPL${String(maxNum + 1).padStart(3, '0')}`;
 
-    if (items && items.length > 0) {
-      await Promise.all(
-        items.map(item =>
-          this.priceListItemRepository.create({
-            priceListId: priceList.id,
-            serviceId: item.serviceId,
-            itemId: item.itemId,
-            price: item.price,
-          }),
-        ),
-      );
-    }
-
+    const priceList = await this.priceListRepository.create({...body, code});
     return this.priceListRepository.findById(priceList.id, {
-      include: [{relation: 'region'}, {relation: 'priceListItems'}],
+      include: [{relation: 'region'}],
     });
   }
 
@@ -126,30 +103,9 @@ export class PriceListController {
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin']})
-  @patch('/price-lists')
-  @response(200, {
-    description: 'PriceList PATCH success count',
-    content: {'application/json': {schema: CountSchema}},
-  })
-  async updateAll(
-    @requestBody({
-      content: {
-        'application/json': {
-          schema: getModelSchemaRef(PriceList, {partial: true}),
-        },
-      },
-    })
-    priceList: PriceList,
-    @param.where(PriceList) where?: Where<PriceList>,
-  ): Promise<Count> {
-    return this.priceListRepository.updateAll(priceList, where);
-  }
-
-  @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
   @get('/price-lists/{id}')
   @response(200, {
-    description: 'PriceList model instance with region and items',
+    description: 'PriceList model instance',
     content: {
       'application/json': {
         schema: getModelSchemaRef(PriceList, {includeRelations: true}),
@@ -162,18 +118,7 @@ export class PriceListController {
   ): Promise<PriceList> {
     return this.priceListRepository.findById(id, {
       ...filter,
-      include: [
-        {relation: 'region'},
-        {
-          relation: 'priceListItems',
-          scope: {
-            include: [
-              {relation: 'service', scope: {fields: {id: true, name: true, code: true}}},
-              {relation: 'item', scope: {fields: {id: true, name: true, code: true}}},
-            ],
-          },
-        },
-      ],
+      include: [{relation: 'region'}],
     });
   }
 
@@ -194,16 +139,4 @@ export class PriceListController {
   ): Promise<void> {
     await this.priceListRepository.updateById(id, priceList);
   }
-
-  // @authenticate('jwt')
-  // @authorize({roles: ['super_admin']})
-  // @del('/price-lists/{id}')
-  // @response(204, {description: 'PriceList DELETE success'})
-  // async deleteById(@param.path.string('id') id: string): Promise<void> {
-  //   await this.priceListRepository.updateById(id, {
-  //     isDeleted: true,
-  //     isActive: false,
-  //     deletedAt: new Date() as any,
-  //   } as any);
-  // }
 }

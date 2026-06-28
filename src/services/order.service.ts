@@ -10,6 +10,7 @@ import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
 import {
   AdditionalChargeMasterRepository,
+  ClusterPriceListRepository,
   ClusterRepository,
   CustomerRepository,
   GarmentRepository,
@@ -20,7 +21,6 @@ import {
   OrderRepository,
   OrderStatusHistoryRepository,
   PaymentTransactionRepository,
-  PriceListItemRepository,
   PriceListRepository,
   ServiceItemMappingRepository,
   StoreRepository,
@@ -74,8 +74,8 @@ export class OrderService {
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(StoreRepository) private storeRepo: StoreRepository,
     @repository(ClusterRepository) private clusterRepo: ClusterRepository,
+    @repository(ClusterPriceListRepository) private clusterPriceListRepo: ClusterPriceListRepository,
     @repository(PriceListRepository) private priceListRepo: PriceListRepository,
-    @repository(PriceListItemRepository) private priceListItemRepo: PriceListItemRepository,
     @repository(StorePriceOverrideRepository) private storePriceOverrideRepo: StorePriceOverrideRepository,
     @repository(ServiceItemMappingRepository) private serviceItemMappingRepo: ServiceItemMappingRepository,
     @repository(AdditionalChargeMasterRepository) private additionalChargeRepo: AdditionalChargeMasterRepository,
@@ -87,38 +87,41 @@ export class OrderService {
   // ─── Pricing ──────────────────────────────────────────────────────────────
 
   private async getUnitPrice(storeId: string, serviceId: string, itemId: string): Promise<number> {
-    // 1. Store-specific price override
-    const override = await this.storePriceOverrideRepo.findOne({
-      where: {storeId, serviceId, itemId, isActive: true, isDeleted: false},
-    });
-    if (override?.overridePrice != null) return Number(override.overridePrice);
+    // Base price from service-item mapping (required)
+    const mapping = await this.serviceItemMappingRepo.findOne({where: {serviceId, itemId}});
+    if (mapping?.basePrice == null) {
+      throw new HttpErrors.BadRequest(
+        `No base price configured for serviceId: ${serviceId}, itemId: ${itemId}. Add a ServiceItemMapping with a base price.`,
+      );
+    }
+    const base = Number(mapping.basePrice);
 
-    // 2. Region price list via Store → Cluster → Region
+    // 1. Store-specific override percentage
+    const override = await this.storePriceOverrideRepo.findOne({
+      where: {storeId, isActive: true, isDeleted: false},
+    });
+    if (override?.percentage != null) return base * (Number(override.percentage) / 100);
+
+    // 2. Cluster price list percentage
     const store = await this.storeRepo.findById(storeId);
     if (store.clusterId) {
+      const clusterPriceList = await this.clusterPriceListRepo.findOne({
+        where: {clusterId: store.clusterId, isActive: true, isDeleted: false},
+      });
+      if (clusterPriceList?.percentage != null) return base * (Number(clusterPriceList.percentage) / 100);
+
+      // 3. Region price list percentage
       const cluster = await this.clusterRepo.findById(store.clusterId);
       if (cluster.regionId) {
         const priceList = await this.priceListRepo.findOne({
           where: {regionId: cluster.regionId, isActive: true, isDeleted: false},
         });
-        if (priceList) {
-          const plItem = await this.priceListItemRepo.findOne({
-            where: {priceListId: priceList.id, serviceId, itemId, isActive: true, isDeleted: false},
-          });
-          if (plItem?.price != null) return Number(plItem.price);
-        }
+        if (priceList?.percentage != null) return base * (Number(priceList.percentage) / 100);
       }
     }
 
-    // 3. Fallback: service-item mapping base price
-    const mapping = await this.serviceItemMappingRepo.findOne({
-      where: {serviceId, itemId},
-    });
-    if (mapping?.basePrice != null) return Number(mapping.basePrice);
-
-    throw new HttpErrors.BadRequest(
-      `No price configured for serviceId: ${serviceId}, itemId: ${itemId}. Add a PriceListItem or StorePriceOverride.`,
-    );
+    // 4. Return base price as-is
+    return base;
   }
 
   private applyCustomerDiscount(

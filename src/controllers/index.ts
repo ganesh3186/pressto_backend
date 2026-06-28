@@ -1,3 +1,4 @@
+export * from './cluster-price-list.controller';
 export * from './additional-charge-master.controller';
 export * from './employee.controller';
 export * from './gst-tax-configuration.controller';

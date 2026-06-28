@@ -8,7 +8,6 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
@@ -80,8 +79,6 @@ export class StorePriceOverrideController {
       ...filter,
       include: [
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
-        {relation: 'service', scope: {fields: {id: true, name: true, code: true}}},
-        {relation: 'item', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
   }
@@ -126,8 +123,6 @@ export class StorePriceOverrideController {
       ...filter,
       include: [
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
-        {relation: 'service', scope: {fields: {id: true, name: true, code: true}}},
-        {relation: 'item', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
   }

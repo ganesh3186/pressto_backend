@@ -1,15 +1,15 @@
 import {Entity, model, property, belongsTo} from '@loopback/repository';
-import {Store} from './store.model';
+import {Cluster} from './cluster.model';
 
 @model({
   settings: {
     postgresql: {
-      table: 'store_price_override',
+      table: 'cluster_price_list',
       schema: 'public',
     },
   },
 })
-export class StorePriceOverride extends Entity {
+export class ClusterPriceList extends Entity {
   @property({
     type: 'string',
     id: true,
@@ -18,8 +18,14 @@ export class StorePriceOverride extends Entity {
   })
   id: string;
 
-  @belongsTo(() => Store)
-  storeId: string;
+  @property({type: 'string', required: true})
+  name: string;
+
+  @property({type: 'string', required: true})
+  code: string;
+
+  @belongsTo(() => Cluster)
+  clusterId: string;
 
   @property({
     type: 'number',
@@ -27,6 +33,9 @@ export class StorePriceOverride extends Entity {
     postgresql: {dataType: 'numeric'},
   })
   percentage: number;
+
+  @property({type: 'string'})
+  description?: string;
 
   @property({type: 'boolean', default: true})
   isActive?: boolean;
@@ -43,20 +52,13 @@ export class StorePriceOverride extends Entity {
   @property({type: 'date'})
   deletedAt?: Date;
 
-  @property({type: 'string', postgresql: {dataType: 'uuid'}})
-  createdBy?: string;
-
-  @property({type: 'string', postgresql: {dataType: 'uuid'}})
-  updatedBy?: string;
-
-  @property({type: 'string', postgresql: {dataType: 'uuid'}})
-  deletedBy?: string;
-
-  constructor(data?: Partial<StorePriceOverride>) {
+  constructor(data?: Partial<ClusterPriceList>) {
     super(data);
   }
 }
 
-export interface StorePriceOverrideRelations {}
+export interface ClusterPriceListRelations {
+  cluster?: Cluster;
+}
 
-export type StorePriceOverrideWithRelations = StorePriceOverride & StorePriceOverrideRelations;
+export type ClusterPriceListWithRelations = ClusterPriceList & ClusterPriceListRelations;

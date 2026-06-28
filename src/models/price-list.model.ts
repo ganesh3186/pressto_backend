@@ -1,7 +1,6 @@
 import {Entity, model, property, belongsTo, hasMany} from '@loopback/repository';
 import {Region} from './region.model';
 import {PriceListItem} from './price-list-item.model';
-import {PriceListType} from './price-list-type.enum';
 
 @model({
   settings: {
@@ -36,11 +35,11 @@ export class PriceList extends Entity {
   regionId: string;
 
   @property({
-    type: 'string',
+    type: 'number',
     required: true,
-    jsonSchema: {enum: Object.values(PriceListType)},
+    postgresql: {dataType: 'numeric'},
   })
-  priceListType: PriceListType;
+  percentage: number;
 
   @property({type: 'string'})
   description?: string;
