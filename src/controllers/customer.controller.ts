@@ -95,6 +95,7 @@ export class CustomerController {
               roleValues: {type: 'array', items: {type: 'string'}},
               email: {type: 'string', format: 'email'},
               password: {type: 'string', minLength: 6},
+              customerEntityType: {type: 'string', enum: ['individual', 'business']},
               customerTypeId: {type: 'string', format: 'uuid'},
               customerGroupId: {type: 'string', format: 'uuid'},
               gstNumber: {type: 'string'},
@@ -118,6 +119,7 @@ export class CustomerController {
       roleValues: string[];
       email?: string;
       password?: string;
+      customerEntityType?: 'individual' | 'business';
       customerTypeId: string;
       customerGroupId: string;
       gstNumber?: string;
@@ -174,6 +176,7 @@ export class CustomerController {
           lastName: body.lastName,
           ...(body.email && {email: body.email}),
           dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : undefined,
+          customerEntityType: body.customerEntityType ?? 'individual',
           customerTypeId: body.customerTypeId,
           customerGroupId: body.customerGroupId,
           gstNumber: body.gstNumber,
@@ -298,6 +301,7 @@ export class CustomerController {
               firstName: {type: 'string'},
               lastName: {type: 'string'},
               dateOfBirth: {type: 'string', format: 'date'},
+              customerEntityType: {type: 'string', enum: ['individual', 'business']},
               customerTypeId: {type: 'string', format: 'uuid'},
               customerGroupId: {type: 'string', format: 'uuid'},
               gstNumber: {type: 'string'},
@@ -308,6 +312,7 @@ export class CustomerController {
               preferredStoreId: {type: 'string', format: 'uuid'},
               sensitivityScore: {type: 'number'},
               notes: {type: 'string'},
+              statusChangeRemark: {type: 'string'},
               // role management
               roleValues: {type: 'array', items: {type: 'string'}},
             },
@@ -324,6 +329,7 @@ export class CustomerController {
       firstName?: string;
       lastName?: string;
       dateOfBirth?: string;
+      customerEntityType?: 'individual' | 'business';
       customerTypeId?: string;
       customerGroupId?: string;
       gstNumber?: string;
@@ -334,6 +340,7 @@ export class CustomerController {
       preferredStoreId?: string;
       sensitivityScore?: number;
       notes?: string;
+      statusChangeRemark?: string;
       roleValues?: string[];
     },
   ): Promise<void> {
@@ -346,9 +353,10 @@ export class CustomerController {
 
     const userKeys = ['fullName', 'email', 'countryCode', 'phone', 'isActive'];
     const customerKeys = [
-      'firstName', 'lastName', 'customerTypeId', 'customerGroupId',
+      'firstName', 'lastName', 'customerEntityType', 'customerTypeId', 'customerGroupId',
       'gstNumber', 'companyName', 'loyaltyPoints', 'defaultDiscountType',
       'defaultDiscountValue', 'preferredStoreId', 'sensitivityScore', 'notes',
+      'statusChangeRemark',
     ];
 
     for (const [key, value] of Object.entries(rest)) {

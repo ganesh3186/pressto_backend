@@ -47,6 +47,12 @@ export class ServiceItemMapping extends Entity {
   basePrice: number;
 
   @property({
+    type: 'number',
+    postgresql: { dataType: 'numeric' },
+  })
+  estimatedDurationInDays?: number;
+
+  @property({
     type: 'boolean',
     default: true,
   })

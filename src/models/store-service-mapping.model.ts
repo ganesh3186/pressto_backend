@@ -32,6 +32,12 @@ export class StoreServiceMapping extends Entity {
   serviceId: string;
 
   @property({
+    type: 'number',
+    postgresql: {dataType: 'integer'},
+  })
+  dailyCapacity?: number;
+
+  @property({
     type: 'boolean',
     default: true,
   })

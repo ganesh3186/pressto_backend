@@ -52,6 +52,13 @@ export class ProcessStepController {
     })
     processStep: Omit<ProcessStep, 'id'>,
   ): Promise<ProcessStep> {
+    const existing = await this.processStepRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const ps of existing) {
+      const match = ps.code?.match(/^PROC(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    processStep.code = `PROC${String(maxNum + 1).padStart(3, '0')}`;
     const newProcessStep = await this.processStepRepository.create(processStep);
     if (newProcessStep.mediaId) {
       await this.mediaService.updateMediaUsedStatus([newProcessStep.mediaId], true);

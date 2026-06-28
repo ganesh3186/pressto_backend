@@ -64,7 +64,7 @@ export class EmployeeController {
             type: 'object',
             required: [
               'email', 'countryCode', 'phone', 'password',
-              'roleValues', 'employeeCode', 'firstName', 'lastName',
+              'roleValues', 'firstName', 'lastName',
               'addressLine1', 'city', 'state', 'pincode',
             ],
             properties: {
@@ -75,7 +75,6 @@ export class EmployeeController {
               password: {type: 'string', minLength: 6},
               roleValues: {type: 'array', items: {type: 'string'}},
               // employee fields
-              employeeCode: {type: 'string'},
               firstName: {type: 'string'},
               lastName: {type: 'string'},
               dateOfBirth: {type: 'string', format: 'date'},
@@ -84,6 +83,7 @@ export class EmployeeController {
               // department: {type: 'string'},
               mediaId: {type: 'string', format: 'uuid'},
               reportingManagerId: {type: 'string', format: 'uuid'},
+              storeId: {type: 'string', format: 'uuid'},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               city: {type: 'string'},
@@ -100,15 +100,13 @@ export class EmployeeController {
       phone: string;
       password: string;
       roleValues: string[];
-      employeeCode: string;
       firstName: string;
       lastName: string;
       dateOfBirth?: string;
       joiningDate?: string;
-      // designation?: string;
-      // department?: string;
       mediaId?: string;
       reportingManagerId?: string;
+      storeId?: string;
       addressLine1: string;
       addressLine2?: string;
       city: string;
@@ -132,6 +130,14 @@ export class EmployeeController {
       }),
     );
 
+    const existingCodes = await this.employeeRepository.find({fields: {employeeCode: true}});
+    let maxNum = 0;
+    for (const e of existingCodes) {
+      const match = e.employeeCode?.match(/^EMP(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    const employeeCode = `EMP${String(maxNum + 1).padStart(3, '0')}`;
+
     const hashedPassword = await this.hasher.hashPassword(body.password);
     const username = await this.generateUniqueUsername(body.email);
 
@@ -153,15 +159,14 @@ export class EmployeeController {
       const employee = await this.employeeRepository.create(
         {
           userId: user.id,
-          employeeCode: body.employeeCode,
+          employeeCode,
           firstName: body.firstName,
           lastName: body.lastName,
           dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : undefined,
           joiningDate: body.joiningDate ? new Date(body.joiningDate) : undefined,
-          // designation: body.designation,
-          // department: body.department,
           mediaId: body.mediaId,
           reportingManagerId: body.reportingManagerId,
+          storeId: body.storeId,
           addressLine1: body.addressLine1,
           addressLine2: body.addressLine2,
           city: body.city,
@@ -221,6 +226,7 @@ export class EmployeeController {
           },
         },
         {relation: 'media', scope: {fields: {id: true, fileOriginalName: true, fileUrl: true, fileType: true}}},
+        {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
   }
@@ -251,6 +257,7 @@ export class EmployeeController {
           },
         },
         {relation: 'media', scope: {fields: {id: true, fileOriginalName: true, fileUrl: true, fileType: true}}},
+        {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
   }
@@ -283,6 +290,7 @@ export class EmployeeController {
               // department: {type: 'string'},
               mediaId: {type: 'string', format: 'uuid'},
               reportingManagerId: {type: 'string', format: 'uuid'},
+              storeId: {type: 'string', format: 'uuid'},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               city: {type: 'string'},
@@ -310,6 +318,7 @@ export class EmployeeController {
       // department?: string;
       mediaId?: string;
       reportingManagerId?: string;
+      storeId?: string;
       addressLine1?: string;
       addressLine2?: string;
       city?: string;
@@ -328,8 +337,8 @@ export class EmployeeController {
     const userKeys = ['fullName', 'email', 'countryCode', 'phone', 'isActive'];
     const employeeKeys = [
       'employeeCode', 'firstName', 'lastName',
-      'mediaId', 'reportingManagerId', 'addressLine1', 'addressLine2',
-      'city', 'state', 'pincode',
+      'mediaId', 'reportingManagerId', 'storeId',
+      'addressLine1', 'addressLine2', 'city', 'state', 'pincode',
     ];
 
     for (const [key, value] of Object.entries(rest)) {

@@ -8,7 +8,6 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
@@ -47,6 +46,13 @@ export class RegionController {
     })
     region: Omit<Region, 'id'>,
   ): Promise<Region> {
+    const existing = await this.regionRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const r of existing) {
+      const match = r.code?.match(/^REG(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    region.code = `REG${String(maxNum + 1).padStart(3, '0')}`;
     return this.regionRepository.create(region);
   }
 

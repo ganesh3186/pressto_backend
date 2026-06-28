@@ -8,7 +8,6 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
@@ -47,6 +46,13 @@ export class ClusterController {
     })
     cluster: Omit<Cluster, 'id'>,
   ): Promise<Cluster> {
+    const existing = await this.clusterRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const c of existing) {
+      const match = c.code?.match(/^CLS(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    cluster.code = `CLS${String(maxNum + 1).padStart(3, '0')}`;
     return this.clusterRepository.create(cluster);
   }
 

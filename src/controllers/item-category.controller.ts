@@ -50,6 +50,13 @@ export class ItemCategoryController {
     })
     itemCategory: Omit<ItemCategory, 'id'>,
   ): Promise<ItemCategory> {
+    const existing = await this.itemCategoryRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const cat of existing) {
+      const match = cat.code?.match(/^ICAT(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    itemCategory.code = `ICAT${String(maxNum + 1).padStart(3, '0')}`;
     const newItemCategory = await this.itemCategoryRepository.create(itemCategory);
     if (newItemCategory.mediaId) {
       await this.mediaService.updateMediaUsedStatus([newItemCategory.mediaId], true);

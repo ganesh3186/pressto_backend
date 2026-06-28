@@ -1,6 +1,7 @@
 import {Entity, model, property, belongsTo} from '@loopback/repository';
 import {Users} from './users.model';
 import {Media} from './media.model';
+import {Store} from './store.model';
 
 @model({
   settings: {
@@ -52,6 +53,9 @@ export class Employee extends Entity {
   @belongsTo(() => Media)
   mediaId?: string;
 
+  @belongsTo(() => Store)
+  storeId?: string;
+
   @property({
     type: 'string',
     postgresql: {dataType: 'uuid'},
@@ -96,6 +100,7 @@ export class Employee extends Entity {
 export interface EmployeeRelations {
   user?: Users;
   media?: Media;
+  store?: Store;
 }
 
 export type EmployeeWithRelations = Employee & EmployeeRelations;

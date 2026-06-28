@@ -8,7 +8,6 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
@@ -47,6 +46,13 @@ export class CustomerDiscountGroupController {
     })
     customerDiscountGroup: Omit<CustomerDiscountGroup, 'id'>,
   ): Promise<CustomerDiscountGroup> {
+    const existing = await this.customerDiscountGroupRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const g of existing) {
+      const match = g.code?.match(/^CDG(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    customerDiscountGroup.code = `CDG${String(maxNum + 1).padStart(3, '0')}`;
     return this.customerDiscountGroupRepository.create(customerDiscountGroup);
   }
 

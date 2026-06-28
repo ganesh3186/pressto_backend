@@ -8,7 +8,6 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
@@ -47,6 +46,13 @@ export class CustomerLabelController {
     })
     customerLabel: Omit<CustomerLabel, 'id'>,
   ): Promise<CustomerLabel> {
+    const existing = await this.customerLabelRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const l of existing) {
+      const match = l.code?.match(/^CLBL(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    customerLabel.code = `CLBL${String(maxNum + 1).padStart(3, '0')}`;
     return this.customerLabelRepository.create(customerLabel);
   }
 

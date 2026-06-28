@@ -8,7 +8,6 @@ import {
   Where,
 } from '@loopback/repository';
 import {
-  del,
   get,
   getModelSchemaRef,
   param,
@@ -47,6 +46,13 @@ export class StoreController {
     })
     store: Omit<Store, 'id'>,
   ): Promise<Store> {
+    const existing = await this.storeRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const s of existing) {
+      const match = s.code?.match(/^STR(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    store.code = `STR${String(maxNum + 1).padStart(3, '0')}`;
     return this.storeRepository.create(store);
   }
 

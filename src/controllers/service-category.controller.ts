@@ -12,8 +12,6 @@ import {
   get,
   getModelSchemaRef,
   patch,
-  put,
-  del,
   requestBody,
   response,
 } from '@loopback/rest';
@@ -48,6 +46,13 @@ export class ServiceCategoryController {
     })
     serviceCategory: Omit<ServiceCategory, 'id'>,
   ): Promise<ServiceCategory> {
+    const existing = await this.serviceCategoryRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const cat of existing) {
+      const match = cat.code?.match(/^SCAT(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    serviceCategory.code = `SCAT${String(maxNum + 1).padStart(3, '0')}`;
     return this.serviceCategoryRepository.create(serviceCategory);
   }
 

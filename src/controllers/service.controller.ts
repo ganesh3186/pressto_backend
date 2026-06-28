@@ -50,6 +50,13 @@ export class ServiceController {
     })
     service: Omit<Service, 'id'>,
   ): Promise<Service> {
+    const existing = await this.serviceRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const s of existing) {
+      const match = s.code?.match(/^SRV(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    service.code = `SRV${String(maxNum + 1).padStart(3, '0')}`;
     const newService = await this.serviceRepository.create(service);
     if (newService.mediaId) {
       await this.mediaService.updateMediaUsedStatus([newService.mediaId], true);

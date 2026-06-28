@@ -50,6 +50,13 @@ export class ItemController {
     })
     item: Omit<Item, 'id'>,
   ): Promise<Item> {
+    const existing = await this.itemRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const it of existing) {
+      const match = it.code?.match(/^ITEM(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    item.code = `ITEM${String(maxNum + 1).padStart(3, '0')}`;
     const newItem = await this.itemRepository.create(item);
     if (newItem.mediaId) {
       await this.mediaService.updateMediaUsedStatus([newItem.mediaId], true);

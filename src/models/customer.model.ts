@@ -55,6 +55,15 @@ export class Customer extends Entity {
 
   @property({
     type: 'string',
+    default: 'individual',
+    jsonSchema: {
+      enum: ['individual', 'business'],
+    },
+  })
+  customerEntityType?: string;
+
+  @property({
+    type: 'string',
     postgresql: {dataType: 'uuid'},
   })
   customerGroupId?: string;
@@ -91,6 +100,9 @@ export class Customer extends Entity {
 
   @property({type: 'boolean', default: true})
   isActive?: boolean;
+
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  statusChangeRemark?: string;
 
   @property({type: 'boolean', default: false})
   isDeleted?: boolean;
