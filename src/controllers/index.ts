@@ -2,6 +2,7 @@ export * from './cluster-price-list.controller';
 export * from './additional-charge-master.controller';
 export * from './employee.controller';
 export * from './gst-tax-configuration.controller';
+export * from './wallet-configuration.controller';
 export * from './auth.controller';
 export * from './bag.controller';
 export * from './cluster.controller';

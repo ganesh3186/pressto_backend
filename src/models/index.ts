@@ -2,6 +2,7 @@ export * from './cluster-price-list.model';
 export * from './additional-charge-master.model';
 export * from './employee.model';
 export * from './gst-tax-configuration.model';
+export * from './wallet-configuration.model';
 export * from './additional-charge-scope.enum';
 export * from './additional-charge-type.enum';
 export * from './bag.model';
