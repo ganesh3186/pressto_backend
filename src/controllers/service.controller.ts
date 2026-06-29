@@ -43,7 +43,7 @@ export class ServiceController {
         'application/json': {
           schema: getModelSchemaRef(Service, {
             title: 'NewService',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

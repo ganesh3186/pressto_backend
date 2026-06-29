@@ -39,7 +39,7 @@ export class CustomerDiscountGroupController {
         'application/json': {
           schema: getModelSchemaRef(CustomerDiscountGroup, {
             title: 'NewCustomerDiscountGroup',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

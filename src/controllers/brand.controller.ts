@@ -41,7 +41,7 @@ export class BrandController {
         'application/json': {
           schema: getModelSchemaRef(Brand, {
             title: 'NewBrand',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

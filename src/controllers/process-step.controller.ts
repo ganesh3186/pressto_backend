@@ -45,7 +45,7 @@ export class ProcessStepController {
         'application/json': {
           schema: getModelSchemaRef(ProcessStep, {
             title: 'NewProcessStep',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

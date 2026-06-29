@@ -41,7 +41,7 @@ export class DamageTypeController {
         'application/json': {
           schema: getModelSchemaRef(DamageType, {
             title: 'NewDamageType',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

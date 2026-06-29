@@ -41,7 +41,7 @@ export class StainController {
         'application/json': {
           schema: getModelSchemaRef(Stain, {
             title: 'NewStain',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

@@ -43,7 +43,7 @@ export class ItemCategoryController {
         'application/json': {
           schema: getModelSchemaRef(ItemCategory, {
             title: 'NewItemCategory',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

@@ -39,7 +39,7 @@ export class RegionController {
         'application/json': {
           schema: getModelSchemaRef(Region, {
             title: 'NewRegion',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

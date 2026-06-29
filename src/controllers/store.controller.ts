@@ -39,7 +39,7 @@ export class StoreController {
         'application/json': {
           schema: getModelSchemaRef(Store, {
             title: 'NewStore',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

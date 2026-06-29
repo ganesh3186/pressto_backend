@@ -39,7 +39,7 @@ export class CustomerLabelController {
         'application/json': {
           schema: getModelSchemaRef(CustomerLabel, {
             title: 'NewCustomerLabel',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },

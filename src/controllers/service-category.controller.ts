@@ -39,7 +39,7 @@ export class ServiceCategoryController {
         'application/json': {
           schema: getModelSchemaRef(ServiceCategory, {
             title: 'NewServiceCategory',
-            exclude: ['id'],
+            exclude: ['id', 'code'],
           }),
         },
       },

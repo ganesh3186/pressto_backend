@@ -39,7 +39,7 @@ export class ClusterController {
         'application/json': {
           schema: getModelSchemaRef(Cluster, {
             title: 'NewCluster',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },
