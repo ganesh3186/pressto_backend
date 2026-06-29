@@ -39,7 +39,7 @@ export class ClusterPriceListController {
         'application/json': {
           schema: getModelSchemaRef(ClusterPriceList, {
             title: 'NewClusterPriceList',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },
