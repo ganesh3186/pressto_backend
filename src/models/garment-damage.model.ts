@@ -1,5 +1,5 @@
-import {Entity, model, property} from '@loopback/repository';
-import {Severity} from './severity.enum';
+import {Entity, hasMany, model, property} from '@loopback/repository';
+import {GarmentDamageImage} from './garment-damage-image.model';
 
 @model({
   settings: {postgresql: {table: 'garment_damage', schema: 'public'}},
@@ -14,13 +14,6 @@ export class GarmentDamage extends Entity {
   @property({type: 'string', required: true, postgresql: {dataType: 'uuid'}})
   damageTypeId: string;
 
-  @property({
-    type: 'string',
-    required: true,
-    jsonSchema: {enum: Object.values(Severity)},
-  })
-  severity: Severity;
-
   @property({type: 'string', postgresql: {dataType: 'text'}})
   remarks?: string;
 
@@ -33,10 +26,16 @@ export class GarmentDamage extends Entity {
   @property({type: 'date', defaultFn: 'now'})
   updatedAt?: Date;
 
+  @hasMany(() => GarmentDamageImage)
+  images: GarmentDamageImage[];
+
   constructor(data?: Partial<GarmentDamage>) {
     super(data);
   }
 }
 
-export interface GarmentDamageRelations {}
+export interface GarmentDamageRelations {
+  images?: GarmentDamageImage[];
+}
+
 export type GarmentDamageWithRelations = GarmentDamage & GarmentDamageRelations;

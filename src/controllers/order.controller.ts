@@ -75,13 +75,16 @@ export class OrderController {
               customerId: {type: 'string', format: 'uuid'},
               storeId: {type: 'string', format: 'uuid'},
               orderType: {type: 'string', enum: Object.values(OrderType)},
-              deliveryDate: {type: 'string', format: 'date-time'},
+              expressMultiplier: {
+                type: 'number',
+                minimum: 1,
+                description: 'Urgency multiplier (1 = standard, 2 = 2x faster/costlier). Backend calculates deliveryDate from this.',
+              },
               specialInstructions: {type: 'string'},
               specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
               remarks: {type: 'string'},
               additionalChargeIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
               items: {type: 'array', minItems: 1, items: ORDER_ITEM_SCHEMA},
-              // Payment at order creation time
               payments: {
                 type: 'array',
                 items: PAYMENT_ITEM_SCHEMA,

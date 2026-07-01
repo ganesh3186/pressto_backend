@@ -19,6 +19,23 @@ export class OrderItem extends Entity {
   @property({type: 'number', required: true})
   quantity: number;
 
+  // Raw base price from ServiceItemMapping at time of order (audit trail)
+  @property({type: 'number', default: 0, postgresql: {dataType: 'numeric'}})
+  basePrice?: number;
+
+  // Which price level was applied: store | cluster | region | base
+  @property({type: 'string'})
+  priceSource?: string;
+
+  // The percentage multiplier applied from the matched price list (null if base)
+  @property({type: 'number', postgresql: {dataType: 'numeric'}})
+  appliedPercentage?: number;
+
+  // Resolved price after price list (before express multiplier)
+  @property({type: 'number', default: 0, postgresql: {dataType: 'numeric'}})
+  resolvedPrice?: number;
+
+  // Final unit price = resolvedPrice × expressMultiplier
   @property({type: 'number', default: 0, postgresql: {dataType: 'numeric'}})
   unitPrice?: number;
 

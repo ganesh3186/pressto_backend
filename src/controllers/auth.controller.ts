@@ -4,7 +4,7 @@ import { repository } from '@loopback/repository';
 import { get, HttpErrors, post, requestBody } from '@loopback/rest';
 import { securityId, UserProfile } from '@loopback/security';
 import { authorize } from '../authorization';
-import { RolesRepository, UserRolesRepository, UsersRepository } from '../repositories';
+import { EmployeeRepository, RolesRepository, UserRolesRepository, UsersRepository } from '../repositories';
 import { BcryptHasher } from '../services/hash.password.bcrypt';
 import { JWTService } from '../services/jwt-service';
 import { RbacService } from '../services/rbac.service';
@@ -19,6 +19,8 @@ export class AuthController {
     private rolesRepository: RolesRepository,
     @repository(UserRolesRepository)
     private userRolesRepository: UserRolesRepository,
+    @repository(EmployeeRepository)
+    private employeeRepository: EmployeeRepository,
     @inject('service.hasher')
     private hasher: BcryptHasher,
     @inject('service.user.service')
@@ -270,13 +272,20 @@ export class AuthController {
       include: [{ relation: 'roles' }],
     });
 
+    const employee = await this.employeeRepository.findOne({
+      where: { userId, isDeleted: false },
+      fields: { id: true, storeId: true },
+    });
+
     return {
       id: user.id,
       fullName: user.fullName,
       email: user.email,
       countryCode: user.countryCode,
       phone: user.phone,
-      roles: currentUser.roles
+      roles: currentUser.roles,
+      employeeId: employee?.id ?? null,
+      storeId: employee?.storeId ?? null,
     };
   }
 

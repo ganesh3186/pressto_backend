@@ -37,6 +37,11 @@ export class Order extends Entity {
   })
   status?: OrderStatus;
 
+  // Urgency multiplier selected at order creation (1 = standard, 2 = 2x faster/costlier, etc.)
+  @property({type: 'number', default: 1, postgresql: {dataType: 'numeric'}})
+  expressMultiplier?: number;
+
+  // Calculated by backend: createdAt + ceil(maxEstimatedDurationInDays / expressMultiplier)
   @property({type: 'date'})
   deliveryDate?: Date;
 

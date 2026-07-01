@@ -13,7 +13,12 @@ import {
   ClusterPriceListRepository,
   ClusterRepository,
   CustomerRepository,
+  GarmentDamageImageRepository,
+  GarmentDamageRepository,
+  GarmentImageRepository,
   GarmentRepository,
+  GarmentStainImageRepository,
+  GarmentStainRepository,
   GarmentStatusHistoryRepository,
   OrderAdditionalChargeRepository,
   OrderItemAdditionalChargeRepository,
@@ -28,12 +33,36 @@ import {
   WalletRepository,
   WalletTransactionRepository,
 } from '../repositories';
+import {GarmentImageType} from '../models/garment-image-type.enum';
 
 export interface OrderPaymentInput {
   paymentMode: PaymentMode;
   amount: number;
   transactionReference?: string;
   gatewayResponse?: string;
+}
+
+export interface UnitStainMarkInput {
+  stainId: string;
+  remarks?: string;
+  mediaIds?: string[];   // already-uploaded Media record IDs
+}
+
+export interface UnitDamageMarkInput {
+  damageId: string;
+  remarks?: string;
+  mediaIds?: string[];   // already-uploaded Media record IDs
+}
+
+export interface UnitInspectionInput {
+  brandId?: string;
+  colorId?: string;
+  additionalChargeIds?: string[];   // add-ons + requirements for this specific unit
+  stainMarks?: UnitStainMarkInput[];
+  damageMarks?: UnitDamageMarkInput[];
+  itemPhotoMediaIds?: string[];     // already-uploaded Media record IDs
+  instructions?: string;            // stored as customerRemarks on Garment
+  qrPrintCount?: number;
 }
 
 export interface CreateOrderItemInput {
@@ -43,7 +72,8 @@ export interface CreateOrderItemInput {
   specialInstructions?: string;
   specialInstructionMediaIds?: string[];
   remarks?: string;
-  additionalChargeIds?: string[];
+  additionalChargeIds?: string[];   // line-level charges (billing)
+  units?: UnitInspectionInput[];    // per-garment inspection data (length must match quantity)
 }
 
 export interface CreateOrderInput {
@@ -55,7 +85,7 @@ export interface CreateOrderInput {
   specialInstructions?: string;
   specialInstructionMediaIds?: string[];
   remarks?: string;
-  deliveryDate?: Date;
+  expressMultiplier?: number;  // 1 = standard, 2 = 2x faster/costlier; backend calculates deliveryDate
   payments?: OrderPaymentInput[];
   walletAmount?: number;
 }
@@ -81,47 +111,118 @@ export class OrderService {
     @repository(AdditionalChargeMasterRepository) private additionalChargeRepo: AdditionalChargeMasterRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
+    @repository(GarmentStainRepository) private garmentStainRepo: GarmentStainRepository,
+    @repository(GarmentStainImageRepository) private garmentStainImageRepo: GarmentStainImageRepository,
+    @repository(GarmentDamageRepository) private garmentDamageRepo: GarmentDamageRepository,
+    @repository(GarmentDamageImageRepository) private garmentDamageImageRepo: GarmentDamageImageRepository,
+    @repository(GarmentImageRepository) private garmentImageRepo: GarmentImageRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
+  // ─── Inspection ──────────────────────────────────────────────────────────
+
+  private async saveGarmentInspection(
+    garmentId: string,
+    unit: UnitInspectionInput,
+    tx: any,
+    v4: () => string,
+  ): Promise<void> {
+    // Item-level photos → GarmentImage (imageType: inspection)
+    for (const mediaId of unit.itemPhotoMediaIds ?? []) {
+      await this.garmentImageRepo.create(
+        {id: v4(), garmentId, mediaId, imageType: GarmentImageType.GENERAL},
+        {transaction: tx},
+      );
+    }
+
+    // Stain marks → GarmentStain + GarmentStainImage per photo
+    for (const stainMark of unit.stainMarks ?? []) {
+      if (!stainMark.stainId) continue;
+      const garmentStain = await this.garmentStainRepo.create(
+        {id: v4(), garmentId, stainId: stainMark.stainId, remarks: stainMark.remarks},
+        {transaction: tx},
+      );
+      for (const mediaId of stainMark.mediaIds ?? []) {
+        await this.garmentStainImageRepo.create(
+          {id: v4(), garmentStainId: garmentStain.id, mediaId},
+          {transaction: tx},
+        );
+      }
+    }
+
+    // Damage marks → GarmentDamage + GarmentDamageImage per photo
+    for (const damageMark of unit.damageMarks ?? []) {
+      if (!damageMark.damageId) continue;
+      const garmentDamage = await this.garmentDamageRepo.create(
+        {id: v4(), garmentId, damageTypeId: damageMark.damageId, remarks: damageMark.remarks},
+        {transaction: tx},
+      );
+      for (const mediaId of damageMark.mediaIds ?? []) {
+        await this.garmentDamageImageRepo.create(
+          {id: v4(), garmentDamageId: garmentDamage.id, mediaId},
+          {transaction: tx},
+        );
+      }
+    }
+  }
+
   // ─── Pricing ──────────────────────────────────────────────────────────────
 
-  private async getUnitPrice(storeId: string, serviceId: string, itemId: string): Promise<number> {
-    // Base price from service-item mapping (required)
+  private async resolvePricing(
+    storeId: string,
+    serviceId: string,
+    itemId: string,
+  ): Promise<{
+    basePrice: number;
+    resolvedPrice: number;
+    appliedPercentage: number | null;
+    priceSource: 'store' | 'cluster' | 'region' | 'base';
+    estimatedDurationInDays: number | null;
+  }> {
     const mapping = await this.serviceItemMappingRepo.findOne({where: {serviceId, itemId}});
     if (mapping?.basePrice == null) {
       throw new HttpErrors.BadRequest(
-        `No base price configured for serviceId: ${serviceId}, itemId: ${itemId}. Add a ServiceItemMapping with a base price.`,
+        `No base price configured for serviceId: ${serviceId}, itemId: ${itemId}.`,
       );
     }
     const base = Number(mapping.basePrice);
+    const estimatedDurationInDays = mapping.estimatedDurationInDays ?? null;
 
-    // 1. Store-specific override percentage
+    // Priority 1: store override
     const override = await this.storePriceOverrideRepo.findOne({
       where: {storeId, isActive: true, isDeleted: false},
     });
-    if (override?.percentage != null) return base * (Number(override.percentage) / 100);
+    if (override?.percentage != null) {
+      const pct = Number(override.percentage);
+      return {basePrice: base, resolvedPrice: base * (pct / 100), appliedPercentage: pct, priceSource: 'store', estimatedDurationInDays};
+    }
 
-    // 2. Cluster price list percentage
+    // Priority 2: cluster price list
     const store = await this.storeRepo.findById(storeId);
     if (store.clusterId) {
       const clusterPriceList = await this.clusterPriceListRepo.findOne({
         where: {clusterId: store.clusterId, isActive: true, isDeleted: false},
       });
-      if (clusterPriceList?.percentage != null) return base * (Number(clusterPriceList.percentage) / 100);
+      if (clusterPriceList?.percentage != null) {
+        const pct = Number(clusterPriceList.percentage);
+        return {basePrice: base, resolvedPrice: base * (pct / 100), appliedPercentage: pct, priceSource: 'cluster', estimatedDurationInDays};
+      }
 
-      // 3. Region price list percentage
+      // Priority 3: region price list
       const cluster = await this.clusterRepo.findById(store.clusterId);
       if (cluster.regionId) {
         const priceList = await this.priceListRepo.findOne({
           where: {regionId: cluster.regionId, isActive: true, isDeleted: false},
         });
-        if (priceList?.percentage != null) return base * (Number(priceList.percentage) / 100);
+        if (priceList?.percentage != null) {
+          const pct = Number(priceList.percentage);
+          return {basePrice: base, resolvedPrice: base * (pct / 100), appliedPercentage: pct, priceSource: 'region', estimatedDurationInDays};
+        }
       }
     }
 
-    // 4. Return base price as-is
-    return base;
+    // Fallback: base price as-is
+    return {basePrice: base, resolvedPrice: base, appliedPercentage: null, priceSource: 'base', estimatedDurationInDays};
   }
 
   private applyCustomerDiscount(
@@ -181,6 +282,7 @@ export class OrderService {
     }
 
     // ── Pricing ──
+    const expressMultiplier = Math.max(1, Number(input.expressMultiplier ?? 1));
     const count = await this.orderRepo.count();
     const orderNumber = `ORD${String(count.count + 1).padStart(6, '0')}`;
 
@@ -188,8 +290,13 @@ export class OrderService {
       serviceId: string;
       itemId: string;
       quantity: number;
+      basePrice: number;
+      appliedPercentage: number | null;
+      priceSource: string;
+      resolvedPrice: number;
       unitPrice: number;
       totalPrice: number;
+      estimatedDurationInDays: number | null;
       specialInstructions?: string;
       specialInstructionMediaIds?: string[];
       remarks?: string;
@@ -198,8 +305,9 @@ export class OrderService {
     }> = [];
 
     for (const item of input.items) {
-      const unitPrice = await this.getUnitPrice(input.storeId, item.serviceId, item.itemId);
-      const totalPrice = unitPrice * item.quantity;
+      const pricing = await this.resolvePricing(input.storeId, item.serviceId, item.itemId);
+      const unitPrice = parseFloat((pricing.resolvedPrice * expressMultiplier).toFixed(2));
+      const totalPrice = parseFloat((unitPrice * item.quantity).toFixed(2));
 
       let additionalChargesTotal = 0;
       for (const chargeId of item.additionalChargeIds ?? []) {
@@ -207,8 +315,29 @@ export class OrderService {
         additionalChargesTotal += Number(charge.defaultAmount);
       }
 
-      itemPricings.push({...item, unitPrice, totalPrice, additionalChargesTotal});
+      itemPricings.push({
+        ...item,
+        basePrice: pricing.basePrice,
+        appliedPercentage: pricing.appliedPercentage,
+        priceSource: pricing.priceSource,
+        resolvedPrice: pricing.resolvedPrice,
+        unitPrice,
+        totalPrice,
+        estimatedDurationInDays: pricing.estimatedDurationInDays,
+        additionalChargesTotal,
+      });
     }
+
+    // ── ETA calculation ──
+    // Take the max estimated duration across all items, then compress by expressMultiplier
+    const maxDays = itemPricings.reduce(
+      (max, i) => Math.max(max, i.estimatedDurationInDays ?? 0),
+      0,
+    );
+    const etaDays = maxDays > 0 ? Math.ceil(maxDays / expressMultiplier) : null;
+    const deliveryDate = etaDays
+      ? new Date(Date.now() + etaDays * 24 * 60 * 60 * 1000)
+      : undefined;
 
     const orderChargeDetails: Array<{id: string; amount: number}> = [];
     let orderChargesTotal = 0;
@@ -261,7 +390,8 @@ export class OrderService {
           storeId: input.storeId,
           orderType: input.orderType,
           status: orderInitialStatus,
-          deliveryDate: input.deliveryDate,
+          expressMultiplier,
+          deliveryDate,
           subtotal,
           discountAmount,
           discountType,
@@ -283,6 +413,10 @@ export class OrderService {
             serviceId: item.serviceId,
             itemId: item.itemId,
             quantity: item.quantity,
+            basePrice: item.basePrice,
+            appliedPercentage: item.appliedPercentage ?? undefined,
+            priceSource: item.priceSource,
+            resolvedPrice: item.resolvedPrice,
             unitPrice: item.unitPrice,
             totalPrice: item.totalPrice,
             specialInstructions: item.specialInstructions,
@@ -324,17 +458,29 @@ export class OrderService {
         {transaction: tx},
       );
 
-      // Auto-create garments for store drop-off (customer is physically present)
+      // Auto-create garments for store drop-off with full inspection data
       const createdGarments: object[] = [];
       if (isStoreDropoffOrder) {
         const now = new Date();
-        for (const orderItem of createdItems) {
-          for (let i = 0; i < orderItem.quantity; i++) {
+        for (let itemIdx = 0; itemIdx < createdItems.length; itemIdx++) {
+          const orderItem = createdItems[itemIdx];
+          const inputItem = input.items[itemIdx];
+
+          for (let unitIdx = 0; unitIdx < orderItem.quantity; unitIdx++) {
+            const unitInspection = inputItem.units?.[unitIdx];
             const garmentCount = await this.garmentRepo.count();
             const garmentTagNumber = `GT${String(garmentCount.count + 1).padStart(8, '0')}`;
 
             const garment = await this.garmentRepo.create(
-              {orderItemId: orderItem.id, garmentTagNumber, status: GarmentStatus.RECEIVED},
+              {
+                orderItemId: orderItem.id,
+                garmentTagNumber,
+                status: GarmentStatus.RECEIVED,
+                brandId: unitInspection?.brandId,
+                colorId: unitInspection?.colorId,
+                qrPrintCount: unitInspection?.qrPrintCount ?? 1,
+                customerRemarks: unitInspection?.instructions,
+              },
               {transaction: tx},
             );
 
@@ -349,6 +495,10 @@ export class OrderService {
               },
               {transaction: tx},
             );
+
+            if (unitInspection) {
+              await this.saveGarmentInspection(garment.id, unitInspection, tx, v4);
+            }
 
             createdGarments.push(garment);
           }

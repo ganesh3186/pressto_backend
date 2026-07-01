@@ -35,6 +35,9 @@ export class Garment extends Entity {
   })
   status?: GarmentStatus;
 
+  @property({type: 'number', default: 1})
+  qrPrintCount?: number;
+
   // Customer's verbal remarks when dropping off
   @property({type: 'string', postgresql: {dataType: 'text'}})
   customerRemarks?: string;
