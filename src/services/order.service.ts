@@ -20,6 +20,7 @@ import {
   GarmentStainImageRepository,
   GarmentStainRepository,
   GarmentStatusHistoryRepository,
+  GstTaxConfigurationRepository,
   OrderAdditionalChargeRepository,
   OrderItemAdditionalChargeRepository,
   OrderItemRepository,
@@ -116,6 +117,7 @@ export class OrderService {
     @repository(GarmentDamageRepository) private garmentDamageRepo: GarmentDamageRepository,
     @repository(GarmentDamageImageRepository) private garmentDamageImageRepo: GarmentDamageImageRepository,
     @repository(GarmentImageRepository) private garmentImageRepo: GarmentImageRepository,
+    @repository(GstTaxConfigurationRepository) private gstConfigRepo: GstTaxConfigurationRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -357,8 +359,11 @@ export class OrderService {
       customer.defaultDiscountValue ? Number(customer.defaultDiscountValue) : 0,
     );
 
-    const taxAmount = 0; // GST calculated at invoice generation (Phase 3)
-    const totalAmount = subtotal - discountAmount + taxAmount;
+    const gstConfig = await this.gstConfigRepo.findOne({where: {isActive: true, isDeleted: false}});
+    const taxableAmount = subtotal - discountAmount;
+    const gstRate = gstConfig ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage) : 0;
+    const taxAmount = gstRate > 0 ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2)) : 0;
+    const totalAmount = taxableAmount + taxAmount;
 
     // Validate that payment amounts don't exceed total
     const paymentsTotal = (input.payments ?? []).reduce((s, p) => s + Number(p.amount), 0);
