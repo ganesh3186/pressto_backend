@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -46,6 +47,8 @@ export class OrderLabelController {
     })
     orderLabel: Omit<OrderLabel, 'id'>,
   ): Promise<OrderLabel> {
+    const existing = await this.orderLabelRepository.findOne({where: {code: orderLabel.code, isDeleted: false}});
+    if (existing) throw new HttpErrors.Conflict(`An order label with code "${orderLabel.code}" already exists.`);
     return this.orderLabelRepository.create(orderLabel);
   }
 
@@ -79,7 +82,7 @@ export class OrderLabelController {
   async find(
     @param.filter(OrderLabel) filter?: Filter<OrderLabel>,
   ): Promise<OrderLabel[]> {
-    return this.orderLabelRepository.find(filter);
+    return this.orderLabelRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

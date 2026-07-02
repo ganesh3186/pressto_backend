@@ -68,7 +68,7 @@ export class BagController {
     },
   })
   async find(@param.filter(Bag) filter?: Filter<Bag>): Promise<Bag[]> {
-    return this.bagRepository.find(filter);
+    return this.bagRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

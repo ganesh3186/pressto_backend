@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -18,12 +19,16 @@ import {
 } from '@loopback/rest';
 import { authorize } from '../authorization';
 import { ServiceProcessMapping } from '../models/service-process-mapping.model';
-import { ServiceProcessMappingRepository } from '../repositories/service-process-mapping.repository';
+import { ProcessStepRepository, ServiceProcessMappingRepository, ServiceRepository } from '../repositories';
 
 export class ServiceProcessMappingController {
   constructor(
     @repository(ServiceProcessMappingRepository)
     public serviceProcessMappingRepository: ServiceProcessMappingRepository,
+    @repository(ServiceRepository)
+    private serviceRepository: ServiceRepository,
+    @repository(ProcessStepRepository)
+    private processStepRepository: ProcessStepRepository,
   ) { }
 
   @authenticate('jwt')
@@ -48,6 +53,18 @@ export class ServiceProcessMappingController {
     })
     serviceProcessMapping: Omit<ServiceProcessMapping, 'id'>,
   ): Promise<ServiceProcessMapping> {
+    const existing = await this.serviceProcessMappingRepository.findOne({
+      where: {serviceId: serviceProcessMapping.serviceId, processStepId: serviceProcessMapping.processStepId, isDeleted: false},
+    });
+    if (existing) {
+      const [service, step] = await Promise.all([
+        this.serviceRepository.findById(serviceProcessMapping.serviceId),
+        this.processStepRepository.findById(serviceProcessMapping.processStepId),
+      ]);
+      throw new HttpErrors.Conflict(
+        `Process step "${step.name}" is already mapped to service "${service.name}".`,
+      );
+    }
     serviceProcessMapping.isInitial = serviceProcessMapping.sequence === 1;
     return this.serviceProcessMappingRepository.create(serviceProcessMapping);
   }
@@ -84,7 +101,7 @@ export class ServiceProcessMappingController {
   async find(
     @param.filter(ServiceProcessMapping) filter?: Filter<ServiceProcessMapping>,
   ): Promise<ServiceProcessMapping[]> {
-    return this.serviceProcessMappingRepository.find(filter);
+    return this.serviceProcessMappingRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

@@ -98,6 +98,8 @@ export class ProcessStepController {
   ): Promise<ProcessStep[]> {
     return this.processStepRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [
         { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
       ]

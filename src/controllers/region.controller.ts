@@ -82,7 +82,7 @@ export class RegionController {
     },
   })
   async find(@param.filter(Region) filter?: Filter<Region>): Promise<Region[]> {
-    return this.regionRepository.find(filter);
+    return this.regionRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

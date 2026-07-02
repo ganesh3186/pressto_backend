@@ -11,6 +11,7 @@ import {
   del,
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -20,12 +21,16 @@ import {
 } from '@loopback/rest';
 import { authorize } from '../authorization';
 import { ServiceItemMapping } from '../models/service-item-mapping.model';
-import { ServiceItemMappingRepository } from '../repositories/service-item-mapping.repository';
+import { ItemRepository, ServiceItemMappingRepository, ServiceRepository } from '../repositories';
 
 export class ServiceItemMappingController {
   constructor(
     @repository(ServiceItemMappingRepository)
     public serviceItemMappingRepository: ServiceItemMappingRepository,
+    @repository(ServiceRepository)
+    private serviceRepository: ServiceRepository,
+    @repository(ItemRepository)
+    private itemRepository: ItemRepository,
   ) { }
 
   @authenticate('jwt')
@@ -50,6 +55,18 @@ export class ServiceItemMappingController {
     })
     serviceItemMapping: Omit<ServiceItemMapping, 'id'>,
   ): Promise<ServiceItemMapping> {
+    const existing = await this.serviceItemMappingRepository.findOne({
+      where: {serviceId: serviceItemMapping.serviceId, itemId: serviceItemMapping.itemId, isDeleted: false},
+    });
+    if (existing) {
+      const [service, item] = await Promise.all([
+        this.serviceRepository.findById(serviceItemMapping.serviceId),
+        this.itemRepository.findById(serviceItemMapping.itemId),
+      ]);
+      throw new HttpErrors.Conflict(
+        `A mapping for "${service.name}" → "${item.name}" already exists.`,
+      );
+    }
     return this.serviceItemMappingRepository.create(serviceItemMapping);
   }
 
@@ -85,7 +102,7 @@ export class ServiceItemMappingController {
   async find(
     @param.filter(ServiceItemMapping) filter?: Filter<ServiceItemMapping>,
   ): Promise<ServiceItemMapping[]> {
-    return this.serviceItemMappingRepository.find(filter);
+    return this.serviceItemMappingRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

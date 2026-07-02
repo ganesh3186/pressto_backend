@@ -81,6 +81,8 @@ export class ClusterPriceListController {
   async find(@param.filter(ClusterPriceList) filter?: Filter<ClusterPriceList>): Promise<ClusterPriceList[]> {
     return this.clusterPriceListRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [{relation: 'cluster', scope: {fields: {id: true, name: true, code: true}}}],
     });
   }

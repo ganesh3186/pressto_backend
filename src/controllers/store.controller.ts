@@ -84,6 +84,8 @@ export class StoreController {
   async find(@param.filter(Store) filter?: Filter<Store>): Promise<Store[]> {
     return this.storeRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [{relation: 'cluster'}],
     });
   }

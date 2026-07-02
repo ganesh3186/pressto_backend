@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -46,6 +47,8 @@ export class CustomerTypeMasterController {
     })
     customerTypeMaster: Omit<CustomerTypeMaster, 'id'>,
   ): Promise<CustomerTypeMaster> {
+    const existing = await this.customerTypeMasterRepository.findOne({where: {value: customerTypeMaster.value, isDeleted: false}});
+    if (existing) throw new HttpErrors.Conflict(`A customer type with value "${customerTypeMaster.value}" already exists.`);
     return this.customerTypeMasterRepository.create(customerTypeMaster);
   }
 
@@ -79,7 +82,7 @@ export class CustomerTypeMasterController {
   async find(
     @param.filter(CustomerTypeMaster) filter?: Filter<CustomerTypeMaster>,
   ): Promise<CustomerTypeMaster[]> {
-    return this.customerTypeMasterRepository.find(filter);
+    return this.customerTypeMasterRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

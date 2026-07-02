@@ -11,6 +11,7 @@ import {
   del,
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -48,6 +49,8 @@ export class ColorController {
     })
     color: Omit<Color, 'id'>,
   ): Promise<Color> {
+    const existing = await this.colorRepository.findOne({where: {code: color.code, isDeleted: false}});
+    if (existing) throw new HttpErrors.Conflict(`A color with code "${color.code}" already exists.`);
     return this.colorRepository.create(color);
   }
 
@@ -77,7 +80,7 @@ export class ColorController {
     },
   })
   async find(@param.filter(Color) filter?: Filter<Color>): Promise<Color[]> {
-    return this.colorRepository.find(filter);
+    return this.colorRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

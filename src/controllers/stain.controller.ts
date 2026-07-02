@@ -84,7 +84,7 @@ export class StainController {
     },
   })
   async find(@param.filter(Stain) filter?: Filter<Stain>): Promise<Stain[]> {
-    return this.stainRepository.find(filter);
+    return this.stainRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

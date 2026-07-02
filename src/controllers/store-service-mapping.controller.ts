@@ -11,6 +11,7 @@ import {
   del,
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -19,12 +20,16 @@ import {
 } from '@loopback/rest';
 import {authorize} from '../authorization';
 import {StoreServiceMapping} from '../models/store-service-mapping.model';
-import {StoreServiceMappingRepository} from '../repositories/store-service-mapping.repository';
+import {ServiceRepository, StoreRepository, StoreServiceMappingRepository} from '../repositories';
 
 export class StoreServiceMappingController {
   constructor(
     @repository(StoreServiceMappingRepository)
     public storeServiceMappingRepository: StoreServiceMappingRepository,
+    @repository(StoreRepository)
+    private storeRepository: StoreRepository,
+    @repository(ServiceRepository)
+    private serviceRepository: ServiceRepository,
   ) {}
 
   @authenticate('jwt')
@@ -47,6 +52,18 @@ export class StoreServiceMappingController {
     })
     storeServiceMapping: Omit<StoreServiceMapping, 'id'>,
   ): Promise<StoreServiceMapping> {
+    const existing = await this.storeServiceMappingRepository.findOne({
+      where: {storeId: storeServiceMapping.storeId, serviceId: storeServiceMapping.serviceId, isDeleted: false},
+    });
+    if (existing) {
+      const [store, service] = await Promise.all([
+        this.storeRepository.findById(storeServiceMapping.storeId),
+        this.serviceRepository.findById(storeServiceMapping.serviceId),
+      ]);
+      throw new HttpErrors.Conflict(
+        `Service "${service.name}" is already mapped to store "${store.name}".`,
+      );
+    }
     return this.storeServiceMappingRepository.create(storeServiceMapping);
   }
 
@@ -78,6 +95,8 @@ export class StoreServiceMappingController {
   async find(@param.filter(StoreServiceMapping) filter?: Filter<StoreServiceMapping>): Promise<StoreServiceMapping[]> {
     return this.storeServiceMappingRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
         {relation: 'service', scope: {fields: {id: true, name: true, code: true}}},

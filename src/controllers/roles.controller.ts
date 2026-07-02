@@ -60,6 +60,9 @@ export class RolesController {
   ): Promise<object> {
     const {permissionValues, ...roleFields} = body;
 
+    const existing = await this.rolesRepository.findOne({where: {value: body.value, isDeleted: false}});
+    if (existing) throw new HttpErrors.Conflict(`A role with value "${body.value}" already exists.`);
+
     const created = await this.rolesRepository.create(roleFields);
 
     if (permissionValues?.length) {
@@ -96,6 +99,8 @@ export class RolesController {
   async find(@param.filter(Roles) filter?: Filter<Roles>): Promise<Roles[]> {
     return this.rolesRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [{relation: 'permissions'}],
     });
   }

@@ -231,6 +231,7 @@ export class CustomerController {
     return this.customerRepository.find({
       ...filter,
       where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [
         {
           relation: 'user',

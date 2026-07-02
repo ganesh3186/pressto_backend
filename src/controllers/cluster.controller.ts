@@ -86,6 +86,8 @@ export class ClusterController {
   ): Promise<Cluster[]> {
     return this.clusterRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [{ relation: 'region' }],
     });
   }

@@ -92,6 +92,8 @@ export class ItemController {
   async find(@param.filter(Item) filter?: Filter<Item>): Promise<Item[]> {
     return this.itemRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [
         { relation: 'media', scope: { fields: { id: true, fileOriginalName: true, fileUrl: true, fileType: true } } }
       ]

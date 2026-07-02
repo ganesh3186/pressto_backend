@@ -88,6 +88,8 @@ export class PermissionsController {
   async find(@param.filter(Permissions) filter?: Filter<Permissions>): Promise<Permissions[]> {
     return this.permissionsRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [{relation: 'roles'}],
     });
   }

@@ -84,7 +84,7 @@ export class BrandController {
     },
   })
   async find(@param.filter(Brand) filter?: Filter<Brand>): Promise<Brand[]> {
-    return this.brandRepository.find(filter);
+    return this.brandRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

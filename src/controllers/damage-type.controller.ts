@@ -88,7 +88,7 @@ export class DamageTypeController {
   async find(
     @param.filter(DamageType) filter?: Filter<DamageType>,
   ): Promise<DamageType[]> {
-    return this.damageTypeRepository.find(filter);
+    return this.damageTypeRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

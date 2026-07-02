@@ -97,6 +97,8 @@ export class PriceListController {
   async find(@param.filter(PriceList) filter?: Filter<PriceList>): Promise<PriceList[]> {
     return this.priceListRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [{relation: 'region'}],
     });
   }

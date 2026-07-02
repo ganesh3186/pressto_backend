@@ -78,6 +78,8 @@ export class PriceListItemController {
   async find(@param.filter(PriceListItem) filter?: Filter<PriceListItem>): Promise<PriceListItem[]> {
     return this.priceListItemRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [
         {relation: 'service', scope: {fields: {id: true, name: true, code: true}}},
         {relation: 'item', scope: {fields: {id: true, name: true, code: true}}},

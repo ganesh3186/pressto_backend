@@ -217,6 +217,8 @@ export class EmployeeController {
   async find(@param.filter(Employee) filter?: Filter<Employee>): Promise<Employee[]> {
     return this.employeeRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [
         {
           relation: 'user',

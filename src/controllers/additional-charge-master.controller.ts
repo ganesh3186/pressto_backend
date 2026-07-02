@@ -11,6 +11,7 @@ import {
   del,
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -47,6 +48,8 @@ export class AdditionalChargeMasterController {
     })
     additionalChargeMaster: Omit<AdditionalChargeMaster, 'id'>,
   ): Promise<AdditionalChargeMaster> {
+    const existing = await this.additionalChargeMasterRepository.findOne({where: {code: additionalChargeMaster.code, isDeleted: false}});
+    if (existing) throw new HttpErrors.Conflict(`An additional charge with code "${additionalChargeMaster.code}" already exists.`);
     return this.additionalChargeMasterRepository.create(additionalChargeMaster);
   }
 
@@ -80,7 +83,7 @@ export class AdditionalChargeMasterController {
   async find(
     @param.filter(AdditionalChargeMaster) filter?: Filter<AdditionalChargeMaster>,
   ): Promise<AdditionalChargeMaster[]> {
-    return this.additionalChargeMasterRepository.find(filter);
+    return this.additionalChargeMasterRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

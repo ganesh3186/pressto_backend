@@ -86,7 +86,7 @@ export class CustomerLabelController {
   async find(
     @param.filter(CustomerLabel) filter?: Filter<CustomerLabel>,
   ): Promise<CustomerLabel[]> {
-    return this.customerLabelRepository.find(filter);
+    return this.customerLabelRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

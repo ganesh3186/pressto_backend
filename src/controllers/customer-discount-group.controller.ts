@@ -86,7 +86,7 @@ export class CustomerDiscountGroupController {
   async find(
     @param.filter(CustomerDiscountGroup) filter?: Filter<CustomerDiscountGroup>,
   ): Promise<CustomerDiscountGroup[]> {
-    return this.customerDiscountGroupRepository.find(filter);
+    return this.customerDiscountGroupRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')

@@ -77,6 +77,8 @@ export class StorePriceOverrideController {
   async find(@param.filter(StorePriceOverride) filter?: Filter<StorePriceOverride>): Promise<StorePriceOverride[]> {
     return this.storePriceOverrideRepository.find({
       ...filter,
+      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      order: ['createdAt DESC'],
       include: [
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
       ],

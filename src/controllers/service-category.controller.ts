@@ -86,7 +86,7 @@ export class ServiceCategoryController {
   async find(
     @param.filter(ServiceCategory) filter?: Filter<ServiceCategory>,
   ): Promise<ServiceCategory[]> {
-    return this.serviceCategoryRepository.find(filter);
+    return this.serviceCategoryRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
   }
 
   @authenticate('jwt')
