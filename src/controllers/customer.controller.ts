@@ -365,6 +365,8 @@ export class CustomerController {
     }
 
     if (rest.dateOfBirth) customerFields.dateOfBirth = new Date(rest.dateOfBirth);
+    // isActive must be kept in sync on both tables
+    if (rest.isActive !== undefined) customerFields.isActive = rest.isActive;
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {

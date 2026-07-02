@@ -348,6 +348,8 @@ export class EmployeeController {
 
     if (rest.dateOfBirth) employeeFields.dateOfBirth = new Date(rest.dateOfBirth);
     if (rest.joiningDate) employeeFields.joiningDate = new Date(rest.joiningDate);
+    // isActive must be kept in sync on both tables
+    if (rest.isActive !== undefined) employeeFields.isActive = rest.isActive;
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {

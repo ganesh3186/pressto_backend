@@ -462,14 +462,19 @@ export class OrderService {
       const createdGarments: object[] = [];
       if (isStoreDropoffOrder) {
         const now = new Date();
+        // Fetch count once — inside a transaction uncommitted rows aren't visible,
+        // so querying per-garment returns the same value every time → duplicate tags.
+        const baseGarmentCount = await this.garmentRepo.count();
+        let garmentSeq = baseGarmentCount.count;
+
         for (let itemIdx = 0; itemIdx < createdItems.length; itemIdx++) {
           const orderItem = createdItems[itemIdx];
           const inputItem = input.items[itemIdx];
 
           for (let unitIdx = 0; unitIdx < orderItem.quantity; unitIdx++) {
             const unitInspection = inputItem.units?.[unitIdx];
-            const garmentCount = await this.garmentRepo.count();
-            const garmentTagNumber = `GT${String(garmentCount.count + 1).padStart(8, '0')}`;
+            garmentSeq++;
+            const garmentTagNumber = `GT${String(garmentSeq).padStart(8, '0')}`;
 
             const garment = await this.garmentRepo.create(
               {
@@ -609,6 +614,10 @@ export class OrderService {
     const now = new Date();
     const created: object[] = [];
 
+    // Fetch once so the sequence stays consistent across multiple creates
+    const baseCount = await this.garmentRepo.count();
+    let garmentSeq = baseCount.count;
+
     for (const item of orderItems) {
       // Check how many garments already exist (idempotent — skip if already created)
       const existing = await this.garmentRepo.count({orderItemId: item.id, isDeleted: false});
@@ -616,8 +625,8 @@ export class OrderService {
       if (toCreate <= 0) continue;
 
       for (let i = 0; i < toCreate; i++) {
-        const totalCount = await this.garmentRepo.count();
-        const garmentTagNumber = `GT${String(totalCount.count + 1).padStart(8, '0')}`;
+        garmentSeq++;
+        const garmentTagNumber = `GT${String(garmentSeq).padStart(8, '0')}`;
 
         const garment = await this.garmentRepo.create({
           orderItemId: item.id,
@@ -681,7 +690,7 @@ export class OrderService {
     orderId: string,
     payment: OrderPaymentInput,
     walletAmount: number,
-    performedBy: string,
+    _performedBy: string,
   ): Promise<object> {
     const {v4} = await import('uuid');
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
