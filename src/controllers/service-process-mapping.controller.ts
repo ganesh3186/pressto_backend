@@ -164,16 +164,28 @@ export class ServiceProcessMappingController {
     })
     serviceProcessMapping: Partial<ServiceProcessMapping>,
   ): Promise<void> {
-    if (serviceProcessMapping.sequence !== undefined) {
-      const old = await this.serviceProcessMappingRepository.findById(id);
-      if (old.sequence !== serviceProcessMapping.sequence) {
-        serviceProcessMapping.isInitial = serviceProcessMapping.sequence === 1;
+    const current = await this.serviceProcessMappingRepository.findById(id);
+
+    if (serviceProcessMapping.serviceId !== undefined || serviceProcessMapping.processStepId !== undefined) {
+      const newServiceId = serviceProcessMapping.serviceId ?? current.serviceId;
+      const newProcessStepId = serviceProcessMapping.processStepId ?? current.processStepId;
+      const duplicate = await this.serviceProcessMappingRepository.findOne({
+        where: {serviceId: newServiceId, processStepId: newProcessStepId, isDeleted: false, id: {neq: id}},
+      });
+      if (duplicate) {
+        const [service, step] = await Promise.all([
+          this.serviceRepository.findById(newServiceId),
+          this.processStepRepository.findById(newProcessStepId),
+        ]);
+        throw new HttpErrors.Conflict(`Process step "${step.name}" is already mapped to service "${service.name}".`);
       }
     }
-    await this.serviceProcessMappingRepository.updateById(
-      id,
-      serviceProcessMapping,
-    );
+
+    if (serviceProcessMapping.sequence !== undefined && current.sequence !== serviceProcessMapping.sequence) {
+      serviceProcessMapping.isInitial = serviceProcessMapping.sequence === 1;
+    }
+
+    await this.serviceProcessMappingRepository.updateById(id, serviceProcessMapping);
   }
 
   // @authenticate('jwt')

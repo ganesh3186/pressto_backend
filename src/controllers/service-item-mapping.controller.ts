@@ -163,6 +163,21 @@ export class ServiceItemMappingController {
     })
     serviceItemMapping: ServiceItemMapping,
   ): Promise<void> {
+    if (serviceItemMapping.serviceId !== undefined || serviceItemMapping.itemId !== undefined) {
+      const current = await this.serviceItemMappingRepository.findById(id);
+      const newServiceId = serviceItemMapping.serviceId ?? current.serviceId;
+      const newItemId = serviceItemMapping.itemId ?? current.itemId;
+      const duplicate = await this.serviceItemMappingRepository.findOne({
+        where: {serviceId: newServiceId, itemId: newItemId, isDeleted: false, id: {neq: id}},
+      });
+      if (duplicate) {
+        const [service, item] = await Promise.all([
+          this.serviceRepository.findById(newServiceId),
+          this.itemRepository.findById(newItemId),
+        ]);
+        throw new HttpErrors.Conflict(`A mapping for "${service.name}" → "${item.name}" already exists.`);
+      }
+    }
     await this.serviceItemMappingRepository.updateById(id, serviceItemMapping);
   }
 

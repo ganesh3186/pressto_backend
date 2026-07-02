@@ -164,6 +164,21 @@ export class StoreServiceMappingController {
     })
     storeServiceMapping: Partial<StoreServiceMapping>,
   ): Promise<void> {
+    if (storeServiceMapping.storeId !== undefined || storeServiceMapping.serviceId !== undefined) {
+      const current = await this.storeServiceMappingRepository.findById(id);
+      const newStoreId = storeServiceMapping.storeId ?? current.storeId;
+      const newServiceId = storeServiceMapping.serviceId ?? current.serviceId;
+      const duplicate = await this.storeServiceMappingRepository.findOne({
+        where: {storeId: newStoreId, serviceId: newServiceId, isDeleted: false, id: {neq: id}},
+      });
+      if (duplicate) {
+        const [store, service] = await Promise.all([
+          this.storeRepository.findById(newStoreId),
+          this.serviceRepository.findById(newServiceId),
+        ]);
+        throw new HttpErrors.Conflict(`Service "${service.name}" is already mapped to store "${store.name}".`);
+      }
+    }
     await this.storeServiceMappingRepository.updateById(id, storeServiceMapping);
   }
 
