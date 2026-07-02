@@ -73,9 +73,6 @@ export class Store extends Entity {
   @property({type: 'string', required: true})
   phone: string;
 
-  @property({type: 'number', required: true})
-  dailyCapacity: number;
-
   @property({type: 'boolean', default: true})
   isActive?: boolean;
 
