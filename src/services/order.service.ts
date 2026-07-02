@@ -82,6 +82,7 @@ export interface CreateOrderInput {
   storeId: string;
   orderType: OrderType;
   items: CreateOrderItemInput[];
+  isDraft?: boolean;
   additionalChargeIds?: string[];
   specialInstructions?: string;
   specialInstructionMediaIds?: string[];
@@ -384,7 +385,9 @@ export class OrderService {
       const isStoreDropoffOrder =
         input.orderType === OrderType.STORE_DROPOFF ||
         input.orderType === OrderType.STORE_DROPOFF_HOME_DELIVERY;
-      const orderInitialStatus = isStoreDropoffOrder
+      const orderInitialStatus = input.isDraft
+        ? OrderStatus.DRAFT
+        : isStoreDropoffOrder
         ? OrderStatus.RECEIVED_AT_STORE
         : OrderStatus.CONFIRMED;
 

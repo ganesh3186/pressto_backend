@@ -75,6 +75,7 @@ export class OrderController {
               customerId: {type: 'string', format: 'uuid'},
               storeId: {type: 'string', format: 'uuid'},
               orderType: {type: 'string', enum: Object.values(OrderType)},
+              isDraft: {type: 'boolean', description: 'Set true to save the order as a draft without confirming it.'},
               expressMultiplier: {
                 type: 'number',
                 minimum: 1,
