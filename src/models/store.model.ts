@@ -67,11 +67,11 @@ export class Store extends Entity {
   })
   longitude?: number;
 
-  @property({type: 'string', required: true})
-  email: string;
+  @property({type: 'string'})
+  email?: string;
 
-  @property({type: 'string', required: true})
-  phone: string;
+  @property({type: 'string'})
+  phone?: string;
 
   @property({type: 'boolean', default: true})
   isActive?: boolean;
