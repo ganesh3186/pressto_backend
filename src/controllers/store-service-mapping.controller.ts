@@ -164,8 +164,9 @@ export class StoreServiceMappingController {
     })
     storeServiceMapping: Partial<StoreServiceMapping>,
   ): Promise<void> {
+    const current = await this.storeServiceMappingRepository.findOne({where: {id, isDeleted: false}});
+    if (!current) throw new HttpErrors.NotFound('Store-service mapping not found.');
     if (storeServiceMapping.storeId !== undefined || storeServiceMapping.serviceId !== undefined) {
-      const current = await this.storeServiceMappingRepository.findById(id);
       const newStoreId = storeServiceMapping.storeId ?? current.storeId;
       const newServiceId = storeServiceMapping.serviceId ?? current.serviceId;
       const duplicate = await this.storeServiceMappingRepository.findOne({
