@@ -41,15 +41,22 @@ export class AdditionalChargeMasterController {
         'application/json': {
           schema: getModelSchemaRef(AdditionalChargeMaster, {
             title: 'NewAdditionalChargeMaster',
-            exclude: ['id', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },
     })
     additionalChargeMaster: Omit<AdditionalChargeMaster, 'id'>,
   ): Promise<AdditionalChargeMaster> {
-    const existing = await this.additionalChargeMasterRepository.findOne({where: {code: additionalChargeMaster.code, isDeleted: false}});
-    if (existing) throw new HttpErrors.Conflict(`An additional charge with code "${additionalChargeMaster.code}" already exists.`);
+    const existing = await this.additionalChargeMasterRepository.findOne({where: {name: additionalChargeMaster.name, isDeleted: false}});
+    if (existing) throw new HttpErrors.Conflict(`An additional charge with name "${additionalChargeMaster.name}" already exists.`);
+    const all = await this.additionalChargeMasterRepository.find({fields: {code: true}});
+    let maxNum = 0;
+    for (const a of all) {
+      const match = a.code?.match(/^ACM(\d+)$/i);
+      if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
+    }
+    additionalChargeMaster.code = `ACM${String(maxNum + 1).padStart(3, '0')}`;
     return this.additionalChargeMasterRepository.create(additionalChargeMaster);
   }
 

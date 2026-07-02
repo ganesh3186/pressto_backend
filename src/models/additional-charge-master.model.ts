@@ -28,7 +28,7 @@ export class AdditionalChargeMaster extends Entity {
   @property({type: 'string', required: true})
   name: string;
 
-  @property({type: 'string', required: true})
+  @property({type: 'string'})
   code: string;
 
   @property({
