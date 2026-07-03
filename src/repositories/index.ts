@@ -2,6 +2,7 @@ export * from './cluster-price-list.repository';
 export * from './additional-charge-master.repository';
 export * from './employee.repository';
 export * from './gst-tax-configuration.repository';
+export * from './delivery-type-configuration.repository';
 export * from './wallet-configuration.repository';
 export * from './bag.repository';
 export * from './brand.repository';

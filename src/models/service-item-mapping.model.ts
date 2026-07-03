@@ -53,6 +53,13 @@ export class ServiceItemMapping extends Entity {
   estimatedDurationInDays?: number;
 
   @property({
+    type: 'array',
+    itemType: 'string',
+    postgresql: {dataType: 'jsonb'},
+  })
+  additionalServiceIds?: string[];
+
+  @property({
     type: 'boolean',
     default: true,
   })

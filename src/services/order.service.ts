@@ -12,7 +12,9 @@ import {
   AdditionalChargeMasterRepository,
   ClusterPriceListRepository,
   ClusterRepository,
+  CustomerContactRepository,
   CustomerRepository,
+  DeliveryTypeConfigurationRepository,
   GarmentDamageImageRepository,
   GarmentDamageRepository,
   GarmentImageRepository,
@@ -34,6 +36,7 @@ import {
   WalletRepository,
   WalletTransactionRepository,
 } from '../repositories';
+import {DeliveryType} from '../models/delivery-type.enum';
 import {GarmentImageType} from '../models/garment-image-type.enum';
 
 export interface OrderPaymentInput {
@@ -74,6 +77,7 @@ export interface CreateOrderItemInput {
   specialInstructionMediaIds?: string[];
   remarks?: string;
   additionalChargeIds?: string[];   // line-level charges (billing)
+  additionalServiceIds?: string[];  // additional services selected for this item
   units?: UnitInspectionInput[];    // per-garment inspection data (length must match quantity)
 }
 
@@ -83,7 +87,9 @@ export interface CreateOrderInput {
   orderType: OrderType;
   items: CreateOrderItemInput[];
   isDraft?: boolean;
+  deliveryType?: DeliveryType;      // standard | express | lightning
   additionalChargeIds?: string[];
+  customerContactId?: string;       // person who came on behalf of customer
   specialInstructions?: string;
   specialInstructionMediaIds?: string[];
   remarks?: string;
@@ -119,6 +125,8 @@ export class OrderService {
     @repository(GarmentDamageImageRepository) private garmentDamageImageRepo: GarmentDamageImageRepository,
     @repository(GarmentImageRepository) private garmentImageRepo: GarmentImageRepository,
     @repository(GstTaxConfigurationRepository) private gstConfigRepo: GstTaxConfigurationRepository,
+    @repository(DeliveryTypeConfigurationRepository) private deliveryTypeConfigRepo: DeliveryTypeConfigurationRepository,
+    @repository(CustomerContactRepository) private customerContactRepo: CustomerContactRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -284,6 +292,31 @@ export class OrderService {
       wallet = {id: found.id, currentBalance: Number(found.currentBalance)};
     }
 
+    // ── Validate customer contact (if provided) ──
+    if (input.customerContactId) {
+      const contact = await this.customerContactRepo.findOne({
+        where: {id: input.customerContactId, customerId: input.customerId, isDeleted: false},
+      });
+      if (!contact) {
+        throw new HttpErrors.NotFound('Customer contact not found or does not belong to this customer.');
+      }
+    }
+
+    // ── Delivery type percentage ──
+    let deliveryTypePercentage = 0;
+    if (input.deliveryType) {
+      const dtConfig = await this.deliveryTypeConfigRepo.findOne({where: {isDeleted: false}});
+      if (dtConfig) {
+        if (input.deliveryType === DeliveryType.EXPRESS) {
+          deliveryTypePercentage = Number(dtConfig.expressPercentage);
+        } else if (input.deliveryType === DeliveryType.LIGHTNING) {
+          deliveryTypePercentage = Number(dtConfig.lightningPercentage);
+        } else {
+          deliveryTypePercentage = Number(dtConfig.standardPercentage);
+        }
+      }
+    }
+
     // ── Pricing ──
     const expressMultiplier = Math.max(1, Number(input.expressMultiplier ?? 1));
     const count = await this.orderRepo.count();
@@ -304,6 +337,7 @@ export class OrderService {
       specialInstructionMediaIds?: string[];
       remarks?: string;
       additionalChargeIds?: string[];
+      additionalServiceIds?: string[];
       additionalChargesTotal: number;
     }> = [];
 
@@ -399,6 +433,9 @@ export class OrderService {
           orderType: input.orderType,
           status: orderInitialStatus,
           expressMultiplier,
+          deliveryType: input.deliveryType,
+          deliveryTypePercentage,
+          customerContactId: input.customerContactId,
           deliveryDate,
           subtotal,
           discountAmount,
@@ -430,6 +467,7 @@ export class OrderService {
             specialInstructions: item.specialInstructions,
             specialInstructionMediaIds: item.specialInstructionMediaIds,
             remarks: item.remarks,
+            additionalServiceIds: item.additionalServiceIds,
           },
           {transaction: tx},
         );

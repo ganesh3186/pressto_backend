@@ -18,6 +18,7 @@ import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {Order} from '../models/order.model';
 import {OrderItemRepository, OrderRepository, OrderStatusHistoryRepository} from '../repositories';
+import {DeliveryType} from '../models/delivery-type.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
 
 const PAYMENT_ITEM_SCHEMA = {
@@ -42,6 +43,7 @@ const ORDER_ITEM_SCHEMA = {
     specialInstructionMediaIds: {type: 'array' as const, items: {type: 'string' as const}},
     remarks: {type: 'string' as const},
     additionalChargeIds: {type: 'array' as const, items: {type: 'string' as const, format: 'uuid'}},
+    additionalServiceIds: {type: 'array' as const, items: {type: 'string' as const, format: 'uuid'}, description: 'Additional services selected for this item'},
   },
 };
 
@@ -76,6 +78,8 @@ export class OrderController {
               storeId: {type: 'string', format: 'uuid'},
               orderType: {type: 'string', enum: Object.values(OrderType)},
               isDraft: {type: 'boolean', description: 'Set true to save the order as a draft without confirming it.'},
+              deliveryType: {type: 'string', enum: Object.values(DeliveryType), description: 'Delivery speed: standard | express | lightning'},
+              customerContactId: {type: 'string', format: 'uuid', description: 'Customer contact (person coming on behalf of the customer)'},
               expressMultiplier: {
                 type: 'number',
                 minimum: 1,

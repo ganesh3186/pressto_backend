@@ -57,6 +57,14 @@ export class OrderItem extends Entity {
   @property({type: 'string', postgresql: {dataType: 'text'}})
   remarks?: string;
 
+  // Additional services selected for this item (UUIDs of Service records)
+  @property({
+    type: 'array',
+    itemType: 'string',
+    postgresql: {dataType: 'jsonb'},
+  })
+  additionalServiceIds?: string[];
+
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 

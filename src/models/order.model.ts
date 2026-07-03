@@ -1,4 +1,5 @@
 import {Entity, model, property} from '@loopback/repository';
+import {DeliveryType} from './delivery-type.enum';
 import {OrderStatus} from './order-status.enum';
 import {OrderType} from './order-type.enum';
 
@@ -40,6 +41,18 @@ export class Order extends Entity {
   // Urgency multiplier selected at order creation (1 = standard, 2 = 2x faster/costlier, etc.)
   @property({type: 'number', default: 1, postgresql: {dataType: 'numeric'}})
   expressMultiplier?: number;
+
+  // Delivery type selected at order creation (standard / express / lightning)
+  @property({type: 'string', jsonSchema: {enum: Object.values(DeliveryType)}})
+  deliveryType?: DeliveryType;
+
+  // Snapshot of the delivery type percentage at time of order (from DeliveryTypeConfiguration)
+  @property({type: 'number', default: 0, postgresql: {dataType: 'numeric'}})
+  deliveryTypePercentage?: number;
+
+  // Customer contact (person who came on behalf of the customer)
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  customerContactId?: string;
 
   // Calculated by backend: createdAt + ceil(maxEstimatedDurationInDays / expressMultiplier)
   @property({type: 'date'})

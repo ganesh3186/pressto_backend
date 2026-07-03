@@ -101,8 +101,9 @@ export class ServiceItemMappingController {
   })
   async find(
     @param.filter(ServiceItemMapping) filter?: Filter<ServiceItemMapping>,
-  ): Promise<ServiceItemMapping[]> {
-    return this.serviceItemMappingRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
+  ): Promise<object[]> {
+    const mappings = await this.serviceItemMappingRepository.find({...filter, where: {and: [{isDeleted: false}, filter?.where ?? {}]}, order: ['createdAt DESC']});
+    return this._withAdditionalServices(mappings);
   }
 
   @authenticate('jwt')
@@ -144,8 +145,10 @@ export class ServiceItemMappingController {
     @param.path.string('id') id: string,
     @param.filter(ServiceItemMapping, { exclude: 'where' })
     filter?: FilterExcludingWhere<ServiceItemMapping>,
-  ): Promise<ServiceItemMapping> {
-    return this.serviceItemMappingRepository.findById(id, filter);
+  ): Promise<object> {
+    const mapping = await this.serviceItemMappingRepository.findById(id, filter);
+    const [resolved] = await this._withAdditionalServices([mapping]);
+    return resolved;
   }
 
   @authenticate('jwt')
@@ -199,4 +202,20 @@ export class ServiceItemMappingController {
   // async deleteById(@param.path.string('id') id: string): Promise<void> {
   //   await this.serviceItemMappingRepository.deleteById(id);
   // }
+
+  private async _withAdditionalServices(mappings: ServiceItemMapping[]): Promise<object[]> {
+    const allIds = [...new Set(mappings.flatMap(m => m.additionalServiceIds ?? []))];
+    const serviceMap: Record<string, {id: string; name: string; code: string}> = {};
+    if (allIds.length) {
+      const services = await this.serviceRepository.find({
+        where: {id: {inq: allIds}},
+        fields: {id: true, name: true, code: true} as any,
+      });
+      for (const s of services) serviceMap[s.id] = {id: s.id, name: s.name, code: s.code};
+    }
+    return mappings.map(m => ({
+      ...m,
+      additionalServices: (m.additionalServiceIds ?? []).map(sid => serviceMap[sid]).filter(Boolean),
+    }));
+  }
 }
