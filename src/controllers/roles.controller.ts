@@ -141,15 +141,10 @@ export class RolesController {
               description: {type: 'string'},
               isActive: {type: 'boolean'},
               loginAccess: {type: 'boolean'},
-              addPermissionValues: {
+              permissionValues: {
                 type: 'array',
                 items: {type: 'string'},
-                description: 'Permission codes to add to this role',
-              },
-              removePermissionValues: {
-                type: 'array',
-                items: {type: 'string'},
-                description: 'Permission codes to remove from this role',
+                description: 'Full list of permission codes for this role — replaces all existing permissions',
               },
             },
           },
@@ -162,8 +157,7 @@ export class RolesController {
       description?: string;
       isActive?: boolean;
       loginAccess?: boolean;
-      addPermissionValues?: string[];
-      removePermissionValues?: string[];
+      permissionValues?: string[];
     },
   ): Promise<void> {
     const existing = await this.rolesRepository.findById(id);
@@ -171,40 +165,18 @@ export class RolesController {
       throw new HttpErrors.Forbidden('This role is locked and cannot be modified.');
     }
 
-    const {addPermissionValues, removePermissionValues, ...fields} = body;
+    const {permissionValues, ...fields} = body;
 
     if (Object.keys(fields).length > 0) {
       await this.rolesRepository.updateById(id, fields);
     }
 
-    if (addPermissionValues?.length) {
-      for (const permValue of addPermissionValues) {
-        const permission = await this.permissionsRepository.findOne({
-          where: {permission: permValue},
-        });
+    if (permissionValues !== undefined) {
+      await this.rolePermissionsRepository.deleteAll({rolesId: id});
+      for (const permValue of permissionValues) {
+        const permission = await this.permissionsRepository.findOne({where: {permission: permValue}});
         if (!permission) throw new HttpErrors.BadRequest(`Permission not found: ${permValue}`);
-        const exists = await this.rolePermissionsRepository.findOne({
-          where: {rolesId: id, permissionsId: permission.id},
-        });
-        if (!exists) {
-          await this.rolePermissionsRepository.create({
-            rolesId: id,
-            permissionsId: permission.id,
-          });
-        }
-      }
-    }
-
-    if (removePermissionValues?.length) {
-      for (const permValue of removePermissionValues) {
-        const permission = await this.permissionsRepository.findOne({
-          where: {permission: permValue},
-        });
-        if (!permission) throw new HttpErrors.BadRequest(`Permission not found: ${permValue}`);
-        await this.rolePermissionsRepository.deleteAll({
-          rolesId: id,
-          permissionsId: permission.id,
-        });
+        await this.rolePermissionsRepository.create({rolesId: id, permissionsId: permission.id});
       }
     }
   }
