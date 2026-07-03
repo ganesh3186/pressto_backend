@@ -1,6 +1,6 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {Filter, repository} from '@loopback/repository';
+import {repository} from '@loopback/repository';
 import {
   del,
   get,
@@ -16,7 +16,6 @@ import {authorize} from '../authorization';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
-import {Order} from '../models/order.model';
 import {OrderItemRepository, OrderRepository, OrderStatusHistoryRepository} from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
@@ -112,17 +111,22 @@ export class OrderController {
     return {message: 'Order created successfully.', ...result};
   }
 
-  // ─── List Orders ──────────────────────────────────────────────────────────
+  // ─── List Orders ─────────────────────────────────────────────────────────
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin']})
   @get('/orders')
-  @response(200, {description: 'List of orders'})
-  async find(@param.filter(Order) filter?: Filter<Order>): Promise<Order[]> {
-    return this.orderRepository.find({
-      ...filter,
-      where: {and: [{isDeleted: false}, (filter?.where ?? {}) as object]},
-    });
+  @response(200, {description: 'Enriched order list with customer details, payment summary and filters'})
+  async listOrders(
+    @param.query.string('search') search?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+    @param.query.string('orderType') orderType?: string,
+    @param.query.string('status') status?: string,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+  ): Promise<object> {
+    return this.orderService.listOrders({search, dateFrom, dateTo, orderType, status, limit, skip});
   }
 
   @authenticate('jwt')

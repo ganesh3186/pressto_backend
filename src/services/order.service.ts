@@ -15,6 +15,9 @@ import {
   CustomerContactRepository,
   CustomerRepository,
   DeliveryTypeConfigurationRepository,
+  ItemRepository,
+  ServiceRepository,
+  UsersRepository,
   GarmentDamageImageRepository,
   GarmentDamageRepository,
   GarmentImageRepository,
@@ -127,6 +130,9 @@ export class OrderService {
     @repository(GstTaxConfigurationRepository) private gstConfigRepo: GstTaxConfigurationRepository,
     @repository(DeliveryTypeConfigurationRepository) private deliveryTypeConfigRepo: DeliveryTypeConfigurationRepository,
     @repository(CustomerContactRepository) private customerContactRepo: CustomerContactRepository,
+    @repository(UsersRepository) private userRepo: UsersRepository,
+    @repository(ItemRepository) private itemRepo: ItemRepository,
+    @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -696,32 +702,277 @@ export class OrderService {
     return created;
   }
 
+  // ─── List Orders (enriched) ───────────────────────────────────────────────
+
+  async listOrders(params: {
+    search?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    orderType?: string;
+    status?: string;
+    limit?: number;
+    skip?: number;
+  }): Promise<{rows: object[]; total: number}> {
+    const limit = Math.min(Number(params.limit ?? 20), 100);
+    const skip = Number(params.skip ?? 0);
+
+    const baseConditions: object[] = [{isDeleted: false}];
+
+    if (params.status) baseConditions.push({status: params.status});
+    if (params.orderType) baseConditions.push({orderType: params.orderType});
+    if (params.dateFrom || params.dateTo) {
+      const range: Record<string, string> = {};
+      if (params.dateFrom) range.gte = params.dateFrom;
+      if (params.dateTo) range.lte = params.dateTo;
+      baseConditions.push({createdAt: range});
+    }
+
+    if (params.search) {
+      const q = params.search.trim();
+      const orConditions: object[] = [{orderNumber: {ilike: `%${q}%`}}];
+
+      // Match by customer name
+      const nameCustomers = await this.customerRepo.find({
+        where: {and: [{isDeleted: false}, {or: [{firstName: {ilike: `%${q}%`}}, {lastName: {ilike: `%${q}%`}}]}]} as any,
+        fields: {id: true} as any,
+      });
+      const nameCustomerIds = nameCustomers.map(c => c.id);
+
+      // Match by phone via users table
+      const phoneUsers = await this.userRepo.find({
+        where: {and: [{isDeleted: false}, {phone: {ilike: `%${q}%`}}]} as any,
+        fields: {id: true} as any,
+      });
+      let phoneCustomerIds: string[] = [];
+      if (phoneUsers.length) {
+        const userIds = phoneUsers.map(u => u.id);
+        const phoneCustomers = await this.customerRepo.find({
+          where: {and: [{isDeleted: false}, {userId: {inq: userIds}}]} as any,
+          fields: {id: true} as any,
+        });
+        phoneCustomerIds = phoneCustomers.map(c => c.id);
+      }
+
+      const allCustomerIds = [...new Set([...nameCustomerIds, ...phoneCustomerIds])];
+      if (allCustomerIds.length) orConditions.push({customerId: {inq: allCustomerIds}});
+
+      baseConditions.push({or: orConditions});
+    }
+
+    const where = baseConditions.length === 1 ? baseConditions[0] : {and: baseConditions};
+
+    const [orders, countResult] = await Promise.all([
+      this.orderRepo.find({where: where as any, order: ['createdAt DESC'], limit, skip}),
+      this.orderRepo.count(where as any),
+    ]);
+
+    if (!orders.length) return {rows: [], total: 0};
+
+    const orderIds = orders.map(o => o.id);
+    const customerIds = [...new Set(orders.map(o => o.customerId))];
+
+    const [customers, paymentTxns] = await Promise.all([
+      this.customerRepo.find({where: {id: {inq: customerIds}} as any}),
+      this.paymentTransactionRepo.find({where: {orderId: {inq: orderIds}} as any}),
+    ]);
+
+    const userIds = [...new Set(customers.map(c => c.userId).filter(Boolean))];
+    const users = userIds.length
+      ? await this.userRepo.find({
+          where: {id: {inq: userIds}} as any,
+          fields: {id: true, phone: true, countryCode: true} as any,
+        })
+      : [];
+
+    const customerMap = new Map(customers.map(c => [c.id, c]));
+    const userMap = new Map(users.map(u => [u.id, u]));
+
+    const paymentsByOrder = new Map<string, number>();
+    for (const pt of paymentTxns) {
+      paymentsByOrder.set(pt.orderId, (paymentsByOrder.get(pt.orderId) ?? 0) + Number(pt.amount));
+    }
+
+    const rows = orders.map(order => {
+      const customer = customerMap.get(order.customerId);
+      const user = customer ? userMap.get(customer.userId) : undefined;
+      const totalCollected = paymentsByOrder.get(order.id) ?? 0;
+      const totalAmount = Number(order.totalAmount ?? 0);
+      const balanceDue = Math.max(0, totalAmount - totalCollected);
+
+      let paymentStatus: string;
+      if (totalAmount === 0) paymentStatus = 'pending';
+      else if (totalCollected >= totalAmount) paymentStatus = 'paid';
+      else if (totalCollected > 0) paymentStatus = 'partial';
+      else paymentStatus = 'pending';
+
+      return {
+        id: order.id,
+        orderNumber: order.orderNumber,
+        orderType: order.orderType,
+        status: order.status,
+        deliveryType: order.deliveryType,
+        createdAt: order.createdAt,
+        deliveryDate: order.deliveryDate,
+        subtotal: order.subtotal,
+        discountAmount: order.discountAmount,
+        taxAmount: order.taxAmount,
+        totalAmount: order.totalAmount,
+        totalCollected,
+        balanceDue,
+        paymentStatus,
+        customer: customer
+          ? {
+              id: customer.id,
+              firstName: customer.firstName,
+              lastName: customer.lastName,
+              fullName: `${customer.firstName} ${customer.lastName}`,
+              email: customer.email,
+              sensitivityScore: customer.sensitivityScore ?? null,
+              phone: user?.phone ?? null,
+              countryCode: user?.countryCode ?? null,
+            }
+          : null,
+      };
+    });
+
+    return {rows, total: countResult.count};
+  }
+
   // ─── Get Order Details ────────────────────────────────────────────────────
 
   async getOrderDetails(orderId: string): Promise<object> {
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
-    const [items, orderCharges, statusHistory, paymentTransactions] = await Promise.all([
+    // ── Parallel batch 1: order sub-tables ───────────────────────────────────
+    const [orderItems, orderCharges, statusHistory, paymentTransactions] = await Promise.all([
       this.orderItemRepo.find({where: {orderId}}),
       this.orderChargeRepo.find({where: {orderId}}),
-      this.statusHistoryRepo.find({where: {orderId}, order: ['changedAt DESC']}),
+      this.statusHistoryRepo.find({where: {orderId}, order: ['changedAt ASC']}),
       this.paymentTransactionRepo.find({where: {orderId}}),
     ]);
 
-    const itemsWithCharges = await Promise.all(
-      items.map(async item => {
-        const charges = await this.orderItemChargeRepo.find({where: {orderItemId: item.id}});
-        return {...item, additionalCharges: charges};
-      }),
-    );
+    const orderItemIds = orderItems.map(i => i.id);
+    const serviceIds = [...new Set(orderItems.map(i => i.serviceId))];
+    const itemIds = [...new Set(orderItems.map(i => i.itemId))];
 
+    // ── Parallel batch 2: customer, services, items, garments, item charges ──
+    const [customer, services, items, garments, itemCharges] = await Promise.all([
+      this.customerRepo.findOne({where: {id: order.customerId, isDeleted: false}}),
+      serviceIds.length ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as any}) : Promise.resolve([]),
+      itemIds.length ? this.itemRepo.find({where: {id: {inq: itemIds}} as any}) : Promise.resolve([]),
+      orderItemIds.length ? this.garmentRepo.find({where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any}) : Promise.resolve([]),
+      orderItemIds.length ? this.orderItemChargeRepo.find({where: {orderItemId: {inq: orderItemIds}} as any}) : Promise.resolve([]),
+    ]);
+
+    // ── Customer phone ────────────────────────────────────────────────────────
+    let customerUser = null;
+    if (customer?.userId) {
+      customerUser = await this.userRepo.findOne({
+        where: {id: customer.userId} as any,
+        fields: {id: true, phone: true, countryCode: true} as any,
+      });
+    }
+
+    // ── Garment stage histories ───────────────────────────────────────────────
+    const garmentIds = garments.map(g => g.id);
+    const garmentHistories = garmentIds.length
+      ? await this.garmentStatusHistoryRepo.find({
+          where: {garmentId: {inq: garmentIds}} as any,
+          order: ['changedAt ASC'],
+        })
+      : [];
+
+    // ── Build lookup maps ─────────────────────────────────────────────────────
+    const serviceMap = new Map(services.map(s => [s.id, s]));
+    const itemMap = new Map(items.map(i => [i.id, i]));
+    const garmentsByItem = new Map<string, typeof garments[0][]>();
+    for (const g of garments) {
+      const list = garmentsByItem.get(g.orderItemId) ?? [];
+      list.push(g);
+      garmentsByItem.set(g.orderItemId, list);
+    }
+    const historiesByGarment = new Map<string, typeof garmentHistories[0][]>();
+    for (const h of garmentHistories) {
+      const list = historiesByGarment.get(h.garmentId) ?? [];
+      list.push(h);
+      historiesByGarment.set(h.garmentId, list);
+    }
+    const chargesByItem = new Map<string, typeof itemCharges[0][]>();
+    for (const c of itemCharges) {
+      const list = chargesByItem.get(c.orderItemId) ?? [];
+      list.push(c);
+      chargesByItem.set(c.orderItemId, list);
+    }
+
+    // ── Stage status helper ───────────────────────────────────────────────────
+    const STAGES: {key: string; status: GarmentStatus}[] = [
+      {key: 'receive', status: GarmentStatus.RECEIVED},
+      {key: 'inspect', status: GarmentStatus.IN_INSPECTION},
+      {key: 'process', status: GarmentStatus.IN_PROCESS},
+      {key: 'dispatch', status: GarmentStatus.OUT_FOR_DELIVERY},
+      {key: 'deliver', status: GarmentStatus.DELIVERED},
+    ];
+
+    const resolveStages = (garmentId: string) => {
+      const history = historiesByGarment.get(garmentId) ?? [];
+      const result: Record<string, {done: boolean; at: Date | null}> = {};
+      for (const stage of STAGES) {
+        const entry = history.find(h => h.status === stage.status);
+        result[stage.key] = {done: !!entry, at: entry?.changedAt ?? null};
+      }
+      return result;
+    };
+
+    // ── Assemble enriched items ───────────────────────────────────────────────
+    const enrichedItems = orderItems.map(oi => ({
+      id: oi.id,
+      serviceId: oi.serviceId,
+      serviceName: serviceMap.get(oi.serviceId)?.name ?? null,
+      itemId: oi.itemId,
+      itemName: itemMap.get(oi.itemId)?.name ?? null,
+      quantity: oi.quantity,
+      basePrice: oi.basePrice,
+      resolvedPrice: oi.resolvedPrice,
+      unitPrice: oi.unitPrice,
+      totalPrice: oi.totalPrice,
+      priceSource: oi.priceSource,
+      additionalServiceIds: oi.additionalServiceIds ?? [],
+      additionalCharges: chargesByItem.get(oi.id) ?? [],
+      garments: (garmentsByItem.get(oi.id) ?? []).map(g => ({
+        id: g.id,
+        garmentTagNumber: g.garmentTagNumber,
+        status: g.status,
+        brandId: g.brandId,
+        colorId: g.colorId,
+        customerRemarks: g.customerRemarks,
+        inspectionRemarks: g.inspectionRemarks,
+        stages: resolveStages(g.id),
+      })),
+    }));
+
+    // ── Payment summary ───────────────────────────────────────────────────────
     const totalCollected = paymentTransactions.reduce((s, p) => s + Number(p.amount), 0);
-    const balanceDue = Math.max(0, Number(order.totalAmount) - totalCollected);
+    const totalAmount = Number(order.totalAmount ?? 0);
+    const balanceDue = Math.max(0, totalAmount - totalCollected);
 
     return {
-      order,
-      items: itemsWithCharges,
+      order: {
+        ...order,
+        customer: customer
+          ? {
+              id: customer.id,
+              firstName: customer.firstName,
+              lastName: customer.lastName,
+              fullName: `${customer.firstName} ${customer.lastName}`,
+              email: customer.email,
+              sensitivityScore: customer.sensitivityScore ?? null,
+              phone: customerUser?.phone ?? null,
+              countryCode: customerUser?.countryCode ?? null,
+            }
+          : null,
+      },
+      items: enrichedItems,
       orderCharges,
       statusHistory,
       paymentTransactions,
