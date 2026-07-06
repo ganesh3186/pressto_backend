@@ -16,7 +16,7 @@ import {authorize} from '../authorization';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
-import {OrderItemRepository, OrderRepository, OrderStatusHistoryRepository} from '../repositories';
+import {OrderRepository, OrderStatusHistoryRepository} from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
 
@@ -50,8 +50,6 @@ export class OrderController {
   constructor(
     @repository(OrderRepository)
     private orderRepository: OrderRepository,
-    @repository(OrderItemRepository)
-    private orderItemRepository: OrderItemRepository,
     @repository(OrderStatusHistoryRepository)
     private statusHistoryRepository: OrderStatusHistoryRepository,
     @inject('services.order')
@@ -209,6 +207,39 @@ export class OrderController {
       response.note = `${(result as any).garments.length} garments auto-created. Add brand, color and inspection details to each.`;
     }
     return response;
+  }
+
+  // ─── Split Order ─────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin']})
+  @post('/orders/{id}/split')
+  @response(200, {description: 'Split ready garments into a new sub-order dispatched immediately'})
+  async splitOrder(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['garmentIds'],
+            properties: {
+              garmentIds: {
+                type: 'array',
+                minItems: 1,
+                items: {type: 'string', format: 'uuid'},
+                description: 'IDs of READY garments to split out into a sub-order',
+              },
+              remarks: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {garmentIds: string[]; remarks?: string},
+  ): Promise<object> {
+    return this.orderService.splitOrder(id, body.garmentIds, body.remarks, currentUser[securityId]);
   }
 
   // ─── Add Payment to Existing Order ────────────────────────────────────────

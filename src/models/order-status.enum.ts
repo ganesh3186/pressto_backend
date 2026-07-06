@@ -6,6 +6,7 @@ export enum OrderStatus {
   IN_PROCESS = 'in_process',
   QUALITY_CHECK = 'quality_check',
   READY = 'ready',
+  PARTIALLY_DISPATCHED = 'partially_dispatched',
   OUT_FOR_DELIVERY = 'out_for_delivery',
   DELIVERED = 'delivered',
   CANCELLED = 'cancelled',
@@ -22,6 +23,8 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.IN_PROCESS]: [OrderStatus.QUALITY_CHECK, OrderStatus.CANCELLED],
   [OrderStatus.QUALITY_CHECK]: [OrderStatus.READY, OrderStatus.IN_PROCESS],
   [OrderStatus.READY]: [OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED],
+  // Set only by the split operation — remaining items continue normal flow
+  [OrderStatus.PARTIALLY_DISPATCHED]: [OrderStatus.PARTIALLY_DISPATCHED, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED, OrderStatus.ON_HOLD, OrderStatus.CANCELLED],
   [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED],
   [OrderStatus.DELIVERED]: [],
   [OrderStatus.CANCELLED]: [],

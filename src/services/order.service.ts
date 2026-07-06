@@ -981,6 +981,194 @@ export class OrderService {
     };
   }
 
+  // ─── Split Order ─────────────────────────────────────────────────────────
+
+  async splitOrder(
+    orderId: string,
+    garmentIds: string[],
+    remarks: string | undefined,
+    createdBy: string,
+  ): Promise<object> {
+    const {v4} = await import('uuid');
+
+    if (!garmentIds?.length) {
+      throw new HttpErrors.BadRequest('Provide at least one garment to split.');
+    }
+
+    const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.DELIVERED) {
+      throw new HttpErrors.BadRequest(`Cannot split a ${order.status} order.`);
+    }
+
+    const garments = await this.garmentRepo.find({
+      where: {id: {inq: garmentIds}, isDeleted: false} as any,
+    });
+    if (garments.length !== garmentIds.length) {
+      throw new HttpErrors.BadRequest('One or more garments not found.');
+    }
+    const notReady = garments.filter(g => g.status !== GarmentStatus.READY);
+    if (notReady.length) {
+      throw new HttpErrors.BadRequest(
+        `Garments must be in 'ready' status to split. Not ready: ${notReady.map(g => g.garmentTagNumber).join(', ')}`,
+      );
+    }
+
+    // Validate garments belong to this order
+    const orderItemIds = [...new Set(garments.map(g => g.orderItemId))];
+    const parentOrderItems = await this.orderItemRepo.find({
+      where: {id: {inq: orderItemIds}, orderId} as any,
+    });
+    if (parentOrderItems.length !== orderItemIds.length) {
+      throw new HttpErrors.BadRequest('One or more garments do not belong to this order.');
+    }
+
+    // Group garments by orderItemId
+    const garmentsByItem = new Map<string, typeof garments>();
+    for (const g of garments) {
+      const list = garmentsByItem.get(g.orderItemId) ?? [];
+      list.push(g);
+      garmentsByItem.set(g.orderItemId, list);
+    }
+    const parentItemMap = new Map(parentOrderItems.map(oi => [oi.id, oi]));
+
+    // Calculate sub-order financials
+    let subOrderSubtotal = 0;
+    for (const [itemId, itemGarments] of garmentsByItem) {
+      subOrderSubtotal += Number(parentItemMap.get(itemId)!.unitPrice ?? 0) * itemGarments.length;
+    }
+    const originalSubtotal = Number(order.subtotal ?? 0) || 1;
+    const ratio = subOrderSubtotal / originalSubtotal;
+    const subOrderDiscount = parseFloat((Number(order.discountAmount ?? 0) * ratio).toFixed(2));
+    const subOrderTax = parseFloat((Number(order.taxAmount ?? 0) * ratio).toFixed(2));
+    const subOrderTotal = parseFloat((subOrderSubtotal - subOrderDiscount + subOrderTax).toFixed(2));
+
+    // Proportional payment allocation
+    const existingPayments = await this.paymentTransactionRepo.find({where: {orderId}});
+    const totalPaid = existingPayments.reduce((s, p) => s + Number(p.amount), 0);
+    const allocatedPayment = parseFloat((totalPaid * ratio).toFixed(2));
+
+    // Sub-order number: ORD000001-S1, ORD000001-S2, ...
+    const subOrderCount = await this.orderRepo.count({parentOrderId: orderId} as any);
+    const subOrderNumber = `${order.orderNumber}-S${subOrderCount.count + 1}`;
+
+    const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED' as any});
+    try {
+      const now = new Date();
+
+      const subOrder = await this.orderRepo.create(
+        {
+          orderNumber: subOrderNumber,
+          customerId: order.customerId,
+          storeId: order.storeId,
+          orderType: order.orderType,
+          status: OrderStatus.OUT_FOR_DELIVERY,
+          expressMultiplier: order.expressMultiplier,
+          deliveryType: order.deliveryType,
+          deliveryTypePercentage: order.deliveryTypePercentage,
+          customerContactId: order.customerContactId,
+          parentOrderId: order.id,
+          subtotal: subOrderSubtotal,
+          discountAmount: subOrderDiscount,
+          discountType: order.discountType,
+          taxAmount: subOrderTax,
+          totalAmount: subOrderTotal,
+          allocatedPayment,
+          remarks,
+        },
+        {transaction: tx},
+      );
+
+      const createdSubItems = [];
+      for (const [itemId, itemGarments] of garmentsByItem) {
+        const oi = parentItemMap.get(itemId)!;
+        const qty = itemGarments.length;
+        const subItemTotal = parseFloat((Number(oi.unitPrice ?? 0) * qty).toFixed(2));
+
+        const subOrderItem = await this.orderItemRepo.create(
+          {
+            orderId: subOrder.id,
+            serviceId: oi.serviceId,
+            itemId: oi.itemId,
+            quantity: qty,
+            basePrice: oi.basePrice,
+            priceSource: oi.priceSource,
+            appliedPercentage: oi.appliedPercentage,
+            resolvedPrice: oi.resolvedPrice,
+            unitPrice: oi.unitPrice,
+            totalPrice: subItemTotal,
+            additionalServiceIds: oi.additionalServiceIds,
+          },
+          {transaction: tx},
+        );
+        createdSubItems.push(subOrderItem);
+
+        for (const garment of itemGarments) {
+          await this.garmentRepo.updateById(
+            garment.id,
+            {orderItemId: subOrderItem.id, status: GarmentStatus.OUT_FOR_DELIVERY},
+            {transaction: tx},
+          );
+          await this.garmentStatusHistoryRepo.create(
+            {
+              id: v4(),
+              garmentId: garment.id,
+              status: GarmentStatus.OUT_FOR_DELIVERY,
+              changedAt: now,
+              changedBy: createdBy,
+              remarks: `Split from order ${order.orderNumber}`,
+            },
+            {transaction: tx},
+          );
+        }
+      }
+
+      // Mark parent as partially dispatched
+      await this.orderRepo.updateById(
+        orderId,
+        {status: OrderStatus.PARTIALLY_DISPATCHED},
+        {transaction: tx},
+      );
+      await this.statusHistoryRepo.create(
+        {
+          id: v4(),
+          orderId,
+          status: OrderStatus.PARTIALLY_DISPATCHED,
+          changedAt: now,
+          changedBy: createdBy,
+          remarks: `Split order created: ${subOrderNumber}`,
+        },
+        {transaction: tx},
+      );
+
+      await this.statusHistoryRepo.create(
+        {
+          id: v4(),
+          orderId: subOrder.id,
+          status: OrderStatus.OUT_FOR_DELIVERY,
+          changedAt: now,
+          changedBy: createdBy,
+          remarks: `Split from order ${order.orderNumber}`,
+        },
+        {transaction: tx},
+      );
+
+      await tx.commit();
+
+      return {
+        message: `Split order ${subOrderNumber} created successfully.`,
+        subOrder: {...subOrder, status: OrderStatus.OUT_FOR_DELIVERY},
+        subOrderItems: createdSubItems,
+        garmentsSplit: garments.length,
+        allocatedPayment,
+        balanceDue: Math.max(0, subOrderTotal - allocatedPayment),
+      };
+    } catch (err) {
+      await tx.rollback();
+      throw err;
+    }
+  }
+
   // ─── Add Payment to Existing Order ───────────────────────────────────────
 
   async addPayment(

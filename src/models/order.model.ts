@@ -54,6 +54,14 @@ export class Order extends Entity {
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   customerContactId?: string;
 
+  // For split sub-orders: UUID of the original parent order
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  parentOrderId?: string;
+
+  // For split sub-orders: payment amount allocated from the parent order proportionally
+  @property({type: 'number', default: 0, postgresql: {dataType: 'numeric'}})
+  allocatedPayment?: number;
+
   // Calculated by backend: createdAt + ceil(maxEstimatedDurationInDays / expressMultiplier)
   @property({type: 'date'})
   deliveryDate?: Date;
