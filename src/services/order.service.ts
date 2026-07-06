@@ -1008,10 +1008,14 @@ export class OrderService {
     if (garments.length !== garmentIds.length) {
       throw new HttpErrors.BadRequest('One or more garments not found.');
     }
-    const notReady = garments.filter(g => g.status !== GarmentStatus.READY);
-    if (notReady.length) {
+    // Reject only garments that are already dispatched or delivered
+    const nonSplittable = garments.filter(g =>
+      g.status === GarmentStatus.OUT_FOR_DELIVERY ||
+      g.status === GarmentStatus.DELIVERED,
+    );
+    if (nonSplittable.length) {
       throw new HttpErrors.BadRequest(
-        `Garments must be in 'ready' status to split. Not ready: ${notReady.map(g => g.garmentTagNumber).join(', ')}`,
+        `Cannot split garments already dispatched or delivered: ${nonSplittable.map(g => g.garmentTagNumber).join(', ')}`,
       );
     }
 
