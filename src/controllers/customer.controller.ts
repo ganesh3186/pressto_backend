@@ -311,7 +311,8 @@ export class CustomerController {
               lastName: { type: 'string' },
               dateOfBirth: { type: 'string', format: 'date' },
               customerEntityType: { type: 'string', enum: ['individual', 'business'] },
-              customerTypeId: { type: 'string', format: 'uuid' },
+              // customerTypeId: { type: 'string', format: 'uuid' },
+              customerLabelId: { type: 'string', format: 'uuid' },
               customerGroupId: { type: 'string', format: 'uuid' },
               gstNumber: { type: 'string' },
               companyName: { type: 'string' },
@@ -339,7 +340,8 @@ export class CustomerController {
       lastName?: string;
       dateOfBirth?: string;
       customerEntityType?: 'individual' | 'business';
-      customerTypeId?: string;
+      // customerTypeId?: string;
+      customerLabelId?: string;
       customerGroupId?: string;
       gstNumber?: string;
       companyName?: string;
@@ -362,7 +364,7 @@ export class CustomerController {
 
     const userKeys = ['fullName', 'email', 'countryCode', 'phone', 'isActive'];
     const customerKeys = [
-      'firstName', 'lastName', 'customerEntityType', 'customerTypeId', 'customerGroupId',
+      'firstName', 'lastName', 'customerEntityType', 'customerLabelId', 'customerGroupId',
       'gstNumber', 'companyName', 'loyaltyPoints', 'defaultDiscountType',
       'defaultDiscountValue', 'preferredStoreId', 'sensitivityScore', 'notes',
       'statusChangeRemark',
