@@ -26,6 +26,7 @@ import { CustomerAddressService } from './services/customer-address.service';
 import { CustomerContactService } from './services/customer-contact.service';
 import { CustomerPhoneService } from './services/customer-phone.service';
 import { OrderService } from './services/order.service';
+import { ProcessService } from './services/process.service';
 
 export { ApplicationConfig };
 
@@ -80,6 +81,7 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.customer-contact').toClass(CustomerContactService);
     this.bind('services.customer-phone').toClass(CustomerPhoneService);
     this.bind('services.order').toClass(OrderService);
+    this.bind('services.process').toClass(ProcessService);
   }
 
   protected configureFileUpload(destination?: string) {

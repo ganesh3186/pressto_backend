@@ -60,3 +60,4 @@ export * from './garment-stain-image.repository';
 export * from './garment-image.repository';
 export * from './garment-status-history.repository';
 export * from './payment-transaction.repository';
+export * from './garment-process-log.repository';

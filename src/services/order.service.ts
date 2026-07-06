@@ -830,6 +830,7 @@ export class OrderService {
               sensitivityScore: customer.sensitivityScore ?? null,
               phone: user?.phone ?? null,
               countryCode: user?.countryCode ?? null,
+              customerEntityType: customer.customerEntityType
             }
           : null,
       };

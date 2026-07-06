@@ -1,6 +1,6 @@
-import {authenticate} from '@loopback/authentication';
-import {inject} from '@loopback/core';
-import {Filter, FilterExcludingWhere, IsolationLevel, repository} from '@loopback/repository';
+import { authenticate } from '@loopback/authentication';
+import { inject } from '@loopback/core';
+import { Filter, FilterExcludingWhere, IsolationLevel, repository } from '@loopback/repository';
 import {
   get,
   getModelSchemaRef,
@@ -11,9 +11,9 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
-import {authorize} from '../authorization';
-import {PresstoDataSource} from '../datasources';
-import {Customer} from '../models';
+import { authorize } from '../authorization';
+import { PresstoDataSource } from '../datasources';
+import { Customer } from '../models';
 import {
   CustomerRepository,
   CustomerSecurityDepositRepository,
@@ -22,9 +22,9 @@ import {
   UsersRepository,
   WalletRepository,
 } from '../repositories';
-import {BcryptHasher} from '../services/hash.password.bcrypt';
-import {SecurityDepositService} from '../services/security-deposit.service';
-import {WalletService} from '../services/wallet.service';
+import { BcryptHasher } from '../services/hash.password.bcrypt';
+import { SecurityDepositService } from '../services/security-deposit.service';
+import { WalletService } from '../services/wallet.service';
 
 export class CustomerController {
   constructor(
@@ -48,7 +48,7 @@ export class CustomerController {
     private walletService: WalletService,
     @inject('services.security-deposit')
     private securityDepositService: SecurityDepositService,
-  ) {}
+  ) { }
 
   private async generateUniqueUsername(email: string | undefined, fullName: string): Promise<string> {
     const base = email
@@ -56,7 +56,7 @@ export class CustomerController {
       : fullName.trim().toLowerCase().replace(/\s+/g, '.');
     let username = base;
     for (let attempt = 0; attempt < 10; attempt++) {
-      const existing = await this.usersRepository.findOne({where: {username}});
+      const existing = await this.usersRepository.findOne({ where: { username } });
       if (!existing) return username;
       username = `${base}${Math.floor(1000 + Math.random() * 9000)}`;
     }
@@ -66,7 +66,7 @@ export class CustomerController {
   private async generateCustomerCode(): Promise<string> {
     const lastCustomer = await this.customerRepository.findOne({
       order: ['createdAt DESC'],
-      fields: {customerCode: true},
+      fields: { customerCode: true },
     });
     if (!lastCustomer?.customerCode) {
       return 'CUST0001';
@@ -77,9 +77,9 @@ export class CustomerController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @post('/customers')
-  @response(200, {description: 'Customer created'})
+  @response(200, { description: 'Customer created' })
   async create(
     @requestBody({
       content: {
@@ -88,24 +88,25 @@ export class CustomerController {
             type: 'object',
             required: ['firstName', 'lastName', 'countryCode', 'phone', 'roleValues'],
             properties: {
-              firstName: {type: 'string'},
-              lastName: {type: 'string'},
-              countryCode: {type: 'string', default: '+91'},
-              phone: {type: 'string'},
-              roleValues: {type: 'array', items: {type: 'string'}},
-              email: {type: 'string', format: 'email'},
-              password: {type: 'string', minLength: 6},
-              customerEntityType: {type: 'string', enum: ['individual', 'business']},
-              customerTypeId: {type: 'string', format: 'uuid'},
-              customerGroupId: {type: 'string', format: 'uuid'},
-              gstNumber: {type: 'string'},
-              companyName: {type: 'string'},
-              dateOfBirth: {type: 'string', format: 'date'},
-              preferredStoreId: {type: 'string', format: 'uuid'},
-              sensitivityScore: {type: 'number'},
-              notes: {type: 'string'},
-              defaultDiscountType: {type: 'string'},
-              defaultDiscountValue: {type: 'number'},
+              firstName: { type: 'string' },
+              lastName: { type: 'string' },
+              countryCode: { type: 'string', default: '+91' },
+              phone: { type: 'string' },
+              roleValues: { type: 'array', items: { type: 'string' } },
+              email: { type: 'string', format: 'email' },
+              password: { type: 'string', minLength: 6 },
+              customerEntityType: { type: 'string', enum: ['individual', 'business'] },
+              // customerTypeId: {type: 'string', format: 'uuid'},
+              customerLabelId: { type: 'string', format: 'uuid' },
+              customerGroupId: { type: 'string', format: 'uuid' },
+              gstNumber: { type: 'string' },
+              companyName: { type: 'string' },
+              dateOfBirth: { type: 'string', format: 'date' },
+              preferredStoreId: { type: 'string', format: 'uuid' },
+              sensitivityScore: { type: 'number' },
+              notes: { type: 'string' },
+              defaultDiscountType: { type: 'string' },
+              defaultDiscountValue: { type: 'number' },
             },
           },
         },
@@ -120,7 +121,8 @@ export class CustomerController {
       email?: string;
       password?: string;
       customerEntityType?: 'individual' | 'business';
-      customerTypeId: string;
+      // customerTypeId: string;
+      customerLabelId: string;
       customerGroupId: string;
       gstNumber?: string;
       companyName?: string;
@@ -133,16 +135,16 @@ export class CustomerController {
     },
   ): Promise<object> {
     // Check uniqueness
-    const orConditions: object[] = [{phone: body.phone}];
-    if (body.email) orConditions.push({email: body.email});
-    const existingUser = await this.usersRepository.findOne({where: {or: orConditions}});
+    const orConditions: object[] = [{ phone: body.phone }];
+    if (body.email) orConditions.push({ email: body.email });
+    const existingUser = await this.usersRepository.findOne({ where: { or: orConditions } });
     if (existingUser) {
       throw new HttpErrors.BadRequest('Email or phone already in use.');
     }
 
     const roles = await Promise.all(
       body.roleValues.map(async v => {
-        const role = await this.rolesRepository.findOne({where: {value: v}});
+        const role = await this.rolesRepository.findOne({ where: { value: v } });
         if (!role) throw new HttpErrors.BadRequest(`Role not found: ${v}`);
         return role;
       }),
@@ -159,13 +161,13 @@ export class CustomerController {
         {
           fullName: `${body.firstName} ${body.lastName}`,
           username,
-          ...(body.email && {email: body.email}),
+          ...(body.email && { email: body.email }),
           countryCode: body.countryCode || '+91',
           phone: body.phone,
           password: hashedPassword,
           isActive: true,
         },
-        {transaction: tx},
+        { transaction: tx },
       );
 
       const customer = await this.customerRepository.create(
@@ -174,10 +176,10 @@ export class CustomerController {
           customerCode,
           firstName: body.firstName,
           lastName: body.lastName,
-          ...(body.email && {email: body.email}),
+          ...(body.email && { email: body.email }),
           dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : undefined,
           customerEntityType: body.customerEntityType ?? 'individual',
-          customerTypeId: body.customerTypeId,
+          customerLabelId: body.customerLabelId,
           customerGroupId: body.customerGroupId,
           gstNumber: body.gstNumber,
           companyName: body.companyName,
@@ -187,24 +189,24 @@ export class CustomerController {
           defaultDiscountType: body.defaultDiscountType,
           defaultDiscountValue: body.defaultDiscountValue,
         },
-        {transaction: tx},
+        { transaction: tx },
       );
 
       for (const role of roles) {
         await this.userRolesRepository.create(
-          {usersId: user.id, rolesId: role.id},
-          {transaction: tx},
+          { usersId: user.id, rolesId: role.id },
+          { transaction: tx },
         );
       }
 
-      await this.walletService.createWallet(customer.id, {transaction: tx});
-      await this.securityDepositService.createDeposit(customer.id, {transaction: tx});
+      await this.walletService.createWallet(customer.id, { transaction: tx });
+      await this.securityDepositService.createDeposit(customer.id, { transaction: tx });
 
       await tx.commit();
 
       return {
         message: 'Customer created successfully',
-        customer: {...customer, user: {...user, password: undefined}},
+        customer: { ...customer, user: { ...user, password: undefined } },
         assignedRoles: body.roleValues,
       };
     } catch (error) {
@@ -214,7 +216,7 @@ export class CustomerController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/customers')
   @response(200, {
     description: 'Array of Customer model instances',
@@ -222,7 +224,7 @@ export class CustomerController {
       'application/json': {
         schema: {
           type: 'array',
-          items: getModelSchemaRef(Customer, {includeRelations: true}),
+          items: getModelSchemaRef(Customer, { includeRelations: true }),
         },
       },
     },
@@ -230,34 +232,40 @@ export class CustomerController {
   async find(@param.filter(Customer) filter?: Filter<Customer>): Promise<Customer[]> {
     return this.customerRepository.find({
       ...filter,
-      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      where: { and: [{ isDeleted: false }, filter?.where ?? {}] },
       order: ['createdAt DESC'],
       include: [
         {
           relation: 'user',
           scope: {
-            fields: {id: true, fullName: true, email: true, countryCode: true, phone: true, username: true, isActive: true},
-            include: [{relation: 'roles'}],
+            fields: { id: true, fullName: true, email: true, countryCode: true, phone: true, username: true, isActive: true },
+            include: [{ relation: 'roles' }],
           },
         },
+        {
+          relation: 'customerLabel',
+          scope: {
+            fields: { id: true, name: true },
+          },
+        }
       ],
     });
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @get('/customers/{id}')
   @response(200, {
     description: 'Customer model instance',
     content: {
       'application/json': {
-        schema: getModelSchemaRef(Customer, {includeRelations: true}),
+        schema: getModelSchemaRef(Customer, { includeRelations: true }),
       },
     },
   })
   async findById(
     @param.path.string('id') id: string,
-    @param.filter(Customer, {exclude: 'where'}) filter?: FilterExcludingWhere<Customer>,
+    @param.filter(Customer, { exclude: 'where' }) filter?: FilterExcludingWhere<Customer>,
   ): Promise<object> {
     const customer = await this.customerRepository.findById(id, {
       ...filter,
@@ -265,25 +273,25 @@ export class CustomerController {
         {
           relation: 'user',
           scope: {
-            fields: {id: true, fullName: true, email: true, countryCode: true, phone: true, username: true, isActive: true},
-            include: [{relation: 'roles'}],
+            fields: { id: true, fullName: true, email: true, countryCode: true, phone: true, username: true, isActive: true },
+            include: [{ relation: 'roles' }],
           },
         },
       ],
     });
 
     const [wallet, securityDeposit] = await Promise.all([
-      this.walletRepository.findOne({where: {customerId: id}}),
-      this.customerSecurityDepositRepository.findOne({where: {customerId: id}}),
+      this.walletRepository.findOne({ where: { customerId: id } }),
+      this.customerSecurityDepositRepository.findOne({ where: { customerId: id } }),
     ]);
 
-    return {...customer, wallet, securityDeposit};
+    return { ...customer, wallet, securityDeposit };
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({ roles: ['super_admin'] })
   @patch('/customers/{id}')
-  @response(200, {description: 'Customer updated'})
+  @response(200, { description: 'Customer updated' })
   async updateById(
     @param.path.string('id') id: string,
     @requestBody({
@@ -293,29 +301,29 @@ export class CustomerController {
             type: 'object',
             properties: {
               // user fields
-              fullName: {type: 'string'},
-              email: {type: 'string', format: 'email'},
-              countryCode: {type: 'string'},
-              phone: {type: 'string'},
-              isActive: {type: 'boolean'},
+              fullName: { type: 'string' },
+              email: { type: 'string', format: 'email' },
+              countryCode: { type: 'string' },
+              phone: { type: 'string' },
+              isActive: { type: 'boolean' },
               // customer fields
-              firstName: {type: 'string'},
-              lastName: {type: 'string'},
-              dateOfBirth: {type: 'string', format: 'date'},
-              customerEntityType: {type: 'string', enum: ['individual', 'business']},
-              customerTypeId: {type: 'string', format: 'uuid'},
-              customerGroupId: {type: 'string', format: 'uuid'},
-              gstNumber: {type: 'string'},
-              companyName: {type: 'string'},
-              loyaltyPoints: {type: 'number'},
-              defaultDiscountType: {type: 'string'},
-              defaultDiscountValue: {type: 'number'},
-              preferredStoreId: {type: 'string', format: 'uuid'},
-              sensitivityScore: {type: 'number'},
-              notes: {type: 'string'},
-              statusChangeRemark: {type: 'string'},
+              firstName: { type: 'string' },
+              lastName: { type: 'string' },
+              dateOfBirth: { type: 'string', format: 'date' },
+              customerEntityType: { type: 'string', enum: ['individual', 'business'] },
+              customerTypeId: { type: 'string', format: 'uuid' },
+              customerGroupId: { type: 'string', format: 'uuid' },
+              gstNumber: { type: 'string' },
+              companyName: { type: 'string' },
+              loyaltyPoints: { type: 'number' },
+              defaultDiscountType: { type: 'string' },
+              defaultDiscountValue: { type: 'number' },
+              preferredStoreId: { type: 'string', format: 'uuid' },
+              sensitivityScore: { type: 'number' },
+              notes: { type: 'string' },
+              statusChangeRemark: { type: 'string' },
               // role management
-              roleValues: {type: 'array', items: {type: 'string'}},
+              roleValues: { type: 'array', items: { type: 'string' } },
             },
           },
         },
@@ -347,7 +355,7 @@ export class CustomerController {
   ): Promise<void> {
     const customer = await this.customerRepository.findById(id);
 
-    const {roleValues, ...rest} = body;
+    const { roleValues, ...rest } = body;
 
     const userFields: Record<string, unknown> = {};
     const customerFields: Record<string, unknown> = {};
@@ -372,29 +380,29 @@ export class CustomerController {
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
       if (Object.keys(userFields).length > 0) {
-        await this.usersRepository.updateById(customer.userId, userFields, {transaction: tx});
+        await this.usersRepository.updateById(customer.userId, userFields, { transaction: tx });
       }
 
       if (Object.keys(customerFields).length > 0) {
-        await this.customerRepository.updateById(id, customerFields, {transaction: tx});
+        await this.customerRepository.updateById(id, customerFields, { transaction: tx });
       }
 
       if (roleValues?.length) {
         const roles = await Promise.all(
           roleValues.map(async v => {
-            const role = await this.rolesRepository.findOne({where: {value: v}});
+            const role = await this.rolesRepository.findOne({ where: { value: v } });
             if (!role) throw new HttpErrors.BadRequest(`Role not found: ${v}`);
             return role;
           }),
         );
         await this.userRolesRepository.deleteAll(
-          {usersId: customer.userId},
-          {transaction: tx},
+          { usersId: customer.userId },
+          { transaction: tx },
         );
         for (const role of roles) {
           await this.userRolesRepository.create(
-            {usersId: customer.userId, rolesId: role.id},
-            {transaction: tx},
+            { usersId: customer.userId, rolesId: role.id },
+            { transaction: tx },
           );
         }
       }

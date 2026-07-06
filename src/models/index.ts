@@ -75,3 +75,5 @@ export * from './garment-stain-image.model';
 export * from './garment-image.model';
 export * from './garment-status-history.model';
 export * from './payment-transaction.model';
+export * from './process-log-status.enum';
+export * from './garment-process-log.model';
