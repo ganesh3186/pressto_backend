@@ -1057,6 +1057,28 @@ export class OrderService {
     const subOrderCount = await this.orderRepo.count({parentOrderId: orderId} as any);
     const subOrderNumber = `${order.orderNumber}-S${subOrderCount.count + 1}`;
 
+    // Derive sub-order status from the earliest garment status in the split set
+    const GARMENT_STATUS_PRIORITY: GarmentStatus[] = [
+      GarmentStatus.RECEIVED,
+      GarmentStatus.IN_INSPECTION,
+      GarmentStatus.IN_PROCESS,
+      GarmentStatus.QUALITY_CHECK,
+      GarmentStatus.READY,
+    ];
+    const GARMENT_TO_ORDER_STATUS: Partial<Record<GarmentStatus, OrderStatus>> = {
+      [GarmentStatus.RECEIVED]: OrderStatus.RECEIVED_AT_STORE,
+      [GarmentStatus.IN_INSPECTION]: OrderStatus.IN_INSPECTION,
+      [GarmentStatus.IN_PROCESS]: OrderStatus.IN_PROCESS,
+      [GarmentStatus.QUALITY_CHECK]: OrderStatus.QUALITY_CHECK,
+      [GarmentStatus.READY]: OrderStatus.READY,
+    };
+    const earliestGarmentStatus = garments.reduce((min, g) => {
+      const minIdx = GARMENT_STATUS_PRIORITY.indexOf(min);
+      const gIdx = GARMENT_STATUS_PRIORITY.indexOf(g.status as GarmentStatus);
+      return gIdx !== -1 && (minIdx === -1 || gIdx < minIdx) ? g.status as GarmentStatus : min;
+    }, garments[0].status as GarmentStatus);
+    const subOrderStatus = GARMENT_TO_ORDER_STATUS[earliestGarmentStatus] ?? OrderStatus.RECEIVED_AT_STORE;
+
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED' as any});
     try {
       const now = new Date();
@@ -1067,7 +1089,7 @@ export class OrderService {
           customerId: order.customerId,
           storeId: order.storeId,
           orderType: order.orderType,
-          status: OrderStatus.OUT_FOR_DELIVERY,
+          status: subOrderStatus,
           expressMultiplier: order.expressMultiplier,
           deliveryType: order.deliveryType,
           deliveryTypePercentage: order.deliveryTypePercentage,
@@ -1109,20 +1131,10 @@ export class OrderService {
         createdSubItems.push(subOrderItem);
 
         for (const garment of itemGarments) {
+          // Re-parent to sub-order item; garment status stays as-is
           await this.garmentRepo.updateById(
             garment.id,
-            {orderItemId: subOrderItem.id, status: GarmentStatus.OUT_FOR_DELIVERY},
-            {transaction: tx},
-          );
-          await this.garmentStatusHistoryRepo.create(
-            {
-              id: v4(),
-              garmentId: garment.id,
-              status: GarmentStatus.OUT_FOR_DELIVERY,
-              changedAt: now,
-              changedBy: createdBy,
-              remarks: `Split from order ${order.orderNumber}`,
-            },
+            {orderItemId: subOrderItem.id},
             {transaction: tx},
           );
         }
@@ -1150,7 +1162,7 @@ export class OrderService {
         {
           id: v4(),
           orderId: subOrder.id,
-          status: OrderStatus.OUT_FOR_DELIVERY,
+          status: subOrderStatus,
           changedAt: now,
           changedBy: createdBy,
           remarks: `Split from order ${order.orderNumber}`,
@@ -1162,7 +1174,7 @@ export class OrderService {
 
       return {
         message: `Split order ${subOrderNumber} created successfully.`,
-        subOrder: {...subOrder, status: OrderStatus.OUT_FOR_DELIVERY},
+        subOrder: {...subOrder, status: subOrderStatus},
         subOrderItems: createdSubItems,
         garmentsSplit: garments.length,
         allocatedPayment,
