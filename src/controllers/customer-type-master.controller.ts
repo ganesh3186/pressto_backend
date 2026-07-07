@@ -47,8 +47,11 @@ export class CustomerTypeMasterController {
     })
     customerTypeMaster: Omit<CustomerTypeMaster, 'id'>,
   ): Promise<CustomerTypeMaster> {
+    customerTypeMaster.name = (customerTypeMaster.name as string).trim();
     const existing = await this.customerTypeMasterRepository.findOne({where: {value: customerTypeMaster.value, isDeleted: false}});
     if (existing) throw new HttpErrors.Conflict(`A customer type with value "${customerTypeMaster.value}" already exists.`);
+    const duplicate = await this.customerTypeMasterRepository.findOne({where: {name: {ilike: customerTypeMaster.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A customer type with name "${customerTypeMaster.name}" already exists.`);
     return this.customerTypeMasterRepository.create(customerTypeMaster);
   }
 
@@ -140,6 +143,11 @@ export class CustomerTypeMasterController {
     })
     customerTypeMaster: Partial<CustomerTypeMaster>,
   ): Promise<void> {
+    if (customerTypeMaster.name) {
+      customerTypeMaster.name = (customerTypeMaster.name as string).trim();
+      const duplicate = await this.customerTypeMasterRepository.findOne({where: {name: {ilike: customerTypeMaster.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A customer type with name "${customerTypeMaster.name}" already exists.`);
+    }
     await this.customerTypeMasterRepository.updateById(id, customerTypeMaster);
   }
 

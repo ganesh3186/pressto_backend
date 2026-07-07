@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -56,6 +57,9 @@ export class ItemCategoryController {
       const match = cat.code?.match(/^ICAT(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    itemCategory.name = (itemCategory.name as string).trim();
+    const duplicate = await this.itemCategoryRepository.findOne({where: {name: {ilike: itemCategory.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`An item category with name "${itemCategory.name}" already exists.`);
     itemCategory.code = `ICAT${String(maxNum + 1).padStart(3, '0')}`;
     const newItemCategory = await this.itemCategoryRepository.create(itemCategory);
     if (newItemCategory.mediaId) {
@@ -164,6 +168,11 @@ export class ItemCategoryController {
     })
     itemCategory: Partial<ItemCategory>,
   ): Promise<void> {
+    if (itemCategory.name) {
+      itemCategory.name = (itemCategory.name as string).trim();
+      const duplicate = await this.itemCategoryRepository.findOne({where: {name: {ilike: itemCategory.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`An item category with name "${itemCategory.name}" already exists.`);
+    }
     const oldItemCategory = await this.itemCategoryRepository.findById(id);
     await this.itemCategoryRepository.updateById(id, itemCategory);
     if (itemCategory.mediaId && oldItemCategory.mediaId !== itemCategory.mediaId) {

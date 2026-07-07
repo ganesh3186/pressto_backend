@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -52,6 +53,9 @@ export class RegionController {
       const match = r.code?.match(/^REG(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    region.name = (region.name as string).trim();
+    const duplicate = await this.regionRepository.findOne({where: {name: {ilike: region.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A region with name "${region.name}" already exists.`);
     region.code = `REG${String(maxNum + 1).padStart(3, '0')}`;
     return this.regionRepository.create(region);
   }
@@ -140,6 +144,11 @@ export class RegionController {
     })
     region: Partial<Region>,
   ): Promise<void> {
+    if (region.name) {
+      region.name = (region.name as string).trim();
+      const duplicate = await this.regionRepository.findOne({where: {name: {ilike: region.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A region with name "${region.name}" already exists.`);
+    }
     await this.regionRepository.updateById(id, region);
   }
 

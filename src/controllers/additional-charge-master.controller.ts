@@ -48,7 +48,8 @@ export class AdditionalChargeMasterController {
     })
     additionalChargeMaster: Omit<AdditionalChargeMaster, 'id'>,
   ): Promise<AdditionalChargeMaster> {
-    const existing = await this.additionalChargeMasterRepository.findOne({where: {name: additionalChargeMaster.name, isDeleted: false}});
+    additionalChargeMaster.name = (additionalChargeMaster.name as string).trim();
+    const existing = await this.additionalChargeMasterRepository.findOne({where: {name: {ilike: additionalChargeMaster.name}, isDeleted: false}});
     if (existing) throw new HttpErrors.Conflict(`An additional charge with name "${additionalChargeMaster.name}" already exists.`);
     const all = await this.additionalChargeMasterRepository.find({fields: {code: true}});
     let maxNum = 0;
@@ -148,6 +149,11 @@ export class AdditionalChargeMasterController {
     })
     additionalChargeMaster: Partial<AdditionalChargeMaster>,
   ): Promise<void> {
+    if (additionalChargeMaster.name) {
+      additionalChargeMaster.name = (additionalChargeMaster.name as string).trim();
+      const duplicate = await this.additionalChargeMasterRepository.findOne({where: {name: {ilike: additionalChargeMaster.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`An additional charge with name "${additionalChargeMaster.name}" already exists.`);
+    }
     await this.additionalChargeMasterRepository.updateById(id, additionalChargeMaster);
   }
 

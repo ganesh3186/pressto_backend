@@ -47,8 +47,11 @@ export class OrderLabelController {
     })
     orderLabel: Omit<OrderLabel, 'id'>,
   ): Promise<OrderLabel> {
+    orderLabel.name = (orderLabel.name as string).trim();
     const existing = await this.orderLabelRepository.findOne({where: {code: orderLabel.code, isDeleted: false}});
     if (existing) throw new HttpErrors.Conflict(`An order label with code "${orderLabel.code}" already exists.`);
+    const duplicate = await this.orderLabelRepository.findOne({where: {name: {ilike: orderLabel.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`An order label with name "${orderLabel.name}" already exists.`);
     return this.orderLabelRepository.create(orderLabel);
   }
 
@@ -140,6 +143,11 @@ export class OrderLabelController {
     })
     orderLabel: Partial<OrderLabel>,
   ): Promise<void> {
+    if (orderLabel.name) {
+      orderLabel.name = (orderLabel.name as string).trim();
+      const duplicate = await this.orderLabelRepository.findOne({where: {name: {ilike: orderLabel.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`An order label with name "${orderLabel.name}" already exists.`);
+    }
     await this.orderLabelRepository.updateById(id, orderLabel);
   }
 

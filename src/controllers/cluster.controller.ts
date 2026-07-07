@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -52,6 +53,9 @@ export class ClusterController {
       const match = c.code?.match(/^CLS(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    cluster.name = (cluster.name as string).trim();
+    const duplicate = await this.clusterRepository.findOne({where: {name: {ilike: cluster.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A cluster with name "${cluster.name}" already exists.`);
     cluster.code = `CLS${String(maxNum + 1).padStart(3, '0')}`;
     return this.clusterRepository.create(cluster);
   }
@@ -150,6 +154,11 @@ export class ClusterController {
     })
     cluster: Partial<Cluster>,
   ): Promise<void> {
+    if (cluster.name) {
+      cluster.name = (cluster.name as string).trim();
+      const duplicate = await this.clusterRepository.findOne({where: {name: {ilike: cluster.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A cluster with name "${cluster.name}" already exists.`);
+    }
     await this.clusterRepository.updateById(id, cluster);
   }
 

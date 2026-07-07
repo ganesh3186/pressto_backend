@@ -11,6 +11,7 @@ import {
   del,
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -54,6 +55,9 @@ export class StainController {
       const match = s.code?.match(/^STN(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    stain.name = (stain.name as string).trim();
+    const duplicate = await this.stainRepository.findOne({where: {name: {ilike: stain.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A stain with name "${stain.name}" already exists.`);
     stain.code = `STN${String(maxNum + 1).padStart(3, '0')}`;
     return this.stainRepository.create(stain);
   }
@@ -140,6 +144,11 @@ export class StainController {
     })
     stain: Stain,
   ): Promise<void> {
+    if (stain.name) {
+      stain.name = (stain.name as string).trim();
+      const duplicate = await this.stainRepository.findOne({where: {name: {ilike: stain.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A stain with name "${stain.name}" already exists.`);
+    }
     await this.stainRepository.updateById(id, stain);
   }
 

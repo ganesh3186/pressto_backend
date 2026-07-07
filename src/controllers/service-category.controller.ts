@@ -11,6 +11,7 @@ import {
   param,
   get,
   getModelSchemaRef,
+  HttpErrors,
   patch,
   requestBody,
   response,
@@ -52,6 +53,9 @@ export class ServiceCategoryController {
       const match = cat.code?.match(/^SCAT(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    serviceCategory.name = (serviceCategory.name as string).trim();
+    const duplicate = await this.serviceCategoryRepository.findOne({where: {name: {ilike: serviceCategory.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A service category with name "${serviceCategory.name}" already exists.`);
     serviceCategory.code = `SCAT${String(maxNum + 1).padStart(3, '0')}`;
     return this.serviceCategoryRepository.create(serviceCategory);
   }
@@ -145,6 +149,11 @@ export class ServiceCategoryController {
     })
     serviceCategory: ServiceCategory,
   ): Promise<void> {
+    if (serviceCategory.name) {
+      serviceCategory.name = (serviceCategory.name as string).trim();
+      const duplicate = await this.serviceCategoryRepository.findOne({where: {name: {ilike: serviceCategory.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A service category with name "${serviceCategory.name}" already exists.`);
+    }
     await this.serviceCategoryRepository.updateById(id, serviceCategory);
   }
 

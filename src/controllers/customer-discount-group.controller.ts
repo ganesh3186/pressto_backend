@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -52,6 +53,9 @@ export class CustomerDiscountGroupController {
       const match = g.code?.match(/^CDG(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    customerDiscountGroup.name = (customerDiscountGroup.name as string).trim();
+    const duplicate = await this.customerDiscountGroupRepository.findOne({where: {name: {ilike: customerDiscountGroup.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A customer discount group with name "${customerDiscountGroup.name}" already exists.`);
     customerDiscountGroup.code = `CDG${String(maxNum + 1).padStart(3, '0')}`;
     return this.customerDiscountGroupRepository.create(customerDiscountGroup);
   }
@@ -144,6 +148,11 @@ export class CustomerDiscountGroupController {
     })
     customerDiscountGroup: Partial<CustomerDiscountGroup>,
   ): Promise<void> {
+    if (customerDiscountGroup.name) {
+      customerDiscountGroup.name = (customerDiscountGroup.name as string).trim();
+      const duplicate = await this.customerDiscountGroupRepository.findOne({where: {name: {ilike: customerDiscountGroup.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A customer discount group with name "${customerDiscountGroup.name}" already exists.`);
+    }
     await this.customerDiscountGroupRepository.updateById(id, customerDiscountGroup);
   }
 

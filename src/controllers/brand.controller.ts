@@ -11,6 +11,7 @@ import {
   del,
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -54,6 +55,9 @@ export class BrandController {
       const match = b.code?.match(/^BRD(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    brand.name = (brand.name as string).trim();
+    const duplicate = await this.brandRepository.findOne({where: {name: {ilike: brand.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A brand with name "${brand.name}" already exists.`);
     brand.code = `BRD${String(maxNum + 1).padStart(3, '0')}`;
     return this.brandRepository.create(brand);
   }
@@ -140,6 +144,11 @@ export class BrandController {
     })
     brand: Brand,
   ): Promise<void> {
+    if (brand.name) {
+      brand.name = (brand.name as string).trim();
+      const duplicate = await this.brandRepository.findOne({where: {name: {ilike: brand.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A brand with name "${brand.name}" already exists.`);
+    }
     await this.brandRepository.updateById(id, brand);
   }
 

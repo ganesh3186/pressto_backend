@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -56,6 +57,9 @@ export class ItemController {
       const match = it.code?.match(/^ITEM(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    item.name = (item.name as string).trim();
+    const duplicate = await this.itemRepository.findOne({where: {name: {ilike: item.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`An item with name "${item.name}" already exists.`);
     item.code = `ITEM${String(maxNum + 1).padStart(3, '0')}`;
     const newItem = await this.itemRepository.create(item);
     if (newItem.mediaId) {
@@ -157,6 +161,11 @@ export class ItemController {
     })
     item: Partial<Item>,
   ): Promise<void> {
+    if (item.name) {
+      item.name = (item.name as string).trim();
+      const duplicate = await this.itemRepository.findOne({where: {name: {ilike: item.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`An item with name "${item.name}" already exists.`);
+    }
     const oldItem = await this.itemRepository.findById(id);
     await this.itemRepository.updateById(id, item);
     if (item.mediaId && oldItem.mediaId !== item.mediaId) {

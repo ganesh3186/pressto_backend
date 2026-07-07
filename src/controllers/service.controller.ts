@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -56,6 +57,9 @@ export class ServiceController {
       const match = s.code?.match(/^SRV(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    service.name = (service.name as string).trim();
+    const duplicate = await this.serviceRepository.findOne({where: {name: {ilike: service.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A service with name "${service.name}" already exists.`);
     service.code = `SRV${String(maxNum + 1).padStart(3, '0')}`;
     const newService = await this.serviceRepository.create(service);
     if (newService.mediaId) {
@@ -163,6 +167,11 @@ export class ServiceController {
     })
     service: Partial<Service>,
   ): Promise<void> {
+    if (service.name) {
+      service.name = (service.name as string).trim();
+      const duplicate = await this.serviceRepository.findOne({where: {name: {ilike: service.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A service with name "${service.name}" already exists.`);
+    }
     const oldService = await this.serviceRepository.findById(id);
     await this.serviceRepository.updateById(id, service);
     if (service.mediaId && oldService.mediaId !== service.mediaId) {

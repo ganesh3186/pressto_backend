@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -63,6 +64,9 @@ export class PriceListController {
       .reduce((m, n) => Math.max(m, n), 0);
     const code = `RPL${String(maxNum + 1).padStart(3, '0')}`;
 
+    body.name = (body.name as string).trim();
+    const duplicate = await this.priceListRepository.findOne({where: {name: {ilike: body.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A price list with name "${body.name}" already exists.`);
     const priceList = await this.priceListRepository.create({...body, code});
     return this.priceListRepository.findById(priceList.id, {
       include: [{relation: 'region'}],
@@ -139,6 +143,11 @@ export class PriceListController {
     })
     priceList: Partial<PriceList>,
   ): Promise<void> {
+    if (priceList.name) {
+      priceList.name = (priceList.name as string).trim();
+      const duplicate = await this.priceListRepository.findOne({where: {name: {ilike: priceList.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A price list with name "${priceList.name}" already exists.`);
+    }
     await this.priceListRepository.updateById(id, priceList);
   }
 }

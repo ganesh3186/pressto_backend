@@ -11,6 +11,7 @@ import {
   del,
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -54,6 +55,9 @@ export class DamageTypeController {
       const match = d.code?.match(/^DMG(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    damageType.name = (damageType.name as string).trim();
+    const duplicate = await this.damageTypeRepository.findOne({where: {name: {ilike: damageType.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A damage type with name "${damageType.name}" already exists.`);
     damageType.code = `DMG${String(maxNum + 1).padStart(3, '0')}`;
     return this.damageTypeRepository.create(damageType);
   }
@@ -146,6 +150,11 @@ export class DamageTypeController {
     })
     damageType: DamageType,
   ): Promise<void> {
+    if (damageType.name) {
+      damageType.name = (damageType.name as string).trim();
+      const duplicate = await this.damageTypeRepository.findOne({where: {name: {ilike: damageType.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A damage type with name "${damageType.name}" already exists.`);
+    }
     await this.damageTypeRepository.updateById(id, damageType);
   }
 

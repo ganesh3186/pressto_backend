@@ -49,8 +49,11 @@ export class ColorController {
     })
     color: Omit<Color, 'id'>,
   ): Promise<Color> {
+    color.name = (color.name as string).trim();
     const existing = await this.colorRepository.findOne({where: {code: color.code, isDeleted: false}});
     if (existing) throw new HttpErrors.Conflict(`A color with code "${color.code}" already exists.`);
+    const duplicate = await this.colorRepository.findOne({where: {name: {ilike: color.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A color with name "${color.name}" already exists.`);
     return this.colorRepository.create(color);
   }
 
@@ -136,6 +139,11 @@ export class ColorController {
     })
     color: Color,
   ): Promise<void> {
+    if (color.name) {
+      color.name = (color.name as string).trim();
+      const duplicate = await this.colorRepository.findOne({where: {name: {ilike: color.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A color with name "${color.name}" already exists.`);
+    }
     await this.colorRepository.updateById(id, color);
   }
 

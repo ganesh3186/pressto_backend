@@ -11,6 +11,7 @@ import {
   del,
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -58,6 +59,9 @@ export class ProcessStepController {
       const match = ps.code?.match(/^PROC(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    processStep.name = (processStep.name as string).trim();
+    const duplicate = await this.processStepRepository.findOne({where: {name: {ilike: processStep.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A process step with name "${processStep.name}" already exists.`);
     processStep.code = `PROC${String(maxNum + 1).padStart(3, '0')}`;
     const newProcessStep = await this.processStepRepository.create(processStep);
     if (newProcessStep.mediaId) {
@@ -166,6 +170,11 @@ export class ProcessStepController {
     })
     processStep: Partial<ProcessStep>,
   ): Promise<void> {
+    if (processStep.name) {
+      processStep.name = (processStep.name as string).trim();
+      const duplicate = await this.processStepRepository.findOne({where: {name: {ilike: processStep.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A process step with name "${processStep.name}" already exists.`);
+    }
     const oldProcessStep = await this.processStepRepository.findById(id);
     await this.processStepRepository.updateById(id, processStep);
     if (processStep.mediaId && oldProcessStep.mediaId !== processStep.mediaId) {
