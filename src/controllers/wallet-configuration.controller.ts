@@ -20,7 +20,7 @@ export class WalletConfigurationController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['wallet_configuration:create']})
   @post('/wallet-configuration')
   @response(200, {
     description: 'WalletConfiguration model instance',
@@ -51,7 +51,7 @@ export class WalletConfigurationController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['wallet_configuration:read']})
   @get('/wallet-configuration')
   @response(200, {
     description: 'WalletConfiguration singleton',
@@ -64,7 +64,7 @@ export class WalletConfigurationController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['wallet_configuration:update']})
   @patch('/wallet-configuration')
   @response(204, {description: 'WalletConfiguration PATCH success'})
   async update(

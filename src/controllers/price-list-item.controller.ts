@@ -28,7 +28,7 @@ export class PriceListItemController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['price_list_item:create']})
   @post('/price-list-items')
   @response(200, {
     description: 'PriceListItem model instance',
@@ -51,7 +51,7 @@ export class PriceListItemController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['price_list_item:read']})
   @get('/price-list-items/count')
   @response(200, {
     description: 'PriceListItem model count',
@@ -62,7 +62,7 @@ export class PriceListItemController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['price_list_item:read']})
   @get('/price-list-items')
   @response(200, {
     description: 'Array of PriceListItem model instances',
@@ -88,7 +88,7 @@ export class PriceListItemController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['price_list_item:update']})
   @patch('/price-list-items')
   @response(200, {
     description: 'PriceListItem PATCH success count',
@@ -109,7 +109,7 @@ export class PriceListItemController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['price_list_item:read']})
   @get('/price-list-items/{id}')
   @response(200, {
     description: 'PriceListItem model instance',
@@ -133,7 +133,7 @@ export class PriceListItemController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['price_list_item:update']})
   @patch('/price-list-items/{id}')
   @response(204, {description: 'PriceListItem PATCH success'})
   async updateById(

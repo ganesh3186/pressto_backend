@@ -25,7 +25,7 @@ export class PermissionsController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['permission:create']})
   @post('/permissions')
   @response(200, {description: 'Permission created and assigned to roles'})
   async create(
@@ -75,7 +75,7 @@ export class PermissionsController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['permission:read']})
   @get('/permissions')
   @response(200, {
     description: 'Array of Permissions model instances',
@@ -95,7 +95,7 @@ export class PermissionsController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['permission:read']})
   @get('/permissions/{id}')
   @response(200, {
     description: 'Permissions model instance',
@@ -114,7 +114,7 @@ export class PermissionsController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['permission:update']})
   @patch('/permissions/{id}')
   @response(200, {description: 'Permission updated'})
   async updateById(

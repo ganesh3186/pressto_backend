@@ -30,7 +30,7 @@ export class StainController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['stain:create']})
   @post('/stains')
   @response(200, {
     description: 'Stain model instance',
@@ -63,7 +63,7 @@ export class StainController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['stain:read']})
   @get('/stains/count')
   @response(200, {
     description: 'Stain model count',
@@ -74,7 +74,7 @@ export class StainController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['stain:read']})
   @get('/stains')
   @response(200, {
     description: 'Array of Stain model instances',
@@ -92,7 +92,7 @@ export class StainController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['stain:update']})
   @patch('/stains')
   @response(200, {
     description: 'Stain PATCH success count',
@@ -113,7 +113,7 @@ export class StainController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['stain:read']})
   @get('/stains/{id}')
   @response(200, {
     description: 'Stain model instance',
@@ -132,7 +132,7 @@ export class StainController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['stain:update']})
   @patch('/stains/{id}')
   @response(204, { description: 'Stain PATCH success' })
   async updateById(

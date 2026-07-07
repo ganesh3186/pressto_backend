@@ -29,7 +29,7 @@ export class ProfileController {
   // ─── Super Admin Profile ────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['profile:read']})
   @get('/profile/admin')
   @response(200, {description: 'Super admin profile'})
   async getAdminProfile(
@@ -46,7 +46,7 @@ export class ProfileController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['profile:update']})
   @patch('/profile/admin')
   @response(204, {description: 'Super admin profile updated'})
   async updateAdminProfile(

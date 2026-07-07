@@ -30,7 +30,7 @@ export class DamageTypeController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['damage_type:create']})
   @post('/damage-types')
   @response(200, {
     description: 'DamageType model instance',
@@ -63,7 +63,7 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['damage_type:read']})
   @get('/damage-types/count')
   @response(200, {
     description: 'DamageType model count',
@@ -76,7 +76,7 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['damage_type:read']})
   @get('/damage-types')
   @response(200, {
     description: 'Array of DamageType model instances',
@@ -96,7 +96,7 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['damage_type:update']})
   @patch('/damage-types')
   @response(200, {
     description: 'DamageType PATCH success count',
@@ -117,7 +117,7 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['damage_type:read']})
   @get('/damage-types/{id}')
   @response(200, {
     description: 'DamageType model instance',
@@ -136,7 +136,7 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['damage_type:update']})
   @patch('/damage-types/{id}')
   @response(204, { description: 'DamageType PATCH success' })
   async updateById(

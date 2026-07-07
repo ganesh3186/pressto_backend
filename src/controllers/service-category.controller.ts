@@ -28,7 +28,7 @@ export class ServiceCategoryController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_category:create']})
   @post('/service-categories')
   @response(200, {
     description: 'ServiceCategory model instance',
@@ -61,7 +61,7 @@ export class ServiceCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_category:read']})
   @get('/service-categories/count')
   @response(200, {
     description: 'ServiceCategory model count',
@@ -74,7 +74,7 @@ export class ServiceCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_category:read']})
   @get('/service-categories')
   @response(200, {
     description: 'Array of ServiceCategory model instances',
@@ -94,7 +94,7 @@ export class ServiceCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_category:update']})
   @patch('/service-categories')
   @response(200, {
     description: 'ServiceCategory PATCH success count',
@@ -115,7 +115,7 @@ export class ServiceCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_category:read']})
   @get('/service-categories/{id}')
   @response(200, {
     description: 'ServiceCategory model instance',
@@ -133,7 +133,7 @@ export class ServiceCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_category:update']})
   @patch('/service-categories/{id}')
   @response(204, {
     description: 'ServiceCategory PATCH success',

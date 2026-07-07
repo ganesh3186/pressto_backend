@@ -25,7 +25,7 @@ export class RolesController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['role:create']})
   @post('/roles')
   @response(200, {description: 'Role created'})
   async create(
@@ -86,7 +86,7 @@ export class RolesController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['role:read']})
   @get('/roles')
   @response(200, {
     description: 'Array of Roles model instances',
@@ -106,7 +106,7 @@ export class RolesController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['role:read']})
   @get('/roles/{id}')
   @response(200, {
     description: 'Roles model instance',
@@ -125,7 +125,7 @@ export class RolesController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['role:update']})
   @patch('/roles/{id}')
   @response(200, {description: 'Role updated'})
   async updateById(

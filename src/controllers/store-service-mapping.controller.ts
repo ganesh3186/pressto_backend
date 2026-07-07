@@ -33,7 +33,7 @@ export class StoreServiceMappingController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:create']})
   @post('/store-service-mappings')
   @response(200, {
     description: 'StoreServiceMapping model instance',
@@ -68,7 +68,7 @@ export class StoreServiceMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:read']})
   @get('/store-service-mappings/count')
   @response(200, {
     description: 'StoreServiceMapping model count',
@@ -79,7 +79,7 @@ export class StoreServiceMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:read']})
   @get('/store-service-mappings')
   @response(200, {
     description: 'Array of StoreServiceMapping model instances',
@@ -105,7 +105,7 @@ export class StoreServiceMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:update']})
   @patch('/store-service-mappings')
   @response(200, {
     description: 'StoreServiceMapping PATCH success count',
@@ -126,7 +126,7 @@ export class StoreServiceMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:read']})
   @get('/store-service-mappings/{id}')
   @response(200, {
     description: 'StoreServiceMapping model instance',
@@ -150,7 +150,7 @@ export class StoreServiceMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:update']})
   @patch('/store-service-mappings/{id}')
   @response(204, {description: 'StoreServiceMapping PATCH success'})
   async updateById(

@@ -28,7 +28,7 @@ export class BagController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['bag:create']})
   @post('/bags')
   @response(200, {
     description: 'Bag model instance',
@@ -43,7 +43,7 @@ export class BagController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['bag:read']})
   @get('/bags/count')
   @response(200, {
     description: 'Bag model count',
@@ -54,7 +54,7 @@ export class BagController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['bag:read']})
   @get('/bags')
   @response(200, {
     description: 'Array of Bag model instances',
@@ -72,7 +72,7 @@ export class BagController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['bag:read']})
   @get('/bags/{id}')
   @response(200, {
     description: 'Bag model instance',
@@ -90,7 +90,7 @@ export class BagController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['bag:update']})
   @patch('/bags/{id}')
   @response(204, { description: 'Bag PATCH success' })
   async updateById(
@@ -108,7 +108,7 @@ export class BagController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['bag:delete']})
   @del('/bags/{id}')
   @response(204, { description: 'Bag DELETE success' })
   async deleteById(@param.path.string('id') id: string): Promise<void> {

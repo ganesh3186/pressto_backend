@@ -24,7 +24,7 @@ export class AdminCustomerRechargeController {
   // ─── Admin Wallet Recharge ────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_recharge:create']})
   @post('/admin/customers/{customerId}/wallet/recharge')
   @response(200, {description: 'Wallet recharged by admin'})
   async adminWalletRecharge(
@@ -63,7 +63,7 @@ export class AdminCustomerRechargeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_recharge:read']})
   @get('/admin/customers/{customerId}/wallet/recharge-history')
   @response(200, {description: 'Customer wallet recharge history'})
   async adminWalletRechargeHistory(
@@ -78,7 +78,7 @@ export class AdminCustomerRechargeController {
   // ─── Admin Security Deposit Top-up ───────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_recharge:create']})
   @post('/admin/customers/{customerId}/security-deposit/topup')
   @response(200, {description: 'Security deposit topped up by admin'})
   async adminSecurityDepositTopup(
@@ -117,7 +117,7 @@ export class AdminCustomerRechargeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_recharge:read']})
   @get('/admin/customers/{customerId}/security-deposit/topup-history')
   @response(200, {description: 'Customer security deposit top-up history'})
   async adminSecurityDepositTopupHistory(

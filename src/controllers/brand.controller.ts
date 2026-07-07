@@ -30,7 +30,7 @@ export class BrandController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['brand:create']})
   @post('/brands')
   @response(200, {
     description: 'Brand model instance',
@@ -63,7 +63,7 @@ export class BrandController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['brand:read']})
   @get('/brands/count')
   @response(200, {
     description: 'Brand model count',
@@ -74,7 +74,7 @@ export class BrandController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['brand:read']})
   @get('/brands')
   @response(200, {
     description: 'Array of Brand model instances',
@@ -92,7 +92,7 @@ export class BrandController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['brand:update']})
   @patch('/brands')
   @response(200, {
     description: 'Brand PATCH success count',
@@ -113,7 +113,7 @@ export class BrandController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['brand:read']})
   @get('/brands/{id}')
   @response(200, {
     description: 'Brand model instance',
@@ -132,7 +132,7 @@ export class BrandController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['brand:update']})
   @patch('/brands/{id}')
   @response(204, { description: 'Brand PATCH success' })
   async updateById(

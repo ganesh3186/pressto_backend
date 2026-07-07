@@ -11,7 +11,7 @@ export class AuditController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['audit:read']})
   @get('/audit-logs')
   @response(200, {description: 'Audit log entries'})
   async list(

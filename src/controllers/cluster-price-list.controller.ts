@@ -27,7 +27,7 @@ export class ClusterPriceListController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['cluster_price_list:create']})
   @post('/cluster-price-lists')
   @response(200, {
     description: 'ClusterPriceList model instance',
@@ -57,7 +57,7 @@ export class ClusterPriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['cluster_price_list:read']})
   @get('/cluster-price-lists/count')
   @response(200, {
     description: 'ClusterPriceList model count',
@@ -68,7 +68,7 @@ export class ClusterPriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['cluster_price_list:read']})
   @get('/cluster-price-lists')
   @response(200, {
     description: 'Array of ClusterPriceList model instances',
@@ -88,7 +88,7 @@ export class ClusterPriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['cluster_price_list:read']})
   @get('/cluster-price-lists/{id}')
   @response(200, {
     description: 'ClusterPriceList model instance',
@@ -107,7 +107,7 @@ export class ClusterPriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['cluster_price_list:update']})
   @patch('/cluster-price-lists/{id}')
   @response(204, {description: 'ClusterPriceList PATCH success'})
   async updateById(

@@ -29,6 +29,8 @@
     "docker:run": "docker run -p 3000:3000 -d Pressto-backend",
     "premigrate": "npm run build",
     "migrate": "node ./dist/migrate",
+    "preseed": "npm run build",
+    "seed": "node ./dist/seed",
     "preopenapi-spec": "npm run build",
     "openapi-spec": "node ./dist/openapi-spec",
     "prestart": "npm run rebuild",

@@ -59,7 +59,7 @@ export class OrderController {
   // ─── Create Order ─────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders')
   @response(200, {description: 'Order created'})
   async createOrder(
@@ -112,7 +112,7 @@ export class OrderController {
   // ─── List Orders ─────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders')
   @response(200, {description: 'Enriched order list with customer details, payment summary and filters'})
   async listOrders(
@@ -128,7 +128,7 @@ export class OrderController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}')
   @response(200, {description: 'Order with items, charges, payments and status history'})
   async findById(@param.path.string('id') id: string): Promise<object> {
@@ -138,7 +138,7 @@ export class OrderController {
   // ─── Update Order Metadata ────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
   @patch('/orders/{id}')
   @response(200, {description: 'Order updated'})
   async updateById(
@@ -177,7 +177,7 @@ export class OrderController {
   // ─── Change Status ────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/{id}/status')
   @response(200, {description: 'Order status changed'})
   async changeStatus(
@@ -212,7 +212,7 @@ export class OrderController {
   // ─── Split Order ─────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/{id}/split')
   @response(200, {description: 'Split ready garments into a new sub-order dispatched immediately'})
   async splitOrder(
@@ -245,7 +245,7 @@ export class OrderController {
   // ─── Add Payment to Existing Order ────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/{id}/payments')
   @response(200, {description: 'Payment recorded against order'})
   async addPayment(
@@ -280,7 +280,7 @@ export class OrderController {
   // ─── Get Payment History ──────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}/payments')
   @response(200, {description: 'Payment transactions for an order'})
   async getPayments(@param.path.string('id') id: string): Promise<object> {
@@ -295,7 +295,7 @@ export class OrderController {
   // ─── Status History ───────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}/status-history')
   @response(200, {description: 'Order status change history'})
   async statusHistory(@param.path.string('id') id: string): Promise<object> {
@@ -309,7 +309,7 @@ export class OrderController {
   // ─── Soft Delete ──────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order:delete']})
   @del('/orders/{id}')
   @response(200, {description: 'Order cancelled and soft-deleted'})
   async deleteById(

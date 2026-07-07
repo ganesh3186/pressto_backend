@@ -28,7 +28,7 @@ export class CustomerTypeMasterController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_type_master:create']})
   @post('/customer-type-masters')
   @response(200, {
     description: 'CustomerTypeMaster model instance',
@@ -56,7 +56,7 @@ export class CustomerTypeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_type_master:read']})
   @get('/customer-type-masters/count')
   @response(200, {
     description: 'CustomerTypeMaster model count',
@@ -69,7 +69,7 @@ export class CustomerTypeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_type_master:read']})
   @get('/customer-type-masters')
   @response(200, {
     description: 'Array of CustomerTypeMaster model instances',
@@ -89,7 +89,7 @@ export class CustomerTypeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_type_master:update']})
   @patch('/customer-type-masters')
   @response(200, {
     description: 'CustomerTypeMaster PATCH success count',
@@ -110,7 +110,7 @@ export class CustomerTypeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_type_master:read']})
   @get('/customer-type-masters/{id}')
   @response(200, {
     description: 'CustomerTypeMaster model instance',
@@ -129,7 +129,7 @@ export class CustomerTypeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_type_master:update']})
   @patch('/customer-type-masters/{id}')
   @response(204, {description: 'CustomerTypeMaster PATCH success'})
   async updateById(

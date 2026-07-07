@@ -27,7 +27,7 @@ export class StoreController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store:create']})
   @post('/stores')
   @response(200, {
     description: 'Store model instance',
@@ -57,7 +57,7 @@ export class StoreController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store:read']})
   @get('/stores/count')
   @response(200, {
     description: 'Store model count',
@@ -68,7 +68,7 @@ export class StoreController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store:read']})
   @get('/stores')
   @response(200, {
     description: 'Array of Store model instances',
@@ -91,7 +91,7 @@ export class StoreController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store:update']})
   @patch('/stores')
   @response(200, {
     description: 'Store PATCH success count',
@@ -112,7 +112,7 @@ export class StoreController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store:read']})
   @get('/stores/{id}')
   @response(200, {
     description: 'Store model instance',
@@ -134,7 +134,7 @@ export class StoreController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store:update']})
   @patch('/stores/{id}')
   @response(204, {description: 'Store PATCH success'})
   async updateById(

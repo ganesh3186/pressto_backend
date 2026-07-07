@@ -53,7 +53,7 @@ export class EmployeeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['employee:create']})
   @post('/employees')
   @response(200, {description: 'Employee created'})
   async create(
@@ -201,7 +201,7 @@ export class EmployeeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['employee:read']})
   @get('/employees')
   @response(200, {
     description: 'Array of Employee model instances',
@@ -234,7 +234,7 @@ export class EmployeeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['employee:read']})
   @get('/employees/{id}')
   @response(200, {
     description: 'Employee model instance',
@@ -265,7 +265,7 @@ export class EmployeeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['employee:update']})
   @patch('/employees/{id}')
   @response(200, {description: 'Employee updated'})
   async updateById(

@@ -28,7 +28,7 @@ export class RegionController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['region:create']})
   @post('/regions')
   @response(200, {
     description: 'Region model instance',
@@ -61,7 +61,7 @@ export class RegionController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['region:read']})
   @get('/regions/count')
   @response(200, {
     description: 'Region model count',
@@ -72,7 +72,7 @@ export class RegionController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['region:read']})
   @get('/regions')
   @response(200, {
     description: 'Array of Region model instances',
@@ -90,7 +90,7 @@ export class RegionController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['region:update']})
   @patch('/regions')
   @response(200, {
     description: 'Region PATCH success count',
@@ -111,7 +111,7 @@ export class RegionController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['region:read']})
   @get('/regions/{id}')
   @response(200, {
     description: 'Region model instance',
@@ -130,7 +130,7 @@ export class RegionController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['region:update']})
   @patch('/regions/{id}')
   @response(204, {description: 'Region PATCH success'})
   async updateById(

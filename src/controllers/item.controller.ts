@@ -32,7 +32,7 @@ export class ItemController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['item:create']})
   @post('/items')
   @response(200, {
     description: 'Item model instance',
@@ -69,7 +69,7 @@ export class ItemController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['item:read']})
   @get('/items/count')
   @response(200, {
     description: 'Item model count',
@@ -80,7 +80,7 @@ export class ItemController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['item:read']})
   @get('/items')
   @response(200, {
     description: 'Array of Item model instances',
@@ -105,7 +105,7 @@ export class ItemController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['item:update']})
   @patch('/items')
   @response(200, {
     description: 'Item PATCH success count',
@@ -126,7 +126,7 @@ export class ItemController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['item:read']})
   @get('/items/{id}')
   @response(200, {
     description: 'Item model instance',
@@ -149,7 +149,7 @@ export class ItemController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['item:update']})
   @patch('/items/{id}')
   @response(204, { description: 'Item PATCH success' })
   async updateById(

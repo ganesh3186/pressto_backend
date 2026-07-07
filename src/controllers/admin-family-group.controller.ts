@@ -37,7 +37,7 @@ export class AdminFamilyGroupController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['family_group:read']})
   @get('/admin/customers/{customerId}/family-group')
   @response(200, {description: 'Get customer family group with members'})
   async getGroup(
@@ -51,7 +51,7 @@ export class AdminFamilyGroupController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['family_group:create']})
   @post('/admin/customers/{customerId}/family-group')
   @response(200, {description: 'Create family group for a customer'})
   async createGroup(
@@ -88,7 +88,7 @@ export class AdminFamilyGroupController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['family_group:create']})
   @post('/admin/customers/{customerId}/family-group/members')
   @response(200, {description: 'Add a family member for a customer'})
   async addMember(
@@ -135,7 +135,7 @@ export class AdminFamilyGroupController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['family_group:update']})
   @patch('/admin/customers/{customerId}/family-group/members/{memberId}')
   @response(200, {description: 'Update a family member'})
   async updateMember(
@@ -168,7 +168,7 @@ export class AdminFamilyGroupController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['family_group:delete']})
   @del('/admin/customers/{customerId}/family-group/members/{memberId}')
   @response(200, {description: 'Remove a family member'})
   async removeMember(

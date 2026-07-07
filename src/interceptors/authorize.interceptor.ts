@@ -58,20 +58,19 @@ export class AuthorizeInterceptor implements Provider<Interceptor> {
       return next();
     }
 
-    // ROLE CHECK
-    if (requiredRoles.length > 0) {
-      const matched = intersection(currentUser.roles, requiredRoles);
-      if (matched.length === 0) {
-        console.log('required roles', requiredRoles)
-        console.log('currentuser roles', currentUser);
+    if (requiredRoles.length > 0 && requiredPermissions.length > 0) {
+      // Having the required role OR the required permission grants access
+      const hasRole = intersection(currentUser.roles, requiredRoles).length > 0;
+      const hasPerm = intersection(currentUser.permissions, requiredPermissions).length > 0;
+      if (!hasRole && !hasPerm) {
+        throw new HttpErrors.Forbidden('Forbidden: Insufficient role or permission');
+      }
+    } else if (requiredRoles.length > 0) {
+      if (intersection(currentUser.roles, requiredRoles).length === 0) {
         throw new HttpErrors.Forbidden('Forbidden: Role not allowed');
       }
-    }
-
-    // PERMISSION CHECK
-    if (requiredPermissions.length > 0) {
-      const matched = intersection(currentUser.permissions, requiredPermissions);
-      if (matched.length === 0) {
+    } else if (requiredPermissions.length > 0) {
+      if (intersection(currentUser.permissions, requiredPermissions).length === 0) {
         throw new HttpErrors.Forbidden('Forbidden: Permission not allowed');
       }
     }

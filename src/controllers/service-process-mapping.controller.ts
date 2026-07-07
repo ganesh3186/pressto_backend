@@ -32,7 +32,7 @@ export class ServiceProcessMappingController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:create']})
   @post('/service-process-mappings')
   @response(200, {
     description: 'ServiceProcessMapping model instance',
@@ -70,7 +70,7 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:read']})
   @get('/service-process-mappings/count')
   @response(200, {
     description: 'ServiceProcessMapping model count',
@@ -83,7 +83,7 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:read']})
   @get('/service-process-mappings')
   @response(200, {
     description: 'Array of ServiceProcessMapping model instances',
@@ -105,7 +105,7 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:update']})
   @patch('/service-process-mappings')
   @response(200, {
     description: 'ServiceProcessMapping PATCH success count',
@@ -129,7 +129,7 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:read']})
   @get('/service-process-mappings/{id}')
   @response(200, {
     description: 'ServiceProcessMapping model instance',
@@ -150,7 +150,7 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:update']})
   @patch('/service-process-mappings/{id}')
   @response(204, { description: 'ServiceProcessMapping PATCH success' })
   async updateById(

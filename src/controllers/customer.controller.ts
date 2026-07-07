@@ -78,7 +78,7 @@ export class CustomerController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['customer:create']})
   @post('/customers')
   @response(200, { description: 'Customer created' })
   async create(
@@ -223,7 +223,7 @@ export class CustomerController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['customer:read']})
   @get('/customers')
   @response(200, {
     description: 'Array of Customer model instances',
@@ -260,7 +260,7 @@ export class CustomerController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['customer:read']})
   @get('/customers/{id}')
   @response(200, {
     description: 'Customer model instance',
@@ -296,7 +296,7 @@ export class CustomerController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['customer:update']})
   @patch('/customers/{id}')
   @response(200, { description: 'Customer updated' })
   async updateById(

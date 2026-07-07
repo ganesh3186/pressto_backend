@@ -47,7 +47,7 @@ export class GarmentController {
   // ─── Register Garments for an Order Item ──────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:create']})
   @post('/orders/{orderId}/items/{orderItemId}/garments')
   @response(200, {description: 'Garment registered for order item'})
   async registerGarment(
@@ -113,7 +113,7 @@ export class GarmentController {
   // ─── List Garments for an Order ───────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:read']})
   @get('/orders/{orderId}/garments')
   @response(200, {description: 'Garments for an order'})
   async listGarments(@param.path.string('orderId') orderId: string): Promise<object> {
@@ -141,7 +141,7 @@ export class GarmentController {
   // ─── Get Single Garment ───────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:read']})
   @get('/garments/{garmentId}')
   @response(200, {description: 'Garment details'})
   async getGarment(@param.path.string('garmentId') garmentId: string): Promise<object> {
@@ -161,7 +161,7 @@ export class GarmentController {
   // ─── Update Garment ───────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:update']})
   @patch('/garments/{garmentId}')
   @response(200, {description: 'Garment updated'})
   async updateGarment(
@@ -205,7 +205,7 @@ export class GarmentController {
   // ─── Change Garment Status ────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:create']})
   @post('/garments/{garmentId}/status')
   @response(200, {description: 'Garment status updated'})
   async changeGarmentStatus(
@@ -249,7 +249,7 @@ export class GarmentController {
   // ─── Stains ───────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:create']})
   @post('/garments/{garmentId}/stains')
   @response(200, {description: 'Stain recorded'})
   async addStain(
@@ -300,7 +300,7 @@ export class GarmentController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:create']})
   @post('/garments/{garmentId}/stains/{stainId}/images')
   @response(200, {description: 'Image added to stain'})
   async addStainImage(
@@ -328,7 +328,7 @@ export class GarmentController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:delete']})
   @del('/garments/{garmentId}/stains/{stainId}')
   @response(200, {description: 'Stain removed'})
   async removeStain(
@@ -344,7 +344,7 @@ export class GarmentController {
   // ─── Damages ──────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:create']})
   @post('/garments/{garmentId}/damages')
   @response(200, {description: 'Damage recorded'})
   async addDamage(
@@ -395,7 +395,7 @@ export class GarmentController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:create']})
   @post('/garments/{garmentId}/damages/{damageId}/images')
   @response(200, {description: 'Image added to damage'})
   async addDamageImage(
@@ -423,7 +423,7 @@ export class GarmentController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:delete']})
   @del('/garments/{garmentId}/damages/{damageId}')
   @response(200, {description: 'Damage removed'})
   async removeDamage(
@@ -439,7 +439,7 @@ export class GarmentController {
   // ─── Garment Images ───────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:create']})
   @post('/garments/{garmentId}/images')
   @response(200, {description: 'Image attached to garment'})
   async addImage(
@@ -468,7 +468,7 @@ export class GarmentController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['garment:delete']})
   @del('/garments/{garmentId}/images/{imageId}')
   @response(200, {description: 'Image removed'})
   async removeImage(

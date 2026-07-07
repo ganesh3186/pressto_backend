@@ -32,7 +32,7 @@ export class ServiceController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service:create']})
   @post('/services')
   @response(200, {
     description: 'Service model instance',
@@ -69,7 +69,7 @@ export class ServiceController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service:read']})
   @get('/services/count')
   @response(200, {
     description: 'Service model count',
@@ -80,7 +80,7 @@ export class ServiceController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service:read']})
   @get('/services')
   @response(200, {
     description: 'Array of Service model instances',
@@ -108,7 +108,7 @@ export class ServiceController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service:update']})
   @patch('/services')
   @response(200, {
     description: 'Service PATCH success count',
@@ -129,7 +129,7 @@ export class ServiceController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service:read']})
   @get('/services/{id}')
   @response(200, {
     description: 'Service model instance',
@@ -153,7 +153,7 @@ export class ServiceController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service:update']})
   @patch('/services/{id}')
   @response(204, { description: 'Service PATCH success' })
   async updateById(

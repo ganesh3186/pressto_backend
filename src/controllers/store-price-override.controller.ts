@@ -27,7 +27,7 @@ export class StorePriceOverrideController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_price_override:create']})
   @post('/store-price-overrides')
   @response(200, {
     description: 'StorePriceOverride model instance',
@@ -50,7 +50,7 @@ export class StorePriceOverrideController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_price_override:read']})
   @get('/store-price-overrides/count')
   @response(200, {
     description: 'StorePriceOverride model count',
@@ -61,7 +61,7 @@ export class StorePriceOverrideController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_price_override:read']})
   @get('/store-price-overrides')
   @response(200, {
     description: 'Array of StorePriceOverride model instances',
@@ -86,7 +86,7 @@ export class StorePriceOverrideController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_price_override:update']})
   @patch('/store-price-overrides')
   @response(200, {
     description: 'StorePriceOverride PATCH success count',
@@ -107,7 +107,7 @@ export class StorePriceOverrideController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_price_override:read']})
   @get('/store-price-overrides/{id}')
   @response(200, {
     description: 'StorePriceOverride model instance',
@@ -130,7 +130,7 @@ export class StorePriceOverrideController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['store_price_override:update']})
   @patch('/store-price-overrides/{id}')
   @response(204, {description: 'StorePriceOverride PATCH success'})
   async updateById(

@@ -20,7 +20,7 @@ export class DeliveryTypeConfigurationController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['delivery_type_configuration:create']})
   @post('/delivery-type-configuration')
   @response(200, {
     description: 'DeliveryTypeConfiguration model instance',
@@ -51,7 +51,7 @@ export class DeliveryTypeConfigurationController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['delivery_type_configuration:read']})
   @get('/delivery-type-configuration')
   @response(200, {
     description: 'DeliveryTypeConfiguration singleton',
@@ -68,7 +68,7 @@ export class DeliveryTypeConfigurationController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['delivery_type_configuration:update']})
   @patch('/delivery-type-configuration')
   @response(204, {description: 'DeliveryTypeConfiguration PATCH success'})
   async update(

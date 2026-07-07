@@ -28,7 +28,7 @@ export class OrderLabelController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order_label:create']})
   @post('/order-labels')
   @response(200, {
     description: 'OrderLabel model instance',
@@ -56,7 +56,7 @@ export class OrderLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order_label:read']})
   @get('/order-labels/count')
   @response(200, {
     description: 'OrderLabel model count',
@@ -69,7 +69,7 @@ export class OrderLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order_label:read']})
   @get('/order-labels')
   @response(200, {
     description: 'Array of OrderLabel model instances',
@@ -89,7 +89,7 @@ export class OrderLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order_label:update']})
   @patch('/order-labels')
   @response(200, {
     description: 'OrderLabel PATCH success count',
@@ -110,7 +110,7 @@ export class OrderLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order_label:read']})
   @get('/order-labels/{id}')
   @response(200, {
     description: 'OrderLabel model instance',
@@ -129,7 +129,7 @@ export class OrderLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['order_label:update']})
   @patch('/order-labels/{id}')
   @response(204, {description: 'OrderLabel PATCH success'})
   async updateById(

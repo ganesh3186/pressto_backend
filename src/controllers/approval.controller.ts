@@ -22,7 +22,7 @@ export class ApprovalController {
   // ─── Create Approval Request ──────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['approval:create']})
   @post('/approval-requests')
   @response(200, {description: 'Approval request created'})
   async create(
@@ -60,7 +60,7 @@ export class ApprovalController {
   // ─── Resolve (Approve / Reject) ───────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['approval:create']})
   @post('/approval-requests/{id}/resolve')
   @response(200, {description: 'Approval request resolved'})
   async resolve(
@@ -94,7 +94,7 @@ export class ApprovalController {
   // ─── List Approval Requests ───────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['approval:read']})
   @get('/approval-requests')
   @response(200, {description: 'List of approval requests'})
   async list(
@@ -121,7 +121,7 @@ export class ApprovalController {
   // ─── Get Single Request + Audit Trail ────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['approval:read']})
   @get('/approval-requests/{id}')
   @response(200, {description: 'Approval request detail with audit trail'})
   async getById(@param.path.string('id') id: string): Promise<object> {

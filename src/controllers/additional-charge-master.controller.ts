@@ -29,7 +29,7 @@ export class AdditionalChargeMasterController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['additional_charge_master:create']})
   @post('/additional-charge-masters')
   @response(200, {
     description: 'AdditionalChargeMaster model instance',
@@ -62,7 +62,7 @@ export class AdditionalChargeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['additional_charge_master:read']})
   @get('/additional-charge-masters/count')
   @response(200, {
     description: 'AdditionalChargeMaster model count',
@@ -75,7 +75,7 @@ export class AdditionalChargeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['additional_charge_master:read']})
   @get('/additional-charge-masters')
   @response(200, {
     description: 'Array of AdditionalChargeMaster model instances',
@@ -95,7 +95,7 @@ export class AdditionalChargeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['additional_charge_master:update']})
   @patch('/additional-charge-masters')
   @response(200, {
     description: 'AdditionalChargeMaster PATCH success count',
@@ -116,7 +116,7 @@ export class AdditionalChargeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['additional_charge_master:read']})
   @get('/additional-charge-masters/{id}')
   @response(200, {
     description: 'AdditionalChargeMaster model instance',
@@ -135,7 +135,7 @@ export class AdditionalChargeMasterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['additional_charge_master:update']})
   @patch('/additional-charge-masters/{id}')
   @response(204, {description: 'AdditionalChargeMaster PATCH success'})
   async updateById(

@@ -20,7 +20,7 @@ export class GstTaxConfigurationController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['gst_tax_configuration:create']})
   @post('/gst-tax-configuration')
   @response(200, {
     description: 'GstTaxConfiguration model instance',
@@ -51,7 +51,7 @@ export class GstTaxConfigurationController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['gst_tax_configuration:read']})
   @get('/gst-tax-configuration')
   @response(200, {
     description: 'GstTaxConfiguration singleton',
@@ -68,7 +68,7 @@ export class GstTaxConfigurationController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['gst_tax_configuration:update']})
   @patch('/gst-tax-configuration')
   @response(204, {description: 'GstTaxConfiguration PATCH success'})
   async update(

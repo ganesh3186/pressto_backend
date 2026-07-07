@@ -34,7 +34,7 @@ export class ServiceItemMappingController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_item_mapping:create']})
   @post('/service-item-mappings')
   @response(200, {
     description: 'ServiceItemMapping model instance',
@@ -71,7 +71,7 @@ export class ServiceItemMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_item_mapping:read']})
   @get('/service-item-mappings/count')
   @response(200, {
     description: 'ServiceItemMapping model count',
@@ -84,7 +84,7 @@ export class ServiceItemMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_item_mapping:read']})
   @get('/service-item-mappings')
   @response(200, {
     description: 'Array of ServiceItemMapping model instances',
@@ -107,7 +107,7 @@ export class ServiceItemMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_item_mapping:update']})
   @patch('/service-item-mappings')
   @response(200, {
     description: 'ServiceItemMapping PATCH success count',
@@ -131,7 +131,7 @@ export class ServiceItemMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_item_mapping:read']})
   @get('/service-item-mappings/{id}')
   @response(200, {
     description: 'ServiceItemMapping model instance',
@@ -152,7 +152,7 @@ export class ServiceItemMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['service_item_mapping:update']})
   @patch('/service-item-mappings/{id}')
   @response(204, { description: 'ServiceItemMapping PATCH success' })
   async updateById(

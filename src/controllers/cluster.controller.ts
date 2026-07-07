@@ -28,7 +28,7 @@ export class ClusterController {
   ) { }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['cluster:create']})
   @post('/clusters')
   @response(200, {
     description: 'Cluster model instance',
@@ -61,7 +61,7 @@ export class ClusterController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['cluster:read']})
   @get('/clusters/count')
   @response(200, {
     description: 'Cluster model count',
@@ -72,7 +72,7 @@ export class ClusterController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['cluster:read']})
   @get('/clusters')
   @response(200, {
     description: 'Array of Cluster model instances',
@@ -97,7 +97,7 @@ export class ClusterController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['cluster:update']})
   @patch('/clusters')
   @response(200, {
     description: 'Cluster PATCH success count',
@@ -118,7 +118,7 @@ export class ClusterController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['cluster:read']})
   @get('/clusters/{id}')
   @response(200, {
     description: 'Cluster model instance',
@@ -140,7 +140,7 @@ export class ClusterController {
   }
 
   @authenticate('jwt')
-  @authorize({ roles: ['super_admin'] })
+  @authorize({roles: ['super_admin'], permissions: ['cluster:update']})
   @patch('/clusters/{id}')
   @response(204, { description: 'Cluster PATCH success' })
   async updateById(
