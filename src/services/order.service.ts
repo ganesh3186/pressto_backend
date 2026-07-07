@@ -349,8 +349,22 @@ export class OrderService {
 
     for (const item of input.items) {
       const pricing = await this.resolvePricing(input.storeId, item.serviceId, item.itemId);
-      const unitPrice = parseFloat((pricing.resolvedPrice * expressMultiplier).toFixed(2));
+
+      // Resolve price + TAT for each additional service (sequential — prices and days both sum up)
+      let additionalServicesUnitPrice = 0;
+      let additionalServicesDays = 0;
+      for (const addlServiceId of item.additionalServiceIds ?? []) {
+        const addlPricing = await this.resolvePricing(input.storeId, addlServiceId, item.itemId);
+        additionalServicesUnitPrice += addlPricing.resolvedPrice;
+        additionalServicesDays += addlPricing.estimatedDurationInDays ?? 0;
+      }
+
+      const unitPrice = parseFloat(
+        ((pricing.resolvedPrice + additionalServicesUnitPrice) * expressMultiplier).toFixed(2),
+      );
       const totalPrice = parseFloat((unitPrice * item.quantity).toFixed(2));
+      const estimatedDurationInDays =
+        (pricing.estimatedDurationInDays ?? 0) + additionalServicesDays || null;
 
       let additionalChargesTotal = 0;
       for (const chargeId of item.additionalChargeIds ?? []) {
@@ -366,7 +380,7 @@ export class OrderService {
         resolvedPrice: pricing.resolvedPrice,
         unitPrice,
         totalPrice,
-        estimatedDurationInDays: pricing.estimatedDurationInDays,
+        estimatedDurationInDays,
         additionalChargesTotal,
       });
     }
@@ -391,8 +405,10 @@ export class OrderService {
       orderChargeDetails.push({id: chargeId, amount});
     }
 
-    const itemsSubtotal = itemPricings.reduce((s, i) => s + i.totalPrice + i.additionalChargesTotal, 0);
-    const subtotal = itemsSubtotal + orderChargesTotal;
+    const itemsSubtotal = parseFloat(
+      itemPricings.reduce((s, i) => s + i.totalPrice + i.additionalChargesTotal, 0).toFixed(2),
+    );
+    const subtotal = parseFloat((itemsSubtotal + orderChargesTotal).toFixed(2));
 
     const {discountAmount, discountType} = this.applyCustomerDiscount(
       subtotal,
@@ -401,10 +417,10 @@ export class OrderService {
     );
 
     const gstConfig = await this.gstConfigRepo.findOne({where: {isActive: true, isDeleted: false}});
-    const taxableAmount = subtotal - discountAmount;
+    const taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
     const gstRate = gstConfig ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage) : 0;
     const taxAmount = gstRate > 0 ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2)) : 0;
-    const totalAmount = taxableAmount + taxAmount;
+    const totalAmount = parseFloat((taxableAmount + taxAmount).toFixed(2));
 
     // Validate that payment amounts don't exceed total
     const paymentsTotal = (input.payments ?? []).reduce((s, p) => s + Number(p.amount), 0);
