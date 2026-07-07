@@ -64,3 +64,4 @@ export * from './garment-process-log.repository';
 export * from './approval-request.repository';
 export * from './approval-action.repository';
 export * from './approval-audit-log.repository';
+export * from './audit-log.repository';

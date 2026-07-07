@@ -15,6 +15,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {GarmentImageType} from '../models/garment-image-type.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
+import {OrderStatus} from '../models/order-status.enum';
 import {UnprocessedHandlingMode} from '../models/unprocessed-handling-mode.enum';
 import {
   GarmentDamageImageRepository,
@@ -26,6 +27,7 @@ import {
   GarmentStatusHistoryRepository,
   OrderItemRepository,
   OrderRepository,
+  OrderStatusHistoryRepository,
 } from '../repositories';
 
 export class GarmentController {
@@ -39,6 +41,7 @@ export class GarmentController {
     @repository(GarmentStainImageRepository) private stainImageRepository: GarmentStainImageRepository,
     @repository(GarmentImageRepository) private imageRepository: GarmentImageRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepository: GarmentStatusHistoryRepository,
+    @repository(OrderStatusHistoryRepository) private orderStatusHistoryRepository: OrderStatusHistoryRepository,
   ) {}
 
   // ─── Register Garments for an Order Item ──────────────────────────────────
@@ -237,6 +240,8 @@ export class GarmentController {
       changedBy: currentUser[securityId],
       remarks: body.remarks,
     });
+
+    await this.syncOrderStatus(garmentId, body.status, currentUser[securityId]);
 
     return {message: `Garment status changed to '${body.status}'.`};
   }
@@ -477,6 +482,61 @@ export class GarmentController {
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
+
+  // ─── Order status auto-sync ───────────────────────────────────────────────
+
+  private async syncOrderStatus(garmentId: string, newStatus: GarmentStatus, changedBy: string): Promise<void> {
+    const garment = await this.garmentRepository.findById(garmentId);
+    const orderItem = await this.orderItemRepository.findById(garment.orderItemId);
+    const order = await this.orderRepository.findOne({where: {id: orderItem.orderId, isDeleted: false}});
+    if (!order) return;
+
+    const allItems = await this.orderItemRepository.find({where: {orderId: order.id}});
+    const allItemIds = allItems.map(i => i.id);
+    const allGarments = await this.garmentRepository.find({
+      where: {orderItemId: {inq: allItemIds}, isDeleted: false} as any,
+    });
+
+    const {v4} = await import('uuid');
+    const now = new Date();
+
+    // Trigger 1: first garment reaches IN_INSPECTION → order moves to in_inspection
+    if (newStatus === GarmentStatus.IN_INSPECTION && order.status === OrderStatus.RECEIVED_AT_STORE) {
+      await this.orderRepository.updateById(order.id, {status: OrderStatus.IN_INSPECTION});
+      await this.orderStatusHistoryRepository.create({
+        id: v4(),
+        orderId: order.id,
+        status: OrderStatus.IN_INSPECTION,
+        changedAt: now,
+        changedBy,
+        remarks: 'Auto-advanced: first garment moved to inspection',
+      });
+      return;
+    }
+
+    // Trigger 2: all garments past inspection → order moves to in_process
+    const PAST_INSPECTION: GarmentStatus[] = [
+      GarmentStatus.IN_PROCESS,
+      GarmentStatus.QUALITY_CHECK,
+      GarmentStatus.READY,
+      GarmentStatus.OUT_FOR_DELIVERY,
+      GarmentStatus.DELIVERED,
+    ];
+    const allPastInspection = allGarments.every(g =>
+      PAST_INSPECTION.includes(g.id === garmentId ? newStatus : (g.status as GarmentStatus)),
+    );
+    if (allPastInspection && order.status === OrderStatus.IN_INSPECTION) {
+      await this.orderRepository.updateById(order.id, {status: OrderStatus.IN_PROCESS});
+      await this.orderStatusHistoryRepository.create({
+        id: v4(),
+        orderId: order.id,
+        status: OrderStatus.IN_PROCESS,
+        changedAt: now,
+        changedBy,
+        remarks: 'Auto-advanced: all garments completed inspection',
+      });
+    }
+  }
 
   private async _stainsWithImages(garmentId: string) {
     const stains = await this.stainRepository.find({where: {garmentId, isDeleted: false}});

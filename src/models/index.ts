@@ -84,3 +84,4 @@ export * from './approval-action-type.enum';
 export * from './approval-request.model';
 export * from './approval-action.model';
 export * from './approval-audit-log.model';
+export * from './audit-log.model';

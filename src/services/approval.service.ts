@@ -1,4 +1,4 @@
-import {BindingScope, injectable} from '@loopback/core';
+import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {ApprovalActionRepository} from '../repositories/approval-action.repository';
@@ -8,6 +8,7 @@ import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {APPROVAL_ROLE_ROUTING, ApprovalRequest} from '../models/approval-request.model';
+import {AuditService} from './audit.service';
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class ApprovalService {
@@ -15,6 +16,7 @@ export class ApprovalService {
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @repository(ApprovalActionRepository) private approvalActionRepo: ApprovalActionRepository,
     @repository(ApprovalAuditLogRepository) private approvalAuditLogRepo: ApprovalAuditLogRepository,
+    @inject('services.audit') private auditService: AuditService,
   ) {}
 
   async createRequest(params: {
@@ -89,6 +91,19 @@ export class ApprovalService {
       performedBy: params.performedBy,
     });
 
-    return this.approvalRequestRepo.findById(params.requestId);
+    const resolved = await this.approvalRequestRepo.findById(params.requestId);
+
+    // Write to general audit log so the entity's full history is queryable in one place
+    await this.auditService.log({
+      entityType: request.entityType,
+      entityId: request.entityId,
+      actionType: `approval_${params.action}`,
+      performedBy: params.performedBy,
+      before: {approvalStatus: ApprovalRequestStatus.PENDING},
+      after: {approvalStatus: newStatus, approvalRequestId: params.requestId},
+      remarks: params.comments,
+    });
+
+    return resolved;
   }
 }

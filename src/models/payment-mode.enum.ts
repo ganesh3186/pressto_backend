@@ -9,4 +9,5 @@ export enum PaymentMode {
   PAY_LATER = 'pay_later',     // customer pays after delivery
   ON_ACCOUNT = 'on_account',   // B2B only — deducted from running deposit balance
   GATEWAY = 'gateway',
+  WALLET = 'wallet',           // internal wallet deduction — always creates a PaymentTransaction
 }

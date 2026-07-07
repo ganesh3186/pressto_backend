@@ -616,6 +616,17 @@ export class OrderService {
           },
           {transaction: tx},
         );
+        // Record wallet payment in payment_transaction so totalCollected queries stay consistent
+        const walletPt = await this.paymentTransactionRepo.create(
+          {
+            orderId: order.id,
+            paymentMode: PaymentMode.WALLET,
+            amount: walletAmount,
+            paymentDate: new Date(),
+          },
+          {transaction: tx},
+        );
+        createdPayments.push(walletPt);
       }
 
       await tx.commit();
@@ -1265,6 +1276,7 @@ export class OrderService {
         );
       }
 
+      let walletPayment = null;
       if (thisWallet > 0 && wallet) {
         const newBalance = wallet.currentBalance - thisWallet;
         await this.walletRepo.updateById(wallet.id, {currentBalance: newBalance}, {transaction: tx});
@@ -1281,6 +1293,15 @@ export class OrderService {
           },
           {transaction: tx},
         );
+        walletPayment = await this.paymentTransactionRepo.create(
+          {
+            orderId,
+            paymentMode: PaymentMode.WALLET,
+            amount: thisWallet,
+            paymentDate: new Date(),
+          },
+          {transaction: tx},
+        );
       }
 
       await tx.commit();
@@ -1289,6 +1310,7 @@ export class OrderService {
       return {
         message: 'Payment recorded.',
         payment: createdPayment,
+        walletPayment,
         walletAmountDeducted: thisWallet,
         totalCollected: newPaid,
         balanceDue: Math.max(0, Number(order.totalAmount) - newPaid),
