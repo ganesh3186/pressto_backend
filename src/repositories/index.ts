@@ -61,3 +61,6 @@ export * from './garment-image.repository';
 export * from './garment-status-history.repository';
 export * from './payment-transaction.repository';
 export * from './garment-process-log.repository';
+export * from './approval-request.repository';
+export * from './approval-action.repository';
+export * from './approval-audit-log.repository';
