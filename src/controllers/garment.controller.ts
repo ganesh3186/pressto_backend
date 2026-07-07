@@ -15,6 +15,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {GarmentImageType} from '../models/garment-image-type.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
+import {UnprocessedHandlingMode} from '../models/unprocessed-handling-mode.enum';
 import {
   GarmentDamageImageRepository,
   GarmentDamageRepository,
@@ -174,6 +175,8 @@ export class GarmentController {
               customerRemarks: {type: 'string'},
               inspectionRemarks: {type: 'string'},
               qrPrintCount: {type: 'number'},
+              isTagPrinted: {type: 'boolean'},
+              unprocessedHandlingMode: {type: 'string', enum: Object.values(UnprocessedHandlingMode)},
             },
           },
         },
@@ -186,6 +189,8 @@ export class GarmentController {
       customerRemarks?: string;
       inspectionRemarks?: string;
       qrPrintCount?: number;
+      isTagPrinted?: boolean;
+      unprocessedHandlingMode?: UnprocessedHandlingMode;
     },
   ): Promise<object> {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});

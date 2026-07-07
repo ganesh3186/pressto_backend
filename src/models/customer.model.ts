@@ -1,6 +1,7 @@
 import {Entity, belongsTo, model, property} from '@loopback/repository';
 import {Users} from './users.model';
 import {CustomerLabel} from './customer-label.model';
+import {PaymentMode} from './payment-mode.enum';
 
 @model({
   settings: {
@@ -72,7 +73,16 @@ export class Customer extends Entity {
   gstNumber?: string;
 
   @property({type: 'string'})
+  panNumber?: string;
+
+  @property({type: 'string'})
   companyName?: string;
+
+  @property({
+    type: 'string',
+    jsonSchema: {enum: Object.values(PaymentMode)},
+  })
+  preferredPaymentMode?: PaymentMode;
 
   @property({type: 'number', default: 0})
   loyaltyPoints?: number;

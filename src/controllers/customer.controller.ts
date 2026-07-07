@@ -14,6 +14,7 @@ import {
 import { authorize } from '../authorization';
 import { PresstoDataSource } from '../datasources';
 import { Customer } from '../models';
+import { PaymentMode } from '../models/payment-mode.enum';
 import {
   CustomerRepository,
   CustomerSecurityDepositRepository,
@@ -100,7 +101,9 @@ export class CustomerController {
               customerLabelId: { type: 'string', format: 'uuid' },
               customerGroupId: { type: 'string', format: 'uuid' },
               gstNumber: { type: 'string' },
+              panNumber: { type: 'string' },
               companyName: { type: 'string' },
+              preferredPaymentMode: { type: 'string', enum: Object.values(PaymentMode) },
               dateOfBirth: { type: 'string', format: 'date' },
               preferredStoreId: { type: 'string', format: 'uuid' },
               sensitivityScore: { type: 'number' },
@@ -125,7 +128,9 @@ export class CustomerController {
       customerLabelId: string;
       customerGroupId: string;
       gstNumber?: string;
+      panNumber?: string;
       companyName?: string;
+      preferredPaymentMode?: PaymentMode;
       dateOfBirth?: string;
       preferredStoreId?: string;
       sensitivityScore?: number;
@@ -182,7 +187,9 @@ export class CustomerController {
           customerLabelId: body.customerLabelId,
           customerGroupId: body.customerGroupId,
           gstNumber: body.gstNumber,
+          panNumber: body.panNumber,
           companyName: body.companyName,
+          preferredPaymentMode: body.preferredPaymentMode,
           preferredStoreId: body.preferredStoreId,
           sensitivityScore: body.sensitivityScore,
           notes: body.notes,
@@ -315,7 +322,9 @@ export class CustomerController {
               customerLabelId: { type: 'string', format: 'uuid' },
               customerGroupId: { type: 'string', format: 'uuid' },
               gstNumber: { type: 'string' },
+              panNumber: { type: 'string' },
               companyName: { type: 'string' },
+              preferredPaymentMode: { type: 'string', enum: Object.values(PaymentMode) },
               loyaltyPoints: { type: 'number' },
               defaultDiscountType: { type: 'string' },
               defaultDiscountValue: { type: 'number' },
@@ -344,7 +353,9 @@ export class CustomerController {
       customerLabelId?: string;
       customerGroupId?: string;
       gstNumber?: string;
+      panNumber?: string;
       companyName?: string;
+      preferredPaymentMode?: PaymentMode;
       loyaltyPoints?: number;
       defaultDiscountType?: string;
       defaultDiscountValue?: number;
@@ -365,7 +376,7 @@ export class CustomerController {
     const userKeys = ['fullName', 'email', 'countryCode', 'phone', 'isActive'];
     const customerKeys = [
       'firstName', 'lastName', 'customerEntityType', 'customerLabelId', 'customerGroupId',
-      'gstNumber', 'companyName', 'loyaltyPoints', 'defaultDiscountType',
+      'gstNumber', 'panNumber', 'companyName', 'preferredPaymentMode', 'loyaltyPoints', 'defaultDiscountType',
       'defaultDiscountValue', 'preferredStoreId', 'sensitivityScore', 'notes',
       'statusChangeRemark',
     ];

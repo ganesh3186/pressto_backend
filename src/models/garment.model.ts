@@ -1,5 +1,6 @@
 import {Entity, model, property} from '@loopback/repository';
 import {GarmentStatus} from './garment-status.enum';
+import {UnprocessedHandlingMode} from './unprocessed-handling-mode.enum';
 
 @model({
   settings: {
@@ -37,6 +38,17 @@ export class Garment extends Entity {
 
   @property({type: 'number', default: 1})
   qrPrintCount?: number;
+
+  // Set to true when the QR tag is first printed — locks the order for approval flow (T-07)
+  @property({type: 'boolean', default: false})
+  isTagPrinted?: boolean;
+
+  // How unprocessed items were handled at delivery
+  @property({
+    type: 'string',
+    jsonSchema: {enum: Object.values(UnprocessedHandlingMode)},
+  })
+  unprocessedHandlingMode?: UnprocessedHandlingMode;
 
   // Customer's verbal remarks when dropping off
   @property({type: 'string', postgresql: {dataType: 'text'}})
