@@ -142,6 +142,27 @@ export class WalletService {
     });
   }
 
+  // Returns the full transaction ledger (credits + debits) with current balance.
+  // This is the source of truth for what to show in the wallet tab.
+  async getWalletHistory(customerId: string, limit = 50, skip = 0): Promise<{balance: number; transactions: object[]}> {
+    const wallet = await this.walletRepository.findOne({where: {customerId}});
+    if (!wallet) {
+      return {balance: 0, transactions: []};
+    }
+
+    const transactions = await this.walletTransactionRepository.find({
+      where: {walletId: wallet.id, isDeleted: false} as any,
+      order: ['transactionDate DESC'],
+      limit,
+      skip,
+    });
+
+    return {
+      balance: Number(wallet.currentBalance ?? 0),
+      transactions,
+    };
+  }
+
   // Admin directly credits — no pending phase since payment is already collected in-store
   async adminRecharge(
     customerId: string,

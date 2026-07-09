@@ -71,6 +71,43 @@ export class ServiceProcessMappingController {
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:read']})
+  @get('/service-process-mappings/by-service/{serviceId}')
+  @response(200, {description: 'Process steps mapped to a service, ordered by sequence'})
+  async findByService(
+    @param.path.string('serviceId') serviceId: string,
+  ): Promise<object[]> {
+    const mappings = await this.serviceProcessMappingRepository.find({
+      where: {serviceId, isDeleted: false} as any,
+      order: ['sequence ASC'],
+    });
+
+    if (!mappings.length) return [];
+
+    const stepIds = mappings.map(m => m.processStepId);
+    const steps = await this.processStepRepository.find({
+      where: {id: {inq: stepIds}} as any,
+    });
+    const stepMap = new Map(steps.map(s => [s.id, s]));
+
+    return mappings.map(m => {
+      const step = stepMap.get(m.processStepId);
+      return {
+        id: m.id,
+        serviceId: m.serviceId,
+        processStepId: m.processStepId,
+        sequence: m.sequence,
+        isInitial: m.isInitial,
+        isMandatory: m.isMandatory,
+        isActive: m.isActive,
+        processStep: step
+          ? {id: step.id, name: step.name, code: step.code, description: step.description}
+          : null,
+      };
+    });
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:read']})
   @get('/service-process-mappings/count')
   @response(200, {
     description: 'ServiceProcessMapping model count',

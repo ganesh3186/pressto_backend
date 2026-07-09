@@ -153,6 +153,26 @@ export class SecurityDepositService {
     });
   }
 
+  // Returns the full transaction ledger (deposits + deductions) with current balance.
+  async getDepositHistory(customerId: string, limit = 50, skip = 0): Promise<{balance: number; transactions: object[]}> {
+    const deposit = await this.depositRepository.findOne({where: {customerId}});
+    if (!deposit) {
+      return {balance: 0, transactions: []};
+    }
+
+    const transactions = await this.depositTxRepository.find({
+      where: {securityDepositId: deposit.id, isDeleted: false} as any,
+      order: ['transactionDate DESC'],
+      limit,
+      skip,
+    });
+
+    return {
+      balance: Number(deposit.availableBalance ?? 0),
+      transactions,
+    };
+  }
+
   // Admin directly tops up — no pending phase since payment is already collected in-store
   async adminTopup(
     customerId: string,

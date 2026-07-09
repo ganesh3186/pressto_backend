@@ -68,11 +68,10 @@ export class AdminCustomerRechargeController {
   @response(200, {description: 'Customer wallet recharge history'})
   async adminWalletRechargeHistory(
     @param.path.string('customerId') customerId: string,
-    @param.query.number('limit') limit = 20,
+    @param.query.number('limit') limit = 50,
     @param.query.number('skip') skip = 0,
   ): Promise<object> {
-    const history = await this.walletService.getRechargeHistory(customerId, limit, skip);
-    return {history};
+    return this.walletService.getWalletHistory(customerId, limit, skip);
   }
 
   // ─── Admin Security Deposit Top-up ───────────────────────────────────────
@@ -122,10 +121,9 @@ export class AdminCustomerRechargeController {
   @response(200, {description: 'Customer security deposit top-up history'})
   async adminSecurityDepositTopupHistory(
     @param.path.string('customerId') customerId: string,
-    @param.query.number('limit') limit = 20,
+    @param.query.number('limit') limit = 50,
     @param.query.number('skip') skip = 0,
   ): Promise<object> {
-    const history = await this.securityDepositService.getTopupHistory(customerId, limit, skip);
-    return {history};
+    return this.securityDepositService.getDepositHistory(customerId, limit, skip);
   }
 }
