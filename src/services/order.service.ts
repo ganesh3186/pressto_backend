@@ -797,10 +797,14 @@ export class OrderService {
 
     const orderIds = orders.map(o => o.id);
     const customerIds = [...new Set(orders.map(o => o.customerId))];
+    const parentOrderIds = [...new Set(orders.map(o => (o as any).parentOrderId).filter(Boolean))];
 
-    const [customers, paymentTxns] = await Promise.all([
+    const [customers, paymentTxns, parentOrders] = await Promise.all([
       this.customerRepo.find({where: {id: {inq: customerIds}} as any}),
       this.paymentTransactionRepo.find({where: {orderId: {inq: orderIds}} as any}),
+      parentOrderIds.length
+        ? this.orderRepo.find({where: {id: {inq: parentOrderIds}} as any, fields: {id: true, orderNumber: true} as any})
+        : Promise.resolve([]),
     ]);
 
     const userIds = [...new Set(customers.map(c => c.userId).filter(Boolean))];
@@ -813,6 +817,7 @@ export class OrderService {
 
     const customerMap = new Map(customers.map(c => [c.id, c]));
     const userMap = new Map(users.map(u => [u.id, u]));
+    const parentOrderMap = new Map(parentOrders.map(o => [o.id, (o as any).orderNumber]));
 
     const paymentsByOrder = new Map<string, number>();
     for (const pt of paymentTxns) {
@@ -822,7 +827,13 @@ export class OrderService {
     const rows = orders.map(order => {
       const customer = customerMap.get(order.customerId);
       const user = customer ? userMap.get(customer.userId) : undefined;
-      const totalCollected = paymentsByOrder.get(order.id) ?? 0;
+      const txnCollected = paymentsByOrder.get(order.id) ?? 0;
+      const allocPay = Number(order.allocatedPayment ?? 0);
+      const isChildOrder = !!(order as any).parentOrderId;
+      // Child orders: allocated base + any new payments recorded directly on the child
+      // Split parent orders (allocPay > 0): use allocated share only (original txns are redistributed)
+      // Regular orders: use transaction total
+      const totalCollected = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
       const totalAmount = Number(order.totalAmount ?? 0);
       const balanceDue = Math.max(0, totalAmount - totalCollected);
 
@@ -847,6 +858,8 @@ export class OrderService {
         totalCollected,
         balanceDue,
         paymentStatus,
+        parentOrderId: (order as any).parentOrderId ?? null,
+        parentOrderNumber: (order as any).parentOrderId ? (parentOrderMap.get((order as any).parentOrderId) ?? null) : null,
         customer: customer
           ? {
               id: customer.id,
@@ -873,11 +886,12 @@ export class OrderService {
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     // ── Parallel batch 1: order sub-tables ───────────────────────────────────
-    const [orderItems, orderCharges, statusHistory, paymentTransactions] = await Promise.all([
+    const [orderItems, orderCharges, statusHistory, paymentTransactions, splitChildren] = await Promise.all([
       this.orderItemRepo.find({where: {orderId}}),
       this.orderChargeRepo.find({where: {orderId}}),
       this.statusHistoryRepo.find({where: {orderId}, order: ['changedAt ASC']}),
       this.paymentTransactionRepo.find({where: {orderId}}),
+      this.orderRepo.find({where: {parentOrderId: orderId, isDeleted: false} as any, fields: {id: true, orderNumber: true, status: true, totalAmount: true, allocatedPayment: true} as any}),
     ]);
 
     const orderItemIds = orderItems.map(i => i.id);
@@ -980,7 +994,13 @@ export class OrderService {
     }));
 
     // ── Payment summary ───────────────────────────────────────────────────────
-    const totalCollected = paymentTransactions.reduce((s, p) => s + Number(p.amount), 0);
+    const txnCollected = paymentTransactions.reduce((s, p) => s + Number(p.amount), 0);
+    const allocPay = Number(order.allocatedPayment ?? 0);
+    const isChildOrder = !!order.parentOrderId;
+    // Child: allocated base (transferred from parent) + any new direct payments
+    // Split parent (allocPay > 0): only the allocated share counts — original transactions were redistributed
+    // Regular order: transaction total
+    const totalCollected = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
     const totalAmount = Number(order.totalAmount ?? 0);
     const balanceDue = Math.max(0, totalAmount - totalCollected);
 
@@ -999,6 +1019,13 @@ export class OrderService {
               countryCode: customerUser?.countryCode ?? null,
             }
           : null,
+        splitChildren: splitChildren.map(c => ({
+          id: c.id,
+          orderNumber: c.orderNumber,
+          status: c.status,
+          totalAmount: c.totalAmount,
+          allocatedPayment: c.allocatedPayment,
+        })),
       },
       items: enrichedItems,
       orderCharges,
@@ -1006,6 +1033,7 @@ export class OrderService {
       paymentTransactions,
       totalCollected,
       balanceDue,
+      paymentStatus: totalAmount === 0 ? 'pending' : totalCollected >= totalAmount ? 'paid' : totalCollected > 0 ? 'partial' : 'pending',
     };
   }
 
@@ -1075,14 +1103,9 @@ export class OrderService {
     const subOrderTax = parseFloat((Number(order.taxAmount ?? 0) * ratio).toFixed(2));
     const subOrderTotal = parseFloat((subOrderSubtotal - subOrderDiscount + subOrderTax).toFixed(2));
 
-    // Proportional payment allocation
-    const existingPayments = await this.paymentTransactionRepo.find({where: {orderId}});
-    const totalPaid = existingPayments.reduce((s, p) => s + Number(p.amount), 0);
-    const allocatedPayment = parseFloat((totalPaid * ratio).toFixed(2));
-
-    // Sub-order number: ORD000001-S1, ORD000001-S2, ...
-    const subOrderCount = await this.orderRepo.count({parentOrderId: orderId} as any);
-    const subOrderNumber = `${order.orderNumber}-S${subOrderCount.count + 1}`;
+    // Sub-order gets a normal sequential order number (same format as any other order)
+    const totalOrderCount = await this.orderRepo.count();
+    const subOrderNumber = `ORD${String(totalOrderCount.count + 1).padStart(6, '0')}`;
 
     // Derive sub-order status from the earliest garment status in the split set
     const GARMENT_STATUS_PRIORITY: GarmentStatus[] = [
@@ -1105,6 +1128,50 @@ export class OrderService {
       return gIdx !== -1 && (minIdx === -1 || gIdx < minIdx) ? g.status as GarmentStatus : min;
     }, garments[0].status as GarmentStatus);
     const subOrderStatus = GARMENT_TO_ORDER_STATUS[earliestGarmentStatus] ?? OrderStatus.RECEIVED_AT_STORE;
+
+    // Payment allocation: give existing payment to whichever order delivers first
+    // (more advanced garment status = closer to delivery)
+    const existingPayments = await this.paymentTransactionRepo.find({where: {orderId}});
+    const txnPaid = existingPayments.reduce((s, p) => s + Number(p.amount), 0);
+    // Child orders carry no transaction records — their payment lives in allocatedPayment.
+    // New direct payments (if any) are in txnPaid. Both must be included.
+    const totalPaid = order.parentOrderId
+      ? Number(order.allocatedPayment ?? 0) + txnPaid
+      : txnPaid;
+
+    // Find the earliest status among remaining (non-split) parent garments
+    const allParentGarments = await this.garmentRepo.find({
+      where: {orderItemId: {inq: parentOrderItems.map(oi => oi.id)}, isDeleted: false} as any,
+    });
+    const remainingGarments = allParentGarments.filter(g => !garmentIds.includes(g.id));
+    const parentEarliestStatus = remainingGarments.length
+      ? remainingGarments.reduce((min, g) => {
+          const minIdx = GARMENT_STATUS_PRIORITY.indexOf(min);
+          const gIdx = GARMENT_STATUS_PRIORITY.indexOf(g.status as GarmentStatus);
+          return gIdx !== -1 && (minIdx === -1 || gIdx < minIdx) ? g.status as GarmentStatus : min;
+        }, remainingGarments[0].status as GarmentStatus)
+      : earliestGarmentStatus;
+
+    const childStatusIdx = GARMENT_STATUS_PRIORITY.indexOf(earliestGarmentStatus);
+    const parentStatusIdx = GARMENT_STATUS_PRIORITY.indexOf(parentEarliestStatus);
+
+    // Higher index = more advanced pipeline stage = delivers sooner
+    let allocatedPayment: number;
+    let parentAllocatedPayment: number;
+    const parentNewTotal = parseFloat(
+      (Number(order.totalAmount ?? 0) - subOrderTotal).toFixed(2),
+    );
+    if (childStatusIdx >= parentStatusIdx) {
+      // Child delivers first — give it full payment up to its total
+      allocatedPayment = Math.min(totalPaid, subOrderTotal);
+      parentAllocatedPayment = Math.max(0, totalPaid - allocatedPayment);
+    } else {
+      // Parent delivers first — keep payment on parent up to its (new) total
+      parentAllocatedPayment = Math.min(totalPaid, parentNewTotal);
+      allocatedPayment = Math.max(0, totalPaid - parentAllocatedPayment);
+    }
+    allocatedPayment = parseFloat(allocatedPayment.toFixed(2));
+    parentAllocatedPayment = parseFloat(parentAllocatedPayment.toFixed(2));
 
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED' as any});
     try {
@@ -1167,17 +1234,43 @@ export class OrderService {
         }
       }
 
-      // Mark parent as partially dispatched
+      // Update parent order item quantities — reduce by the garments moved out
+      for (const [itemId, itemGarments] of garmentsByItem) {
+        const oi = parentItemMap.get(itemId)!;
+        const newQty = Math.max(0, Number(oi.quantity) - itemGarments.length);
+        if (newQty === 0) {
+          await this.orderItemRepo.deleteById(oi.id, {transaction: tx} as any);
+        } else {
+          const newTotal = parseFloat((Number(oi.unitPrice ?? 0) * newQty).toFixed(2));
+          await this.orderItemRepo.updateById(
+            oi.id,
+            {quantity: newQty, totalPrice: newTotal},
+            {transaction: tx} as any,
+          );
+        }
+      }
+
+      // Reduce parent order financials
+      const parentNewSubtotal = parseFloat((Number(order.subtotal ?? 0) - subOrderSubtotal).toFixed(2));
+      const parentNewDiscount = parseFloat((Number(order.discountAmount ?? 0) - subOrderDiscount).toFixed(2));
+      const parentNewTax = parseFloat((Number(order.taxAmount ?? 0) - subOrderTax).toFixed(2));
       await this.orderRepo.updateById(
         orderId,
-        {status: OrderStatus.PARTIALLY_DISPATCHED},
-        {transaction: tx},
+        {
+          subtotal: parentNewSubtotal,
+          discountAmount: parentNewDiscount,
+          taxAmount: parentNewTax,
+          totalAmount: parentNewTotal,
+          allocatedPayment: parentAllocatedPayment,
+        },
+        {transaction: tx} as any,
       );
+
       await this.statusHistoryRepo.create(
         {
           id: v4(),
           orderId,
-          status: OrderStatus.PARTIALLY_DISPATCHED,
+          status: order.status,
           changedAt: now,
           changedBy: createdBy,
           remarks: `Split order created: ${subOrderNumber}`,

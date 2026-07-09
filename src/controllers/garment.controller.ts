@@ -25,9 +25,11 @@ import {
   GarmentStainImageRepository,
   GarmentStainRepository,
   GarmentStatusHistoryRepository,
+  ItemRepository,
   OrderItemRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
+  ServiceRepository,
 } from '../repositories';
 
 export class GarmentController {
@@ -42,6 +44,8 @@ export class GarmentController {
     @repository(GarmentImageRepository) private imageRepository: GarmentImageRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepository: GarmentStatusHistoryRepository,
     @repository(OrderStatusHistoryRepository) private orderStatusHistoryRepository: OrderStatusHistoryRepository,
+    @repository(ItemRepository) private itemRepository: ItemRepository,
+    @repository(ServiceRepository) private serviceRepository: ServiceRepository,
   ) {}
 
   // ─── Register Garments for an Order Item ──────────────────────────────────
@@ -138,6 +142,55 @@ export class GarmentController {
     return {garments: garmentDetails};
   }
 
+  // ─── Scan Lookup (by tag number or UUID) ─────────────────────────────────
+  // Must be declared before /garments/{garmentId} so the static path wins.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['garment:read']})
+  @get('/garments/lookup')
+  @response(200, {description: 'Full garment details by tag number or UUID — used by scan/QR lookup'})
+  async lookupGarment(
+    @param.query.string('q') q: string,
+  ): Promise<object> {
+    if (!q?.trim()) throw new HttpErrors.BadRequest('Query param "q" is required.');
+
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(q.trim());
+
+    const garment = isUuid
+      ? await this.garmentRepository.findOne({where: {id: q.trim(), isDeleted: false}})
+      : await this.garmentRepository.findOne({where: {garmentTagNumber: q.trim(), isDeleted: false}});
+
+    if (!garment) throw new HttpErrors.NotFound(`Garment "${q}" not found.`);
+
+    const orderItem = await this.orderItemRepository.findOne({where: {id: garment.orderItemId}});
+    const orderId = orderItem?.orderId ?? null;
+
+    const [item, service] = await Promise.all([
+      orderItem?.itemId ? this.itemRepository.findOne({where: {id: orderItem.itemId}}) : Promise.resolve(null),
+      orderItem?.serviceId ? this.serviceRepository.findOne({where: {id: orderItem.serviceId}}) : Promise.resolve(null),
+    ]);
+
+    const [damages, stains, images, statusHistory] = await Promise.all([
+      this._damagesWithImages(garment.id),
+      this._stainsWithImages(garment.id),
+      this.imageRepository.find({where: {garmentId: garment.id}}),
+      this.garmentStatusHistoryRepository.find({where: {garmentId: garment.id}, order: ['changedAt DESC']}),
+    ]);
+
+    return {
+      ...garment,
+      orderId,
+      orderItemId: garment.orderItemId,
+      itemName: item?.name ?? null,
+      serviceName: service?.name ?? null,
+      damages,
+      stains,
+      images,
+      statusHistory,
+    };
+  }
+
   // ─── Get Single Garment ───────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -156,6 +209,41 @@ export class GarmentController {
     ]);
 
     return {...garment, damages, stains, images, statusHistory};
+  }
+
+  // ─── Search Garments by Filter ───────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['garment:read']})
+  @get('/garments')
+  @response(200, {description: 'Search garments by filter'})
+  async searchGarments(
+    @param.query.string('filter') filterStr?: string,
+  ): Promise<object[]> {
+    let where: Record<string, unknown> = {isDeleted: false};
+
+    if (filterStr) {
+      try {
+        const parsed = JSON.parse(filterStr);
+        if (parsed?.where && typeof parsed.where === 'object') {
+          where = {...parsed.where, isDeleted: false};
+        }
+      } catch {
+        // ignore malformed filter
+      }
+    }
+
+    const garments = await this.garmentRepository.find({where, limit: 20});
+
+    // Resolve orderId via orderItem so callers can navigate to the parent order
+    const enriched = await Promise.all(
+      garments.map(async (g) => {
+        const orderItem = await this.orderItemRepository.findOne({where: {id: g.orderItemId}});
+        return {...g, orderId: orderItem?.orderId ?? null};
+      }),
+    );
+
+    return enriched;
   }
 
   // ─── Update Garment ───────────────────────────────────────────────────────
