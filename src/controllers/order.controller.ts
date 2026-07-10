@@ -229,17 +229,26 @@ export class OrderController {
                 type: 'array',
                 minItems: 1,
                 items: {type: 'string', format: 'uuid'},
-                description: 'IDs of READY garments to split out into a sub-order',
+                description: 'IDs of garments to split out into a sub-order',
               },
+              deliveryDate: {type: 'string', format: 'date-time', description: 'New delivery date for the sub-order'},
+              expressMultiplier: {type: 'number', description: 'Delivery pricing multiplier derived from the new delivery date (1 = standard, >1 = express/lightning)'},
               remarks: {type: 'string'},
             },
           },
         },
       },
     })
-    body: {garmentIds: string[]; remarks?: string},
+    body: {garmentIds: string[]; deliveryDate?: string; expressMultiplier?: number; remarks?: string},
   ): Promise<object> {
-    return this.orderService.splitOrder(id, body.garmentIds, body.remarks, currentUser[securityId]);
+    return this.orderService.splitOrder(
+      id,
+      body.garmentIds,
+      body.deliveryDate,
+      body.expressMultiplier,
+      body.remarks,
+      currentUser[securityId],
+    );
   }
 
   // ─── Add Payment to Existing Order ────────────────────────────────────────

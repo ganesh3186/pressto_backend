@@ -4,11 +4,20 @@ import {HttpErrors} from '@loopback/rest';
 import {ApprovalActionRepository} from '../repositories/approval-action.repository';
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
+import {GarmentRepository} from '../repositories/garment.repository';
+import {GarmentStatusHistoryRepository} from '../repositories/garment-status-history.repository';
 import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {GarmentStatus} from '../models/garment-status.enum';
 import {APPROVAL_ROLE_ROUTING, ApprovalRequest} from '../models/approval-request.model';
 import {AuditService} from './audit.service';
+
+const GARMENT_STATUS_ON_APPROVAL: Partial<Record<ApprovalRequestType, GarmentStatus>> = {
+  [ApprovalRequestType.RETURN_ITEM]: GarmentStatus.ON_HOLD,
+  [ApprovalRequestType.ITEM_DAMAGED]: GarmentStatus.ON_HOLD,
+  [ApprovalRequestType.REPROCESS]: GarmentStatus.IN_PROCESS,
+};
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class ApprovalService {
@@ -16,6 +25,8 @@ export class ApprovalService {
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @repository(ApprovalActionRepository) private approvalActionRepo: ApprovalActionRepository,
     @repository(ApprovalAuditLogRepository) private approvalAuditLogRepo: ApprovalAuditLogRepository,
+    @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
     @inject('services.audit') private auditService: AuditService,
   ) {}
 
@@ -104,6 +115,32 @@ export class ApprovalService {
       remarks: params.comments,
     });
 
+    // Apply downstream effect when approved
+    if (params.action === ApprovalActionType.APPROVED) {
+      await this.applyApprovalEffect(request, params.performedBy);
+    }
+
     return resolved;
+  }
+
+  private async applyApprovalEffect(request: ApprovalRequest, performedBy: string): Promise<void> {
+    if (request.entityType !== 'garment') return;
+
+    const newStatus = GARMENT_STATUS_ON_APPROVAL[request.type];
+    if (!newStatus) return;
+
+    const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
+    if (!garment) return;
+
+    const {v4} = await import('uuid');
+    await this.garmentRepo.updateById(request.entityId, {status: newStatus});
+    await this.garmentStatusHistoryRepo.create({
+      id: v4(),
+      garmentId: request.entityId,
+      status: newStatus,
+      changedAt: new Date(),
+      changedBy: performedBy,
+      remarks: `Auto-updated via approval: ${request.type}`,
+    });
   }
 }

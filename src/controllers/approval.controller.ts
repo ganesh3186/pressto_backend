@@ -10,6 +10,7 @@ import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {ApprovalRequest} from '../models/approval-request.model';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
+import {GarmentRepository, OrderItemRepository, OrderRepository, ItemRepository} from '../repositories';
 import {ApprovalService} from '../services/approval.service';
 
 export class ApprovalController {
@@ -17,7 +18,36 @@ export class ApprovalController {
     @inject('services.approval') private approvalService: ApprovalService,
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @repository(ApprovalAuditLogRepository) private approvalAuditLogRepo: ApprovalAuditLogRepository,
+    @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
+    @repository(OrderRepository) private orderRepo: OrderRepository,
+    @repository(ItemRepository) private itemRepo: ItemRepository,
   ) {}
+
+  private async enrichRequest(req: ApprovalRequest): Promise<object> {
+    if (req.entityType !== 'garment') return req;
+
+    const garment = await this.garmentRepo.findOne({where: {id: req.entityId}});
+    if (!garment) return req;
+
+    const orderItem = garment.orderItemId
+      ? await this.orderItemRepo.findOne({where: {id: garment.orderItemId}})
+      : null;
+
+    const [order, item] = await Promise.all([
+      orderItem?.orderId ? this.orderRepo.findOne({where: {id: orderItem.orderId}}) : Promise.resolve(null),
+      orderItem?.itemId ? this.itemRepo.findOne({where: {id: orderItem.itemId}}) : Promise.resolve(null),
+    ]);
+
+    return {
+      ...req,
+      garmentTag: garment.garmentTagNumber,
+      garmentStatus: garment.status,
+      itemName: item?.name ?? null,
+      orderNumber: (order as any)?.orderNumber ?? null,
+      orderId: orderItem?.orderId ?? null,
+    };
+  }
 
   // ─── Create Approval Request ──────────────────────────────────────────────
 
@@ -115,7 +145,9 @@ export class ApprovalController {
       where,
       order: ['createdAt DESC'],
     });
-    return {requests};
+
+    const enriched = await Promise.all(requests.map(r => this.enrichRequest(r)));
+    return {requests: enriched};
   }
 
   // ─── Get Single Request + Audit Trail ────────────────────────────────────

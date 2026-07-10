@@ -14,10 +14,12 @@ import {
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {GarmentImageType} from '../models/garment-image-type.enum';
-import {GarmentStatus} from '../models/garment-status.enum';
+import {GarmentStatus, GARMENT_STATUS_TRANSITIONS} from '../models/garment-status.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {UnprocessedHandlingMode} from '../models/unprocessed-handling-mode.enum';
 import {
+  BrandRepository,
+  ColorRepository,
   GarmentDamageImageRepository,
   GarmentDamageRepository,
   GarmentImageRepository,
@@ -46,6 +48,8 @@ export class GarmentController {
     @repository(OrderStatusHistoryRepository) private orderStatusHistoryRepository: OrderStatusHistoryRepository,
     @repository(ItemRepository) private itemRepository: ItemRepository,
     @repository(ServiceRepository) private serviceRepository: ServiceRepository,
+    @repository(BrandRepository) private brandRepository: BrandRepository,
+    @repository(ColorRepository) private colorRepository: ColorRepository,
   ) {}
 
   // ─── Register Garments for an Order Item ──────────────────────────────────
@@ -166,9 +170,12 @@ export class GarmentController {
     const orderItem = await this.orderItemRepository.findOne({where: {id: garment.orderItemId}});
     const orderId = orderItem?.orderId ?? null;
 
-    const [item, service] = await Promise.all([
+    const [item, service, order, brand, color] = await Promise.all([
       orderItem?.itemId ? this.itemRepository.findOne({where: {id: orderItem.itemId}}) : Promise.resolve(null),
       orderItem?.serviceId ? this.serviceRepository.findOne({where: {id: orderItem.serviceId}}) : Promise.resolve(null),
+      orderId ? this.orderRepository.findOne({where: {id: orderId}}) : Promise.resolve(null),
+      garment.brandId ? this.brandRepository.findOne({where: {id: garment.brandId}}) : Promise.resolve(null),
+      garment.colorId ? this.colorRepository.findOne({where: {id: garment.colorId}}) : Promise.resolve(null),
     ]);
 
     const [damages, stains, images, statusHistory] = await Promise.all([
@@ -181,9 +188,12 @@ export class GarmentController {
     return {
       ...garment,
       orderId,
+      orderNumber: (order as any)?.orderNumber ?? null,
       orderItemId: garment.orderItemId,
       itemName: item?.name ?? null,
       serviceName: service?.name ?? null,
+      brandName: (brand as any)?.name ?? null,
+      colorName: (color as any)?.name ?? null,
       damages,
       stains,
       images,
@@ -201,14 +211,26 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
-    const [damages, stains, images, statusHistory] = await Promise.all([
+    const orderItem = await this.orderItemRepository.findOne({where: {id: garment.orderItemId}});
+    const [damages, stains, images, statusHistory, brand, color] = await Promise.all([
       this._damagesWithImages(garmentId),
       this._stainsWithImages(garmentId),
       this.imageRepository.find({where: {garmentId}}),
       this.garmentStatusHistoryRepository.find({where: {garmentId}, order: ['changedAt DESC']}),
+      garment.brandId ? this.brandRepository.findOne({where: {id: garment.brandId}}) : Promise.resolve(null),
+      garment.colorId ? this.colorRepository.findOne({where: {id: garment.colorId}}) : Promise.resolve(null),
     ]);
 
-    return {...garment, damages, stains, images, statusHistory};
+    return {
+      ...garment,
+      orderId: orderItem?.orderId ?? null,
+      brandName: (brand as any)?.name ?? null,
+      colorName: (color as any)?.name ?? null,
+      damages,
+      stains,
+      images,
+      statusHistory,
+    };
   }
 
   // ─── Search Garments by Filter ───────────────────────────────────────────
@@ -317,6 +339,21 @@ export class GarmentController {
   ): Promise<object> {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+
+    // Block direct on_hold — must come through the approval flow
+    if (body.status === GarmentStatus.ON_HOLD) {
+      throw new HttpErrors.BadRequest(
+        "Garment cannot be put on hold directly. Submit a return_item or item_damaged approval request.",
+      );
+    }
+
+    // Validate state machine transition
+    const allowed = GARMENT_STATUS_TRANSITIONS[garment.status as GarmentStatus] ?? [];
+    if (!allowed.includes(body.status)) {
+      throw new HttpErrors.BadRequest(
+        `Invalid transition: '${garment.status}' → '${body.status}'. Allowed: [${allowed.join(', ') || 'none'}].`,
+      );
+    }
 
     const {v4} = await import('uuid');
     await this.garmentRepository.updateById(garmentId, {status: body.status});
@@ -579,50 +616,66 @@ export class GarmentController {
     const order = await this.orderRepository.findOne({where: {id: orderItem.orderId, isDeleted: false}});
     if (!order) return;
 
+    // Terminal orders don't get auto-synced
+    if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.CANCELLED) return;
+
     const allItems = await this.orderItemRepository.find({where: {orderId: order.id}});
     const allItemIds = allItems.map(i => i.id);
     const allGarments = await this.garmentRepository.find({
       where: {orderItemId: {inq: allItemIds}, isDeleted: false} as any,
     });
 
+    // Compute effective status for each garment (apply the incoming change optimistically)
+    const effectiveStatuses = allGarments.map(g =>
+      g.id === garmentId ? newStatus : (g.status as GarmentStatus),
+    );
+
+    // Active garments = those not on hold (on_hold garments are excluded from pipeline)
+    const activeStatuses = effectiveStatuses.filter(s => s !== GarmentStatus.ON_HOLD);
+
     const {v4} = await import('uuid');
     const now = new Date();
 
-    // Trigger 1: first garment reaches IN_INSPECTION → order moves to in_inspection
-    if (newStatus === GarmentStatus.IN_INSPECTION && order.status === OrderStatus.RECEIVED_AT_STORE) {
-      await this.orderRepository.updateById(order.id, {status: OrderStatus.IN_INSPECTION});
+    const setOrderStatus = async (status: OrderStatus, remarks: string) => {
+      if (order.status === status) return;
+      await this.orderRepository.updateById(order.id, {status});
       await this.orderStatusHistoryRepository.create({
-        id: v4(),
-        orderId: order.id,
-        status: OrderStatus.IN_INSPECTION,
-        changedAt: now,
-        changedBy,
-        remarks: 'Auto-advanced: first garment moved to inspection',
+        id: v4(), orderId: order.id, status, changedAt: now, changedBy, remarks,
       });
+    };
+
+    // All garments on hold = full return → cancel order
+    if (activeStatuses.length === 0) {
+      await setOrderStatus(OrderStatus.CANCELLED, 'Auto-cancelled: all garments returned/on hold');
       return;
     }
 
-    // Trigger 2: all garments past inspection → order moves to in_process
-    const PAST_INSPECTION: GarmentStatus[] = [
-      GarmentStatus.IN_PROCESS,
-      GarmentStatus.QUALITY_CHECK,
-      GarmentStatus.READY,
-      GarmentStatus.OUT_FOR_DELIVERY,
-      GarmentStatus.DELIVERED,
-    ];
-    const allPastInspection = allGarments.every(g =>
-      PAST_INSPECTION.includes(g.id === garmentId ? newStatus : (g.status as GarmentStatus)),
-    );
-    if (allPastInspection && order.status === OrderStatus.IN_INSPECTION) {
-      await this.orderRepository.updateById(order.id, {status: OrderStatus.IN_PROCESS});
-      await this.orderStatusHistoryRepository.create({
-        id: v4(),
-        orderId: order.id,
-        status: OrderStatus.IN_PROCESS,
-        changedAt: now,
-        changedBy,
-        remarks: 'Auto-advanced: all garments completed inspection',
-      });
+    // Rank every status so we can find the bottleneck (minimum rank among active garments)
+    const STATUS_RANK: Record<GarmentStatus, number> = {
+      [GarmentStatus.RECEIVED]:         0,
+      [GarmentStatus.IN_INSPECTION]:    1,
+      [GarmentStatus.IN_PROCESS]:       2,
+      [GarmentStatus.QUALITY_CHECK]:    3,
+      [GarmentStatus.READY]:            4,
+      [GarmentStatus.OUT_FOR_DELIVERY]: 5,
+      [GarmentStatus.DELIVERED]:        6,
+      [GarmentStatus.ON_HOLD]:         -1,
+    };
+
+    const RANK_TO_ORDER_STATUS: Record<number, OrderStatus> = {
+      0: OrderStatus.RECEIVED_AT_STORE,
+      1: OrderStatus.IN_INSPECTION,
+      2: OrderStatus.IN_PROCESS,
+      3: OrderStatus.QUALITY_CHECK,
+      4: OrderStatus.READY,
+      5: OrderStatus.OUT_FOR_DELIVERY,
+      6: OrderStatus.DELIVERED,
+    };
+
+    const minRank = Math.min(...activeStatuses.map(s => STATUS_RANK[s] ?? 0));
+    const derived = RANK_TO_ORDER_STATUS[minRank];
+    if (derived) {
+      await setOrderStatus(derived, `Auto-synced: garment pipeline bottleneck is '${activeStatuses.find(s => STATUS_RANK[s] === minRank)}'`);
     }
   }
 
