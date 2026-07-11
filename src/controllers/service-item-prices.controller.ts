@@ -155,9 +155,11 @@ export class ServiceItemPricesController {
     // Key: `${serviceId}:${itemId}` → mapping (for resolving additional service prices)
     const mappingLookup = new Map(mappings.map(m => [`${m.serviceId}:${m.itemId}`, m]));
 
+    // Store/cluster/region percentage is an UPLIFT on top of base (e.g. 30 = +30%).
+    // 0 = no change. First match in the store→cluster→region waterfall wins.
     const resolvePrice = (basePrice: number) =>
       appliedPercentage !== null
-        ? parseFloat((basePrice * (appliedPercentage / 100)).toFixed(2))
+        ? parseFloat((basePrice * (1 + appliedPercentage / 100)).toFixed(2))
         : basePrice;
 
     // 4. Apply resolved percentage to each mapping and hydrate additional services

@@ -6,6 +6,7 @@ import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.rep
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
 import {GarmentRepository} from '../repositories/garment.repository';
 import {GarmentStatusHistoryRepository} from '../repositories/garment-status-history.repository';
+import {GarmentProcessLogRepository} from '../repositories/garment-process-log.repository';
 import {InvoiceRepository} from '../repositories/invoice.repository';
 import {OrderItemRepository} from '../repositories/order-item.repository';
 import {OrderRepository} from '../repositories/order.repository';
@@ -14,8 +15,10 @@ import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
+import {ProcessLogStatus} from '../models/process-log-status.enum';
 import {APPROVAL_ROLE_ROUTING, ApprovalRequest} from '../models/approval-request.model';
 import {AuditService} from './audit.service';
+import {OrderService} from './order.service';
 
 // What status to set on the garment immediately when a request is CREATED
 const GARMENT_STATUS_ON_CREATE: Partial<Record<ApprovalRequestType, GarmentStatus>> = {
@@ -39,11 +42,13 @@ export class ApprovalService {
     @repository(ApprovalAuditLogRepository) private approvalAuditLogRepo: ApprovalAuditLogRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
+    @repository(GarmentProcessLogRepository) private processLogRepo: GarmentProcessLogRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(ServiceItemMappingRepository) private serviceItemMappingRepo: ServiceItemMappingRepository,
     @inject('services.audit') private auditService: AuditService,
+    @inject('services.order') private orderService: OrderService,
   ) {}
 
   async createRequest(params: {
@@ -181,7 +186,41 @@ export class ApprovalService {
     }
 
     // Item damaged approved: log it (no status change — garment stays on_hold until manually resolved)
-    // Reprocess approved: handled externally via init process
+
+    // Reprocess approved: reset the process logs and send the garment back into
+    // processing so the workshop redoes every step. The garment_status_history
+    // entry written below is the trail the client sees for the reprocess.
+    if (request.type === ApprovalRequestType.REPROCESS) {
+      await this._applyReprocess(request, performedBy);
+    }
+  }
+
+  // ─── Reprocess: reset process logs + return garment to in_process ──────────
+
+  private async _applyReprocess(request: ApprovalRequest, performedBy: string): Promise<void> {
+    const garmentId = request.entityId;
+
+    // Reset every process-step log back to pending so the full process runs again.
+    const logs = await this.processLogRepo.find({where: {garmentId} as any});
+    for (const log of logs) {
+      // eslint-disable-next-line no-await-in-loop
+      await this.processLogRepo.updateById(log.id, {
+        status: ProcessLogStatus.PENDING,
+        startedAt: undefined,
+        startedBy: undefined,
+        completedAt: undefined,
+        completedBy: undefined,
+        qrScanned: false,
+      } as any);
+    }
+
+    const reasonSuffix = request.requestReason ? ` — reason: ${request.requestReason}` : '';
+    await this._updateGarmentStatus(
+      garmentId,
+      GarmentStatus.IN_PROCESS,
+      performedBy,
+      `Reprocess approved (request ${request.id}) — garment sent back for reprocessing${reasonSuffix}`,
+    );
   }
 
   // ─── Downstream effects on REJECT ────────────────────────────────────────
@@ -220,15 +259,22 @@ export class ApprovalService {
     const orderItem = await this.orderItemRepo.findOne({where: {id: orderItemId}});
     if (!orderItem) return;
 
-    // Look up the new service-item mapping for pricing
-    const mapping = await this.serviceItemMappingRepo.findOne({
-      where: {serviceId: toServiceId, itemId: orderItem.itemId, isActive: true, isDeleted: false},
-    });
-
-    const newBasePrice = mapping ? Number(mapping.basePrice) : orderItem.basePrice ?? 0;
     const order = await this.orderRepo.findOne({where: {id: orderItem.orderId}});
-    const multiplier = order?.expressMultiplier ?? 1;
-    const newUnitPrice = parseFloat((newBasePrice * multiplier).toFixed(2));
+    if (!order) return;
+
+    // Reprice the new service through the SAME store→cluster→region→base waterfall,
+    // then apply the order's delivery-tier uplift — identical to order creation.
+    let pricing: {basePrice: number; resolvedPrice: number};
+    try {
+      pricing = await this.orderService.resolvePricing(order.storeId!, toServiceId, orderItem.itemId);
+    } catch {
+      // No price configured for the new service+item — fall back to existing base.
+      const base = Number(orderItem.basePrice) || 0;
+      pricing = {basePrice: base, resolvedPrice: base};
+    }
+    const deliveryMultiplier = 1 + (Number(order.deliveryTypePercentage) || 0) / 100;
+    const newBasePrice = pricing.basePrice;
+    const newUnitPrice = parseFloat((pricing.resolvedPrice * deliveryMultiplier).toFixed(2));
     const newTotalPrice = parseFloat((newUnitPrice * orderItem.quantity).toFixed(2));
 
     const oldTotalPrice = orderItem.totalPrice ?? 0;

@@ -184,8 +184,10 @@ export class OrderService {
   }
 
   // ─── Pricing ──────────────────────────────────────────────────────────────
+  // Public so other services (e.g. approval upgrades) reprice through the same
+  // store→cluster→region→base waterfall instead of re-implementing it.
 
-  private async resolvePricing(
+  async resolvePricing(
     storeId: string,
     serviceId: string,
     itemId: string,
@@ -211,7 +213,8 @@ export class OrderService {
     });
     if (override?.percentage != null) {
       const pct = Number(override.percentage);
-      return {basePrice: base, resolvedPrice: base * (pct / 100), appliedPercentage: pct, priceSource: 'store', estimatedDurationInDays};
+      // Percentage is an uplift on base (30 = +30%). 0 = no change. First match wins.
+      return {basePrice: base, resolvedPrice: parseFloat((base * (1 + pct / 100)).toFixed(2)), appliedPercentage: pct, priceSource: 'store', estimatedDurationInDays};
     }
 
     // Priority 2: cluster price list
@@ -222,7 +225,7 @@ export class OrderService {
       });
       if (clusterPriceList?.percentage != null) {
         const pct = Number(clusterPriceList.percentage);
-        return {basePrice: base, resolvedPrice: base * (pct / 100), appliedPercentage: pct, priceSource: 'cluster', estimatedDurationInDays};
+        return {basePrice: base, resolvedPrice: parseFloat((base * (1 + pct / 100)).toFixed(2)), appliedPercentage: pct, priceSource: 'cluster', estimatedDurationInDays};
       }
 
       // Priority 3: region price list
@@ -233,7 +236,7 @@ export class OrderService {
         });
         if (priceList?.percentage != null) {
           const pct = Number(priceList.percentage);
-          return {basePrice: base, resolvedPrice: base * (pct / 100), appliedPercentage: pct, priceSource: 'region', estimatedDurationInDays};
+          return {basePrice: base, resolvedPrice: parseFloat((base * (1 + pct / 100)).toFixed(2)), appliedPercentage: pct, priceSource: 'region', estimatedDurationInDays};
         }
       }
     }
@@ -322,6 +325,9 @@ export class OrderService {
         }
       }
     }
+    // Delivery tier is an uplift on the resolved price (standard 0% = no change,
+    // express/lightning add their configured %). This is the single price knob.
+    const deliveryMultiplier = 1 + (Number(deliveryTypePercentage) || 0) / 100;
 
     // ── Pricing ──
     const expressMultiplier = Math.max(1, Number(input.expressMultiplier ?? 1));
@@ -360,7 +366,7 @@ export class OrderService {
       }
 
       const unitPrice = parseFloat(
-        ((pricing.resolvedPrice + additionalServicesUnitPrice) * expressMultiplier).toFixed(2),
+        ((pricing.resolvedPrice + additionalServicesUnitPrice) * deliveryMultiplier).toFixed(2),
       );
       const totalPrice = parseFloat((unitPrice * item.quantity).toFixed(2));
       const estimatedDurationInDays =
@@ -1066,7 +1072,7 @@ export class OrderService {
     orderId: string,
     garmentIds: string[],
     deliveryDate: string | undefined,
-    expressMultiplier: number | undefined,
+    _expressMultiplier: number | undefined,
     remarks: string | undefined,
     createdBy: string,
   ): Promise<object> {
@@ -1117,14 +1123,13 @@ export class OrderService {
     }
     const parentItemMap = new Map(parentOrderItems.map(oi => [oi.id, oi]));
 
-    // Effective multiplier — use provided value or fall back to parent's
-    const effectiveMultiplier = (expressMultiplier != null && expressMultiplier > 0)
-      ? expressMultiplier
-      : Number(order.expressMultiplier ?? 1) || 1;
-    const multiplierChanged = effectiveMultiplier !== (Number(order.expressMultiplier ?? 1) || 1);
+    // Sub-order inherits the parent's express multiplier (kept only as a snapshot;
+    // delivery-tier uplift already lives inside each item's unit price).
+    const effectiveMultiplier = Number(order.expressMultiplier ?? 1) || 1;
 
     // Calculate sub-order financials
-    // Use ORIGINAL unit prices for the ratio so existing order-level discount is split fairly
+    // Use the parent unit prices (which already include the store/cluster/region
+    // and delivery-tier uplift). Splitting does not re-price — it inherits.
     let oldSubOrderSubtotal = 0;
     for (const [itemId, itemGarments] of garmentsByItem) {
       oldSubOrderSubtotal += Number(parentItemMap.get(itemId)!.unitPrice ?? 0) * itemGarments.length;
@@ -1132,17 +1137,7 @@ export class OrderService {
     const originalSubtotal = Number(order.subtotal ?? 0) || 1;
     const ratio = oldSubOrderSubtotal / originalSubtotal;
 
-    // Recompute sub-order item prices if multiplier changed
-    // resolvedPrice is the customer-discount-applied price before express uplift
-    let subOrderSubtotal = oldSubOrderSubtotal;
-    if (multiplierChanged) {
-      subOrderSubtotal = 0;
-      for (const [itemId, itemGarments] of garmentsByItem) {
-        const oi = parentItemMap.get(itemId)!;
-        const resolvedPrice = Number(oi.resolvedPrice ?? oi.basePrice ?? 0);
-        subOrderSubtotal += parseFloat((resolvedPrice * effectiveMultiplier).toFixed(2)) * itemGarments.length;
-      }
-    }
+    const subOrderSubtotal = oldSubOrderSubtotal;
 
     const subOrderDiscount = parseFloat((Number(order.discountAmount ?? 0) * ratio).toFixed(2));
     const subOrderTax = parseFloat((Number(order.taxAmount ?? 0) * ratio).toFixed(2));
@@ -1250,9 +1245,7 @@ export class OrderService {
       for (const [itemId, itemGarments] of garmentsByItem) {
         const oi = parentItemMap.get(itemId)!;
         const qty = itemGarments.length;
-        const newUnitPrice = multiplierChanged
-          ? parseFloat((Number(oi.resolvedPrice ?? oi.basePrice ?? 0) * effectiveMultiplier).toFixed(2))
-          : Number(oi.unitPrice ?? 0);
+        const newUnitPrice = Number(oi.unitPrice ?? 0);
         const subItemTotal = parseFloat((newUnitPrice * qty).toFixed(2));
 
         const subOrderItem = await this.orderItemRepo.create(

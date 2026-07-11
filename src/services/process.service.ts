@@ -4,11 +4,14 @@ import {HttpErrors} from '@loopback/rest';
 import {PresstoDataSource} from '../datasources';
 import {GarmentStatus} from '../models/garment-status.enum';
 import {ProcessLogStatus} from '../models/process-log-status.enum';
+import {OrderStatus} from '../models/order-status.enum';
 import {
   GarmentProcessLogRepository,
   GarmentRepository,
   GarmentStatusHistoryRepository,
   OrderItemRepository,
+  OrderRepository,
+  OrderStatusHistoryRepository,
   ProcessStepRepository,
   ServiceProcessMappingRepository,
   ServiceRepository,
@@ -22,6 +25,8 @@ export class ProcessService {
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
+    @repository(OrderRepository) private orderRepo: OrderRepository,
+    @repository(OrderStatusHistoryRepository) private orderStatusHistoryRepo: OrderStatusHistoryRepository,
     @repository(ServiceProcessMappingRepository) private spmRepo: ServiceProcessMappingRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(ProcessStepRepository) private processStepRepo: ProcessStepRepository,
@@ -210,6 +215,9 @@ export class ProcessService {
 
       await tx.commit();
 
+      // Roll the order status up now that this garment finished processing.
+      await this.syncOrderStatusFromGarment(garmentId, performedBy);
+
       return {
         message: 'All process steps completed. Garment moved to Quality Check.',
         completedStep: inProgressLog.id,
@@ -282,10 +290,83 @@ export class ProcessService {
       });
     }
 
+    // Keep the order status in sync with the garment pipeline.
+    await this.syncOrderStatusFromGarment(garmentId, performedBy);
+
     return {
       message: 'Last completed step reversed.',
       reversedStepId: lastCompleted.id,
     };
+  }
+
+  // ─── Order status sync ──────────────────────────────────────────────────────
+  // Process operations update garment status directly (bypassing the garment
+  // status endpoint), so they must roll the ORDER status too. The order status
+  // is the pipeline bottleneck: the minimum rank among all active garments.
+  // Mirrors GarmentController.syncOrderStatus.
+
+  async syncOrderStatusFromGarment(garmentId: string, changedBy: string): Promise<void> {
+    const {v4} = await import('uuid');
+
+    const garment = await this.garmentRepo.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) return;
+    const anchorItem = await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
+    if (!anchorItem) return;
+    const order = await this.orderRepo.findOne({where: {id: anchorItem.orderId, isDeleted: false}});
+    if (!order) return;
+
+    // All garments across every item of this order
+    const orderItems = await this.orderItemRepo.find({where: {orderId: order.id}});
+    const orderItemIds = orderItems.map(oi => oi.id);
+    const garments = await this.garmentRepo.find({
+      where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any,
+    });
+
+    const STATUS_RANK: Record<string, number> = {
+      [GarmentStatus.RECEIVED]:             0,
+      [GarmentStatus.IN_INSPECTION]:        1,
+      [GarmentStatus.IN_PROCESS]:           2,
+      [GarmentStatus.QUALITY_CHECK]:        3,
+      [GarmentStatus.READY]:                4,
+      [GarmentStatus.OUT_FOR_DELIVERY]:     5,
+      [GarmentStatus.DELIVERED]:            6,
+      [GarmentStatus.ON_HOLD]:             -1,
+      [GarmentStatus.RETURNED_TO_CUSTOMER]: -1,
+    };
+    const RANK_TO_ORDER_STATUS: Record<number, OrderStatus> = {
+      0: OrderStatus.RECEIVED_AT_STORE,
+      1: OrderStatus.IN_INSPECTION,
+      2: OrderStatus.IN_PROCESS,
+      3: OrderStatus.QUALITY_CHECK,
+      4: OrderStatus.READY,
+      5: OrderStatus.OUT_FOR_DELIVERY,
+      6: OrderStatus.DELIVERED,
+    };
+
+    const now = new Date();
+    const setOrderStatus = async (status: OrderStatus, remarks: string) => {
+      if (order.status === status) return;
+      await this.orderRepo.updateById(order.id, {status});
+      await this.orderStatusHistoryRepo.create({
+        id: v4(), orderId: order.id, status, changedAt: now, changedBy, remarks,
+      });
+    };
+
+    // Active = anything still in the pipeline (exclude on_hold / returned)
+    const activeStatuses = garments
+      .map(g => g.status as GarmentStatus)
+      .filter(s => (STATUS_RANK[s] ?? -1) >= 0);
+
+    if (activeStatuses.length === 0) {
+      await setOrderStatus(OrderStatus.CANCELLED, 'Auto-cancelled: all garments returned/on hold');
+      return;
+    }
+
+    const minRank = Math.min(...activeStatuses.map(s => STATUS_RANK[s] ?? 0));
+    const derived = RANK_TO_ORDER_STATUS[minRank];
+    if (derived) {
+      await setOrderStatus(derived, 'Auto-synced from garment processing pipeline');
+    }
   }
 
   // ─── Process Status ────────────────────────────────────────────────────────

@@ -51,13 +51,15 @@ export class InvoiceController {
       orderItemId: oi.id,
       serviceId: oi.serviceId,
       itemId: oi.itemId,
-      quantity: oi.quantity,
-      unitPrice: oi.unitPrice ?? 0,
-      totalPrice: oi.totalPrice ?? 0,
+      quantity: Number(oi.quantity) || 0,
+      // Postgres numeric columns come back as strings — coerce so downstream
+      // math sums numerically instead of concatenating.
+      unitPrice: Number(oi.unitPrice) || 0,
+      totalPrice: Number(oi.totalPrice) || 0,
       additionalServiceIds: oi.additionalServiceIds ?? [],
     }));
 
-    const subtotal = items.reduce((s, i) => s + (i.totalPrice ?? 0), 0);
+    const subtotal = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0);
     const gstRate = 0.09;
     const cgst = parseFloat((subtotal * gstRate).toFixed(2));
     const sgst = parseFloat((subtotal * gstRate).toFixed(2));
