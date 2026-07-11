@@ -597,7 +597,14 @@ export class OrderService {
 
       // Wallet deduction
       if (walletAmount > 0 && wallet) {
-        const newBalance = wallet.currentBalance - walletAmount;
+        const lockedWallet = await this.walletRepo.findById(wallet.id, undefined, {transaction: tx} as any);
+        if (Number(lockedWallet.currentBalance) < walletAmount) {
+          throw new HttpErrors.BadRequest(
+            `Insufficient wallet balance at checkout. Available: ₹${lockedWallet.currentBalance}, Requested: ₹${walletAmount}`,
+          );
+        }
+
+        const newBalance = Number(lockedWallet.currentBalance) - walletAmount;
         await this.walletRepo.updateById(
           wallet.id,
           {currentBalance: newBalance},
@@ -820,8 +827,14 @@ export class OrderService {
     const parentOrderMap = new Map(parentOrders.map(o => [o.id, (o as any).orderNumber]));
 
     const paymentsByOrder = new Map<string, number>();
+    const lastPaymentByOrder = new Map<string, {mode: string | null; paidAt: Date | null}>();
     for (const pt of paymentTxns) {
       paymentsByOrder.set(pt.orderId, (paymentsByOrder.get(pt.orderId) ?? 0) + Number(pt.amount));
+      const prev = lastPaymentByOrder.get(pt.orderId);
+      const paidAt = (pt as any).paidAt ?? (pt as any).createdAt ?? null;
+      if (!prev || (paidAt && prev.paidAt && new Date(paidAt) > new Date(prev.paidAt)) || !prev.paidAt) {
+        lastPaymentByOrder.set(pt.orderId, {mode: (pt as any).paymentMode ?? null, paidAt});
+      }
     }
 
     const rows = orders.map(order => {
@@ -858,6 +871,8 @@ export class OrderService {
         totalCollected,
         balanceDue,
         paymentStatus,
+        lastPaymentMode: lastPaymentByOrder.get(order.id)?.mode ?? null,
+        lastPaidAt: lastPaymentByOrder.get(order.id)?.paidAt ?? null,
         parentOrderId: (order as any).parentOrderId ?? null,
         parentOrderNumber: (order as any).parentOrderId ? (parentOrderMap.get((order as any).parentOrderId) ?? null) : null,
         customer: customer
@@ -988,12 +1003,15 @@ export class OrderService {
       additionalCharges: chargesByItem.get(oi.id) ?? [],
       garments: (garmentsByItem.get(oi.id) ?? []).map(g => ({
         id: g.id,
+        orderItemId: g.orderItemId,
         garmentTagNumber: g.garmentTagNumber,
         status: g.status,
         brandId: g.brandId,
         colorId: g.colorId,
         customerRemarks: g.customerRemarks,
         inspectionRemarks: g.inspectionRemarks,
+        isTagPrinted: g.isTagPrinted ?? false,
+        unprocessedHandlingMode: g.unprocessedHandlingMode ?? null,
         stages: resolveStages(g.id),
       })),
     }));

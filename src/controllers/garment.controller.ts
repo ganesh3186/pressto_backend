@@ -630,8 +630,10 @@ export class GarmentController {
       g.id === garmentId ? newStatus : (g.status as GarmentStatus),
     );
 
-    // Active garments = those not on hold (on_hold garments are excluded from pipeline)
-    const activeStatuses = effectiveStatuses.filter(s => s !== GarmentStatus.ON_HOLD);
+    // Active garments = those still in the pipeline (on_hold and returned garments are excluded)
+    const activeStatuses = effectiveStatuses.filter(
+      s => s !== GarmentStatus.ON_HOLD && s !== GarmentStatus.RETURNED_TO_CUSTOMER,
+    );
 
     const {v4} = await import('uuid');
     const now = new Date();
@@ -660,6 +662,7 @@ export class GarmentController {
       [GarmentStatus.OUT_FOR_DELIVERY]: 5,
       [GarmentStatus.DELIVERED]:        6,
       [GarmentStatus.ON_HOLD]:         -1,
+      [GarmentStatus.RETURNED_TO_CUSTOMER]: -1,
     };
 
     const RANK_TO_ORDER_STATUS: Record<number, OrderStatus> = {

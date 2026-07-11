@@ -48,6 +48,14 @@ export class ApprovalRequest extends Entity {
   @property({type: 'string', postgresql: {dataType: 'text'}})
   requestReason?: string;
 
+  // Media evidence uploaded when raising the request (already-uploaded media UUIDs)
+  @property({type: 'array', itemType: 'string', postgresql: {dataType: 'jsonb'}})
+  mediaIds?: string[];
+
+  // Type-specific extra data — e.g. { toServiceId } for upgrade_service
+  @property({type: 'object', postgresql: {dataType: 'jsonb'}})
+  metadata?: Record<string, unknown>;
+
   @property({type: 'date'})
   resolvedAt?: Date;
 

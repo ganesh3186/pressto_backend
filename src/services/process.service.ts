@@ -35,7 +35,7 @@ export class ProcessService {
   // Creates pending log rows for all services × steps on this garment.
   // Call this when garment transitions to IN_PROCESS.
 
-  async initProcess(garmentId: string, initiatedBy: string): Promise<object> {
+  async initProcess(garmentId: string, _initiatedBy: string): Promise<object> {
     const {v4} = await import('uuid');
 
     const garment = await this.garmentRepo.findOne({where: {id: garmentId, isDeleted: false}});
@@ -220,6 +220,72 @@ export class ProcessService {
       await tx.rollback();
       throw err;
     }
+  }
+
+  // ─── Reverse Last Step ────────────────────────────────────────────────────
+  // Marks the most recent completed step back to pending, re-opens it.
+  // Also resets the garment to IN_PROCESS if it had advanced to QUALITY_CHECK.
+
+  async reverseStep(garmentId: string, performedBy: string): Promise<object> {
+    const {v4} = await import('uuid');
+
+    const garment = await this.garmentRepo.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+
+    const allLogs = await this.processLogRepo.find({
+      where: {garmentId} as any,
+      order: ['serviceSequence ASC', 'stepSequence ASC'],
+    });
+
+    if (!allLogs.length) {
+      throw new HttpErrors.BadRequest('Process not initialised for this garment.');
+    }
+
+    // Find the last completed step
+    const completedLogs = allLogs.filter(l => l.status === ProcessLogStatus.COMPLETED);
+    if (!completedLogs.length) {
+      throw new HttpErrors.BadRequest('No completed step to reverse.');
+    }
+
+    const lastCompleted = completedLogs[completedLogs.length - 1];
+
+    // Clear any in-progress step first (set back to pending)
+    const inProgressLog = allLogs.find(l => l.status === ProcessLogStatus.IN_PROGRESS);
+    if (inProgressLog) {
+      await this.processLogRepo.updateById(inProgressLog.id, {
+        status: ProcessLogStatus.PENDING,
+        startedAt: undefined,
+        startedBy: undefined,
+        qrScanned: false,
+      } as any);
+    }
+
+    // Reverse the last completed step
+    await this.processLogRepo.updateById(lastCompleted.id, {
+      status: ProcessLogStatus.IN_PROGRESS,
+      completedAt: undefined,
+      completedBy: undefined,
+      startedAt: new Date(),
+      startedBy: performedBy,
+    } as any);
+
+    // If garment moved to QUALITY_CHECK, bring it back to IN_PROCESS
+    if (garment.status === GarmentStatus.QUALITY_CHECK) {
+      await this.garmentRepo.updateById(garmentId, {status: GarmentStatus.IN_PROCESS});
+      await this.garmentStatusHistoryRepo.create({
+        id: v4(),
+        garmentId,
+        status: GarmentStatus.IN_PROCESS,
+        changedAt: new Date(),
+        changedBy: performedBy,
+        remarks: 'Step reversed — garment returned to in_process',
+      });
+    }
+
+    return {
+      message: 'Last completed step reversed.',
+      reversedStepId: lastCompleted.id,
+    };
   }
 
   // ─── Process Status ────────────────────────────────────────────────────────

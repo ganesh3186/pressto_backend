@@ -39,6 +39,14 @@ export class Garment extends Entity {
   @property({type: 'number', default: 1})
   qrPrintCount?: number;
 
+  // Bag this garment is currently assigned to (changed via scan workflow)
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  bagId?: string;
+
+  // Set true when garment is flagged for dispatch batch (status = ready)
+  @property({type: 'boolean', default: false})
+  readyForDispatch?: boolean;
+
   // Set to true when the QR tag is first printed — locks the order for approval flow (T-07)
   @property({type: 'boolean', default: false})
   isTagPrinted?: boolean;

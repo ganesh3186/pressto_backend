@@ -1,0 +1,193 @@
+import {authenticate, AuthenticationBindings} from '@loopback/authentication';
+import {inject} from '@loopback/core';
+import {repository} from '@loopback/repository';
+import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
+import {securityId, UserProfile} from '@loopback/security';
+import {authorize} from '../authorization';
+import {SalesReturn, SalesReturnStatus} from '../models/sales-return.model';
+import {
+  InvoiceRepository,
+  OrderItemRepository,
+  OrderRepository,
+  SalesReturnRepository,
+  WalletRepository,
+  WalletTransactionRepository,
+} from '../repositories';
+
+export class SalesReturnController {
+  constructor(
+    @repository(SalesReturnRepository) private salesReturnRepo: SalesReturnRepository,
+    @repository(OrderRepository) private orderRepo: OrderRepository,
+    @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
+    @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
+    @repository(WalletRepository) private walletRepo: WalletRepository,
+    @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
+  ) {}
+
+  // ─── Create Sales Return ──────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @post('/orders/{orderId}/sales-return')
+  @response(200, {description: 'Sales return created'})
+  async create(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('orderId') orderId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              reason: {type: 'string'},
+              remarks: {type: 'string'},
+              returnedItems: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    orderItemId: {type: 'string'},
+                    quantity: {type: 'number'},
+                    amount: {type: 'number'},
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {
+      reason?: string;
+      remarks?: string;
+      returnedItems?: Array<{orderItemId: string; quantity: number; amount: number}>;
+    },
+  ): Promise<object> {
+    const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const invoice = await this.invoiceRepo.findOne({where: {orderId}} as any);
+
+    const creditAmount = (body.returnedItems ?? []).reduce((s, i) => s + (Number(i.amount) || 0), 0);
+
+    const now = new Date();
+    const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const count = await this.salesReturnRepo.count();
+    const creditNoteNumber = `CN-${ym}-${String(count.count + 1).padStart(5, '0')}`;
+
+    const {v4} = await import('uuid');
+    const salesReturn = await this.salesReturnRepo.create({
+      id: v4(),
+      orderId,
+      invoiceId: invoice?.id,
+      customerId: order.customerId,
+      creditNoteNumber,
+      reason: body.reason,
+      remarks: body.remarks,
+      returnedItems: body.returnedItems ?? [],
+      creditAmount: parseFloat(creditAmount.toFixed(2)),
+      status: SalesReturnStatus.PENDING,
+      requestedBy: currentUser[securityId],
+    } as Partial<SalesReturn>);
+
+    return {message: 'Sales return created. Credit note pending approval.', salesReturn};
+  }
+
+  // ─── Get Credit Note ──────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
+  @get('/orders/{orderId}/credit-note')
+  @response(200, {description: 'Credit note for an order'})
+  async getCreditNote(@param.path.string('orderId') orderId: string): Promise<object> {
+    const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const salesReturn = await this.salesReturnRepo.findOne({
+      where: {orderId} as any,
+      order: ['createdAt DESC'],
+    } as any);
+
+    if (!salesReturn) throw new HttpErrors.NotFound('No sales return / credit note found for this order.');
+    return {creditNote: salesReturn};
+  }
+
+  // ─── Approve Sales Return ─────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @post('/sales-returns/{id}/approve')
+  @response(200, {description: 'Sales return approved'})
+  async approve(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              creditAppliedAs: {type: 'string', enum: ['wallet', 'adjustment', 'refund']},
+            },
+          },
+        },
+      },
+    })
+    body: {creditAppliedAs?: string},
+  ): Promise<object> {
+    const record = await this.salesReturnRepo.findById(id);
+    if (!record) throw new HttpErrors.NotFound('Sales return not found.');
+    if (record.status !== SalesReturnStatus.PENDING) {
+      throw new HttpErrors.BadRequest(`Sales return is already ${record.status}.`);
+    }
+
+    const creditAppliedAs = body.creditAppliedAs ?? 'adjustment';
+
+    if (creditAppliedAs === 'wallet') {
+      let wallet = await this.walletRepo.findOne({where: {customerId: record.customerId}} as any);
+      const {v4} = await import('uuid');
+      if (!wallet) {
+        wallet = await this.walletRepo.create({
+          id: v4(),
+          customerId: record.customerId,
+          balance: 0,
+          currentBalance: 0,
+        } as any);
+      }
+      const newBalance = Number(wallet.currentBalance ?? (wallet as any).balance ?? 0) + Number(record.creditAmount);
+      await this.walletRepo.updateById(wallet.id, {
+        currentBalance: newBalance,
+        balance: newBalance,
+      } as any);
+
+      await this.walletTransactionRepo.create({
+        id: v4(),
+        walletId: wallet.id,
+        customerId: record.customerId,
+        type: 'credit',
+        amount: Number(record.creditAmount),
+        remarks: `Sales Return Credit Note: ${record.creditNoteNumber}`,
+        recordedBy: currentUser[securityId],
+      } as any);
+    } else if (creditAppliedAs === 'adjustment') {
+      if (record.invoiceId) {
+        const invoice = await this.invoiceRepo.findById(record.invoiceId);
+        if (invoice) {
+          const newBalance = Math.max(0, (invoice.balanceDue ?? 0) - Number(record.creditAmount));
+          await this.invoiceRepo.updateById(invoice.id, {
+            balanceDue: newBalance,
+          } as any);
+        }
+      }
+    }
+
+    await this.salesReturnRepo.updateById(id, {
+      status: SalesReturnStatus.APPROVED,
+      resolvedBy: currentUser[securityId],
+      resolvedAt: new Date(),
+      creditAppliedAs: creditAppliedAs,
+    } as Partial<SalesReturn>);
+
+    return {message: 'Sales return approved. Credit note issued.', creditNoteNumber: record.creditNoteNumber};
+  }
+}

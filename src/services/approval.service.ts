@@ -6,6 +6,10 @@ import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.rep
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
 import {GarmentRepository} from '../repositories/garment.repository';
 import {GarmentStatusHistoryRepository} from '../repositories/garment-status-history.repository';
+import {InvoiceRepository} from '../repositories/invoice.repository';
+import {OrderItemRepository} from '../repositories/order-item.repository';
+import {OrderRepository} from '../repositories/order.repository';
+import {ServiceItemMappingRepository} from '../repositories/service-item-mapping.repository';
 import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
@@ -13,10 +17,18 @@ import {GarmentStatus} from '../models/garment-status.enum';
 import {APPROVAL_ROLE_ROUTING, ApprovalRequest} from '../models/approval-request.model';
 import {AuditService} from './audit.service';
 
-const GARMENT_STATUS_ON_APPROVAL: Partial<Record<ApprovalRequestType, GarmentStatus>> = {
-  [ApprovalRequestType.RETURN_ITEM]: GarmentStatus.ON_HOLD,
-  [ApprovalRequestType.ITEM_DAMAGED]: GarmentStatus.ON_HOLD,
-  [ApprovalRequestType.REPROCESS]: GarmentStatus.IN_PROCESS,
+// What status to set on the garment immediately when a request is CREATED
+const GARMENT_STATUS_ON_CREATE: Partial<Record<ApprovalRequestType, GarmentStatus>> = {
+  // Upgrade: put on hold right away so no further processing happens until customer approves
+  [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.ON_HOLD,
+};
+
+// What status to set on the garment when request is APPROVED
+const GARMENT_STATUS_ON_APPROVE: Partial<Record<ApprovalRequestType, GarmentStatus>> = {
+  // Return: go directly to returned_to_customer — no on_hold stop
+  [ApprovalRequestType.RETURN_ITEM]: GarmentStatus.RETURNED_TO_CUSTOMER,
+  // Upgrade: on approve, move to in_inspection so the new service process can be initialised
+  [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.IN_INSPECTION,
 };
 
 @injectable({scope: BindingScope.TRANSIENT})
@@ -27,6 +39,10 @@ export class ApprovalService {
     @repository(ApprovalAuditLogRepository) private approvalAuditLogRepo: ApprovalAuditLogRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
+    @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
+    @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
+    @repository(OrderRepository) private orderRepo: OrderRepository,
+    @repository(ServiceItemMappingRepository) private serviceItemMappingRepo: ServiceItemMappingRepository,
     @inject('services.audit') private auditService: AuditService,
   ) {}
 
@@ -36,6 +52,8 @@ export class ApprovalService {
     entityId: string;
     requestedBy: string;
     requestReason?: string;
+    mediaIds?: string[];
+    metadata?: Record<string, unknown>;
   }): Promise<ApprovalRequest> {
     const {v4} = await import('uuid');
     const assignedToRole = APPROVAL_ROLE_ROUTING[params.type];
@@ -49,6 +67,8 @@ export class ApprovalService {
       assignedToRole,
       status: ApprovalRequestStatus.PENDING,
       requestReason: params.requestReason,
+      mediaIds: params.mediaIds,
+      metadata: params.metadata,
     });
 
     await this.approvalAuditLogRepo.create({
@@ -59,6 +79,13 @@ export class ApprovalService {
       performedBy: params.requestedBy,
     });
 
+    // Apply immediate status change when needed (e.g. upgrade puts garment on_hold right away)
+    const immediateStatus = GARMENT_STATUS_ON_CREATE[params.type];
+    if (immediateStatus && params.entityType === 'garment') {
+      await this._updateGarmentStatus(params.entityId, immediateStatus, params.requestedBy,
+        `Put on hold — ${params.type} approval requested`);
+    }
+
     return request;
   }
 
@@ -67,6 +94,9 @@ export class ApprovalService {
     action: ApprovalActionType;
     performedBy: string;
     comments?: string;
+    mediaIds?: string[];
+    approvalSource?: string;
+    onBehalfOfCustomerId?: string;
   }): Promise<ApprovalRequest> {
     const request = await this.approvalRequestRepo.findById(params.requestId);
     if (request.status !== ApprovalRequestStatus.PENDING) {
@@ -86,6 +116,9 @@ export class ApprovalService {
       action: params.action,
       performedBy: params.performedBy,
       comments: params.comments,
+      mediaIds: params.mediaIds,
+      approvalSource: params.approvalSource,
+      onBehalfOfCustomerId: params.onBehalfOfCustomerId,
     });
 
     await this.approvalRequestRepo.updateById(params.requestId, {
@@ -104,43 +137,163 @@ export class ApprovalService {
 
     const resolved = await this.approvalRequestRepo.findById(params.requestId);
 
-    // Write to general audit log so the entity's full history is queryable in one place
     await this.auditService.log({
       entityType: request.entityType,
       entityId: request.entityId,
       actionType: `approval_${params.action}`,
       performedBy: params.performedBy,
       before: {approvalStatus: ApprovalRequestStatus.PENDING},
-      after: {approvalStatus: newStatus, approvalRequestId: params.requestId},
+      after: {
+        approvalStatus: newStatus,
+        approvalRequestId: params.requestId,
+        approvalSource: params.approvalSource,
+        onBehalfOfCustomerId: params.onBehalfOfCustomerId,
+      },
       remarks: params.comments,
     });
 
-    // Apply downstream effect when approved
     if (params.action === ApprovalActionType.APPROVED) {
-      await this.applyApprovalEffect(request, params.performedBy);
+      await this._applyApproveEffect(request, params.performedBy);
+    } else {
+      await this._applyRejectEffect(request, params.performedBy);
     }
 
     return resolved;
   }
 
-  private async applyApprovalEffect(request: ApprovalRequest, performedBy: string): Promise<void> {
-    if (request.entityType !== 'garment') return;
+  // ─── Downstream effects on APPROVE ───────────────────────────────────────
 
-    const newStatus = GARMENT_STATUS_ON_APPROVAL[request.type];
-    if (!newStatus) return;
+  private async _applyApproveEffect(request: ApprovalRequest, performedBy: string): Promise<void> {
+    if (request.entityType !== 'garment') return;
 
     const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
     if (!garment) return;
 
+    const newStatus = GARMENT_STATUS_ON_APPROVE[request.type];
+    if (newStatus) {
+      await this._updateGarmentStatus(request.entityId, newStatus, performedBy,
+        `Auto-updated via ${request.type} approval`);
+    }
+
+    // Upgrade approved: swap serviceId on the orderItem and recalculate price
+    if (request.type === ApprovalRequestType.UPGRADE_SERVICE) {
+      await this._applyUpgradeOnOrderItem(garment.orderItemId, request, performedBy);
+    }
+
+    // Item damaged approved: log it (no status change — garment stays on_hold until manually resolved)
+    // Reprocess approved: handled externally via init process
+  }
+
+  // ─── Downstream effects on REJECT ────────────────────────────────────────
+
+  private async _applyRejectEffect(request: ApprovalRequest, performedBy: string): Promise<void> {
+    if (request.entityType !== 'garment') return;
+
+    // Upgrade rejected: restore garment off on_hold — go back to in_inspection
+    if (request.type === ApprovalRequestType.UPGRADE_SERVICE) {
+      const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
+      if (garment?.status === GarmentStatus.ON_HOLD) {
+        // Find the last non-on_hold status from history and restore it
+        const history = await this.garmentStatusHistoryRepo.find({
+          where: {garmentId: request.entityId},
+          order: ['changedAt DESC'],
+          limit: 10,
+        });
+        const prevEntry = history.find(h => h.status !== GarmentStatus.ON_HOLD);
+        const restoreStatus = (prevEntry?.status as GarmentStatus) ?? GarmentStatus.IN_INSPECTION;
+        await this._updateGarmentStatus(request.entityId, restoreStatus, performedBy,
+          `Upgrade rejected — restored to ${restoreStatus}`);
+      }
+    }
+  }
+
+  // ─── Upgrade: update orderItem service + price ────────────────────────────
+
+  private async _applyUpgradeOnOrderItem(
+    orderItemId: string,
+    request: ApprovalRequest,
+    performedBy: string,
+  ): Promise<void> {
+    const toServiceId = request.metadata?.toServiceId as string | undefined;
+    if (!toServiceId) return;
+
+    const orderItem = await this.orderItemRepo.findOne({where: {id: orderItemId}});
+    if (!orderItem) return;
+
+    // Look up the new service-item mapping for pricing
+    const mapping = await this.serviceItemMappingRepo.findOne({
+      where: {serviceId: toServiceId, itemId: orderItem.itemId, isActive: true, isDeleted: false},
+    });
+
+    const newBasePrice = mapping ? Number(mapping.basePrice) : orderItem.basePrice ?? 0;
+    const order = await this.orderRepo.findOne({where: {id: orderItem.orderId}});
+    const multiplier = order?.expressMultiplier ?? 1;
+    const newUnitPrice = parseFloat((newBasePrice * multiplier).toFixed(2));
+    const newTotalPrice = parseFloat((newUnitPrice * orderItem.quantity).toFixed(2));
+
+    const oldTotalPrice = orderItem.totalPrice ?? 0;
+    const priceDiff = newTotalPrice - oldTotalPrice;
+
+    await this.orderItemRepo.updateById(orderItemId, {
+      serviceId: toServiceId,
+      basePrice: newBasePrice,
+      unitPrice: newUnitPrice,
+      totalPrice: newTotalPrice,
+      updatedAt: new Date(),
+    });
+
+    // Adjust order totals
+    if (order && priceDiff !== 0) {
+      const newSubtotal = (order.subtotal ?? 0) + priceDiff;
+      const newTotal = (order.totalAmount ?? 0) + priceDiff;
+      await this.orderRepo.updateById(order.id, {
+        subtotal: parseFloat(newSubtotal.toFixed(2)),
+        totalAmount: parseFloat(newTotal.toFixed(2)),
+        updatedAt: new Date(),
+      });
+
+      const invoice = await this.invoiceRepo.findOne({where: {orderId: order.id}} as any);
+      if (invoice) {
+        const newInvoiceSubtotal = (invoice.subtotal ?? 0) + priceDiff;
+        const newInvoiceTotal = (invoice.totalAmount ?? 0) + priceDiff;
+        const newBalanceDue = (invoice.balanceDue ?? 0) + priceDiff;
+        await this.invoiceRepo.updateById(invoice.id, {
+          subtotal: parseFloat(newInvoiceSubtotal.toFixed(2)),
+          totalAmount: parseFloat(newInvoiceTotal.toFixed(2)),
+          balanceDue: parseFloat(newBalanceDue.toFixed(2)),
+          updatedAt: new Date(),
+        } as any);
+      }
+    }
+
+    await this.auditService.log({
+      entityType: 'order_item',
+      entityId: orderItemId,
+      actionType: 'service_upgrade',
+      performedBy,
+      before: {serviceId: orderItem.serviceId, unitPrice: orderItem.unitPrice, totalPrice: oldTotalPrice},
+      after: {serviceId: toServiceId, unitPrice: newUnitPrice, totalPrice: newTotalPrice},
+      remarks: `Service upgraded via approval ${request.id}`,
+    });
+  }
+
+  // ─── Internal helper ──────────────────────────────────────────────────────
+
+  private async _updateGarmentStatus(
+    garmentId: string,
+    status: GarmentStatus,
+    changedBy: string,
+    remarks: string,
+  ): Promise<void> {
     const {v4} = await import('uuid');
-    await this.garmentRepo.updateById(request.entityId, {status: newStatus});
+    await this.garmentRepo.updateById(garmentId, {status});
     await this.garmentStatusHistoryRepo.create({
       id: v4(),
-      garmentId: request.entityId,
-      status: newStatus,
+      garmentId,
+      status,
       changedAt: new Date(),
-      changedBy: performedBy,
-      remarks: `Auto-updated via approval: ${request.type}`,
+      changedBy,
+      remarks,
     });
   }
 }

@@ -65,3 +65,7 @@ export * from './approval-request.repository';
 export * from './approval-action.repository';
 export * from './approval-audit-log.repository';
 export * from './audit-log.repository';
+export * from './intake-rejected-item.repository';
+export * from './challan.repository';
+export * from './invoice.repository';
+export * from './sales-return.repository';

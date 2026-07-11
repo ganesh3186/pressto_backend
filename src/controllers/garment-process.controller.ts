@@ -61,6 +61,21 @@ export class GarmentProcessController {
     return this.processService.advanceProcess(id, currentUser[securityId], body?.qrCode);
   }
 
+  // ─── Reverse Step ─────────────────────────────────────────────────────────
+  // Undoes the last completed process step — marks it back to in_progress.
+  // If the garment had advanced to quality_check, it returns to in_process.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin']})
+  @post('/garments/{id}/process/reverse')
+  @response(200, {description: 'Last completed step reversed'})
+  async reverseStep(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    return this.processService.reverseStep(id, currentUser[securityId]);
+  }
+
   // ─── Process Status ───────────────────────────────────────────────────────
 
   @authenticate('jwt')

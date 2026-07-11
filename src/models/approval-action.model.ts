@@ -18,6 +18,18 @@ export class ApprovalAction extends Entity {
   @property({type: 'string', postgresql: {dataType: 'text'}})
   comments?: string;
 
+  // Media evidence uploaded when resolving (already-uploaded media UUIDs)
+  @property({type: 'array', itemType: 'string', postgresql: {dataType: 'jsonb'}})
+  mediaIds?: string[];
+
+  // How was the approval obtained: direct | on_call | in_person | whatsapp | email
+  @property({type: 'string'})
+  approvalSource?: string;
+
+  // Staff member who approved on behalf of the customer (customer UUID)
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  onBehalfOfCustomerId?: string;
+
   @property({type: 'date', defaultFn: 'now'})
   actionDate?: Date;
 

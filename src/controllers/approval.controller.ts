@@ -68,6 +68,10 @@ export class ApprovalController {
               entityType: {type: 'string', enum: ['order', 'garment', 'payment']},
               entityId: {type: 'string', format: 'uuid'},
               requestReason: {type: 'string'},
+              // Already-uploaded media UUIDs as evidence for the request
+              mediaIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              // Type-specific extra data — e.g. { toServiceId } for upgrade_service
+              metadata: {type: 'object'},
             },
           },
         },
@@ -78,6 +82,8 @@ export class ApprovalController {
       entityType: string;
       entityId: string;
       requestReason?: string;
+      mediaIds?: string[];
+      metadata?: Record<string, unknown>;
     },
   ): Promise<object> {
     const request = await this.approvalService.createRequest({
@@ -105,18 +111,33 @@ export class ApprovalController {
             properties: {
               action: {type: 'string', enum: Object.values(ApprovalActionType)},
               comments: {type: 'string'},
+              // Evidence images uploaded when resolving
+              mediaIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              // How approval was obtained: direct | on_call | in_person | whatsapp | email
+              approvalSource: {type: 'string', enum: ['direct', 'on_call', 'in_person', 'whatsapp', 'email']},
+              // If a staff member approved on behalf of the customer
+              onBehalfOfCustomerId: {type: 'string', format: 'uuid'},
             },
           },
         },
       },
     })
-    body: {action: ApprovalActionType; comments?: string},
+    body: {
+      action: ApprovalActionType;
+      comments?: string;
+      mediaIds?: string[];
+      approvalSource?: string;
+      onBehalfOfCustomerId?: string;
+    },
   ): Promise<object> {
     const updated = await this.approvalService.resolve({
       requestId: id,
       action: body.action,
       performedBy: currentUser[securityId],
       comments: body.comments,
+      mediaIds: body.mediaIds,
+      approvalSource: body.approvalSource,
+      onBehalfOfCustomerId: body.onBehalfOfCustomerId,
     });
     return {message: `Request ${body.action}.`, request: updated};
   }
