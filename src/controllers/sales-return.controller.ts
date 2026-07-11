@@ -10,6 +10,7 @@ import {
   OrderItemRepository,
   OrderRepository,
   SalesReturnRepository,
+  ChallanRepository,
   WalletRepository,
   WalletTransactionRepository,
 } from '../repositories';
@@ -20,6 +21,7 @@ export class SalesReturnController {
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
+    @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
   ) {}
@@ -179,6 +181,18 @@ export class SalesReturnController {
           } as any);
         }
       }
+    }
+
+    // Always reflect the reduced order value on the challan if it exists
+    const challan = await this.challanRepo.findOne({where: {orderId: record.orderId}} as any);
+    if (challan) {
+      const newTotal = Math.max(0, (challan.totalAmount ?? 0) - Number(record.creditAmount));
+      const newSubtotal = Math.max(0, (challan.subtotal ?? 0) - Number(record.creditAmount));
+      await this.challanRepo.updateById(challan.id, {
+        totalAmount: parseFloat(newTotal.toFixed(2)),
+        subtotal: parseFloat(newSubtotal.toFixed(2)),
+        updatedAt: new Date(),
+      } as any);
     }
 
     await this.salesReturnRepo.updateById(id, {

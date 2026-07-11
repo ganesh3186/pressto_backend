@@ -232,20 +232,20 @@ export class OrderController {
                 description: 'IDs of garments to split out into a sub-order',
               },
               deliveryDate: {type: 'string', format: 'date-time', description: 'New delivery date for the sub-order'},
-              expressMultiplier: {type: 'number', description: 'Delivery pricing multiplier derived from the new delivery date (1 = standard, >1 = express/lightning)'},
+              deliveryType: {type: 'string', enum: Object.values(DeliveryType), description: 'New delivery tier for the sub-order (e.g. split an express garment out of a standard order). Re-applies the tier uplift on the sub-order pricing.'},
               remarks: {type: 'string'},
             },
           },
         },
       },
     })
-    body: {garmentIds: string[]; deliveryDate?: string; expressMultiplier?: number; remarks?: string},
+    body: {garmentIds: string[]; deliveryDate?: string; deliveryType?: DeliveryType; remarks?: string},
   ): Promise<object> {
     return this.orderService.splitOrder(
       id,
       body.garmentIds,
       body.deliveryDate,
-      body.expressMultiplier,
+      body.deliveryType,
       body.remarks,
       currentUser[securityId],
     );

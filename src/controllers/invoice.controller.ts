@@ -5,6 +5,7 @@ import {get, HttpErrors, param, patch, post, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {ChallanStatus} from '../models/challan.model';
+import {OrderStatus} from '../models/order-status.enum';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
 import {
   ChallanRepository,
@@ -38,6 +39,16 @@ export class InvoiceController {
   ): Promise<object> {
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const ALLOWED_STATUSES = [
+      OrderStatus.READY,
+      OrderStatus.PARTIALLY_DISPATCHED,
+      OrderStatus.OUT_FOR_DELIVERY,
+      OrderStatus.DELIVERED
+    ];
+    if (!ALLOWED_STATUSES.includes(order.status as OrderStatus)) {
+      throw new HttpErrors.BadRequest('Invoice can only be generated after processing and quality checks are complete (status must be ready or beyond).');
+    }
 
     // Guard: only one invoice per order
     const existingInvoice = await this.invoiceRepo.findOne({where: {orderId}} as any);

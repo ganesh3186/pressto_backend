@@ -1072,7 +1072,7 @@ export class OrderService {
     orderId: string,
     garmentIds: string[],
     deliveryDate: string | undefined,
-    _expressMultiplier: number | undefined,
+    deliveryType: DeliveryType | undefined,
     remarks: string | undefined,
     createdBy: string,
   ): Promise<object> {
@@ -1123,21 +1123,40 @@ export class OrderService {
     }
     const parentItemMap = new Map(parentOrderItems.map(oi => [oi.id, oi]));
 
-    // Sub-order inherits the parent's express multiplier (kept only as a snapshot;
-    // delivery-tier uplift already lives inside each item's unit price).
-    const effectiveMultiplier = Number(order.expressMultiplier ?? 1) || 1;
-
-    // Calculate sub-order financials
-    // Use the parent unit prices (which already include the store/cluster/region
-    // and delivery-tier uplift). Splitting does not re-price — it inherits.
-    let oldSubOrderSubtotal = 0;
-    for (const [itemId, itemGarments] of garmentsByItem) {
-      oldSubOrderSubtotal += Number(parentItemMap.get(itemId)!.unitPrice ?? 0) * itemGarments.length;
+    // Sub-order delivery tier: a NEW tier can be chosen at split time (e.g. split
+    // an express garment out of a standard order). Otherwise inherit the parent's.
+    const subDeliveryType = deliveryType ?? (order.deliveryType as DeliveryType | undefined);
+    const deliveryChanged = deliveryType != null && deliveryType !== order.deliveryType;
+    let subDeliveryPercentage = Number(order.deliveryTypePercentage) || 0;
+    if (deliveryChanged) {
+      const dtConfig = await this.deliveryTypeConfigRepo.findOne({where: {isDeleted: false}});
+      if (dtConfig) {
+        if (deliveryType === DeliveryType.EXPRESS) subDeliveryPercentage = Number(dtConfig.expressPercentage);
+        else if (deliveryType === DeliveryType.LIGHTNING) subDeliveryPercentage = Number(dtConfig.lightningPercentage);
+        else subDeliveryPercentage = Number(dtConfig.standardPercentage);
+      }
     }
+    const subDeliveryMultiplier = 1 + (Number(subDeliveryPercentage) || 0) / 100;
+
+    // Per-piece price for the sub-order. When the tier changed, re-apply the new
+    // delivery uplift on the delivery-independent resolvedPrice; else inherit the
+    // parent unit price (already includes waterfall + parent delivery uplift).
+    const subUnitPriceFor = (oi: {resolvedPrice?: number; basePrice?: number; unitPrice?: number}) =>
+      deliveryChanged
+        ? parseFloat((Number(oi.resolvedPrice ?? oi.basePrice ?? 0) * subDeliveryMultiplier).toFixed(2))
+        : Number(oi.unitPrice ?? 0);
+
+    // Discount/tax are split proportionally by the parent's original item share.
+    let oldSubOrderSubtotal = 0;
+    let subOrderSubtotal = 0;
+    for (const [itemId, itemGarments] of garmentsByItem) {
+      const oi = parentItemMap.get(itemId)!;
+      oldSubOrderSubtotal += Number(oi.unitPrice ?? 0) * itemGarments.length;
+      subOrderSubtotal += subUnitPriceFor(oi) * itemGarments.length;
+    }
+    subOrderSubtotal = parseFloat(subOrderSubtotal.toFixed(2));
     const originalSubtotal = Number(order.subtotal ?? 0) || 1;
     const ratio = oldSubOrderSubtotal / originalSubtotal;
-
-    const subOrderSubtotal = oldSubOrderSubtotal;
 
     const subOrderDiscount = parseFloat((Number(order.discountAmount ?? 0) * ratio).toFixed(2));
     const subOrderTax = parseFloat((Number(order.taxAmount ?? 0) * ratio).toFixed(2));
@@ -1224,9 +1243,9 @@ export class OrderService {
           storeId: order.storeId,
           orderType: order.orderType,
           status: subOrderStatus,
-          expressMultiplier: effectiveMultiplier,
-          deliveryType: order.deliveryType,
-          deliveryTypePercentage: order.deliveryTypePercentage,
+          expressMultiplier: Number(order.expressMultiplier ?? 1) || 1,
+          deliveryType: subDeliveryType,
+          deliveryTypePercentage: subDeliveryPercentage,
           customerContactId: order.customerContactId,
           parentOrderId: order.id,
           deliveryDate: deliveryDate ? new Date(deliveryDate) : undefined,
@@ -1245,7 +1264,7 @@ export class OrderService {
       for (const [itemId, itemGarments] of garmentsByItem) {
         const oi = parentItemMap.get(itemId)!;
         const qty = itemGarments.length;
-        const newUnitPrice = Number(oi.unitPrice ?? 0);
+        const newUnitPrice = subUnitPriceFor(oi);
         const subItemTotal = parseFloat((newUnitPrice * qty).toFixed(2));
 
         const subOrderItem = await this.orderItemRepo.create(

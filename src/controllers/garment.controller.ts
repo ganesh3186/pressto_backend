@@ -28,6 +28,7 @@ import {
   GarmentStainRepository,
   GarmentStatusHistoryRepository,
   ItemRepository,
+  MediaRepository,
   OrderItemRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
@@ -47,6 +48,7 @@ export class GarmentController {
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepository: GarmentStatusHistoryRepository,
     @repository(OrderStatusHistoryRepository) private orderStatusHistoryRepository: OrderStatusHistoryRepository,
     @repository(ItemRepository) private itemRepository: ItemRepository,
+    @repository(MediaRepository) private mediaRepository: MediaRepository,
     @repository(ServiceRepository) private serviceRepository: ServiceRepository,
     @repository(BrandRepository) private brandRepository: BrandRepository,
     @repository(ColorRepository) private colorRepository: ColorRepository,
@@ -134,11 +136,12 @@ export class GarmentController {
 
     const garmentDetails = await Promise.all(
       garments.map(async g => {
-        const [damages, stains, images] = await Promise.all([
+        const [damages, stains, rawImages] = await Promise.all([
           this._damagesWithImages(g.id),
           this._stainsWithImages(g.id),
           this.imageRepository.find({where: {garmentId: g.id}}),
         ]);
+        const images = await this._attachMediaUrls(rawImages);
         return {...g, damages, stains, images};
       }),
     );
@@ -212,7 +215,7 @@ export class GarmentController {
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
     const orderItem = await this.orderItemRepository.findOne({where: {id: garment.orderItemId}});
-    const [damages, stains, images, statusHistory, brand, color] = await Promise.all([
+    const [damages, stains, rawImages, statusHistory, brand, color] = await Promise.all([
       this._damagesWithImages(garmentId),
       this._stainsWithImages(garmentId),
       this.imageRepository.find({where: {garmentId}}),
@@ -220,6 +223,8 @@ export class GarmentController {
       garment.brandId ? this.brandRepository.findOne({where: {id: garment.brandId}}) : Promise.resolve(null),
       garment.colorId ? this.colorRepository.findOne({where: {id: garment.colorId}}) : Promise.resolve(null),
     ]);
+
+    const images = await this._attachMediaUrls(rawImages);
 
     return {
       ...garment,
@@ -687,7 +692,7 @@ export class GarmentController {
     return Promise.all(
       stains.map(async s => {
         const images = await this.stainImageRepository.find({where: {garmentStainId: s.id}});
-        return {...s, images};
+        return {...s, images: await this._attachMediaUrls(images)};
       }),
     );
   }
@@ -697,7 +702,23 @@ export class GarmentController {
     return Promise.all(
       damages.map(async d => {
         const images = await this.damageImageRepository.find({where: {garmentDamageId: d.id}});
-        return {...d, images};
+        return {...d, images: await this._attachMediaUrls(images)};
+      }),
+    );
+  }
+
+  // Resolve each image record's mediaId → the media's fileUrl so the frontend
+  // has a viewable URL (image records only store mediaId). Exposes fileUrl / url
+  // plus a nested media object to cover the fields the UI checks.
+  private async _attachMediaUrls<T extends {mediaId?: string}>(images: T[]) {
+    return Promise.all(
+      images.map(async img => {
+        let media = null;
+        if (img.mediaId) {
+          media = await this.mediaRepository.findOne({where: {id: img.mediaId} as any});
+        }
+        const fileUrl = (media as any)?.fileUrl ?? null;
+        return {...img, media, fileUrl, url: fileUrl};
       }),
     );
   }
