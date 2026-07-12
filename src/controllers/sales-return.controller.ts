@@ -5,6 +5,8 @@ import {get, HttpErrors, param, post, requestBody, response} from '@loopback/res
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {SalesReturn, SalesReturnStatus} from '../models/sales-return.model';
+import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
+import {ReferenceType} from '../models/reference-type.enum';
 import {
   InvoiceRepository,
   OrderItemRepository,
@@ -146,31 +148,34 @@ export class SalesReturnController {
     const creditAppliedAs = body.creditAppliedAs ?? 'adjustment';
 
     if (creditAppliedAs === 'wallet') {
-      let wallet = await this.walletRepo.findOne({where: {customerId: record.customerId}} as any);
       const {v4} = await import('uuid');
+      let wallet = await this.walletRepo.findOne({where: {customerId: record.customerId}});
       if (!wallet) {
         wallet = await this.walletRepo.create({
           id: v4(),
           customerId: record.customerId,
-          balance: 0,
           currentBalance: 0,
-        } as any);
+        });
       }
-      const newBalance = Number(wallet.currentBalance ?? (wallet as any).balance ?? 0) + Number(record.creditAmount);
+      const creditAmount = Number(record.creditAmount) || 0;
+      const newBalance = parseFloat(
+        ((Number(wallet.currentBalance) || 0) + creditAmount).toFixed(2),
+      );
       await this.walletRepo.updateById(wallet.id, {
         currentBalance: newBalance,
-        balance: newBalance,
-      } as any);
+        updatedAt: new Date(),
+      });
 
       await this.walletTransactionRepo.create({
         id: v4(),
         walletId: wallet.id,
-        customerId: record.customerId,
-        type: 'credit',
-        amount: Number(record.creditAmount),
+        transactionType: WalletTransactionType.CREDIT,
+        amount: creditAmount,
+        referenceType: ReferenceType.REFUND,
+        referenceId: record.orderId,
         remarks: `Sales Return Credit Note: ${record.creditNoteNumber}`,
-        recordedBy: currentUser[securityId],
-      } as any);
+        transactionDate: new Date(),
+      });
     } else if (creditAppliedAs === 'adjustment') {
       if (record.invoiceId) {
         const invoice = await this.invoiceRepo.findById(record.invoiceId);

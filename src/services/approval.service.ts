@@ -19,6 +19,8 @@ import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
 import {ProcessLogStatus} from '../models/process-log-status.enum';
+import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
+import {ReferenceType} from '../models/reference-type.enum';
 import {APPROVAL_ROLE_ROUTING, ApprovalRequest} from '../models/approval-request.model';
 import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
@@ -252,8 +254,8 @@ export class ApprovalService {
       await this._creditWallet(
         order.customerId!,
         overpaid,
-        performedBy,
         `Return credit — garment ${garment.garmentTagNumber} (order ${order.orderNumber})`,
+        order.id,
       );
     }
 
@@ -316,24 +318,30 @@ export class ApprovalService {
   }
 
   // Credit an amount to the customer's wallet + log a wallet transaction (credit note trail).
-  private async _creditWallet(customerId: string, amount: number, performedBy: string, remarks: string): Promise<void> {
+  private async _creditWallet(
+    customerId: string,
+    amount: number,
+    remarks: string,
+    orderId?: string,
+  ): Promise<void> {
     const {v4} = await import('uuid');
-    let wallet = await this.walletRepo.findOne({where: {customerId}} as any);
+    let wallet = await this.walletRepo.findOne({where: {customerId}});
     if (!wallet) {
-      wallet = await this.walletRepo.create({id: v4(), customerId, balance: 0, currentBalance: 0} as any);
+      wallet = await this.walletRepo.create({id: v4(), customerId, currentBalance: 0});
     }
-    const current = Number((wallet as any).currentBalance ?? (wallet as any).balance ?? 0) || 0;
-    const newBalance = parseFloat((current + amount).toFixed(2));
-    await this.walletRepo.updateById(wallet.id, {currentBalance: newBalance, balance: newBalance} as any);
+    const newBalance = parseFloat(((Number(wallet.currentBalance) || 0) + amount).toFixed(2));
+    await this.walletRepo.updateById(wallet.id, {currentBalance: newBalance, updatedAt: new Date()});
+
     await this.walletTransactionRepo.create({
       id: v4(),
       walletId: wallet.id,
-      customerId,
-      type: 'credit',
+      transactionType: WalletTransactionType.CREDIT,
       amount,
+      referenceType: ReferenceType.REFUND,
+      referenceId: orderId,
       remarks,
-      recordedBy: performedBy,
-    } as any);
+      transactionDate: new Date(),
+    });
   }
 
   // ─── Reprocess: reset process logs + return garment to in_process ──────────

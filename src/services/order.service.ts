@@ -750,6 +750,7 @@ export class OrderService {
     dateTo?: string;
     orderType?: string;
     status?: string;
+    customerId?: string;
     limit?: number;
     skip?: number;
   }): Promise<{rows: object[]; total: number}> {
@@ -758,6 +759,8 @@ export class OrderService {
 
     const baseConditions: object[] = [{isDeleted: false}];
 
+    // Scopes the list to a single customer (used by the customer-facing APIs).
+    if (params.customerId) baseConditions.push({customerId: params.customerId});
     if (params.status) baseConditions.push({status: params.status});
     if (params.orderType) baseConditions.push({orderType: params.orderType});
     if (params.dateFrom || params.dateTo) {
