@@ -35,6 +35,16 @@ import {
   ServiceRepository,
 } from '../repositories';
 
+// Shape returned when a garment's order item can't be resolved — keeps the
+// response keys stable so clients never have to guard for missing fields.
+const EMPTY_ITEM_CONTEXT = {
+  orderId: null,
+  itemId: null,
+  itemName: null,
+  serviceId: null,
+  serviceName: null,
+};
+
 export class GarmentController {
   constructor(
     @repository(OrderRepository) private orderRepository: OrderRepository,
@@ -134,8 +144,10 @@ export class GarmentController {
       where: {and: [{orderItemId: {inq: orderItemIds}}, {isDeleted: false}]},
     });
 
+    const withContext = await this._withItemContext(garments);
+
     const garmentDetails = await Promise.all(
-      garments.map(async g => {
+      withContext.map(async g => {
         const [damages, stains, rawImages] = await Promise.all([
           this._damagesWithImages(g.id),
           this._stainsWithImages(g.id),
@@ -214,7 +226,8 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
-    const orderItem = await this.orderItemRepository.findOne({where: {id: garment.orderItemId}});
+    const [withContext] = await this._withItemContext([garment]);
+
     const [damages, stains, rawImages, statusHistory, brand, color] = await Promise.all([
       this._damagesWithImages(garmentId),
       this._stainsWithImages(garmentId),
@@ -227,8 +240,7 @@ export class GarmentController {
     const images = await this._attachMediaUrls(rawImages);
 
     return {
-      ...garment,
-      orderId: orderItem?.orderId ?? null,
+      ...withContext,
       brandName: (brand as any)?.name ?? null,
       colorName: (color as any)?.name ?? null,
       damages,
@@ -246,6 +258,8 @@ export class GarmentController {
   @response(200, {description: 'Search garments by filter'})
   async searchGarments(
     @param.query.string('filter') filterStr?: string,
+    @param.query.string('orderId') orderId?: string,
+    @param.query.number('limit') limit?: number,
   ): Promise<object[]> {
     let where: Record<string, unknown> = {isDeleted: false};
 
@@ -260,17 +274,20 @@ export class GarmentController {
       }
     }
 
-    const garments = await this.garmentRepository.find({where, limit: 20});
+    // orderId lives on the order item, not the garment, so it can't come through
+    // the LoopBack `filter` — resolve it to the garment's own orderItemId column.
+    if (orderId) {
+      const items = await this.orderItemRepository.find({where: {orderId}});
+      if (!items.length) return [];
+      where = {...where, orderItemId: {inq: items.map(i => i.id)}};
+    }
 
-    // Resolve orderId via orderItem so callers can navigate to the parent order
-    const enriched = await Promise.all(
-      garments.map(async (g) => {
-        const orderItem = await this.orderItemRepository.findOne({where: {id: g.orderItemId}});
-        return {...g, orderId: orderItem?.orderId ?? null};
-      }),
-    );
+    const garments = await this.garmentRepository.find({
+      where,
+      limit: Math.min(Number(limit ?? 20), 200),
+    });
 
-    return enriched;
+    return this._withItemContext(garments);
   }
 
   // ─── Update Garment ───────────────────────────────────────────────────────
@@ -685,6 +702,49 @@ export class GarmentController {
     if (derived) {
       await setOrderStatus(derived, `Auto-synced: garment pipeline bottleneck is '${activeStatuses.find(s => STATUS_RANK[s] === minRank)}'`);
     }
+  }
+
+  // Garments only carry an orderItemId — the item and service a customer actually
+  // recognises live one hop away on the order item. Resolve them in bulk (three
+  // queries total, regardless of how many garments) rather than per garment.
+  private async _withItemContext<T extends {orderItemId: string}>(garments: T[]) {
+    const orderItemIds = [...new Set(garments.map(g => g.orderItemId).filter(Boolean))];
+    if (!orderItemIds.length) return garments.map(g => ({...g, ...EMPTY_ITEM_CONTEXT}));
+
+    const orderItems = await this.orderItemRepository.find({
+      where: {id: {inq: orderItemIds}} as any,
+    });
+
+    const itemIds = [...new Set(orderItems.map(oi => oi.itemId).filter(Boolean))];
+    const serviceIds = [...new Set(orderItems.map(oi => oi.serviceId).filter(Boolean))];
+
+    const [items, services] = await Promise.all([
+      itemIds.length ? this.itemRepository.find({where: {id: {inq: itemIds}} as any}) : Promise.resolve([]),
+      serviceIds.length
+        ? this.serviceRepository.find({where: {id: {inq: serviceIds}} as any})
+        : Promise.resolve([]),
+    ]);
+
+    const orderItemMap = new Map(orderItems.map(oi => [oi.id, oi]));
+    const itemMap = new Map(items.map(i => [i.id, i]));
+    const serviceMap = new Map(services.map(s => [s.id, s]));
+
+    return garments.map(g => {
+      const orderItem = orderItemMap.get(g.orderItemId);
+      if (!orderItem) return {...g, ...EMPTY_ITEM_CONTEXT};
+
+      const item = itemMap.get(orderItem.itemId);
+      const service = serviceMap.get(orderItem.serviceId);
+
+      return {
+        ...g,
+        orderId: orderItem.orderId ?? null,
+        itemId: orderItem.itemId ?? null,
+        itemName: (item as any)?.name ?? null,
+        serviceId: orderItem.serviceId ?? null,
+        serviceName: (service as any)?.name ?? null,
+      };
+    });
   }
 
   private async _stainsWithImages(garmentId: string) {

@@ -142,6 +142,45 @@ export class ApprovalController {
     return {message: `Request ${body.action}.`, request: updated};
   }
 
+  // ─── Revert (undo a resolved decision) ────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['approval:update']})
+  @post('/approval-requests/{id}/revert')
+  @response(200, {description: 'Approval request reverted to pending'})
+  async revert(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      required: false,
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              reason: {type: 'string', description: 'Why the decision is being undone'},
+            },
+          },
+        },
+      },
+    })
+    body?: {reason?: string},
+  ): Promise<object> {
+    const {request, notes} = await this.approvalService.revert({
+      requestId: id,
+      performedBy: currentUser[securityId],
+      reason: body?.reason,
+    });
+
+    return {
+      message: 'Approval reverted. The request is pending again and can be approved or rejected afresh.',
+      request,
+      // Things the revert could not undo (process steps already run, refunds
+      // already paid out). Surface these to the user — do not swallow them.
+      notes,
+    };
+  }
+
   // ─── List Approval Requests ───────────────────────────────────────────────
 
   @authenticate('jwt')

@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -52,6 +53,9 @@ export class ClusterPriceListController {
       const match = item.code?.match(/^CPL(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    clusterPriceList.name = (clusterPriceList.name as string).trim();
+    const duplicate = await this.clusterPriceListRepository.findOne({where: {name: {ilike: clusterPriceList.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A cluster price list with name "${clusterPriceList.name}" already exists.`);
     clusterPriceList.code = `CPL${String(maxNum + 1).padStart(3, '0')}`;
     return this.clusterPriceListRepository.create(clusterPriceList);
   }
@@ -121,6 +125,11 @@ export class ClusterPriceListController {
     })
     clusterPriceList: Partial<ClusterPriceList>,
   ): Promise<void> {
+    if (clusterPriceList.name) {
+      clusterPriceList.name = (clusterPriceList.name as string).trim();
+      const duplicate = await this.clusterPriceListRepository.findOne({where: {name: {ilike: clusterPriceList.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A cluster price list with name "${clusterPriceList.name}" already exists.`);
+    }
     await this.clusterPriceListRepository.updateById(id, clusterPriceList);
   }
 }

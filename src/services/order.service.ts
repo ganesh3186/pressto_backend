@@ -924,12 +924,20 @@ export class OrderService {
     const itemIds = [...new Set(orderItems.map(i => i.itemId))];
 
     // ── Parallel batch 2: customer, services, items, garments, item charges ──
-    const [customer, services, items, garments, itemCharges] = await Promise.all([
+    const [customer, services, items, garments, itemCharges, parentOrder] = await Promise.all([
       this.customerRepo.findOne({where: {id: order.customerId, isDeleted: false}}),
       serviceIds.length ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as any}) : Promise.resolve([]),
       itemIds.length ? this.itemRepo.find({where: {id: {inq: itemIds}} as any}) : Promise.resolve([]),
       orderItemIds.length ? this.garmentRepo.find({where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any}) : Promise.resolve([]),
       orderItemIds.length ? this.orderItemChargeRepo.find({where: {orderItemId: {inq: orderItemIds}} as any}) : Promise.resolve([]),
+      // This order is a split child — pull the parent so the UI can name and link
+      // back to it, not just hold an opaque uuid.
+      order.parentOrderId
+        ? this.orderRepo.findOne({
+            where: {id: order.parentOrderId} as any,
+            fields: {id: true, orderNumber: true, status: true} as any,
+          })
+        : Promise.resolve(null),
     ]);
 
     // ── Customer phone ────────────────────────────────────────────────────────
@@ -1049,6 +1057,17 @@ export class OrderService {
               sensitivityScore: customer.sensitivityScore ?? null,
               phone: customerUser?.phone ?? null,
               countryCode: customerUser?.countryCode ?? null,
+            }
+          : null,
+        // Mirrors splitChildren below: null on a regular order, populated when
+        // this order was split off another. parentOrderId itself comes through
+        // the spread above.
+        parentOrderNumber: (parentOrder as any)?.orderNumber ?? null,
+        parentOrder: parentOrder
+          ? {
+              id: parentOrder.id,
+              orderNumber: (parentOrder as any).orderNumber,
+              status: parentOrder.status,
             }
           : null,
         splitChildren: splitChildren.map(c => ({

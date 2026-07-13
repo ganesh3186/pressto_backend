@@ -9,12 +9,15 @@ import {GarmentStatusHistoryRepository} from '../repositories/garment-status-his
 import {GarmentProcessLogRepository} from '../repositories/garment-process-log.repository';
 import {ChallanRepository} from '../repositories/challan.repository';
 import {InvoiceRepository} from '../repositories/invoice.repository';
+import {ItemRepository} from '../repositories/item.repository';
+import {MediaRepository} from '../repositories/media.repository';
 import {OrderItemRepository} from '../repositories/order-item.repository';
 import {OrderRepository} from '../repositories/order.repository';
 import {PaymentTransactionRepository} from '../repositories/payment-transaction.repository';
+import {ServiceRepository} from '../repositories/service.repository';
 import {WalletRepository} from '../repositories/wallet.repository';
 import {WalletTransactionRepository} from '../repositories/wallet-transaction.repository';
-import {ApprovalActionType} from '../models/approval-action-type.enum';
+import {ApprovalActionType, CUSTOMER_UPGRADE_ACTIONS} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
@@ -39,6 +42,28 @@ const GARMENT_STATUS_ON_APPROVE: Partial<Record<ApprovalRequestType, GarmentStat
   [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.IN_INSPECTION,
 };
 
+// Everything a resolve() can mutate, captured before the effects run. Stored on
+// approvalRequest.metadata._revertSnapshot and replayed by revert().
+//
+// Deliberately absent: garment_process_log rows and wallet balances. Reverting
+// never rewinds work already done on the shop floor, and never claws money back
+// out of a customer's wallet.
+interface RevertSnapshot {
+  garmentStatus?: string;
+  orderItem?: {
+    id: string;
+    serviceId: string;
+    quantity: number;
+    basePrice?: number;
+    unitPrice?: number;
+    totalPrice?: number;
+  };
+  order?: {id: string; subtotal?: number; totalAmount?: number};
+  invoice?: {id: string; subtotal?: number; totalAmount?: number; balanceDue?: number; items?: unknown[]};
+  challan?: {id: string; subtotal?: number; totalAmount?: number; items?: unknown[]};
+  refundedToWallet?: number;
+}
+
 @injectable({scope: BindingScope.TRANSIENT})
 export class ApprovalService {
   constructor(
@@ -50,9 +75,12 @@ export class ApprovalService {
     @repository(GarmentProcessLogRepository) private processLogRepo: GarmentProcessLogRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
+    @repository(ItemRepository) private itemRepo: ItemRepository,
+    @repository(MediaRepository) private mediaRepo: MediaRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
+    @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
     @inject('services.audit') private auditService: AuditService,
@@ -123,6 +151,11 @@ export class ApprovalService {
 
     const {v4} = await import('uuid');
 
+    // Photograph every row the effects below are about to touch, BEFORE they run.
+    // This is what a later revert restores from — reconstructing it from audit_log
+    // after the fact would be guesswork.
+    const revertSnapshot = await this._captureSnapshot(request);
+
     await this.approvalActionRepo.create({
       id: v4(),
       approvalRequestId: params.requestId,
@@ -138,6 +171,7 @@ export class ApprovalService {
       status: newStatus,
       resolvedAt: new Date(),
       updatedAt: new Date(),
+      metadata: {...(request.metadata ?? {}), _revertSnapshot: revertSnapshot},
     });
 
     await this.approvalAuditLogRepo.create({
@@ -168,7 +202,7 @@ export class ApprovalService {
     if (params.action === ApprovalActionType.APPROVED) {
       await this._applyApproveEffect(request, params.performedBy);
     } else {
-      await this._applyRejectEffect(request, params.performedBy);
+      await this._applyRejectEffect(request, params.performedBy, params.action);
     }
 
     return resolved;
@@ -257,6 +291,10 @@ export class ApprovalService {
         `Return credit — garment ${garment.garmentTagNumber} (order ${order.orderNumber})`,
         order.id,
       );
+      // Remember it on the snapshot. A revert deliberately does NOT claw this
+      // back (the customer may have spent it) — it just surfaces the amount so
+      // finance can reconcile.
+      await this._mergeIntoSnapshot(request.id, {refundedToWallet: overpaid});
     }
 
     await this.auditService.log({
@@ -374,10 +412,30 @@ export class ApprovalService {
 
   // ─── Downstream effects on REJECT ────────────────────────────────────────
 
-  private async _applyRejectEffect(request: ApprovalRequest, performedBy: string): Promise<void> {
+  private async _applyRejectEffect(
+    request: ApprovalRequest,
+    performedBy: string,
+    action: ApprovalActionType,
+  ): Promise<void> {
     if (request.entityType !== 'garment') return;
 
-    // Upgrade rejected: restore garment off on_hold — go back to in_inspection
+    // Declined + return: the customer wants the piece back unprocessed. Same
+    // downstream effect as an approved return_item — drop it from billing and
+    // refund any overpayment.
+    if (action === ApprovalActionType.REJECTED_AND_RETURN) {
+      await this._updateGarmentStatus(
+        request.entityId,
+        GarmentStatus.RETURNED_TO_CUSTOMER,
+        performedBy,
+        `${request.type} declined — garment returned to customer`,
+      );
+      await this._applyReturnEffect(request, performedBy);
+      return;
+    }
+
+    // Plain reject, or declined + carry on with the original service. Either way
+    // the garment just comes off hold: orderItem.serviceId was never touched, so
+    // processing resumes on the OLD service with no further action needed.
     if (request.type === ApprovalRequestType.UPGRADE_SERVICE) {
       const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
       if (garment?.status === GarmentStatus.ON_HOLD) {
@@ -389,8 +447,11 @@ export class ApprovalService {
         });
         const prevEntry = history.find(h => h.status !== GarmentStatus.ON_HOLD);
         const restoreStatus = (prevEntry?.status as GarmentStatus) ?? GarmentStatus.IN_INSPECTION;
-        await this._updateGarmentStatus(request.entityId, restoreStatus, performedBy,
-          `Upgrade rejected — restored to ${restoreStatus}`);
+        const remarks =
+          action === ApprovalActionType.REJECTED_AND_PROCESS
+            ? `Upgrade declined — resuming ${restoreStatus} on the original service`
+            : `Upgrade rejected — restored to ${restoreStatus}`;
+        await this._updateGarmentStatus(request.entityId, restoreStatus, performedBy, remarks);
       }
     }
   }
@@ -494,6 +555,303 @@ export class ApprovalService {
       after: {serviceId: toServiceId, unitPrice: newUnitPrice, totalPrice: newTotalPrice},
       remarks: `Service upgraded via approval ${request.id}`,
     });
+  }
+
+  // ─── Revert a resolved request back to pending ────────────────────────────
+  // For rectifying a mistake: undoes the money and status changes the resolution
+  // made, reopens the request, and puts the garment back on hold so it can be
+  // approved or rejected afresh.
+  //
+  // What it does NOT undo, by design:
+  //   • garment_process_log rows — work already done on the floor is kept
+  //   • wallet credits — a refund already paid out is not clawed back
+  // Both are reported back in `notes` so the caller can act on them.
+
+  async revert(params: {
+    requestId: string;
+    performedBy: string;
+    reason?: string;
+  }): Promise<{request: ApprovalRequest; notes: string[]}> {
+    const request = await this.approvalRequestRepo.findById(params.requestId);
+    if (request.status === ApprovalRequestStatus.PENDING) {
+      throw new HttpErrors.BadRequest('This request is still pending — there is nothing to revert.');
+    }
+
+    const previousStatus = request.status;
+    const snapshot = request.metadata?._revertSnapshot as RevertSnapshot | undefined;
+    const notes: string[] = [];
+
+    if (snapshot) {
+      await this._restoreSnapshot(snapshot);
+    } else {
+      // Resolved before revert support existed, so nothing was photographed.
+      notes.push(
+        'No pre-resolve snapshot was recorded for this request, so pricing and billing were left untouched. Check the order totals manually.',
+      );
+    }
+
+    if (snapshot?.refundedToWallet) {
+      notes.push(
+        `₹${snapshot.refundedToWallet} was refunded to the customer's wallet on return and has NOT been clawed back. Reconcile manually.`,
+      );
+    }
+
+    if (request.type === ApprovalRequestType.REPROCESS) {
+      notes.push(
+        'The reprocess approval had reset this garment\'s process steps to pending. Those steps are left as they are — reverting does not restore prior step progress.',
+      );
+    }
+
+    // Reverting an APPROVED upgrade puts the old service back on the order item,
+    // but any process steps already initialised were built from the UPGRADED
+    // service's step list. We keep them (process is never deleted), so the two
+    // can now disagree — say so plainly rather than let it pass silently.
+    if (
+      request.type === ApprovalRequestType.UPGRADE_SERVICE &&
+      previousStatus === ApprovalRequestStatus.APPROVED &&
+      request.entityType === 'garment'
+    ) {
+      const logCount = await this.processLogRepo.count({garmentId: request.entityId} as any);
+      if (logCount.count > 0) {
+        notes.push(
+          `Processing had already been initialised on the upgraded service (${logCount.count} step(s)). Those steps are kept, but they no longer match the service now on the order item — review them before processing continues.`,
+        );
+      }
+    }
+
+    const {v4} = await import('uuid');
+
+    // Reopen the request. The original ApprovalAction row is kept — the trail
+    // should show what was decided and that it was later reverted.
+    await this.approvalRequestRepo.updateById(params.requestId, {
+      status: ApprovalRequestStatus.PENDING,
+      resolvedAt: null as unknown as Date,
+      updatedAt: new Date(),
+    });
+
+    // Back on hold, exactly as it sat before anyone decided.
+    if (request.entityType === 'garment') {
+      await this._updateGarmentStatus(
+        request.entityId,
+        GarmentStatus.ON_HOLD,
+        params.performedBy,
+        `${previousStatus} decision reverted — awaiting a fresh decision`,
+      );
+    }
+
+    await this.approvalAuditLogRepo.create({
+      id: v4(),
+      approvalRequestId: params.requestId,
+      eventType: 'reverted',
+      remarks: params.reason ?? `Reverted from ${previousStatus} back to pending`,
+      performedBy: params.performedBy,
+    });
+
+    await this.auditService.log({
+      entityType: request.entityType,
+      entityId: request.entityId,
+      actionType: 'approval_reverted',
+      performedBy: params.performedBy,
+      before: {approvalStatus: previousStatus},
+      after: {approvalStatus: ApprovalRequestStatus.PENDING, approvalRequestId: params.requestId},
+      remarks: [params.reason, ...notes].filter(Boolean).join(' | '),
+    });
+
+    return {request: await this.approvalRequestRepo.findById(params.requestId), notes};
+  }
+
+  /** Photograph every row resolve()'s effects can mutate. */
+  private async _captureSnapshot(request: ApprovalRequest): Promise<RevertSnapshot> {
+    const snapshot: RevertSnapshot = {};
+    if (request.entityType !== 'garment') return snapshot;
+
+    const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
+    if (!garment) return snapshot;
+    snapshot.garmentStatus = garment.status;
+
+    const orderItem = await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
+    if (!orderItem) return snapshot;
+    snapshot.orderItem = {
+      id: orderItem.id,
+      serviceId: orderItem.serviceId,
+      quantity: orderItem.quantity,
+      basePrice: orderItem.basePrice,
+      unitPrice: orderItem.unitPrice,
+      totalPrice: orderItem.totalPrice,
+    };
+
+    const order = await this.orderRepo.findOne({where: {id: orderItem.orderId, isDeleted: false}});
+    if (!order) return snapshot;
+    snapshot.order = {id: order.id, subtotal: order.subtotal, totalAmount: order.totalAmount};
+
+    const [invoice, challan] = await Promise.all([
+      this.invoiceRepo.findOne({where: {orderId: order.id}} as any),
+      this.challanRepo.findOne({where: {orderId: order.id}} as any),
+    ]);
+
+    if (invoice) {
+      snapshot.invoice = {
+        id: invoice.id,
+        subtotal: invoice.subtotal,
+        totalAmount: invoice.totalAmount,
+        balanceDue: invoice.balanceDue,
+        items: invoice.items as unknown[],
+      };
+    }
+    if (challan) {
+      snapshot.challan = {
+        id: challan.id,
+        subtotal: challan.subtotal,
+        totalAmount: challan.totalAmount,
+        items: challan.items as unknown[],
+      };
+    }
+
+    return snapshot;
+  }
+
+  /** Put every photographed row back the way it was. */
+  private async _restoreSnapshot(snapshot: RevertSnapshot): Promise<void> {
+    const now = new Date();
+
+    if (snapshot.orderItem) {
+      const {id, ...fields} = snapshot.orderItem;
+      await this.orderItemRepo.updateById(id, {...fields, updatedAt: now});
+    }
+    if (snapshot.order) {
+      const {id, ...fields} = snapshot.order;
+      await this.orderRepo.updateById(id, {...fields, updatedAt: now});
+    }
+    if (snapshot.invoice) {
+      const {id, ...fields} = snapshot.invoice;
+      await this.invoiceRepo.updateById(id, {...fields, updatedAt: now} as any);
+    }
+    if (snapshot.challan) {
+      const {id, ...fields} = snapshot.challan;
+      await this.challanRepo.updateById(id, {...fields, updatedAt: now} as any);
+    }
+  }
+
+  /** Fold extra facts into the snapshot after the effects have run. */
+  private async _mergeIntoSnapshot(requestId: string, patch: Partial<RevertSnapshot>): Promise<void> {
+    const request = await this.approvalRequestRepo.findById(requestId);
+    const metadata = request.metadata ?? {};
+    const snapshot = (metadata._revertSnapshot ?? {}) as RevertSnapshot;
+    await this.approvalRequestRepo.updateById(requestId, {
+      metadata: {...metadata, _revertSnapshot: {...snapshot, ...patch}},
+      updatedAt: new Date(),
+    });
+  }
+
+  // ─── Customer-facing view of an upgrade request ───────────────────────────
+  // Everything the customer needs to decide: the garment, the service they are
+  // on now vs the one being proposed, what the change costs, and the photos the
+  // store uploaded when raising the request.
+  //
+  // The price shown is computed through the SAME store→cluster→region→base
+  // waterfall + delivery uplift that _applyUpgradeOnOrderItem will apply on
+  // approve, so the quoted difference is what actually lands on the invoice.
+
+  async getUpgradeView(request: ApprovalRequest): Promise<Record<string, unknown>> {
+    const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
+    const orderItem = garment
+      ? await this.orderItemRepo.findOne({where: {id: garment.orderItemId}})
+      : null;
+    const order = orderItem
+      ? await this.orderRepo.findOne({where: {id: orderItem.orderId, isDeleted: false}})
+      : null;
+
+    const fromServiceId = orderItem?.serviceId;
+    const toServiceId = request.metadata?.toServiceId as string | undefined;
+
+    const [fromService, toService, item, media, decision] = await Promise.all([
+      fromServiceId ? this.serviceRepo.findOne({where: {id: fromServiceId}}) : Promise.resolve(null),
+      toServiceId ? this.serviceRepo.findOne({where: {id: toServiceId}}) : Promise.resolve(null),
+      orderItem?.itemId ? this.itemRepo.findOne({where: {id: orderItem.itemId}}) : Promise.resolve(null),
+      this._resolveMedia(request.mediaIds),
+      this.approvalActionRepo.findOne({
+        where: {approvalRequestId: request.id},
+        order: ['actionDate DESC'],
+      }),
+    ]);
+
+    // Quote the proposed service.
+    const quantity = Number(orderItem?.quantity) || 0;
+    const currentUnitPrice = Number(orderItem?.unitPrice) || 0;
+    const currentTotal = Number(orderItem?.totalPrice) || 0;
+
+    let newUnitPrice = currentUnitPrice;
+    if (order && orderItem && toServiceId) {
+      try {
+        const pricing = await this.orderService.resolvePricing(
+          order.storeId!,
+          toServiceId,
+          orderItem.itemId,
+        );
+        const deliveryMultiplier = 1 + (Number(order.deliveryTypePercentage) || 0) / 100;
+        newUnitPrice = parseFloat((pricing.resolvedPrice * deliveryMultiplier).toFixed(2));
+      } catch {
+        // No price configured for the new service + item — quote no extra charge,
+        // matching the fallback the approve path takes.
+        newUnitPrice = currentUnitPrice;
+      }
+    }
+    const newTotal = parseFloat((newUnitPrice * quantity).toFixed(2));
+
+    const isPending = request.status === ApprovalRequestStatus.PENDING;
+
+    return {
+      id: request.id,
+      type: request.type,
+      status: request.status,
+      requestReason: request.requestReason ?? null,
+      createdAt: request.createdAt ?? null,
+      resolvedAt: request.resolvedAt ?? null,
+
+      garment: {
+        id: garment?.id ?? null,
+        tagNumber: garment?.garmentTagNumber ?? null,
+        status: garment?.status ?? null,
+        itemName: item?.name ?? null,
+      },
+
+      currentService: fromService
+        ? {id: fromService.id, name: fromService.name, unitPrice: currentUnitPrice}
+        : null,
+      requestedService: toService
+        ? {id: toService.id, name: toService.name, unitPrice: newUnitPrice}
+        : null,
+
+      pricing: {
+        quantity,
+        currentTotal,
+        newTotal,
+        difference: parseFloat((newTotal - currentTotal).toFixed(2)),
+      },
+
+      media,
+
+      // What the customer may do right now. Empty once the request is resolved.
+      availableActions: isPending ? CUSTOMER_UPGRADE_ACTIONS : [],
+      // Only meaningful while resolved. A reverted request is pending again, and
+      // its superseded ApprovalAction row must not be shown as the live decision.
+      decision:
+        !isPending && decision
+          ? {action: decision.action, comments: decision.comments ?? null, at: decision.actionDate ?? null}
+          : null,
+    };
+  }
+
+  /** Expand media UUIDs into displayable rows (url + type). */
+  private async _resolveMedia(mediaIds?: string[]): Promise<object[]> {
+    if (!mediaIds?.length) return [];
+    const rows = await this.mediaRepo.find({where: {id: {inq: mediaIds}} as any});
+    return rows.map(m => ({
+      id: m.id,
+      fileUrl: m.fileUrl,
+      fileType: m.fileType,
+      fileOriginalName: m.fileOriginalName,
+    }));
   }
 
   // ─── Internal helper ──────────────────────────────────────────────────────

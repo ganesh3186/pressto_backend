@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -52,6 +53,9 @@ export class StoreController {
       const match = s.code?.match(/^STR(\d+)$/i);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
+    store.name = (store.name as string).trim();
+    const duplicate = await this.storeRepository.findOne({where: {name: {ilike: store.name}, isDeleted: false}});
+    if (duplicate) throw new HttpErrors.Conflict(`A store with name "${store.name}" already exists.`);
     store.code = `STR${String(maxNum + 1).padStart(3, '0')}`;
     return this.storeRepository.create(store);
   }
@@ -148,6 +152,11 @@ export class StoreController {
     })
     store: Partial<Store>,
   ): Promise<void> {
+    if (store.name) {
+      store.name = (store.name as string).trim();
+      const duplicate = await this.storeRepository.findOne({where: {name: {ilike: store.name}, isDeleted: false, id: {neq: id}} as any});
+      if (duplicate) throw new HttpErrors.Conflict(`A store with name "${store.name}" already exists.`);
+    }
     await this.storeRepository.updateById(id, store);
   }
 
