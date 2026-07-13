@@ -42,6 +42,21 @@ const GARMENT_STATUS_ON_APPROVE: Partial<Record<ApprovalRequestType, GarmentStat
   [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.IN_INSPECTION,
 };
 
+/**
+ * Coerce a money column to a usable number, rounded to 2dp.
+ *
+ * Postgres `numeric` columns come back from the driver as STRINGS, even though
+ * the LoopBack model types them as `number` — so the compiler cannot catch this.
+ * `"1200" + 280` silently yields `"1200280"`, while `"1200" - 280` coerces and
+ * works. That asymmetry means addition bugs hide behind subtractions that look
+ * fine. Run every money value read from the DB through here before doing maths
+ * on it.
+ */
+function money(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
 // Everything a resolve() can mutate, captured before the effects run. Stored on
 // approvalRequest.metadata._revertSnapshot and replayed by revert().
 //
@@ -487,7 +502,7 @@ export class ApprovalService {
     const newUnitPrice = parseFloat((pricing.resolvedPrice * deliveryMultiplier).toFixed(2));
     const newTotalPrice = parseFloat((newUnitPrice * orderItem.quantity).toFixed(2));
 
-    const oldTotalPrice = orderItem.totalPrice ?? 0;
+    const oldTotalPrice = money(orderItem.totalPrice);
     const priceDiff = newTotalPrice - oldTotalPrice;
 
     await this.orderItemRepo.updateById(orderItemId, {
@@ -500,32 +515,26 @@ export class ApprovalService {
 
     // Adjust order totals
     if (order && priceDiff !== 0) {
-      const newSubtotal = (order.subtotal ?? 0) + priceDiff;
-      const newTotal = (order.totalAmount ?? 0) + priceDiff;
       await this.orderRepo.updateById(order.id, {
-        subtotal: parseFloat(newSubtotal.toFixed(2)),
-        totalAmount: parseFloat(newTotal.toFixed(2)),
+        subtotal: money(money(order.subtotal) + priceDiff),
+        totalAmount: money(money(order.totalAmount) + priceDiff),
         updatedAt: new Date(),
       });
 
       const invoice = await this.invoiceRepo.findOne({where: {orderId: order.id}} as any);
       if (invoice) {
-        const newInvoiceSubtotal = (invoice.subtotal ?? 0) + priceDiff;
-        const newInvoiceTotal = (invoice.totalAmount ?? 0) + priceDiff;
-        const newBalanceDue = (invoice.balanceDue ?? 0) + priceDiff;
         await this.invoiceRepo.updateById(invoice.id, {
-          subtotal: parseFloat(newInvoiceSubtotal.toFixed(2)),
-          totalAmount: parseFloat(newInvoiceTotal.toFixed(2)),
-          balanceDue: parseFloat(newBalanceDue.toFixed(2)),
+          subtotal: money(money(invoice.subtotal) + priceDiff),
+          totalAmount: money(money(invoice.totalAmount) + priceDiff),
+          // An upgrade raises the bill, so the balance rises with it. Never let
+          // it go negative if a downgrade ever produces a negative diff.
+          balanceDue: Math.max(0, money(money(invoice.balanceDue) + priceDiff)),
           updatedAt: new Date(),
         } as any);
       }
 
       const challan = await this.challanRepo.findOne({where: {orderId: order.id}} as any);
       if (challan) {
-        const newChallanSubtotal = (challan.subtotal ?? 0) + priceDiff;
-        const newChallanTotal = (challan.totalAmount ?? 0) + priceDiff;
-        
         const items = [...(challan.items ?? [])] as any[];
         const challanItemIdx = items.findIndex(i => i.orderItemId === orderItemId);
         if (challanItemIdx !== -1) {
@@ -538,8 +547,8 @@ export class ApprovalService {
         }
 
         await this.challanRepo.updateById(challan.id, {
-          subtotal: parseFloat(newChallanSubtotal.toFixed(2)),
-          totalAmount: parseFloat(newChallanTotal.toFixed(2)),
+          subtotal: money(money(challan.subtotal) + priceDiff),
+          totalAmount: money(money(challan.totalAmount) + priceDiff),
           items,
           updatedAt: new Date(),
         } as any);

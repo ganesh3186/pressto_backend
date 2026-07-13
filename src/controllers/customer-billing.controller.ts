@@ -13,6 +13,12 @@ import {
   WalletRepository,
 } from '../repositories';
 
+/** Coerce a Postgres numeric (which the driver returns as a string) to a 2dp number. */
+function money(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
 export class CustomerBillingController {
   constructor(
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
@@ -51,15 +57,15 @@ export class CustomerBillingController {
       invoiceNumber: inv.invoiceNumber,
       orderId: inv.orderId,
       orderNumber: (orderMap.get(inv.orderId) as any)?.orderNumber ?? null,
-      totalAmount: inv.totalAmount ?? 0,
-      amountReceived: inv.amountReceived ?? 0,
-      balanceDue: inv.balanceDue ?? 0,
+      totalAmount: money(inv.totalAmount),
+      amountReceived: money(inv.amountReceived),
+      balanceDue: money(inv.balanceDue),
       createdAt: inv.createdAt,
     }));
 
     const totalDue = enriched.reduce((s, i) => s + i.balanceDue, 0);
 
-    return {pendingInvoices: enriched, totalDue: parseFloat(totalDue.toFixed(2))};
+    return {pendingInvoices: enriched, totalDue: money(totalDue)};
   }
 
   // ─── Club & Pay ───────────────────────────────────────────────────────────
@@ -115,12 +121,14 @@ export class CustomerBillingController {
     try {
       for (const inv of pending) {
         if (remaining <= 0) break;
-        const due = inv.balanceDue ?? 0;
+        // Postgres numeric columns arrive as strings — coerce before any maths.
+        // `"120" + 50` concatenates; only subtraction coerces silently.
+        const due = money(inv.balanceDue);
         const allocated = Math.min(remaining, due);
-        remaining = parseFloat((remaining - allocated).toFixed(2));
+        remaining = money(remaining - allocated);
 
-        const newBalance = parseFloat((due - allocated).toFixed(2));
-        const newReceived = parseFloat(((inv.amountReceived ?? 0) + allocated).toFixed(2));
+        const newBalance = money(due - allocated);
+        const newReceived = money(money(inv.amountReceived) + allocated);
 
         await this.invoiceRepo.updateById(
           inv.id,
@@ -196,7 +204,7 @@ export class CustomerBillingController {
       const allInvoices = await this.invoiceRepo.find({
         where: {orderId: {inq: allOrderIds}} as any,
       });
-      totalPendingBalance = allInvoices.reduce((s, inv) => s + (inv.balanceDue ?? 0), 0);
+      totalPendingBalance = allInvoices.reduce((s, inv) => s + money(inv.balanceDue), 0);
     }
 
     const c = customer as any;
@@ -209,8 +217,10 @@ export class CustomerBillingController {
       sensitivityScore: c.sensitivity ?? c.sensitivityScore ?? 0,
       preferredPaymentMode: c.preferredPaymentMode ?? null,
       specialInstructions: c.specialInstructions ?? c.notes ?? null,
-      walletBalance: parseFloat((wallet as any)?.balance ?? 0),
-      totalPendingBalance: parseFloat(totalPendingBalance.toFixed(2)),
+      // The Wallet model's field is `currentBalance`, not `balance` — reading the
+      // latter through an `as any` made this silently report ₹0 for every customer.
+      walletBalance: money(wallet?.currentBalance),
+      totalPendingBalance: money(totalPendingBalance),
       last5Orders: orders.map(o => ({
         orderId: o.id,
         orderNumber: (o as any).orderNumber,
