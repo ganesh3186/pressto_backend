@@ -777,7 +777,7 @@ export class ApprovalService {
       fromServiceId ? this.serviceRepo.findOne({where: {id: fromServiceId}}) : Promise.resolve(null),
       toServiceId ? this.serviceRepo.findOne({where: {id: toServiceId}}) : Promise.resolve(null),
       orderItem?.itemId ? this.itemRepo.findOne({where: {id: orderItem.itemId}}) : Promise.resolve(null),
-      this._resolveMedia(request.mediaIds),
+      this.resolveMedia(request.mediaIds),
       this.approvalActionRepo.findOne({
         where: {approvalRequestId: request.id},
         order: ['actionDate DESC'],
@@ -851,16 +851,30 @@ export class ApprovalService {
     };
   }
 
-  /** Expand media UUIDs into displayable rows (url + type). */
-  private async _resolveMedia(mediaIds?: string[]): Promise<object[]> {
+  /**
+   * Expand media UUIDs into displayable rows (url + name + type).
+   *
+   * An approval only stores `mediaIds`, which are useless to a client on their
+   * own — every consumer needs the URL. Public so the admin controller reuses it
+   * rather than re-implementing the lookup.
+   */
+  async resolveMedia(mediaIds?: string[]): Promise<object[]> {
     if (!mediaIds?.length) return [];
     const rows = await this.mediaRepo.find({where: {id: {inq: mediaIds}} as any});
-    return rows.map(m => ({
-      id: m.id,
-      fileUrl: m.fileUrl,
-      fileType: m.fileType,
-      fileOriginalName: m.fileOriginalName,
-    }));
+
+    // Preserve the order the ids were stored in — `find` returns them in
+    // whatever order the DB feels like, which would shuffle the gallery.
+    const byId = new Map(rows.map(m => [m.id, m]));
+    return mediaIds
+      .map(id => byId.get(id))
+      .filter((m): m is NonNullable<typeof m> => Boolean(m))
+      .map(m => ({
+        id: m.id,
+        fileUrl: m.fileUrl,
+        fileName: m.fileName,
+        fileOriginalName: m.fileOriginalName,
+        fileType: m.fileType,
+      }));
   }
 
   // ─── Internal helper ──────────────────────────────────────────────────────

@@ -25,10 +25,14 @@ export class ApprovalController {
   ) {}
 
   private async enrichRequest(req: ApprovalRequest): Promise<object> {
-    if (req.entityType !== 'garment') return req;
+    // mediaIds alone are useless to a client — always expand them to real
+    // URLs, even for non-garment requests (payments carry cheque photos).
+    const media = await this.approvalService.resolveMedia(req.mediaIds);
+
+    if (req.entityType !== 'garment') return {...req, media};
 
     const garment = await this.garmentRepo.findOne({where: {id: req.entityId}});
-    if (!garment) return req;
+    if (!garment) return {...req, media};
 
     const orderItem = garment.orderItemId
       ? await this.orderItemRepo.findOne({where: {id: garment.orderItemId}})
@@ -46,6 +50,7 @@ export class ApprovalController {
       itemName: item?.name ?? null,
       orderNumber: (order as any)?.orderNumber ?? null,
       orderId: orderItem?.orderId ?? null,
+      media,
     };
   }
 
@@ -220,11 +225,14 @@ export class ApprovalController {
     const request = await this.approvalRequestRepo.findOne({where: {id}});
     if (!request) throw new HttpErrors.NotFound('Approval request not found.');
 
-    const auditLog = await this.approvalAuditLogRepo.find({
-      where: {approvalRequestId: id},
-      order: ['performedAt ASC'],
-    });
+    const [enriched, auditLog] = await Promise.all([
+      this.enrichRequest(request),
+      this.approvalAuditLogRepo.find({
+        where: {approvalRequestId: id},
+        order: ['performedAt ASC'],
+      }),
+    ]);
 
-    return {request, auditLog};
+    return {request: enriched, auditLog};
   }
 }
