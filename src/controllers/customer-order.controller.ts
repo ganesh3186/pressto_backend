@@ -1,7 +1,7 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
-import {get, HttpErrors, param, response} from '@loopback/rest';
+import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {Customer} from '../models';
 import {Order} from '../models/order.model';
@@ -262,6 +262,59 @@ export class CustomerOrderController {
       balanceDue: details.balanceDue ?? 0,
       paymentTransactions: details.paymentTransactions ?? [],
     };
+  }
+
+  // ─── Orders: pay (partially) from wallet ────────────────────────────────────
+  // Self-service equivalent of the admin walletAmount payment: the customer pays
+  // down an owned order from their own wallet. Any positive amount up to the
+  // balance due is allowed, so partial payments work. The order id and the
+  // wallet are both derived from the JWT — a customer can only pay their own
+  // order from their own wallet.
+
+  @authenticate('jwt')
+  @post('/profile/customer/orders/{orderId}/pay-from-wallet')
+  @response(200, {description: 'Wallet payment recorded against the order'})
+  async payMyOrderFromWallet(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('orderId') orderId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['amount'],
+            properties: {
+              amount: {
+                type: 'number',
+                minimum: 0,
+                description: 'Amount to pay from the wallet. Must be > 0 and ≤ balance due.',
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {amount: number},
+  ): Promise<object> {
+    const customer = await this.resolveCustomer(currentUser);
+    await this.resolveOwnedOrder(orderId, customer.id);
+
+    const amount = Number(body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new HttpErrors.BadRequest('Enter an amount greater than zero.');
+    }
+
+    // Reuse the admin payment path: pass no cash payment, only walletAmount.
+    // It validates balance-due and wallet balance, debits the wallet, and
+    // records both the wallet transaction and the order payment in one DB
+    // transaction — so a customer-initiated wallet payment is identical to a
+    // staff-initiated one.
+    return this.orderService.addPayment(
+      orderId,
+      undefined as never,
+      amount,
+      customer.userId,
+    );
   }
 
   // ─── Orders: billing documents ─────────────────────────────────────────────
