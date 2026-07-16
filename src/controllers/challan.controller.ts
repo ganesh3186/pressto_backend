@@ -60,7 +60,8 @@ export class ChallanController {
     const cgst = parseFloat((subtotal * gstRate).toFixed(2));
     const sgst = parseFloat((subtotal * gstRate).toFixed(2));
     const discount = Number(order.discountAmount) || 0;
-    const totalAmount = parseFloat((subtotal - discount + cgst + sgst).toFixed(2));
+    // Final total is a whole rupee (≥ .5 rounds up); components keep decimals.
+    const totalAmount = Math.round(subtotal - discount + cgst + sgst);
 
     const totalCount = await this.challanRepo.count();
     const challanNumber = `CHL-${String(totalCount.count + 1).padStart(6, '0')}`;

@@ -491,7 +491,8 @@ export class ApprovalService {
     if (order && priceDiff !== 0) {
       await this.orderRepo.updateById(order.id, {
         subtotal: money(money(order.subtotal) + priceDiff),
-        totalAmount: money(money(order.totalAmount) + priceDiff),
+        // Final total is a whole rupee; subtotal keeps decimals.
+        totalAmount: Math.round(money(order.totalAmount) + priceDiff),
         updatedAt: new Date(),
       });
 
@@ -499,10 +500,10 @@ export class ApprovalService {
       if (invoice) {
         await this.invoiceRepo.updateById(invoice.id, {
           subtotal: money(money(invoice.subtotal) + priceDiff),
-          totalAmount: money(money(invoice.totalAmount) + priceDiff),
+          totalAmount: Math.round(money(invoice.totalAmount) + priceDiff),
           // An upgrade raises the bill, so the balance rises with it. Never let
           // it go negative if a downgrade ever produces a negative diff.
-          balanceDue: Math.max(0, money(money(invoice.balanceDue) + priceDiff)),
+          balanceDue: Math.max(0, Math.round(money(invoice.balanceDue) + priceDiff)),
           updatedAt: new Date(),
         } as any);
       }
@@ -522,7 +523,7 @@ export class ApprovalService {
 
         await this.challanRepo.updateById(challan.id, {
           subtotal: money(money(challan.subtotal) + priceDiff),
-          totalAmount: money(money(challan.totalAmount) + priceDiff),
+          totalAmount: Math.round(money(challan.totalAmount) + priceDiff),
           items,
           updatedAt: new Date(),
         } as any);

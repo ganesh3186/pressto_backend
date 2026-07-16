@@ -20,7 +20,13 @@ import {
 } from '@loopback/rest';
 import {authorize} from '../authorization';
 import {StoreServiceMapping} from '../models/store-service-mapping.model';
-import {ServiceRepository, StoreRepository, StoreServiceMappingRepository} from '../repositories';
+import {
+  OrderItemRepository,
+  OrderRepository,
+  ServiceRepository,
+  StoreRepository,
+  StoreServiceMappingRepository,
+} from '../repositories';
 
 export class StoreServiceMappingController {
   constructor(
@@ -30,7 +36,82 @@ export class StoreServiceMappingController {
     private storeRepository: StoreRepository,
     @repository(ServiceRepository)
     private serviceRepository: ServiceRepository,
+    @repository(OrderRepository)
+    private orderRepository: OrderRepository,
+    @repository(OrderItemRepository)
+    private orderItemRepository: OrderItemRepository,
   ) {}
+
+  // ─── Store service capacity (available vs filled) ──────────────────────────
+  // Per service configured for a store: dailyCapacity vs how much is already
+  // booked for a given delivery date. "Filled" = sum of order-item quantities on
+  // that store's non-cancelled orders whose delivery date matches. Display only
+  // (the Create Order screen shows available/filled; no hard block here).
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:read']})
+  @get('/stores/{storeId}/service-capacity')
+  @response(200, {description: 'Per-service capacity (available / filled) for a store on a date'})
+  async serviceCapacity(
+    @param.path.string('storeId') storeId: string,
+    @param.query.string('date') date?: string,
+  ): Promise<object> {
+    const store = await this.storeRepository.findOne({where: {id: storeId, isDeleted: false}});
+    if (!store) throw new HttpErrors.NotFound('Store not found.');
+
+    const mappings = await this.storeServiceMappingRepository.find({
+      where: {storeId, isActive: true, isDeleted: false} as any,
+    });
+    if (!mappings.length) return {storeId, date: date ?? null, services: []};
+
+    // Orders for this store on the target delivery date (default: today).
+    const day = date ? new Date(date) : new Date();
+    const dayStart = new Date(day);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(day);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const orders = await this.orderRepository.find({
+      where: {
+        storeId,
+        isDeleted: false,
+        status: {neq: 'cancelled'},
+        deliveryDate: {between: [dayStart, dayEnd]},
+      } as any,
+      fields: {id: true} as any,
+    });
+
+    // Sum booked quantity per service across those orders' items.
+    const filledByService = new Map<string, number>();
+    if (orders.length) {
+      const items = await this.orderItemRepository.find({
+        where: {orderId: {inq: orders.map(o => o.id)}} as any,
+        fields: {serviceId: true, quantity: true} as any,
+      });
+      for (const it of items) {
+        filledByService.set(it.serviceId, (filledByService.get(it.serviceId) ?? 0) + (Number(it.quantity) || 0));
+      }
+    }
+
+    const serviceIds = mappings.map(m => m.serviceId);
+    const services = await this.serviceRepository.find({where: {id: {inq: serviceIds}} as any});
+    const serviceNameById = new Map(services.map(s => [s.id, s.name]));
+
+    const rows = mappings.map(m => {
+      const capacity = Number(m.dailyCapacity) || 0;
+      const filled = filledByService.get(m.serviceId) ?? 0;
+      return {
+        serviceId: m.serviceId,
+        serviceName: serviceNameById.get(m.serviceId) ?? null,
+        capacity,
+        filled,
+        available: Math.max(0, capacity - filled),
+        isFull: capacity > 0 && filled >= capacity,
+      };
+    });
+
+    return {storeId, date: dayStart.toISOString().slice(0, 10), services: rows};
+  }
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:create']})

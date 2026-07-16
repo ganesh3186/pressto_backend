@@ -65,6 +65,17 @@ export class ServiceProcessMappingController {
         `Process step "${step.name}" is already mapped to service "${service.name}".`,
       );
     }
+
+    // Sequence must be unique within a service — two steps can't share a position.
+    if (serviceProcessMapping.sequence !== undefined) {
+      const seqClash = await this.serviceProcessMappingRepository.findOne({
+        where: {serviceId: serviceProcessMapping.serviceId, sequence: serviceProcessMapping.sequence, isDeleted: false},
+      });
+      if (seqClash) {
+        throw new HttpErrors.Conflict(`Sequence ${serviceProcessMapping.sequence} is already used for this service.`);
+      }
+    }
+
     serviceProcessMapping.isInitial = serviceProcessMapping.sequence === 1;
     return this.serviceProcessMappingRepository.create(serviceProcessMapping);
   }
@@ -215,6 +226,18 @@ export class ServiceProcessMappingController {
           this.processStepRepository.findById(newProcessStepId),
         ]);
         throw new HttpErrors.Conflict(`Process step "${step.name}" is already mapped to service "${service.name}".`);
+      }
+    }
+
+    // Keep sequence unique within the service when it (or the service) changes.
+    if (serviceProcessMapping.sequence !== undefined || serviceProcessMapping.serviceId !== undefined) {
+      const targetServiceId = serviceProcessMapping.serviceId ?? current.serviceId;
+      const targetSequence = serviceProcessMapping.sequence ?? current.sequence;
+      const seqClash = await this.serviceProcessMappingRepository.findOne({
+        where: {serviceId: targetServiceId, sequence: targetSequence, isDeleted: false, id: {neq: id}} as any,
+      });
+      if (seqClash) {
+        throw new HttpErrors.Conflict(`Sequence ${targetSequence} is already used for this service.`);
       }
     }
 

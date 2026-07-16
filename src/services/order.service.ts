@@ -106,6 +106,14 @@ export interface CreateOrderInput {
   walletAmount?: number;
 }
 
+// The final order/invoice/challan total is always a whole rupee (≥ .5 rounds up).
+// Component amounts (subtotal, tax, unit prices) keep their decimals — only the
+// finalized total the customer sees/pays is rounded.
+function roundRupee(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
 @injectable({scope: BindingScope.TRANSIENT})
 export class OrderService {
   constructor(
@@ -434,7 +442,7 @@ export class OrderService {
     const taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
     const gstRate = gstConfig ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage) : 0;
     const taxAmount = gstRate > 0 ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2)) : 0;
-    const totalAmount = parseFloat((taxableAmount + taxAmount).toFixed(2));
+    const totalAmount = roundRupee(taxableAmount + taxAmount);
 
     // Validate that payment amounts don't exceed total
     const paymentsTotal = (input.payments ?? []).reduce((s, p) => s + Number(p.amount), 0);
@@ -1422,7 +1430,7 @@ export class OrderService {
     // Child is taxed on its ACTUAL (possibly express-uplifted) taxable value, so
     // GST applies to the uplift too.
     const subOrderTax = parseFloat(((subOrderSubtotal - subOrderDiscount) * effectiveTaxRate).toFixed(2));
-    const subOrderTotal = parseFloat((subOrderSubtotal - subOrderDiscount + subOrderTax).toFixed(2));
+    const subOrderTotal = roundRupee(subOrderSubtotal - subOrderDiscount + subOrderTax);
 
     // The parent must lose only the ORIGINAL value of the moved garments, never
     // the child's re-tiered price. If the child was bumped to express, debiting
@@ -1490,9 +1498,7 @@ export class OrderService {
     // Higher index = more advanced pipeline stage = delivers sooner
     let allocatedPayment: number;
     let parentAllocatedPayment: number;
-    const parentNewTotal = parseFloat(
-      (Number(order.totalAmount ?? 0) - oldSubOrderTotal).toFixed(2),
-    );
+    const parentNewTotal = roundRupee(Number(order.totalAmount ?? 0) - oldSubOrderTotal);
     if (childStatusIdx >= parentStatusIdx) {
       // Child delivers first — give it full payment up to its total
       allocatedPayment = Math.min(totalPaid, subOrderTotal);

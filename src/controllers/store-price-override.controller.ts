@@ -10,6 +10,7 @@ import {
 import {
   get,
   getModelSchemaRef,
+  HttpErrors,
   param,
   patch,
   post,
@@ -46,6 +47,13 @@ export class StorePriceOverrideController {
     })
     storePriceOverride: Omit<StorePriceOverride, 'id'>,
   ): Promise<StorePriceOverride> {
+    // One override per store — a store can't appear twice in the list.
+    const duplicate = await this.storePriceOverrideRepository.findOne({
+      where: {storeId: storePriceOverride.storeId, isDeleted: false},
+    });
+    if (duplicate) {
+      throw new HttpErrors.Conflict('A price override already exists for this store.');
+    }
     return this.storePriceOverrideRepository.create(storePriceOverride);
   }
 
@@ -144,6 +152,15 @@ export class StorePriceOverrideController {
     })
     storePriceOverride: Partial<StorePriceOverride>,
   ): Promise<void> {
+    // If the store is being changed, keep the one-override-per-store rule.
+    if (storePriceOverride.storeId) {
+      const duplicate = await this.storePriceOverrideRepository.findOne({
+        where: {storeId: storePriceOverride.storeId, isDeleted: false, id: {neq: id}} as any,
+      });
+      if (duplicate) {
+        throw new HttpErrors.Conflict('A price override already exists for this store.');
+      }
+    }
     await this.storePriceOverrideRepository.updateById(id, storePriceOverride);
   }
 

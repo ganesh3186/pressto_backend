@@ -10,8 +10,10 @@ import {
   IntakeRejectionReason,
   IntakeRejectionStatus,
 } from '../models/intake-rejected-item.model';
+import {GarmentStatus} from '../models/garment-status.enum';
 import {
   GarmentRepository,
+  GarmentStatusHistoryRepository,
   IntakeRejectedItemRepository,
   OrderItemRepository,
   OrderRepository,
@@ -23,6 +25,7 @@ export class IntakeRejectionController {
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
   ) {}
 
   // ─── Reject an item at intake ─────────────────────────────────────────────
@@ -51,6 +54,9 @@ export class IntakeRejectionController {
               garmentId: {type: 'string', format: 'uuid'},
               remarks: {type: 'string'},
               mediaIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              // Reject-at-intake from the Create Order inspection popup: no
+              // approval step — the garment is returned to the customer at once.
+              directReturn: {type: 'boolean'},
             },
           },
         },
@@ -61,6 +67,7 @@ export class IntakeRejectionController {
       garmentId?: string;
       remarks?: string;
       mediaIds?: string[];
+      directReturn?: boolean;
     },
   ): Promise<object> {
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
@@ -74,6 +81,44 @@ export class IntakeRejectionController {
       if (!garment) throw new HttpErrors.NotFound('Garment not found on this order item.');
     }
 
+    const {v4} = await import('uuid');
+
+    // ── Direct return (intake popup): no approval, no pending state ──────────
+    // Mark the garment returned to the customer immediately and store the
+    // rejection as already-resolved for the audit trail.
+    if (body.directReturn) {
+      if (!body.garmentId) {
+        throw new HttpErrors.BadRequest('A garment is required to reject and return at intake.');
+      }
+      await this.garmentRepo.updateById(body.garmentId, {status: GarmentStatus.RETURNED_TO_CUSTOMER});
+      await this.garmentStatusHistoryRepo.create({
+        id: v4(),
+        garmentId: body.garmentId,
+        status: GarmentStatus.RETURNED_TO_CUSTOMER,
+        changedAt: new Date(),
+        changedBy: currentUser[securityId],
+        remarks: `Rejected at intake (${body.reason})${body.remarks ? ` — ${body.remarks}` : ''}`,
+      });
+
+      const record = await this.intakeRejectedRepo.create({
+        id: v4(),
+        orderId,
+        orderItemId,
+        garmentId: body.garmentId,
+        reason: body.reason,
+        remarks: body.remarks,
+        mediaIds: body.mediaIds,
+        handledBy: currentUser[securityId],
+        status: IntakeRejectionStatus.RESOLVED,
+        outcome: IntakeRejectionOutcome.RETURN_TO_CUSTOMER,
+        resolvedBy: currentUser[securityId],
+        resolvedAt: new Date(),
+      } as Partial<IntakeRejectedItem>);
+
+      return {message: 'Garment rejected at intake and returned to customer.', record};
+    }
+
+    // ── Standard flow: create a pending rejection for manager resolution ─────
     // Guard: one pending rejection per order item
     const existing = await this.intakeRejectedRepo.findOne({
       where: {orderItemId, status: IntakeRejectionStatus.PENDING} as any,
@@ -82,7 +127,6 @@ export class IntakeRejectionController {
       throw new HttpErrors.Conflict('A pending intake rejection already exists for this order item.');
     }
 
-    const {v4} = await import('uuid');
     const record = await this.intakeRejectedRepo.create({
       id: v4(),
       orderId,
