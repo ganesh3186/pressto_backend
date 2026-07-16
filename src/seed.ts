@@ -582,12 +582,27 @@ async function seedMasters(app: presstoBackendApplication) {
     if (!mastersData[table] || mastersData[table].length === 0) continue;
     console.log(`Seeding master: ${table} (${mastersData[table].length} records)`);
     try {
-      const repo = await app.getRepository(repoClass as any) as any;
+      const repo = (await app.getRepository(repoClass as any)) as any;
+      
+      // Build a mapping from lowercase DB column names to correct camelCase TS properties
+      const properties = repo.entityClass.definition.properties;
+      const keyMapping: Record<string, string> = {};
+      for (const propName of Object.keys(properties)) {
+        keyMapping[propName.toLowerCase()] = propName;
+      }
+
       for (const record of mastersData[table]) {
         try {
-          const exists = await repo.findOne({where: {id: record.id}});
+          // Map the parsed JSON keys to correct casing
+          const mappedRecord: any = {};
+          for (const [key, value] of Object.entries(record)) {
+            const mappedKey = keyMapping[key] || key;
+            mappedRecord[mappedKey] = value;
+          }
+
+          const exists = await repo.findOne({where: {id: mappedRecord.id}});
           if (!exists) {
-            await repo.create(record);
+            await repo.create(mappedRecord);
           }
         } catch (err: any) {
           console.error(`Failed to seed record in ${table} (id: ${record.id}):`, err.message);
