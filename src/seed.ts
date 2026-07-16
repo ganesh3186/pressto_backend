@@ -317,7 +317,7 @@ const ROLES: RoleSeed[] = [
     permissions: flat(
       cru('order'),        // order:create records a payment, order:update is club-pay
       ro('customer'),
-      cru('customer_recharge'),
+      cr('customer_recharge'),
       crud('wallet_configuration'),
       crud('gst_tax_configuration'),
       ro('delivery_type_configuration'),
@@ -540,7 +540,7 @@ export async function seed() {
 }
 
 async function seedMasters(app: presstoBackendApplication) {
-  const seedFile = path.join(__dirname, 'data', 'seed-masters.json');
+  const seedFile = path.join(__dirname, '../src/data/seed-masters.json');
   if (!fs.existsSync(seedFile)) {
     console.log('No master seed file found at', seedFile);
     return;
