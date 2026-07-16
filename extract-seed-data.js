@@ -4,7 +4,7 @@ const dumpFile = '../data-backup/dump.sql';
 const outputFile = './src/data/seed-masters.json';
 
 const tablesToExtract = [
-  'brand', 'color', 'stain', 'damage_type', 'item_category', 'service',
+  'media', 'brand', 'color', 'stain', 'damage_type', 'item_category', 'service',
   'customer_label', 'order_label', 'customer_discount_group', 'process_step',
   'service_category', 'item', 'region', 'cluster', 'store', 'price_list',
   'price_list_item', 'cluster_price_list', 'store_price_override',

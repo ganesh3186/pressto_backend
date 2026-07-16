@@ -548,6 +548,7 @@ async function seedMasters(app: presstoBackendApplication) {
   const mastersData = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
 
   const repoMapping = [
+    { table: 'media', repoClass: Repos.MediaRepository },
     { table: 'region', repoClass: Repos.RegionRepository },
     { table: 'cluster', repoClass: Repos.ClusterRepository },
     { table: 'store', repoClass: Repos.StoreRepository },
