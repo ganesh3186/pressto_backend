@@ -24,6 +24,7 @@ import {GarmentStatus} from '../models/garment-status.enum';
 import {ProcessLogStatus} from '../models/process-log-status.enum';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {ReferenceType} from '../models/reference-type.enum';
+import {PaymentMode} from '../models/payment-mode.enum';
 import {APPROVAL_ROLE_ROUTING, ApprovalRequest} from '../models/approval-request.model';
 import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
@@ -268,48 +269,68 @@ export class ApprovalService {
     const order = await this.orderRepo.findOne({where: {id: orderItem.orderId, isDeleted: false}});
     if (!order) return;
 
-    // One garment = one piece of its order item.
-    const returnedAmount = parseFloat((Number(orderItem.unitPrice) || 0).toFixed(2));
-    if (returnedAmount <= 0) return;
+    // The order total is intentionally LEFT UNCHANGED — the order stays the
+    // record of what was ordered. A return is handled as money going back to the
+    // customer, not by shrinking the bill. We only change the garment status
+    // (done via GARMENT_STATUS_ON_APPROVE) and record a refund.
 
-    // Reduce the order item (one piece removed from billing).
-    const newQty = Math.max(0, (Number(orderItem.quantity) || 0) - 1);
-    const newItemTotal = parseFloat(((Number(orderItem.unitPrice) || 0) * newQty).toFixed(2));
-    await this.orderItemRepo.updateById(orderItem.id, {
-      quantity: newQty,
-      totalPrice: newItemTotal,
-      updatedAt: new Date(),
-    });
+    // Full value the customer paid for this one piece = unit price + its share of
+    // the order's tax.
+    const unitPrice = money(orderItem.unitPrice);
+    if (unitPrice <= 0) return;
+    const orderSubtotal = money(order.subtotal);
+    const share = orderSubtotal > 0 ? unitPrice / orderSubtotal : 0;
+    const taxShare = money(money(order.taxAmount) * share);
+    const pieceValue = money(unitPrice + taxShare);
 
-    // Reduce order totals.
-    const newSubtotal = Math.max(0, parseFloat(((Number(order.subtotal) || 0) - returnedAmount).toFixed(2)));
-    const newTotal = Math.max(0, parseFloat(((Number(order.totalAmount) || 0) - returnedAmount).toFixed(2)));
-    await this.orderRepo.updateById(order.id, {
-      subtotal: newSubtotal,
-      totalAmount: newTotal,
-      updatedAt: new Date(),
-    });
-
-    // Reflect on invoice + challan (reduce the returned line + totals).
-    await this._reduceBillingDocsForReturn(order.id, orderItem.id, returnedAmount);
-
-    // Refund: if the customer already paid more than the new total, credit the
-    // overpayment to their wallet (credit note). Otherwise the reduction simply
-    // lowers the remaining balance (reflected on the invoice above).
+    // How much THIS order actually collected — split-aware, so the refund is
+    // scoped to this order alone. A split child keeps its money in
+    // allocatedPayment (no transaction rows); a split parent's transactions were
+    // superseded by its allocated share. Refund entries are excluded. Returning
+    // from a child therefore refunds from the child, never the parent.
     const payments = await this.paymentRepo.find({where: {orderId: order.id}} as any);
-    const amountReceived = payments.reduce((s: number, p: any) => s + (Number(p.amount) || 0), 0);
-    const overpaid = parseFloat((amountReceived - newTotal).toFixed(2));
-    if (overpaid > 0) {
+    const txnCollected = payments.reduce(
+      (s: number, p: any) => s + (p.transactionType === 'refund' ? 0 : money(p.amount)),
+      0,
+    );
+    const alreadyRefunded = payments.reduce(
+      (s: number, p: any) => s + (p.transactionType === 'refund' ? money(p.amount) : 0),
+      0,
+    );
+    const allocPay = money((order as any).allocatedPayment);
+    const isChild = !!(order as any).parentOrderId;
+    const collected = isChild
+      ? money(allocPay + txnCollected)
+      : allocPay > 0
+        ? allocPay
+        : txnCollected;
+
+    // Never refund more than the customer still has un-refunded on this order.
+    const refundable = money(collected - alreadyRefunded);
+    const refundAmount = money(Math.min(pieceValue, Math.max(0, refundable)));
+
+    if (refundAmount > 0) {
+      // Money back to the customer's wallet.
       await this._creditWallet(
         order.customerId!,
-        overpaid,
-        `Return credit — garment ${garment.garmentTagNumber} (order ${order.orderNumber})`,
+        refundAmount,
+        `Return refund — garment ${garment.garmentTagNumber} (order ${order.orderNumber})`,
         order.id,
       );
-      // Remember it on the snapshot. A revert deliberately does NOT claw this
-      // back (the customer may have spent it) — it just surfaces the amount so
-      // finance can reconcile.
-      await this._mergeIntoSnapshot(request.id, {refundedToWallet: overpaid});
+      // A visible refund entry in the order's payment history (money out). It is
+      // NOT counted toward amount-collected, so the order total/balance are
+      // unaffected — it just records that we returned the money.
+      const {v4} = await import('uuid');
+      await this.paymentRepo.create({
+        id: v4(),
+        orderId: order.id,
+        paymentMode: PaymentMode.WALLET,
+        transactionType: 'refund',
+        amount: refundAmount,
+        paymentDate: new Date(),
+      } as any);
+
+      await this._mergeIntoSnapshot(request.id, {refundedToWallet: refundAmount});
     }
 
     await this.auditService.log({
@@ -317,57 +338,10 @@ export class ApprovalService {
       entityId: orderItem.id,
       actionType: 'item_returned',
       performedBy,
-      before: {quantity: orderItem.quantity, totalPrice: orderItem.totalPrice},
-      after: {quantity: newQty, totalPrice: newItemTotal, refundedToWallet: overpaid > 0 ? overpaid : 0},
-      remarks: `Return via approval ${request.id}${overpaid > 0 ? ` — ₹${overpaid} credited to wallet` : ''}`,
+      before: {garmentStatus: 'active'},
+      after: {garmentStatus: 'returned_to_customer', refundedToWallet: refundAmount},
+      remarks: `Garment ${garment.garmentTagNumber} returned via approval ${request.id}${refundAmount > 0 ? ` — ₹${refundAmount} refunded to wallet` : ''}`,
     });
-  }
-
-  // Reduce the returned item's line + document totals on invoice and challan.
-  private async _reduceBillingDocsForReturn(orderId: string, orderItemId: string, amount: number): Promise<void> {
-    const invoice = await this.invoiceRepo.findOne({where: {orderId}} as any);
-    if (invoice) {
-      const items = this._reduceItemQtyInDocItems(invoice.items as any[], orderItemId);
-      const newSubtotal = Math.max(0, parseFloat(((Number(invoice.subtotal) || 0) - amount).toFixed(2)));
-      const newTotal = Math.max(0, parseFloat(((Number(invoice.totalAmount) || 0) - amount).toFixed(2)));
-      const received = Number((invoice as any).amountReceived) || 0;
-      const newBalance = Math.max(0, parseFloat((newTotal - received).toFixed(2)));
-      await this.invoiceRepo.updateById(invoice.id, {
-        items,
-        subtotal: newSubtotal,
-        totalAmount: newTotal,
-        balanceDue: newBalance,
-        updatedAt: new Date(),
-      } as any);
-    }
-
-    const challan = await this.challanRepo.findOne({where: {orderId}} as any);
-    if (challan) {
-      const items = this._reduceItemQtyInDocItems(challan.items as any[], orderItemId);
-      const newSubtotal = Math.max(0, parseFloat(((Number(challan.subtotal) || 0) - amount).toFixed(2)));
-      const newTotal = Math.max(0, parseFloat(((Number(challan.totalAmount) || 0) - amount).toFixed(2)));
-      await this.challanRepo.updateById(challan.id, {
-        items,
-        subtotal: newSubtotal,
-        totalAmount: newTotal,
-        updatedAt: new Date(),
-      } as any);
-    }
-  }
-
-  private _reduceItemQtyInDocItems(items: any[] | undefined, orderItemId: string): any[] {
-    const list = [...(items ?? [])];
-    const idx = list.findIndex(i => i.orderItemId === orderItemId);
-    if (idx !== -1) {
-      const it = list[idx];
-      const newQty = Math.max(0, (Number(it.quantity) || 0) - 1);
-      list[idx] = {
-        ...it,
-        quantity: newQty,
-        totalPrice: parseFloat(((Number(it.unitPrice) || 0) * newQty).toFixed(2)),
-      };
-    }
-    return list;
   }
 
   // Credit an amount to the customer's wallet + log a wallet transaction (credit note trail).

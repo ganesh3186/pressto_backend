@@ -193,9 +193,27 @@ export class AuthController {
       throw new HttpErrors.Unauthorized('Invalid credentials');
     }
 
-    // Generate JWT token
+    // Resolve the role's permissions so they can be embedded in the token.
+    // Without this the JWT carries only roles, so any non-super_admin user gets
+    // an empty permission set and the frontend hides everything.
+    const roleValue = user.roles[0].value;
+    let permissions: string[] = [];
+    try {
+      const resolved = await this.rbacService.getUserRoleAndPermissionsByRole(user.id!, roleValue);
+      permissions = resolved.permissions;
+    } catch {
+      // No permissions mapped for the role — proceed with an empty set.
+      permissions = [];
+    }
+
+    // Generate JWT token (roles + permissions both travel in the token —
+    // verifyToken reads them back for both frontend gating and backend authz).
     const userProfile = this.userService.convertToUserProfile(user);
-    const token = await this.jwtService.generateToken({ ...userProfile, roles: [user.roles[0].value] });
+    const token = await this.jwtService.generateToken({
+      ...userProfile,
+      roles: [roleValue],
+      permissions,
+    });
 
     return {
       token,
@@ -205,7 +223,8 @@ export class AuthController {
         email: user.email,
         countryCode: user.countryCode,
         phone: user.phone,
-        roles: [user.roles[0].value],
+        roles: [roleValue],
+        permissions,
       },
     };
   }

@@ -5,6 +5,8 @@ import {PresstoDataSource} from '../datasources';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {OrderStatus, ORDER_STATUS_TRANSITIONS} from '../models/order-status.enum';
+import {ContactRelationship} from '../models/contact-relationship.enum';
+import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderType} from '../models/order-type.enum';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
@@ -13,6 +15,8 @@ import {
   ClusterPriceListRepository,
   ClusterRepository,
   CustomerContactRepository,
+  CustomerFamilyGroupMemberRepository,
+  CustomerFamilyGroupRepository,
   CustomerRepository,
   DeliveryTypeConfigurationRepository,
   ItemRepository,
@@ -28,6 +32,7 @@ import {
   GstTaxConfigurationRepository,
   OrderAdditionalChargeRepository,
   OrderItemAdditionalChargeRepository,
+  OrderHandoverRepository,
   OrderItemRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
@@ -130,6 +135,9 @@ export class OrderService {
     @repository(GstTaxConfigurationRepository) private gstConfigRepo: GstTaxConfigurationRepository,
     @repository(DeliveryTypeConfigurationRepository) private deliveryTypeConfigRepo: DeliveryTypeConfigurationRepository,
     @repository(CustomerContactRepository) private customerContactRepo: CustomerContactRepository,
+    @repository(CustomerFamilyGroupRepository) private familyGroupRepo: CustomerFamilyGroupRepository,
+    @repository(CustomerFamilyGroupMemberRepository) private familyMemberRepo: CustomerFamilyGroupMemberRepository,
+    @repository(OrderHandoverRepository) private orderHandoverRepo: OrderHandoverRepository,
     @repository(UsersRepository) private userRepo: UsersRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
@@ -697,6 +705,226 @@ export class OrderService {
     return {};
   }
 
+  // ─── In-store Handover (counter pickup) ─────────────────────────────────────
+  // Records who collected the order at the counter and marks it delivered. This
+  // is the no-rider dispatch path. Steps:
+  //   1. order must be in a handover-eligible status
+  //   2. hard block if any balance is still due
+  //   3. resolve the collector (self | saved contact | ad-hoc, optionally saved)
+  //   4. write the order_handover record
+  //   5. order → delivered, and cascade every active garment → delivered
+
+  async handoverInStore(params: {
+    orderId: string;
+    collectorType: HandoverCollectorType;
+    customerContactId?: string;
+    familyGroupMemberId?: string;
+    collectorName?: string;
+    collectorPhone?: string;
+    collectorRelationship?: ContactRelationship;
+    saveAsContact?: boolean;
+    remarks?: string;
+    handedOverBy: string;
+  }): Promise<object> {
+    const {v4} = await import('uuid');
+    const order = await this.orderRepo.findOne({where: {id: params.orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    // 1. Status must allow the move to delivered (same rule the transition map enforces).
+    const allowed = ORDER_STATUS_TRANSITIONS[order.status!] ?? [];
+    if (!allowed.includes(OrderStatus.DELIVERED)) {
+      throw new HttpErrors.BadRequest(
+        `Order in '${order.status}' cannot be handed over. It must be ready or out for delivery.`,
+      );
+    }
+
+    // 2. Hard block on outstanding balance. Refund entries are money out — not
+    // counted toward what the customer has paid.
+    const payments = await this.paymentTransactionRepo.find({where: {orderId: params.orderId}});
+    const paid = payments.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)), 0);
+    const balanceDue = Math.round((Number(order.totalAmount ?? 0) - paid) * 100) / 100;
+    if (balanceDue > 0) {
+      throw new HttpErrors.BadRequest(
+        `Cannot hand over: ₹${balanceDue} is still due. Collect the balance first.`,
+      );
+    }
+
+    // Reject a second active handover on the same order.
+    const existing = await this.orderHandoverRepo.findOne({
+      where: {orderId: params.orderId, isDeleted: false} as any,
+    });
+    if (existing) throw new HttpErrors.Conflict('This order has already been handed over.');
+
+    // 3. Resolve the collector into a stored snapshot.
+    let collectorName = (params.collectorName ?? '').trim();
+    let collectorPhone = (params.collectorPhone ?? '').trim();
+    let collectorRelationship = params.collectorRelationship;
+    let customerContactId = params.customerContactId;
+    let familyGroupMemberId = params.familyGroupMemberId;
+
+    if (params.collectorType === HandoverCollectorType.SELF) {
+      const customer = await this.customerRepo.findOne({where: {id: order.customerId, isDeleted: false}});
+      if (customer) {
+        collectorName = collectorName || `${customer.firstName ?? ''} ${customer.lastName ?? ''}`.trim();
+      }
+      customerContactId = undefined;
+      familyGroupMemberId = undefined;
+      collectorRelationship = undefined;
+    } else if (params.collectorType === HandoverCollectorType.FAMILY_MEMBER) {
+      if (!familyGroupMemberId) {
+        throw new HttpErrors.BadRequest('Select the family member collecting the order.');
+      }
+      const member = await this.familyMemberRepo.findOne({
+        where: {id: familyGroupMemberId, isDeleted: false} as any,
+      });
+      if (!member) throw new HttpErrors.NotFound('Selected family member not found.');
+      // The member must belong to this order customer's own family group.
+      const group = await this.familyGroupRepo.findOne({
+        where: {id: member.groupId, isDeleted: false} as any,
+      });
+      if (!group || group.primaryCustomerId !== order.customerId) {
+        throw new HttpErrors.BadRequest('That family member does not belong to this order’s customer.');
+      }
+      // Snapshot from the member so the record is stable if it changes later.
+      collectorName = member.name;
+      collectorPhone = member.phone ?? '';
+      collectorRelationship = member.relationship;
+      customerContactId = undefined;
+    } else if (params.collectorType === HandoverCollectorType.CONTACT) {
+      if (!customerContactId) {
+        throw new HttpErrors.BadRequest('Select the household contact collecting the order.');
+      }
+      const contact = await this.customerContactRepo.findOne({
+        where: {id: customerContactId, isDeleted: false} as any,
+      });
+      if (!contact) throw new HttpErrors.NotFound('Selected contact not found.');
+      // Guard against picking a contact that belongs to a different customer.
+      if (contact.customerId !== order.customerId) {
+        throw new HttpErrors.BadRequest('That contact does not belong to this order’s customer.');
+      }
+      // Snapshot from the contact so the record is stable even if it is edited later.
+      collectorName = contact.name;
+      collectorPhone = contact.phone;
+      collectorRelationship = contact.relationship;
+      familyGroupMemberId = undefined;
+    } else {
+      // OTHER — ad-hoc collector.
+      if (!collectorName) {
+        throw new HttpErrors.BadRequest('Enter the name of the person collecting the order.');
+      }
+      customerContactId = undefined;
+      familyGroupMemberId = undefined;
+
+      // Optionally persist the ad-hoc person as a reusable contact for next time.
+      if (params.saveAsContact) {
+        const saved = await this.customerContactRepo.create({
+          id: v4(),
+          customerId: order.customerId,
+          name: collectorName,
+          phone: collectorPhone || 'N/A',
+          relationship: collectorRelationship ?? ContactRelationship.OTHER,
+        } as any);
+        customerContactId = saved.id;
+      }
+    }
+
+    // 4. Handover record.
+    const handover = await this.orderHandoverRepo.create({
+      id: v4(),
+      orderId: params.orderId,
+      collectorType: params.collectorType,
+      customerContactId,
+      familyGroupMemberId,
+      collectorName,
+      collectorPhone: collectorPhone || undefined,
+      collectorRelationship,
+      remarks: params.remarks?.trim() || undefined,
+      handedOverBy: params.handedOverBy,
+      handedOverAt: new Date(),
+    });
+
+    // 5a. Order → delivered (+ status history).
+    await this.orderRepo.updateById(params.orderId, {status: OrderStatus.DELIVERED});
+    await this.statusHistoryRepo.create({
+      id: v4(),
+      orderId: params.orderId,
+      status: OrderStatus.DELIVERED,
+      changedAt: new Date(),
+      changedBy: params.handedOverBy,
+      remarks: `In-store handover to ${collectorName}${params.remarks ? ` — ${params.remarks.trim()}` : ''}`,
+    });
+
+    // 5b. Cascade every still-active garment on the order to delivered.
+    const cascaded = await this._cascadeGarmentsToDelivered(params.orderId, params.handedOverBy, v4);
+
+    return {
+      message: 'Order handed over.',
+      handover,
+      garmentsDelivered: cascaded,
+    };
+  }
+
+  // Move every non-terminal garment on the order to delivered, with history.
+  private async _cascadeGarmentsToDelivered(
+    orderId: string,
+    changedBy: string,
+    v4: () => string,
+  ): Promise<number> {
+    const orderItems = await this.orderItemRepo.find({where: {orderId}});
+    const orderItemIds = orderItems.map(i => i.id);
+    if (!orderItemIds.length) return 0;
+
+    const garments = await this.garmentRepo.find({
+      where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any,
+    });
+
+    // Already-delivered and returned garments are terminal — leave them.
+    const toDeliver = garments.filter(
+      g =>
+        g.status !== GarmentStatus.DELIVERED &&
+        g.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+    );
+
+    const now = new Date();
+    for (const g of toDeliver) {
+      await this.garmentRepo.updateById(g.id, {status: GarmentStatus.DELIVERED});
+      await this.garmentStatusHistoryRepo.create({
+        id: v4(),
+        garmentId: g.id,
+        status: GarmentStatus.DELIVERED,
+        changedAt: now,
+        changedBy,
+        remarks: 'Delivered via in-store handover',
+      });
+    }
+    return toDeliver.length;
+  }
+
+  // Fetch the handover record for an order, enriched with the linked contact.
+  async getHandover(orderId: string): Promise<object | null> {
+    const handover = await this.orderHandoverRepo.findOne({
+      where: {orderId, isDeleted: false} as any,
+      order: ['handedOverAt DESC'],
+    });
+    if (!handover) return null;
+
+    let contact = null;
+    if (handover.customerContactId) {
+      contact = await this.customerContactRepo.findOne({
+        where: {id: handover.customerContactId} as any,
+      });
+    }
+
+    let familyMember = null;
+    if (handover.familyGroupMemberId) {
+      familyMember = await this.familyMemberRepo.findOne({
+        where: {id: handover.familyGroupMemberId} as any,
+      });
+    }
+
+    return {...handover, customerContact: contact, familyMember};
+  }
+
   private async autoCreateGarments(
     orderId: string,
     changedBy: string,
@@ -838,6 +1066,8 @@ export class OrderService {
     const paymentsByOrder = new Map<string, number>();
     const lastPaymentByOrder = new Map<string, {mode: string | null; paidAt: Date | null}>();
     for (const pt of paymentTxns) {
+      // Refund entries are money out — excluded from amount collected.
+      if ((pt as any).transactionType === 'refund') continue;
       paymentsByOrder.set(pt.orderId, (paymentsByOrder.get(pt.orderId) ?? 0) + Number(pt.amount));
       const prev = lastPaymentByOrder.get(pt.orderId);
       const paidAt = (pt as any).paidAt ?? (pt as any).createdAt ?? null;
@@ -1034,7 +1264,7 @@ export class OrderService {
     }));
 
     // ── Payment summary ───────────────────────────────────────────────────────
-    const txnCollected = paymentTransactions.reduce((s, p) => s + Number(p.amount), 0);
+    const txnCollected = paymentTransactions.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
     const allocPay = Number(order.allocatedPayment ?? 0);
     const isChildOrder = !!order.parentOrderId;
     // Child: allocated base (transferred from parent) + any new direct payments
@@ -1180,9 +1410,30 @@ export class OrderService {
     const originalSubtotal = Number(order.subtotal ?? 0) || 1;
     const ratio = oldSubOrderSubtotal / originalSubtotal;
 
+    // Discount follows the parent's original item share (negotiated on the
+    // original order, so it does not scale with an express uplift).
     const subOrderDiscount = parseFloat((Number(order.discountAmount ?? 0) * ratio).toFixed(2));
-    const subOrderTax = parseFloat((Number(order.taxAmount ?? 0) * ratio).toFixed(2));
+
+    // Effective GST rate the order was actually taxed at — derived from the
+    // parent so it stays correct regardless of later config changes.
+    const parentTaxable = Number(order.subtotal ?? 0) - Number(order.discountAmount ?? 0);
+    const effectiveTaxRate = parentTaxable > 0 ? Number(order.taxAmount ?? 0) / parentTaxable : 0;
+
+    // Child is taxed on its ACTUAL (possibly express-uplifted) taxable value, so
+    // GST applies to the uplift too.
+    const subOrderTax = parseFloat(((subOrderSubtotal - subOrderDiscount) * effectiveTaxRate).toFixed(2));
     const subOrderTotal = parseFloat((subOrderSubtotal - subOrderDiscount + subOrderTax).toFixed(2));
+
+    // The parent must lose only the ORIGINAL value of the moved garments, never
+    // the child's re-tiered price. If the child was bumped to express, debiting
+    // the parent by the higher price/tax cancels the uplift out and holds the
+    // grand total flat — when it should rise by exactly the uplift + its GST.
+    // The parent's tax loss is the OLD proportional share (matches its original
+    // tax basis exactly); when the tier is unchanged, old == new and it's a no-op.
+    const oldSubOrderTax = parseFloat((Number(order.taxAmount ?? 0) * ratio).toFixed(2));
+    const oldSubOrderTotal = parseFloat(
+      (oldSubOrderSubtotal - subOrderDiscount + oldSubOrderTax).toFixed(2),
+    );
 
     // Sub-order gets a normal sequential order number (same format as any other order)
     const totalOrderCount = await this.orderRepo.count();
@@ -1213,7 +1464,7 @@ export class OrderService {
     // Payment allocation: give existing payment to whichever order delivers first
     // (more advanced garment status = closer to delivery)
     const existingPayments = await this.paymentTransactionRepo.find({where: {orderId}});
-    const txnPaid = existingPayments.reduce((s, p) => s + Number(p.amount), 0);
+    const txnPaid = existingPayments.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
     // Child orders carry no transaction records — their payment lives in allocatedPayment.
     // New direct payments (if any) are in txnPaid. Both must be included.
     const totalPaid = order.parentOrderId
@@ -1240,7 +1491,7 @@ export class OrderService {
     let allocatedPayment: number;
     let parentAllocatedPayment: number;
     const parentNewTotal = parseFloat(
-      (Number(order.totalAmount ?? 0) - subOrderTotal).toFixed(2),
+      (Number(order.totalAmount ?? 0) - oldSubOrderTotal).toFixed(2),
     );
     if (childStatusIdx >= parentStatusIdx) {
       // Child delivers first — give it full payment up to its total
@@ -1333,10 +1584,11 @@ export class OrderService {
         }
       }
 
-      // Reduce parent order financials
-      const parentNewSubtotal = parseFloat((Number(order.subtotal ?? 0) - subOrderSubtotal).toFixed(2));
+      // Reduce parent order financials. Subtotal drops by the ORIGINAL value of
+      // the moved garments (oldSubOrderSubtotal), not the child's re-tiered price.
+      const parentNewSubtotal = parseFloat((Number(order.subtotal ?? 0) - oldSubOrderSubtotal).toFixed(2));
       const parentNewDiscount = parseFloat((Number(order.discountAmount ?? 0) - subOrderDiscount).toFixed(2));
-      const parentNewTax = parseFloat((Number(order.taxAmount ?? 0) - subOrderTax).toFixed(2));
+      const parentNewTax = parseFloat((Number(order.taxAmount ?? 0) - oldSubOrderTax).toFixed(2));
       await this.orderRepo.updateById(
         orderId,
         {
@@ -1406,7 +1658,7 @@ export class OrderService {
 
     // Check how much is still due
     const existing = await this.paymentTransactionRepo.find({where: {orderId}});
-    const alreadyPaid = existing.reduce((s, p) => s + Number(p.amount), 0);
+    const alreadyPaid = existing.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
     const due = Math.max(0, Number(order.totalAmount) - alreadyPaid);
 
     const thisPayment = Number(payment?.amount ?? 0);

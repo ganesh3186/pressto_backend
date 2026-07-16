@@ -18,6 +18,11 @@ export class PaymentTransaction extends Entity {
   })
   paymentMode: PaymentMode;
 
+  // 'payment' (money in) | 'refund' (money returned to customer). Refunds are
+  // recorded for the audit trail but are NOT counted toward amount collected.
+  @property({type: 'string', default: 'payment'})
+  transactionType?: string;
+
   @property({type: 'string'})
   transactionReference?: string;
 

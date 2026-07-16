@@ -16,6 +16,8 @@ import {authorize} from '../authorization';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
+import {ContactRelationship} from '../models/contact-relationship.enum';
+import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderRepository, OrderStatusHistoryRepository} from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
@@ -284,6 +286,73 @@ export class OrderController {
       Number(body.walletAmount ?? 0),
       currentUser[securityId],
     );
+  }
+
+  // ─── In-store Handover (counter pickup) ────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @post('/orders/{id}/handover')
+  @response(200, {description: 'Order handed over in store and marked delivered'})
+  async handover(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['collectorType'],
+            properties: {
+              collectorType: {type: 'string', enum: Object.values(HandoverCollectorType)},
+              // Required when collectorType = 'contact'
+              customerContactId: {type: 'string', format: 'uuid'},
+              // Required when collectorType = 'family_member'
+              familyGroupMemberId: {type: 'string', format: 'uuid'},
+              // Required when collectorType = 'other'; snapshot for the others
+              collectorName: {type: 'string'},
+              collectorPhone: {type: 'string'},
+              collectorRelationship: {type: 'string', enum: Object.values(ContactRelationship)},
+              // 'other' only: also persist the person as a reusable contact
+              saveAsContact: {type: 'boolean'},
+              remarks: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {
+      collectorType: HandoverCollectorType;
+      customerContactId?: string;
+      familyGroupMemberId?: string;
+      collectorName?: string;
+      collectorPhone?: string;
+      collectorRelationship?: ContactRelationship;
+      saveAsContact?: boolean;
+      remarks?: string;
+    },
+  ): Promise<object> {
+    return this.orderService.handoverInStore({
+      orderId: id,
+      collectorType: body.collectorType,
+      customerContactId: body.customerContactId,
+      familyGroupMemberId: body.familyGroupMemberId,
+      collectorName: body.collectorName,
+      collectorPhone: body.collectorPhone,
+      collectorRelationship: body.collectorRelationship,
+      saveAsContact: body.saveAsContact,
+      remarks: body.remarks,
+      handedOverBy: currentUser[securityId],
+    });
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
+  @get('/orders/{id}/handover')
+  @response(200, {description: 'Handover record for an order (null if not handed over)'})
+  async getHandover(@param.path.string('id') id: string): Promise<object> {
+    const handover = await this.orderService.getHandover(id);
+    return {handover};
   }
 
   // ─── Get Payment History ──────────────────────────────────────────────────
