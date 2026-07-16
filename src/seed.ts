@@ -5,6 +5,9 @@ import {
   RolesRepository,
 } from './repositories';
 import {UserRolesRepository} from './repositories/user-roles.repository';
+import * as Repos from './repositories';
+import fs from 'fs';
+import path from 'path';
 
 const PERMISSIONS: {permission: string; description: string}[] = [
   // Brand
@@ -529,9 +532,71 @@ export async function seed() {
       `links added: ${linksInserted}, pruned: ${linksRemoved}`,
   );
 
+  await seedMasters(app);
+
   console.log('Seed complete.');
   await app.stop();
   process.exit(0);
+}
+
+async function seedMasters(app: presstoBackendApplication) {
+  const seedFile = path.join(__dirname, 'data', 'seed-masters.json');
+  if (!fs.existsSync(seedFile)) {
+    console.log('No master seed file found at', seedFile);
+    return;
+  }
+  const mastersData = JSON.parse(fs.readFileSync(seedFile, 'utf8'));
+
+  const repoMapping = [
+    { table: 'region', repoClass: Repos.RegionRepository },
+    { table: 'cluster', repoClass: Repos.ClusterRepository },
+    { table: 'store', repoClass: Repos.StoreRepository },
+    { table: 'item_category', repoClass: Repos.ItemCategoryRepository },
+    { table: 'item', repoClass: Repos.ItemRepository },
+    { table: 'service_category', repoClass: Repos.ServiceCategoryRepository },
+    { table: 'service', repoClass: Repos.ServiceRepository },
+    { table: 'brand', repoClass: Repos.BrandRepository },
+    { table: 'color', repoClass: Repos.ColorRepository },
+    { table: 'stain', repoClass: Repos.StainRepository },
+    { table: 'damage_type', repoClass: Repos.DamageTypeRepository },
+    { table: 'customer_label', repoClass: Repos.CustomerLabelRepository },
+    { table: 'order_label', repoClass: Repos.OrderLabelRepository },
+    { table: 'customer_discount_group', repoClass: Repos.CustomerDiscountGroupRepository },
+    { table: 'process_step', repoClass: Repos.ProcessStepRepository },
+    { table: 'price_list', repoClass: Repos.PriceListRepository },
+    { table: 'price_list_item', repoClass: Repos.PriceListItemRepository },
+    { table: 'cluster_price_list', repoClass: Repos.ClusterPriceListRepository },
+    { table: 'store_price_override', repoClass: Repos.StorePriceOverrideRepository },
+    { table: 'store_service_mapping', repoClass: Repos.StoreServiceMappingRepository },
+    { table: 'service_item_mapping', repoClass: Repos.ServiceItemMappingRepository },
+    { table: 'service_process_mapping', repoClass: Repos.ServiceProcessMappingRepository },
+    { table: 'additional_charge_master', repoClass: Repos.AdditionalChargeMasterRepository },
+    { table: 'customer_type_master', repoClass: Repos.CustomerTypeMasterRepository },
+    { table: 'gst_tax_configuration', repoClass: Repos.GstTaxConfigurationRepository },
+    { table: 'delivery_type_configuration', repoClass: Repos.DeliveryTypeConfigurationRepository },
+    { table: 'wallet_configuration', repoClass: Repos.WalletConfigurationRepository },
+    { table: 'bag', repoClass: Repos.BagRepository },
+  ];
+
+  for (const { table, repoClass } of repoMapping) {
+    if (!mastersData[table] || mastersData[table].length === 0) continue;
+    console.log(`Seeding master: ${table} (${mastersData[table].length} records)`);
+    try {
+      const repo = await app.getRepository(repoClass as any) as any;
+      for (const record of mastersData[table]) {
+        try {
+          const exists = await repo.findOne({where: {id: record.id}});
+          if (!exists) {
+            await repo.create(record);
+          }
+        } catch (err: any) {
+          console.error(`Failed to seed record in ${table} (id: ${record.id}):`, err.message);
+        }
+      }
+    } catch (err: any) {
+      console.error(`Failed to get repository for ${table}:`, err.message);
+    }
+  }
 }
 
 seed().catch(err => {
