@@ -28,6 +28,15 @@ export class StorePriceOverride extends Entity {
   })
   percentage: number;
 
+  // Separate uplift applied to additional (add-on) services, resolved through the
+  // same store → cluster → region waterfall. Optional: null means this level sets
+  // no additional-service override and the waterfall falls through to the next.
+  @property({
+    type: 'number',
+    postgresql: {dataType: 'numeric'},
+  })
+  additionalServicePercentage?: number;
+
   @property({type: 'boolean', default: true})
   isActive?: boolean;
 

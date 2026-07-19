@@ -207,6 +207,7 @@ export class OrderService {
     storeId: string,
     serviceId: string,
     itemId: string,
+    options: {additional?: boolean} = {},
   ): Promise<{
     basePrice: number;
     resolvedPrice: number;
@@ -223,15 +224,29 @@ export class OrderService {
     const base = Number(mapping.basePrice);
     const estimatedDurationInDays = mapping.estimatedDurationInDays ?? null;
 
+    // Additional (add-on) services run the SAME store→cluster→region waterfall but
+    // read a separate percentage column, so their uplift can differ from the base
+    // service. A null at one level falls through to the next level.
+    const pctField = options.additional ? 'additionalServicePercentage' : 'percentage';
+    const readPct = (row: {percentage?: number; additionalServicePercentage?: number} | null) => {
+      const value = row ? (row as Record<string, unknown>)[pctField] : undefined;
+      return value != null ? Number(value) : null;
+    };
+    const uplift = (pct: number, source: 'store' | 'cluster' | 'region') => ({
+      basePrice: base,
+      // Percentage is an uplift on base (30 = +30%). 0 = no change. First match wins.
+      resolvedPrice: parseFloat((base * (1 + pct / 100)).toFixed(2)),
+      appliedPercentage: pct,
+      priceSource: source as 'store' | 'cluster' | 'region' | 'base',
+      estimatedDurationInDays,
+    });
+
     // Priority 1: store override
     const override = await this.storePriceOverrideRepo.findOne({
       where: {storeId, isActive: true, isDeleted: false},
     });
-    if (override?.percentage != null) {
-      const pct = Number(override.percentage);
-      // Percentage is an uplift on base (30 = +30%). 0 = no change. First match wins.
-      return {basePrice: base, resolvedPrice: parseFloat((base * (1 + pct / 100)).toFixed(2)), appliedPercentage: pct, priceSource: 'store', estimatedDurationInDays};
-    }
+    const storePct = readPct(override);
+    if (storePct != null) return uplift(storePct, 'store');
 
     // Priority 2: cluster price list
     const store = await this.storeRepo.findById(storeId);
@@ -239,10 +254,8 @@ export class OrderService {
       const clusterPriceList = await this.clusterPriceListRepo.findOne({
         where: {clusterId: store.clusterId, isActive: true, isDeleted: false},
       });
-      if (clusterPriceList?.percentage != null) {
-        const pct = Number(clusterPriceList.percentage);
-        return {basePrice: base, resolvedPrice: parseFloat((base * (1 + pct / 100)).toFixed(2)), appliedPercentage: pct, priceSource: 'cluster', estimatedDurationInDays};
-      }
+      const clusterPct = readPct(clusterPriceList);
+      if (clusterPct != null) return uplift(clusterPct, 'cluster');
 
       // Priority 3: region price list
       const cluster = await this.clusterRepo.findById(store.clusterId);
@@ -250,10 +263,8 @@ export class OrderService {
         const priceList = await this.priceListRepo.findOne({
           where: {regionId: cluster.regionId, isActive: true, isDeleted: false},
         });
-        if (priceList?.percentage != null) {
-          const pct = Number(priceList.percentage);
-          return {basePrice: base, resolvedPrice: parseFloat((base * (1 + pct / 100)).toFixed(2)), appliedPercentage: pct, priceSource: 'region', estimatedDurationInDays};
-        }
+        const regionPct = readPct(priceList);
+        if (regionPct != null) return uplift(regionPct, 'region');
       }
     }
 
@@ -376,7 +387,9 @@ export class OrderService {
       let additionalServicesUnitPrice = 0;
       let additionalServicesDays = 0;
       for (const addlServiceId of item.additionalServiceIds ?? []) {
-        const addlPricing = await this.resolvePricing(input.storeId, addlServiceId, item.itemId);
+        const addlPricing = await this.resolvePricing(input.storeId, addlServiceId, item.itemId, {
+          additional: true,
+        });
         additionalServicesUnitPrice += addlPricing.resolvedPrice;
         additionalServicesDays += addlPricing.estimatedDurationInDays ?? 0;
       }

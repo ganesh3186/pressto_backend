@@ -34,6 +34,13 @@ export class ClusterPriceList extends Entity {
   })
   percentage: number;
 
+  // Separate uplift for additional (add-on) services — same waterfall, optional.
+  @property({
+    type: 'number',
+    postgresql: {dataType: 'numeric'},
+  })
+  additionalServicePercentage?: number;
+
   @property({type: 'string'})
   description?: string;
 
