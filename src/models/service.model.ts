@@ -39,6 +39,13 @@ export class Service extends Entity {
   })
   name: string;
 
+  // Manual display order in POS (ascending). Null/0 falls back to alphabetical.
+  @property({
+    type: 'number',
+    default: 0,
+  })
+  sequence?: number;
+
   @property({
     type: 'string',
     required: true
