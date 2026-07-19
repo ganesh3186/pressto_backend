@@ -989,11 +989,23 @@ export class OrderService {
     customerId?: string;
     limit?: number;
     skip?: number;
+    /**
+     * Store ids the caller may see. Resolved from the caller's token by the
+     * controller — never a client parameter. `null`/`undefined` means no store
+     * filtering (global staff, and the customer-facing APIs, which scope by
+     * customerId instead). An empty array matches nothing, which is the
+     * intended fail-closed result for a store-bound user with no store.
+     */
+    storeIds?: string[] | null;
   }): Promise<{rows: object[]; total: number}> {
     const limit = Math.min(Number(params.limit ?? 20), 100);
     const skip = Number(params.skip ?? 0);
 
     const baseConditions: object[] = [{isDeleted: false}];
+
+    if (Array.isArray(params.storeIds)) {
+      baseConditions.push({storeId: {inq: params.storeIds}});
+    }
 
     // Scopes the list to a single customer (used by the customer-facing APIs).
     if (params.customerId) baseConditions.push({customerId: params.customerId});

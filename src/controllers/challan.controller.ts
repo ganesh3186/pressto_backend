@@ -11,6 +11,7 @@ import {
   OrderItemRepository,
   OrderRepository,
 } from '../repositories';
+import {StoreScopeService} from '../services/store-scope.service';
 
 export class ChallanController {
   constructor(
@@ -18,6 +19,7 @@ export class ChallanController {
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
   // ─── Generate Challan ─────────────────────────────────────────────────────
@@ -91,7 +93,12 @@ export class ChallanController {
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{orderId}/challan')
   @response(200, {description: 'Challan for an order'})
-  async getByOrder(@param.path.string('orderId') orderId: string): Promise<object> {
+  async getByOrder(
+    @param.path.string('orderId') orderId: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser!);
+
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 

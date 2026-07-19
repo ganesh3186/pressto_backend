@@ -34,6 +34,7 @@ import {
   OrderStatusHistoryRepository,
   ServiceRepository,
 } from '../repositories';
+import {StoreScopeService} from '../services/store-scope.service';
 
 // Shape returned when a garment's order item can't be resolved — keeps the
 // response keys stable so clients never have to guard for missing fields.
@@ -62,7 +63,48 @@ export class GarmentController {
     @repository(ServiceRepository) private serviceRepository: ServiceRepository,
     @repository(BrandRepository) private brandRepository: BrandRepository,
     @repository(ColorRepository) private colorRepository: ColorRepository,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
+
+  // ─── Store Scoping ────────────────────────────────────────────────────────
+  // Garments carry no storeId of their own: they reach a store through
+  // orderItem -> order -> storeId. Resolving that forward (every order in scope,
+  // then every item of those orders) would build an unbounded `inq`, so reads
+  // instead post-filter the already-bounded result page.
+
+  /** Drop garments whose parent order falls outside the caller's store scope. */
+  private async _filterByStoreScope<T extends {orderItemId: string}>(
+    garments: T[],
+    currentUser: UserProfile,
+  ): Promise<T[]> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (scope.global || !garments.length) return garments;
+
+    const orderItemIds = [...new Set(garments.map(g => g.orderItemId).filter(Boolean))];
+    if (!orderItemIds.length) return [];
+
+    const orderItems = await this.orderItemRepository.find({
+      where: {id: {inq: orderItemIds}} as any,
+      fields: {id: true, orderId: true} as any,
+    });
+    const orderIds = [...new Set(orderItems.map(oi => oi.orderId).filter(Boolean))];
+    if (!orderIds.length) return [];
+
+    const orders = await this.orderRepository.find({
+      where: {id: {inq: orderIds}, isDeleted: false} as any,
+      fields: {id: true, storeId: true} as any,
+    });
+
+    const allowedOrderIds = new Set(
+      orders.filter(o => this.storeScopeService.allows(scope, o.storeId)).map(o => String(o.id)),
+    );
+    const orderIdByItemId = new Map(orderItems.map(oi => [String(oi.id), String(oi.orderId)]));
+
+    return garments.filter(g => {
+      const orderId = orderIdByItemId.get(String(g.orderItemId));
+      return Boolean(orderId && allowedOrderIds.has(orderId));
+    });
+  }
 
   // ─── Register Garments for an Order Item ──────────────────────────────────
 
@@ -136,7 +178,11 @@ export class GarmentController {
   @authorize({roles: ['super_admin'], permissions: ['garment:read']})
   @get('/orders/{orderId}/garments')
   @response(200, {description: 'Garments for an order'})
-  async listGarments(@param.path.string('orderId') orderId: string): Promise<object> {
+  async listGarments(
+    @param.path.string('orderId') orderId: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser!);
     const items = await this.orderItemRepository.find({where: {orderId}});
     const orderItemIds = items.map(i => i.id);
 
@@ -170,6 +216,7 @@ export class GarmentController {
   @response(200, {description: 'Full garment details by tag number or UUID — used by scan/QR lookup'})
   async lookupGarment(
     @param.query.string('q') q: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
   ): Promise<object> {
     if (!q?.trim()) throw new HttpErrors.BadRequest('Query param "q" is required.');
 
@@ -181,6 +228,11 @@ export class GarmentController {
       : await this.garmentRepository.findOne({where: {garmentTagNumber: q.trim(), isDeleted: false}});
 
     if (!garment) throw new HttpErrors.NotFound(`Garment "${q}" not found.`);
+
+    // Scanning a tag from another store must look identical to an unknown tag,
+    // otherwise the lookup confirms which tags exist elsewhere.
+    const [inScope] = await this._filterByStoreScope([garment], currentUser!);
+    if (!inScope) throw new HttpErrors.NotFound(`Garment "${q}" not found.`);
 
     const orderItem = await this.orderItemRepository.findOne({where: {id: garment.orderItemId}});
     const orderId = orderItem?.orderId ?? null;
@@ -222,9 +274,16 @@ export class GarmentController {
   @authorize({roles: ['super_admin'], permissions: ['garment:read']})
   @get('/garments/{garmentId}')
   @response(200, {description: 'Garment details'})
-  async getGarment(@param.path.string('garmentId') garmentId: string): Promise<object> {
+  async getGarment(
+    @param.path.string('garmentId') garmentId: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+
+    // Same 404 as a missing garment: an out-of-scope garment must not be distinguishable.
+    const [inScope] = await this._filterByStoreScope([garment], currentUser!);
+    if (!inScope) throw new HttpErrors.NotFound('Garment not found.');
 
     const [withContext] = await this._withItemContext([garment]);
 
@@ -257,6 +316,7 @@ export class GarmentController {
   @get('/garments')
   @response(200, {description: 'Search garments by filter'})
   async searchGarments(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('filter') filterStr?: string,
     @param.query.string('orderId') orderId?: string,
     @param.query.number('limit') limit?: number,
@@ -287,7 +347,10 @@ export class GarmentController {
       limit: Math.min(Number(limit ?? 20), 200),
     });
 
-    return this._withItemContext(garments);
+    // The client controls `where` here, so the page is filtered to the caller's
+    // stores before anything is returned.
+    const inScope = await this._filterByStoreScope(garments, currentUser);
+    return this._withItemContext(inScope);
   }
 
   // ─── Update Garment ───────────────────────────────────────────────────────

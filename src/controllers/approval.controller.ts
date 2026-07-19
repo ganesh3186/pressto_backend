@@ -10,8 +10,15 @@ import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {ApprovalRequest} from '../models/approval-request.model';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
-import {GarmentRepository, OrderItemRepository, OrderRepository, ItemRepository} from '../repositories';
+import {
+  GarmentRepository,
+  ItemRepository,
+  OrderItemRepository,
+  OrderRepository,
+  PaymentTransactionRepository,
+} from '../repositories';
 import {ApprovalService} from '../services/approval.service';
+import {StoreScopeService} from '../services/store-scope.service';
 
 export class ApprovalController {
   constructor(
@@ -22,7 +29,69 @@ export class ApprovalController {
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
+    @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
+
+  // ─── Store Scoping ────────────────────────────────────────────────────────
+
+  /**
+   * Resolve the order an approval hangs off. Every entityType reaches an order:
+   * `order` directly, `garment` via its order item, `payment` via the transaction.
+   * Returns null when the chain can't be resolved — treated as out of scope.
+   */
+  private async _resolveOrderId(req: ApprovalRequest): Promise<string | null> {
+    if (req.entityType === 'order') return req.entityId ?? null;
+
+    if (req.entityType === 'garment') {
+      const garment = await this.garmentRepo.findOne({
+        where: {id: req.entityId},
+        fields: {id: true, orderItemId: true},
+      });
+      if (!garment?.orderItemId) return null;
+      const orderItem = await this.orderItemRepo.findOne({
+        where: {id: garment.orderItemId},
+        fields: {id: true, orderId: true},
+      });
+      return orderItem?.orderId ?? null;
+    }
+
+    if (req.entityType === 'payment') {
+      const payment = await this.paymentRepo.findOne({
+        where: {id: req.entityId} as any,
+        fields: {id: true, orderId: true} as any,
+      });
+      return (payment as {orderId?: string})?.orderId ?? null;
+    }
+
+    return null;
+  }
+
+  /** Keep only approvals whose underlying order sits in the caller's stores. */
+  private async _filterByStoreScope(
+    requests: ApprovalRequest[],
+    currentUser: UserProfile,
+  ): Promise<ApprovalRequest[]> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (scope.global || !requests.length) return requests;
+
+    const orderIds = await Promise.all(requests.map(r => this._resolveOrderId(r)));
+    const uniqueOrderIds = [...new Set(orderIds.filter(Boolean))] as string[];
+    if (!uniqueOrderIds.length) return [];
+
+    const orders = await this.orderRepo.find({
+      where: {id: {inq: uniqueOrderIds}, isDeleted: false} as any,
+      fields: {id: true, storeId: true} as any,
+    });
+    const allowedOrderIds = new Set(
+      orders.filter(o => this.storeScopeService.allows(scope, o.storeId)).map(o => String(o.id)),
+    );
+
+    return requests.filter((_, index) => {
+      const orderId = orderIds[index];
+      return Boolean(orderId && allowedOrderIds.has(String(orderId)));
+    });
+  }
 
   private async enrichRequest(req: ApprovalRequest): Promise<object> {
     // mediaIds alone are useless to a client — always expand them to real
@@ -193,6 +262,7 @@ export class ApprovalController {
   @get('/approval-requests')
   @response(200, {description: 'List of approval requests'})
   async list(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('status') status?: ApprovalRequestStatus,
     @param.query.string('type') type?: ApprovalRequestType,
     @param.query.string('entityType') entityType?: string,
@@ -211,7 +281,8 @@ export class ApprovalController {
       order: ['createdAt DESC'],
     });
 
-    const enriched = await Promise.all(requests.map(r => this.enrichRequest(r)));
+    const inScope = await this._filterByStoreScope(requests, currentUser);
+    const enriched = await Promise.all(inScope.map(r => this.enrichRequest(r)));
     return {requests: enriched};
   }
 
@@ -221,9 +292,15 @@ export class ApprovalController {
   @authorize({roles: ['super_admin'], permissions: ['approval:read']})
   @get('/approval-requests/{id}')
   @response(200, {description: 'Approval request detail with audit trail'})
-  async getById(@param.path.string('id') id: string): Promise<object> {
+  async getById(
+    @param.path.string('id') id: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
     const request = await this.approvalRequestRepo.findOne({where: {id}});
     if (!request) throw new HttpErrors.NotFound('Approval request not found.');
+
+    const [inScope] = await this._filterByStoreScope([request], currentUser!);
+    if (!inScope) throw new HttpErrors.NotFound('Approval request not found.');
 
     const [enriched, auditLog] = await Promise.all([
       this.enrichRequest(request),

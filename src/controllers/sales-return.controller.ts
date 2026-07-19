@@ -16,6 +16,7 @@ import {
   WalletRepository,
   WalletTransactionRepository,
 } from '../repositories';
+import {StoreScopeService} from '../services/store-scope.service';
 
 export class SalesReturnController {
   constructor(
@@ -26,6 +27,7 @@ export class SalesReturnController {
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
   // ─── Create Sales Return ──────────────────────────────────────────────────
@@ -103,7 +105,12 @@ export class SalesReturnController {
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{orderId}/credit-note')
   @response(200, {description: 'Credit note for an order'})
-  async getCreditNote(@param.path.string('orderId') orderId: string): Promise<object> {
+  async getCreditNote(
+    @param.path.string('orderId') orderId: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser!);
+
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 

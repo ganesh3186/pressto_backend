@@ -18,6 +18,7 @@ import {
   OrderItemRepository,
   OrderRepository,
 } from '../repositories';
+import {StoreScopeService} from '../services/store-scope.service';
 
 export class IntakeRejectionController {
   constructor(
@@ -26,6 +27,7 @@ export class IntakeRejectionController {
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
   // ─── Reject an item at intake ─────────────────────────────────────────────
@@ -197,7 +199,12 @@ export class IntakeRejectionController {
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{orderId}/intake-rejections')
   @response(200, {description: 'Intake rejections for an order'})
-  async listForOrder(@param.path.string('orderId') orderId: string): Promise<object> {
+  async listForOrder(
+    @param.path.string('orderId') orderId: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser!);
+
     const records = await this.intakeRejectedRepo.find({
       where: {orderId} as any,
       order: ['createdAt DESC'],

@@ -76,6 +76,12 @@ export class JWTService implements TokenService {
         phoneNumber: decrypted.phoneNumber,
         roles: decrypted.roles ?? [],
         permissions: decrypted.permissions ?? [],
+        // Store binding travels with the token so per-request scoping costs no query.
+        // `storeScope` is the resolved id list, or '*' for global roles. Left undefined
+        // on tokens minted before store scoping — StoreScopeService falls back to a
+        // database lookup for those rather than treating them as "no stores".
+        storeId: decrypted.storeId ?? null,
+        storeScope: decrypted.storeScope,
       };
 
       return userProfile;

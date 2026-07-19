@@ -10,6 +10,7 @@ import { JWTService } from '../services/jwt-service';
 import { RbacService } from '../services/rbac.service';
 import { MyUserService } from '../services/user-service';
 import { OtpService } from '../services/otp.service';
+import { StoreScopeService } from '../services/store-scope.service';
 
 export class AuthController {
   constructor(
@@ -31,6 +32,8 @@ export class AuthController {
     public rbacService: RbacService,
     @inject('services.OtpService')
     public otpService: OtpService,
+    @inject('services.store-scope')
+    public storeScopeService: StoreScopeService,
   ) { }
 
   private async generateUniqueUsername(email: string | undefined, fullName: string): Promise<string> {
@@ -206,13 +209,24 @@ export class AuthController {
       permissions = [];
     }
 
-    // Generate JWT token (roles + permissions both travel in the token —
+    // Resolve which stores this user may see and snapshot it into the token, so
+    // scoping every later request costs no extra query. Like permissions, this is
+    // fixed at login: moving an employee to another store requires a re-login.
+    const storeScope = await this.storeScopeService.resolveForUser(user.id!, [roleValue]);
+    const employee = await this.employeeRepository.findOne({
+      where: { userId: user.id, isDeleted: false },
+      fields: { id: true, storeId: true },
+    });
+
+    // Generate JWT token (roles + permissions + store scope all travel in the token —
     // verifyToken reads them back for both frontend gating and backend authz).
     const userProfile = this.userService.convertToUserProfile(user);
     const token = await this.jwtService.generateToken({
       ...userProfile,
       roles: [roleValue],
       permissions,
+      storeId: employee?.storeId ?? null,
+      storeScope: this.storeScopeService.toClaim(storeScope),
     });
 
     return {
@@ -225,6 +239,7 @@ export class AuthController {
         phone: user.phone,
         roles: [roleValue],
         permissions,
+        storeId: employee?.storeId ?? null,
       },
     };
   }

@@ -21,6 +21,7 @@ import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderRepository, OrderStatusHistoryRepository} from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
+import {StoreScopeService} from '../services/store-scope.service';
 
 const PAYMENT_ITEM_SCHEMA = {
   type: 'object' as const,
@@ -56,7 +57,18 @@ export class OrderController {
     private statusHistoryRepository: OrderStatusHistoryRepository,
     @inject('services.order')
     private orderService: OrderService,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
   ) {}
+
+  /**
+   * Store ids this caller may see, or null for callers that see every store.
+   * Shape matches what listOrders expects for its `storeIds` param.
+   */
+  private async resolveStoreIds(currentUser: UserProfile): Promise<string[] | null> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    return scope.global ? null : scope.storeIds;
+  }
 
   // ─── Create Order ─────────────────────────────────────────────────────────
 
@@ -118,6 +130,7 @@ export class OrderController {
   @get('/orders')
   @response(200, {description: 'Enriched order list with customer details, payment summary and filters'})
   async listOrders(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('search') search?: string,
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
@@ -126,14 +139,29 @@ export class OrderController {
     @param.query.number('limit') limit?: number,
     @param.query.number('skip') skip?: number,
   ): Promise<object> {
-    return this.orderService.listOrders({search, dateFrom, dateTo, orderType, status, limit, skip});
+    // Store scope comes from the token, never from a query param.
+    const storeIds = await this.resolveStoreIds(currentUser);
+    return this.orderService.listOrders({
+      search,
+      dateFrom,
+      dateTo,
+      orderType,
+      status,
+      limit,
+      skip,
+      storeIds,
+    });
   }
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}')
   @response(200, {description: 'Order with items, charges, payments and status history'})
-  async findById(@param.path.string('id') id: string): Promise<object> {
+  async findById(
+    @param.path.string('id') id: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser!);
     return this.orderService.getOrderDetails(id);
   }
 

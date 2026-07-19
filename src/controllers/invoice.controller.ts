@@ -14,6 +14,7 @@ import {
   OrderRepository,
   PaymentTransactionRepository,
 } from '../repositories';
+import {StoreScopeService} from '../services/store-scope.service';
 
 export class InvoiceController {
   constructor(
@@ -22,6 +23,7 @@ export class InvoiceController {
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
   // ─── Generate Invoice ─────────────────────────────────────────────────────
@@ -124,7 +126,12 @@ export class InvoiceController {
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{orderId}/invoice')
   @response(200, {description: 'Invoice for an order'})
-  async getByOrder(@param.path.string('orderId') orderId: string): Promise<object> {
+  async getByOrder(
+    @param.path.string('orderId') orderId: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser!);
+
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
