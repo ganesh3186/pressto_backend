@@ -201,6 +201,37 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   // File Upload
   {permission: 'file_upload:create', description: 'Upload files'},
   {permission: 'file_upload:read',   description: 'View uploaded files'},
+
+  // ── Operational (pipeline) screens ──────────────────────────────────────────
+  // Each order-pipeline stage is its own permission so a role can be allowed one
+  // stage without the others. Previously these were all collapsed onto the coarse
+  // order:read / order:update / approval:read flags. read = open the screen;
+  // update = perform the stage's action (advance, dispatch, resolve, change status).
+  // Receive Items
+  {permission: 'received:read',   description: 'Open the Receive Items screen'},
+  {permission: 'received:update', description: 'Receive / intake items'},
+  // Inspection
+  {permission: 'inspection:read',   description: 'Open the Inspection screen'},
+  {permission: 'inspection:update', description: 'Perform inspection actions'},
+  // Processing
+  {permission: 'processing:read',   description: 'Open the Processing screen'},
+  {permission: 'processing:update', description: 'Advance garments through processing'},
+  // Dispatch
+  {permission: 'dispatch:read',   description: 'Open the Dispatch screen'},
+  {permission: 'dispatch:update', description: 'Dispatch / hand over orders'},
+  // Post Processing
+  {permission: 'post_processing:read',   description: 'Open the Post Processing screen'},
+  {permission: 'post_processing:update', description: 'Perform post-processing actions'},
+  // On Account
+  {permission: 'on_account:read',   description: 'Open the On Account screen'},
+  {permission: 'on_account:update', description: 'Act on on-account orders'},
+  // Order status change (the "order status updation" action)
+  {permission: 'order_status:update', description: 'Change an order\'s status'},
+  // Approvals — split by audience (the two Approval-screen tabs)
+  {permission: 'approval_customer:read',   description: 'View customer approvals'},
+  {permission: 'approval_customer:update', description: 'Resolve customer approvals'},
+  {permission: 'approval_internal:read',   description: 'View internal approvals'},
+  {permission: 'approval_internal:update', description: 'Resolve internal approvals'},
 ];
 
 // ─── Roles ──────────────────────────────────────────────────────────────────
@@ -234,6 +265,25 @@ const ru = (r: string) => [`${r}:read`, `${r}:update`];
 const ro = (r: string) => [`${r}:read`];
 const readAll = (resources: string[]) => resources.map(r => `${r}:read`);
 const flat = (...groups: string[][]) => [...new Set(groups.flat(Infinity as 1))] as string[];
+
+// Operational (pipeline) permissions carved out of the old coarse order gates.
+// The role grants below MIRROR the previous gating exactly, so no role loses or
+// gains access on reseed; operators then fine-tune per role via the Role
+// Permissions matrix in the admin panel.
+//   • Screens that were behind order:read   → received, on_account (read)
+//   • Screens that were behind order:update → inspection, processing, dispatch,
+//     post_processing (read+update) + order_status:update
+//   • approval:read  → approval_customer/internal:read
+//   • approval:update→ approval_customer/internal:update
+const opsFromOrderRead = () => ['received:read', 'on_account:read'];
+const opsFromOrderUpdate = () =>
+  flat(
+    ['inspection', 'processing', 'dispatch', 'post_processing'].flatMap(s => [`${s}:read`, `${s}:update`]),
+    ['order_status:update'],
+  );
+const approvalScreensRead = () => ['approval_customer:read', 'approval_internal:read'];
+const approvalScreensReadUpdate = () =>
+  flat(['approval_customer', 'approval_internal'].flatMap(s => [`${s}:read`, `${s}:update`]));
 
 // '*' is a sentinel expanded to every seeded permission at run time.
 const ALL = '*' as const;
@@ -274,6 +324,8 @@ const ROLES: RoleSeed[] = [
       cr('file_upload'),
       ru('profile'),
       ro('audit'),
+      // operational: had order:read + order:update + approval:read/update
+      opsFromOrderRead(), opsFromOrderUpdate(), approvalScreensReadUpdate(),
     ),
   },
   {
@@ -291,6 +343,8 @@ const ROLES: RoleSeed[] = [
       ro('audit'),
       cr('file_upload'),
       ru('profile'),
+      // operational: had order:read (read-only ops) + approval:read/update
+      opsFromOrderRead(), approvalScreensReadUpdate(),
     ),
   },
   {
@@ -306,6 +360,8 @@ const ROLES: RoleSeed[] = [
       cr('approval'), cr('family_group'), cr('customer_recharge'),
       cr('file_upload'),
       ru('profile'),
+      // operational: had order:read + order:update + approval:read
+      opsFromOrderRead(), opsFromOrderUpdate(), approvalScreensRead(),
     ),
   },
   {
@@ -324,6 +380,8 @@ const ROLES: RoleSeed[] = [
       ro('audit'),
       cr('file_upload'),
       ru('profile'),
+      // operational: had order:read + order:update (no approval)
+      opsFromOrderRead(), opsFromOrderUpdate(),
     ),
   },
   {
@@ -354,6 +412,8 @@ const ROLES: RoleSeed[] = [
       cr('approval'), cr('customer_recharge'),
       cr('file_upload'),
       ru('profile'),
+      // operational: had order:read + order:update + approval:read
+      opsFromOrderRead(), opsFromOrderUpdate(), approvalScreensRead(),
     ),
   },
   {
@@ -369,6 +429,8 @@ const ROLES: RoleSeed[] = [
       ro('service_process_mapping'),
       cr('file_upload'),
       ru('profile'),
+      // operational: had order:read only (no order:update) — mirrors prior access
+      opsFromOrderRead(),
     ),
   },
 ];
