@@ -56,6 +56,20 @@ export class Employee extends Entity {
   @belongsTo(() => Store)
   storeId?: string;
 
+  // Direct scope bindings used when the employee's role is cluster- or
+  // region-scoped (store-scoped roles use storeId instead). See Roles.scope.
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  clusterId?: string;
+
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  regionId?: string;
+
   @property({
     type: 'string',
     postgresql: {dataType: 'uuid'},

@@ -294,6 +294,8 @@ interface RoleSeed {
   description: string;
   isLocked: boolean;
   loginAccess: boolean;
+  // Store-scope level; omit for the default 'store'. super_admin ignores it.
+  scope?: 'store' | 'cluster' | 'region';
   permissions: string[] | typeof ALL;
 }
 
@@ -334,6 +336,7 @@ const ROLES: RoleSeed[] = [
     description: 'Oversight across stores. Approves returns; read-only on operations and masters.',
     isLocked: true,
     loginAccess: true,
+    scope: 'cluster',
     permissions: flat(
       readAll(MASTER_RESOURCES),
       ro('order'), ro('garment'), ro('customer'),
@@ -528,6 +531,7 @@ export async function seed() {
       description: def.description,
       isLocked: def.isLocked,
       loginAccess: def.loginAccess,
+      scope: def.scope ?? 'store',
       isActive: true,
       isDeleted: false,
     };
@@ -538,11 +542,14 @@ export async function seed() {
       rolesInserted++;
     } else {
       // Keep system-role metadata authoritative (label/desc/isLocked/loginAccess).
+      // Scope is authoritative for locked roles only; custom roles keep the value
+      // set via the admin UI so hand edits survive a reseed.
       await roleRepo.updateById(role.id, {
         label: def.label,
         description: def.description,
         isLocked: def.isLocked,
         loginAccess: def.loginAccess,
+        ...(def.isLocked ? {scope: def.scope ?? 'store'} : {}),
       });
       rolesUpdated++;
     }

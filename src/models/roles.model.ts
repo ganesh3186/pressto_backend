@@ -47,6 +47,19 @@ export class Roles extends Entity {
   })
   description?: string;
 
+  // Store-scope level for this role. Determines how employees with this role are
+  // bound and which stores they can see:
+  //   'store'   → bound to a single store (Employee.storeId)
+  //   'cluster' → bound to a cluster (Employee.clusterId) → all its stores
+  //   'region'  → bound to a region  (Employee.regionId)  → all its stores
+  // super_admin ignores this (bypasses all scope). Defaults to the narrowest.
+  @property({
+    type: 'string',
+    default: 'store',
+    jsonSchema: {enum: ['store', 'cluster', 'region']},
+  })
+  scope?: string;
+
   @property({
     type: 'boolean',
     default: false,

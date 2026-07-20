@@ -2,7 +2,13 @@ import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {UserProfile} from '@loopback/security';
-import {EmployeeRepository, OrderRepository, StoreRepository} from '../repositories';
+import {
+  ClusterRepository,
+  EmployeeRepository,
+  OrderRepository,
+  RolesRepository,
+  StoreRepository,
+} from '../repositories';
 
 /**
  * Resolved store access for a caller.
@@ -16,18 +22,14 @@ export type StoreScope = {
 /** Sentinel stored in the JWT for callers that may see every store. */
 export const STORE_SCOPE_GLOBAL = '*';
 
-/** Roles that are never store-bound. */
+/** Roles that are never store-bound (bypass all scope). */
 const GLOBAL_ROLES = new Set(['super_admin']);
 
-/**
- * Roles bound to an area rather than a single store. Their stores are derived from
- * their home store's cluster — Employee deliberately carries no clusterId of its own,
- * so it can never drift from the store's real cluster.
- */
-const AREA_ROLES = new Set(['asm']);
+/** Scope levels a role can declare (Roles.scope). super_admin ignores these. */
+type RoleScope = 'store' | 'cluster' | 'region';
 
 const GLOBAL_SCOPE: StoreScope = {global: true, storeIds: []};
-/** Fail closed: a store-bound caller we cannot resolve sees nothing. */
+/** Fail closed: a bound caller we cannot resolve sees nothing. */
 const EMPTY_SCOPE: StoreScope = {global: false, storeIds: []};
 
 @injectable({scope: BindingScope.TRANSIENT})
@@ -36,45 +38,75 @@ export class StoreScopeService {
     @repository(EmployeeRepository) private employeeRepo: EmployeeRepository,
     @repository(StoreRepository) private storeRepo: StoreRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
+    @repository(RolesRepository) private rolesRepo: RolesRepository,
+    @repository(ClusterRepository) private clusterRepo: ClusterRepository,
   ) {}
 
   /**
    * Resolve scope from the database. Called at login to snapshot the scope into the
    * JWT, and as the fallback for tokens issued before store scope existed.
+   *
+   * The role's `scope` decides which employee binding is authoritative:
+   *   store   → the employee's storeId
+   *   cluster → every store in the employee's clusterId
+   *   region  → every store in the employee's regionId (via its clusters)
    */
   async resolveForUser(userId: string, roles: string[]): Promise<StoreScope> {
     if ((roles ?? []).some(role => GLOBAL_ROLES.has(role))) return GLOBAL_SCOPE;
 
     const employee = await this.employeeRepo.findOne({
       where: {userId, isDeleted: false},
-      fields: {id: true, storeId: true},
+      fields: {id: true, storeId: true, clusterId: true, regionId: true},
     });
+    if (!employee) return EMPTY_SCOPE;
 
-    const homeStoreId = employee?.storeId;
-    // No employee record, or an employee bound to no store: nothing is in scope.
-    if (!homeStoreId) return EMPTY_SCOPE;
+    const scope = await this.resolveRoleScope(roles);
 
-    if (!(roles ?? []).some(role => AREA_ROLES.has(role))) {
-      return {global: false, storeIds: [String(homeStoreId)]};
+    if (scope === 'region') {
+      if (!employee.regionId) return EMPTY_SCOPE;
+      return {global: false, storeIds: await this.storeIdsForRegion(String(employee.regionId))};
     }
+    if (scope === 'cluster') {
+      if (!employee.clusterId) return EMPTY_SCOPE;
+      return {global: false, storeIds: await this.storeIdsForCluster(String(employee.clusterId))};
+    }
+    // store scope (default)
+    if (!employee.storeId) return EMPTY_SCOPE;
+    return {global: false, storeIds: [String(employee.storeId)]};
+  }
 
-    // Area role: every store sharing the home store's cluster.
-    const homeStore = await this.storeRepo.findOne({
-      where: {id: homeStoreId, isDeleted: false},
-      fields: {id: true, clusterId: true},
+  /** The scope level of the caller's primary role; defaults to the narrowest. */
+  private async resolveRoleScope(roles: string[]): Promise<RoleScope> {
+    const roleValue = (roles ?? [])[0];
+    if (!roleValue) return 'store';
+    const role = await this.rolesRepo.findOne({
+      where: {value: roleValue},
+      fields: {id: true, scope: true},
     });
-    if (!homeStore?.clusterId) return {global: false, storeIds: [String(homeStoreId)]};
+    const scope = role?.scope;
+    return scope === 'cluster' || scope === 'region' ? scope : 'store';
+  }
 
-    const clusterStores = await this.storeRepo.find({
-      where: {clusterId: homeStore.clusterId, isDeleted: false},
+  private async storeIdsForCluster(clusterId: string): Promise<string[]> {
+    const stores = await this.storeRepo.find({
+      where: {clusterId, isDeleted: false},
       fields: {id: true},
     });
+    return stores.map(store => String(store.id)).filter(Boolean);
+  }
 
-    const storeIds = clusterStores.map(store => String(store.id)).filter(Boolean);
-    // Guard against a cluster query that somehow excludes the home store.
-    if (!storeIds.includes(String(homeStoreId))) storeIds.push(String(homeStoreId));
-
-    return {global: false, storeIds};
+  private async storeIdsForRegion(regionId: string): Promise<string[]> {
+    const clusters = await this.clusterRepo.find({
+      where: {regionId, isDeleted: false},
+      fields: {id: true},
+    });
+    const clusterIds = clusters.map(cluster => String(cluster.id)).filter(Boolean);
+    if (!clusterIds.length) return [];
+    const stores = await this.storeRepo.find({
+      where: {clusterId: {inq: clusterIds}, isDeleted: false} as object,
+      fields: {id: true},
+    });
+    return stores.map(store => String(store.id)).filter(Boolean);
   }
 
   /**
