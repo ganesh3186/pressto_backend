@@ -55,6 +55,7 @@ const out = {
   item_category: [],
   item: [],
   service: [],
+  additional_charge_master: [],
   service_item_mapping: [],
 };
 const report = {};
@@ -179,21 +180,59 @@ out.service_category.push({
   isDeleted: false,
 });
 
-// ── Service (distinct "Service Name" in the price list ∪ add-on list) ─────────
 const price = sheet('Base Service Price List');
+
+// ── Classify add-ons: distinct price count decides flat vs per-item ───────────
+// Add-ons from the AddonServiceList sheet (name -> {code, name}).
+const addonByName = new Map();
+sheet('AddonServiceListMaster').forEach((a) => {
+  const n = String(a.ServiceDesc || '').trim();
+  if (n) addonByName.set(norm(n), {code: String(a.ServiceCode || '').trim(), name: n});
+});
+// Distinct base prices per service name across the price list.
+const pricesByName = new Map();
+price.forEach((r) => {
+  const key = norm(r['Service Name']);
+  if (!key) return;
+  if (!pricesByName.has(key)) pricesByName.set(key, new Set());
+  pricesByName.get(key).add(Number(r['Base Price']) || 0);
+});
+// Flat add-ons (≤1 distinct price) → additional charges; the rest stay services.
+const flatAddonKeys = new Set();
+const variableAddonKeys = new Set();
+addonByName.forEach((_v, key) => {
+  const p = pricesByName.get(key);
+  if (p && p.size > 1) variableAddonKeys.add(key);
+  else flatAddonKeys.add(key);
+});
+
+// ── Additional Charge Master (flat add-ons only) ──────────────────────────────
+const chargeCodes = new Set();
+flatAddonKeys.forEach((key) => {
+  const a = addonByName.get(key);
+  const p = pricesByName.get(key);
+  out.additional_charge_master.push({
+    id: uuid(),
+    name: a.name,
+    code: uniqueCode(a.code || slugBase(a.name).slice(0, 40), chargeCodes),
+    chargeScope: 'item',
+    chargeType: 'standard',
+    defaultAmount: p ? [...p][0] : 0, // single flat price (0 if never priced)
+    isTaxable: true,
+    isActive: true,
+    isDeleted: false,
+  });
+});
+report.additional_charge_master = out.additional_charge_master.length;
+
+// ── Service (primary services + variable add-ons; flat add-ons excluded) ──────
 const serviceByName = {};
 const svcCodes = new Set();
 const distinctSvc = new Map(); // norm -> original display name
 price.forEach((r) => {
-  const n = String(r['Service Name'] || '').trim();
-  if (n) distinctSvc.set(norm(n), n);
-});
-const addonSet = new Set();
-sheet('AddonServiceListMaster').forEach((a) => {
-  const n = String(a.ServiceDesc || '').trim();
-  if (!n) return;
-  addonSet.add(norm(n));
-  if (!distinctSvc.has(norm(n))) distinctSvc.set(norm(n), n);
+  const raw = String(r['Service Name'] || '').trim();
+  const key = norm(raw);
+  if (raw && !flatAddonKeys.has(key)) distinctSvc.set(key, raw);
 });
 distinctSvc.forEach((name, key) => {
   const id = uuid();
@@ -209,16 +248,21 @@ distinctSvc.forEach((name, key) => {
   serviceByName[key] = id;
 });
 report.service = out.service.length;
-report.serviceAddonFlagged = [...addonSet].length;
+report.variableAddonsKeptAsService = variableAddonKeys.size;
 
-// ── Service Item Mapping (price list; item matched by name) ───────────────────
+// ── Service Item Mapping (price list; flat add-ons skipped — they're charges) ──
 const seen = new Set();
 let unmatchedItem = 0;
 let unmatchedSvc = 0;
 let dup = 0;
+let skippedFlatAddon = 0;
 const unmatchedItemSamples = new Set();
 price.forEach((r) => {
   const svcKey = norm(r['Service Name']);
+  if (flatAddonKeys.has(svcKey)) {
+    skippedFlatAddon += 1;
+    return;
+  }
   const serviceId = serviceByName[svcKey];
   // Try the "New Name" first, then the raw "Iteam Name".
   const itemId =
@@ -253,6 +297,7 @@ price.forEach((r) => {
 });
 report.service_item_mapping = out.service_item_mapping.length;
 report.priceRowsTotal = price.length;
+report.priceSkippedFlatAddon = skippedFlatAddon;
 report.priceUnmatchedItem = unmatchedItem;
 report.priceUnmatchedService = unmatchedSvc;
 report.priceDuplicatePair = dup;

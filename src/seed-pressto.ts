@@ -24,6 +24,7 @@ const TABLES: {table: string; repoClass: unknown}[] = [
   {table: 'item_category', repoClass: Repos.ItemCategoryRepository},
   {table: 'item', repoClass: Repos.ItemRepository},
   {table: 'service', repoClass: Repos.ServiceRepository},
+  {table: 'additional_charge_master', repoClass: Repos.AdditionalChargeMasterRepository},
   {table: 'service_item_mapping', repoClass: Repos.ServiceItemMappingRepository},
 ];
 
