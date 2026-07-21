@@ -5902,61 +5902,6 @@
       "isDeleted": false
     },
     {
-      "id": "d853910d-2a71-4072-a312-e8e522fcf4de",
-      "name": "Darning Medium",
-      "code": "darning_medium",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Darning Medium",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "315abe8d-d987-4caa-87f0-27f9731710c6",
-      "name": "Rivet 1",
-      "code": "rivet_1",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Rivet 1",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "900514b8-c43e-44d7-86de-0842277017c6",
-      "name": "Darning Large",
-      "code": "darning_large",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Darning Large",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "1f4317d6-b684-4701-b96d-e47dc764f251",
-      "name": "Darning Small",
-      "code": "darning_small",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Darning Small",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "a4077f86-7852-4a16-b5b6-1e1f4a09aad2",
-      "name": "Buckle",
-      "code": "buckle",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Buckle",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
       "id": "a9c0c0dd-0d77-4007-b630-60751cadeb72",
       "name": "Premium Packing M-39",
       "code": "premium_packing_m_39",
@@ -6056,105 +6001,6 @@
       "isDeleted": false
     },
     {
-      "id": "cb9190e8-927d-41ba-a032-1b7b23e6f994",
-      "name": "Miscelleneous Small",
-      "code": "miscelleneous_small",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Miscelleneous Small",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "d21cee8d-9a7c-4c95-bff8-5ec4f8c73137",
-      "name": "Miscelleneous Medium",
-      "code": "miscelleneous_medium",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Miscelleneous Medium",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "80e0e629-af2d-4b30-91e4-b26fb6c1b596",
-      "name": "Miscelleneous Large",
-      "code": "miscelleneous_large",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Miscelleneous Large",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "12039655-ac5e-4cc0-a06a-0d6461420be0",
-      "name": "Velcro Small",
-      "code": "velcro_small",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Velcro Small",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "3929175f-cf0c-4376-a8fd-5f0a81e1a494",
-      "name": "Velcro Medium",
-      "code": "velcro_medium",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Velcro Medium",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "1d45383b-4865-43e4-b203-450639b3977c",
-      "name": "Velcro Large",
-      "code": "velcro_large",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Velcro Large",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "6be76298-ce73-4ac5-ac1f-c08ce6b24a80",
-      "name": "Heel Tips (Blue)",
-      "code": "heel_tips_blue",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Heel Tips (Blue)",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "67b5fd54-eba0-424c-a73d-60dea42611d9",
-      "name": "Heel Tips (Gold)",
-      "code": "heel_tips_gold",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Heel Tips (Gold)",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "cfdbd49e-cb8f-4c8a-8dba-631d1a7ecead",
-      "name": "Heel Tips (Silver)",
-      "code": "heel_tips_silver",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Heel Tips (Silver)",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
       "id": "29c108ca-399c-4037-a895-895ee29af3ed",
       "name": "Freshener",
       "code": "freshener",
@@ -6177,17 +6023,6 @@
       "isDeleted": false
     },
     {
-      "id": "85306fa2-105c-4124-96b8-9e1629f44ed7",
-      "name": "Gift Item",
-      "code": "gift_item",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Gift Item",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
       "id": "d200ab2b-4062-4619-89c8-55164cbf6650",
       "name": "Detach/Attach",
       "code": "detach_attach",
@@ -6195,17 +6030,6 @@
       "sequence": 0,
       "estimatedDurationInHours": 24,
       "description": "Detach/Attach",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "df81119c-89ce-4aa7-9ab8-51dce4c43341",
-      "name": "Pick Up / Drop",
-      "code": "pick_up_drop",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Pick Up / Drop",
       "isActive": true,
       "isDeleted": false
     },
@@ -6228,28 +6052,6 @@
       "sequence": 0,
       "estimatedDurationInHours": 24,
       "description": "Pasting Full",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "d83e0284-4236-463c-80c6-62bc18d7f72c",
-      "name": "Unstitch & Stitch",
-      "code": "unstitch_stitch",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Unstitch & Stitch",
-      "isActive": true,
-      "isDeleted": false
-    },
-    {
-      "id": "9a1d95d6-1f95-4cb7-afaf-d9fde67d7baf",
-      "name": "Leather Replacement Small",
-      "code": "leather_replacement_small",
-      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
-      "sequence": 0,
-      "estimatedDurationInHours": 24,
-      "description": "Leather Replacement Small",
       "isActive": true,
       "isDeleted": false
     }
@@ -7692,6 +7494,204 @@
       "chargeScope": "item",
       "chargeType": "standard",
       "defaultAmount": 700,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "8a54a8fa-a2df-450d-9fda-1550f58194db",
+      "name": "Darning Medium",
+      "code": "SZR055",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 641,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "eedf40c4-0c24-462b-9e8b-a6b6462f15c2",
+      "name": "Rivet 1",
+      "code": "SZR031",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 124,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "df397189-474b-4549-a901-a6eabe7d9a71",
+      "name": "Darning Large",
+      "code": "SZR056",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 854,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "d201b7b1-8f5e-438a-b922-c2d9af18abf5",
+      "name": "Darning Small",
+      "code": "SZR054",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 319,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "c2e69125-77a4-443d-afff-2e5b964f4f0b",
+      "name": "Buckle",
+      "code": "SZR036",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 313,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "39c68a12-76b3-49ad-9701-39b609f0bf88",
+      "name": "Miscelleneous Small",
+      "code": "miscelleneous_small",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 213,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "0dc9259b-2532-4794-8510-3702d949a229",
+      "name": "Miscelleneous Medium",
+      "code": "miscelleneous_medium",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 319,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "b91c27cd-f397-4603-9246-b94c3ba8df77",
+      "name": "Miscelleneous Large",
+      "code": "miscelleneous_large",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 427,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "3455b9e9-8930-4977-bd9e-ce6fda6ac5ed",
+      "name": "Velcro Small",
+      "code": "SZR047",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 160,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "76026438-b841-48e4-a59d-2db93d245bef",
+      "name": "Velcro Medium",
+      "code": "SZR048",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 267,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "9d7ab045-4f6c-473f-aa3b-d8e672460dca",
+      "name": "Velcro Large",
+      "code": "SZR049",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 374,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "39faeae3-6036-4f83-97d1-fd483ab72280",
+      "name": "Heel Tips (Blue)",
+      "code": "SZR072",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 857,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "71bc04ce-0fbb-4588-9468-73e426fae2ca",
+      "name": "Heel Tips (Gold)",
+      "code": "SZR073",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 857,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "033b555e-30ce-4710-9839-7eec4b42a67b",
+      "name": "Heel Tips (Silver)",
+      "code": "SZR074",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 857,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "abf1068d-3deb-4372-98b1-4fe8c86052c2",
+      "name": "Gift Item",
+      "code": "gift_item",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 0,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "679f8fbd-c86e-4741-857f-bb47a7efd91e",
+      "name": "Pick Up / Drop",
+      "code": "pick_up_drop",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 208,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "f8ea5efe-bbc7-4151-ba78-fc02d403fb27",
+      "name": "Unstitch & Stitch",
+      "code": "SPK021",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 1639,
+      "isTaxable": true,
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "b4a27fbe-7b06-4950-a00d-294c80b86f42",
+      "name": "Leather Replacement Small",
+      "code": "SZR106",
+      "chargeScope": "item",
+      "chargeType": "standard",
+      "defaultAmount": 2732,
       "isTaxable": true,
       "isActive": true,
       "isDeleted": false

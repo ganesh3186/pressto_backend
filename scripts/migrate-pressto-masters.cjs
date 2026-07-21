@@ -360,6 +360,41 @@ report.priceUnmatchedItem = unmatchedItem;
 report.priceUnmatchedService = unmatchedSvc;
 report.priceDuplicatePair = dup;
 
+// ── Orphan services → additional charges ─────────────────────────────────────
+// Only services that actually map to an item stay services. Anything left over
+// (its price rows never matched an item) is unusable as a service, so it becomes
+// a flat charge instead — priced at the lowest amount seen in the price list.
+const usedServiceIds = new Set(out.service_item_mapping.map((m) => m.serviceId));
+const keptServices = [];
+const movedMultiPrice = [];
+out.service.forEach((s) => {
+  if (usedServiceIds.has(s.id)) {
+    keptServices.push(s);
+    return;
+  }
+  const key = norm(s.name);
+  const priceSet = pricesByName.get(key);
+  const prices = priceSet ? [...priceSet].filter((n) => Number.isFinite(n)) : [];
+  if (prices.length > 1) movedMultiPrice.push(`${s.name} (${Math.min(...prices)}–${Math.max(...prices)})`);
+  const addon = addonByName.get(key);
+  const code = uniqueCode(addon ? addon.code : slugBase(s.name).slice(0, 40), chargeCodes);
+  out.additional_charge_master.push({
+    id: keepId(prevCharge, code),
+    name: s.name,
+    code,
+    chargeScope: 'item',
+    chargeType: 'standard',
+    defaultAmount: prices.length ? Math.min(...prices) : 0,
+    isTaxable: true,
+    isActive: true,
+    isDeleted: false,
+  });
+});
+report.servicesMovedToCharge = out.service.length - keptServices.length;
+out.service = keptServices;
+report.service = out.service.length;
+report.additional_charge_master = out.additional_charge_master.length;
+
 fs.writeFileSync(OUT_PATH, JSON.stringify(out, null, 2));
 
 console.log('Wrote', path.relative(process.cwd(), OUT_PATH));
@@ -367,3 +402,8 @@ console.log('\n── Summary ──');
 Object.entries(report).forEach(([k, v]) => console.log('  ' + k.padEnd(22) + v));
 console.log('\n── Sample unmatched price-list items (need attention) ──');
 [...unmatchedItemSamples].forEach((s) => console.log('  •', s));
+
+if (movedMultiPrice.length) {
+  console.log('\n── Moved to charges but had a price RANGE (flattened to the lowest) ──');
+  movedMultiPrice.forEach((s) => console.log('  •', s));
+}
