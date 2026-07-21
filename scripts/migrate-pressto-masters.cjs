@@ -22,6 +22,43 @@ const OUT_PATH = path.resolve(__dirname, '../src/data/seed-masters-pressto.json'
 
 const uuid = () => crypto.randomUUID();
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+// Region code → state (the model requires `state`; the sheet doesn't carry it).
+const REGION_STATE = {
+  BLR: 'Karnataka',
+  HYD: 'Telangana',
+  MMR: 'Maharashtra',
+  NCR: 'Delhi',
+};
+
+// ── ID preservation ──────────────────────────────────────────────────────────
+// Re-generating must keep the SAME ids for records that already exist, otherwise
+// rows already seeded (stores → clusterId, mappings → serviceId) would point at
+// ids that no longer exist. Keyed by each table's natural key.
+let prev = {};
+try {
+  prev = JSON.parse(fs.readFileSync(OUT_PATH, 'utf8'));
+} catch {
+  prev = {};
+}
+const prevIds = (table, keyFn) => {
+  const m = new Map();
+  (prev[table] || []).forEach((r) => {
+    const k = keyFn(r);
+    if (k) m.set(k, r.id);
+  });
+  return m;
+};
+const prevRegion = prevIds('region', (r) => r.code);
+const prevCluster = prevIds('cluster', (r) => r.code);
+const prevStore = prevIds('store', (r) => r.code);
+const prevSvcCat = prevIds('service_category', (r) => r.code);
+const prevItemCat = prevIds('item_category', (r) => r.code);
+const prevItem = prevIds('item', (r) => r.code);
+const prevService = prevIds('service', (r) => norm(r.name));
+const prevCharge = prevIds('additional_charge_master', (r) => r.code);
+const prevMapping = prevIds('service_item_mapping', (r) => `${r.serviceId}:${r.itemId}`);
+const keepId = (map, key) => map.get(key) || uuid();
 const slugBase = (s) =>
   String(s || '')
     .trim()
@@ -65,11 +102,13 @@ const regionByCode = {};
 sheet('RegionMaster').forEach((r) => {
   const code = String(r.Code || '').trim();
   if (!code) return;
-  const id = uuid();
+  const id = keepId(prevRegion, code);
   out.region.push({
     id,
     name: String(r.Name || '').trim(),
     code,
+    country: 'India',
+    state: REGION_STATE[code] || 'India', // model requires state; sheet has none
     isActive: r.IsActive !== 0,
     isDeleted: false,
   });
@@ -86,12 +125,13 @@ sheet('ClusterMaster').forEach((c) => {
   const prefixChar = code.replace(/^CL/i, '')[0];
   const regionId = regionByCode[REGION_BY_CLUSTER_PREFIX[prefixChar]] || null;
   if (!regionId) clusterNoRegion += 1;
-  const id = uuid();
+  const id = keepId(prevCluster, code);
   out.cluster.push({
     id,
     regionId,
     name: String(c.Name || '').trim(),
     code,
+    clusterType: 'standard', // model requires it; sheet has no cluster type
     isActive: c.IsActive !== 0,
     isDeleted: false,
   });
@@ -111,7 +151,7 @@ sheet('Store Master').forEach((s) => {
     .filter(Boolean)
     .join(', ');
   out.store.push({
-    id: uuid(),
+    id: keepId(prevStore, String(s.StoreID || '').trim()),
     clusterId,
     name: String(s.Name || '').trim(),
     code: uniqueCode(String(s.StoreID || '').trim() || slugBase(s.Name), storeCodes),
@@ -132,12 +172,19 @@ report.storeWithoutCluster = storeNoCluster;
 // ── Item Category (ProductGroupMaster) ───────────────────────────────────────
 const catByPGId = {};
 const catCodes = new Set();
+let catBlankName = 0;
 sheet('ProductGroupMaster').forEach((p) => {
-  const id = uuid();
+  const name = String(p.ProductGroupName || '').trim();
+  if (!name) {
+    catBlankName += 1; // model requires a name — skip blank rows
+    return;
+  }
+  const code = uniqueCode(String(p.PGCode || '').trim() || slugBase(name), catCodes);
+  const id = keepId(prevItemCat, code);
   out.item_category.push({
     id,
-    name: String(p.ProductGroupName || '').trim(),
-    code: uniqueCode(String(p.PGCode || '').trim() || slugBase(p.ProductGroupName), catCodes),
+    name,
+    code,
     sequence: 0,
     isActive: p.IsActive !== 0,
     isDeleted: false,
@@ -145,20 +192,27 @@ sheet('ProductGroupMaster').forEach((p) => {
   if (p.Id !== '') catByPGId[String(p.Id)] = id;
 });
 report.item_category = out.item_category.length;
+report.itemCategoryBlankNameSkipped = catBlankName;
 
 // ── Item (itemCategoryId from PGId) ──────────────────────────────────────────
 const itemByName = {};
 const itemCodes = new Set();
 let itemNoCategory = 0;
+let itemBlankName = 0;
 sheet('ItemMaster').forEach((it) => {
+  const name = String(it.ItemDesc || '').trim();
+  if (!name) {
+    itemBlankName += 1; // model requires a name — skip blank rows
+    return;
+  }
   const itemCategoryId = catByPGId[String(it.PGId)] || null;
   if (!itemCategoryId) itemNoCategory += 1;
-  const name = String(it.ItemDesc || '').trim();
-  const id = uuid();
+  const code = uniqueCode(String(it.ItemCode || '').trim() || slugBase(name), itemCodes);
+  const id = keepId(prevItem, code);
   out.item.push({
     id,
     name,
-    code: uniqueCode(String(it.ItemCode || '').trim() || slugBase(name), itemCodes),
+    code,
     itemCategoryId,
     sequence: 0,
     isMeasurement: false,
@@ -169,9 +223,10 @@ sheet('ItemMaster').forEach((it) => {
 });
 report.item = out.item.length;
 report.itemWithoutCategory = itemNoCategory;
+report.itemBlankNameSkipped = itemBlankName;
 
 // ── Service Category (default bucket — sheet has none) ────────────────────────
-const svcCatId = uuid();
+const svcCatId = keepId(prevSvcCat, 'GENERAL');
 out.service_category.push({
   id: svcCatId,
   name: 'General',
@@ -211,10 +266,11 @@ const chargeCodes = new Set();
 flatAddonKeys.forEach((key) => {
   const a = addonByName.get(key);
   const p = pricesByName.get(key);
+  const code = uniqueCode(a.code || slugBase(a.name).slice(0, 40), chargeCodes);
   out.additional_charge_master.push({
-    id: uuid(),
+    id: keepId(prevCharge, code),
     name: a.name,
-    code: uniqueCode(a.code || slugBase(a.name).slice(0, 40), chargeCodes),
+    code,
     chargeScope: 'item',
     chargeType: 'standard',
     defaultAmount: p ? [...p][0] : 0, // single flat price (0 if never priced)
@@ -235,13 +291,15 @@ price.forEach((r) => {
   if (raw && !flatAddonKeys.has(key)) distinctSvc.set(key, raw);
 });
 distinctSvc.forEach((name, key) => {
-  const id = uuid();
+  const id = keepId(prevService, key);
   out.service.push({
     id,
     name,
     code: uniqueCode(slugBase(name).slice(0, 40), svcCodes),
     serviceCategoryId: svcCatId,
     sequence: 0,
+    estimatedDurationInHours: 24, // model requires it; sheet has no TAT
+    description: name,
     isActive: true,
     isDeleted: false,
   });
@@ -285,7 +343,7 @@ price.forEach((r) => {
   }
   seen.add(key);
   out.service_item_mapping.push({
-    id: uuid(),
+    id: keepId(prevMapping, `${serviceId}:${itemId}`),
     serviceId,
     itemId,
     basePrice: Number(r['Base Price']) || 0,
