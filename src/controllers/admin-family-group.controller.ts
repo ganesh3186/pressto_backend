@@ -28,12 +28,56 @@ export class AdminFamilyGroupController {
     private memberRepository: CustomerFamilyGroupMemberRepository,
   ) {}
 
+  /** The group this customer OWNS — required for every write path. */
   private async resolveGroup(primaryCustomerId: string) {
     const group = await this.groupRepository.findOne({
       where: {primaryCustomerId, isDeleted: false},
     });
     if (!group) throw new HttpErrors.NotFound('This customer does not have a family group.');
     return group;
+  }
+
+  /**
+   * The group this customer is IN — the one they own, or the one they were added
+   * to as a member. Lets staff look up any customer's family, not just owners.
+   */
+  private async resolveVisibleGroup(customerId: string) {
+    const owned = await this.groupRepository.findOne({
+      where: {primaryCustomerId: customerId, isDeleted: false},
+    });
+    if (owned) return {group: owned, role: 'primary' as const};
+
+    const membership = await this.memberRepository.findOne({
+      where: {customerId, isDeleted: false},
+      order: ['createdAt ASC'],
+    });
+    if (membership?.groupId) {
+      const group = await this.groupRepository.findOne({
+        where: {id: membership.groupId, isDeleted: false},
+      });
+      if (group) return {group, role: 'member' as const};
+    }
+
+    throw new HttpErrors.NotFound('This customer does not belong to a family group.');
+  }
+
+  /**
+   * A customer belongs to exactly ONE family group — as its primary or as a
+   * member of someone else's, never both and never several.
+   */
+  private async assertNotInAnyGroup(customerId: string, ignoreMemberId?: string) {
+    const owned = await this.groupRepository.findOne({
+      where: {primaryCustomerId: customerId, isDeleted: false},
+    });
+    if (owned) {
+      throw new HttpErrors.Conflict('That customer already has their own family group.');
+    }
+    const membership = await this.memberRepository.findOne({
+      where: {customerId, isDeleted: false},
+    });
+    if (membership && membership.id !== ignoreMemberId) {
+      throw new HttpErrors.Conflict('That customer already belongs to another family group.');
+    }
   }
 
   @authenticate('jwt')
@@ -43,11 +87,12 @@ export class AdminFamilyGroupController {
   async getGroup(
     @param.path.string('customerId') customerId: string,
   ): Promise<object> {
-    const group = await this.resolveGroup(customerId);
+    // Resolves whether this customer owns the group or is a member of it.
+    const {group, role} = await this.resolveVisibleGroup(customerId);
     const members = await this.memberRepository.find({
       where: {groupId: group.id, isDeleted: false},
     });
-    return {...group, members};
+    return {...group, role, members};
   }
 
   @authenticate('jwt')
@@ -79,6 +124,16 @@ export class AdminFamilyGroupController {
       where: {primaryCustomerId: customerId, isDeleted: false},
     });
     if (existing) throw new HttpErrors.Conflict('Customer already has a family group.');
+
+    // One group per customer: being someone else's member blocks this too.
+    const existingMembership = await this.memberRepository.findOne({
+      where: {customerId, isDeleted: false},
+    });
+    if (existingMembership) {
+      throw new HttpErrors.Conflict(
+        'Customer already belongs to another family group. Remove them from it first.',
+      );
+    }
 
     const group = await this.groupRepository.create({
       primaryCustomerId: customerId,
@@ -121,6 +176,8 @@ export class AdminFamilyGroupController {
       if (body.customerId === customerId) {
         throw new HttpErrors.BadRequest('Cannot add the primary customer as a member.');
       }
+      // One group per customer.
+      await this.assertNotInAnyGroup(body.customerId);
     }
 
     const member = await this.memberRepository.create({
@@ -163,6 +220,15 @@ export class AdminFamilyGroupController {
     if (member.groupId !== group.id || member.isDeleted) {
       throw new HttpErrors.Forbidden('Member does not belong to this group.');
     }
+
+    // Linking this member row to a customer account: that customer must be free.
+    if (body.customerId && body.customerId !== member.customerId) {
+      if (body.customerId === customerId) {
+        throw new HttpErrors.BadRequest('Cannot add the primary customer as a member.');
+      }
+      await this.assertNotInAnyGroup(body.customerId, memberId);
+    }
+
     await this.memberRepository.updateById(memberId, body);
     return {message: 'Family member updated.'};
   }

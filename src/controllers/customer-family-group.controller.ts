@@ -74,6 +74,29 @@ export class CustomerFamilyGroupController {
     throw new HttpErrors.NotFound('You do not belong to any family group yet.');
   }
 
+  /**
+   * A customer belongs to exactly ONE family group — either as its primary or as
+   * a member of someone else's, never both and never several. Throws if the
+   * customer is already in a group.
+   *
+   * `ignoreMemberId` lets an existing member row re-save without tripping on itself.
+   */
+  private async assertNotInAnyGroup(customerId: string, ignoreMemberId?: string) {
+    const owned = await this.groupRepository.findOne({
+      where: {primaryCustomerId: customerId, isDeleted: false},
+    });
+    if (owned) {
+      throw new HttpErrors.Conflict('That customer already has their own family group.');
+    }
+
+    const membership = await this.memberRepository.findOne({
+      where: {customerId, isDeleted: false},
+    });
+    if (membership && membership.id !== ignoreMemberId) {
+      throw new HttpErrors.Conflict('That customer already belongs to another family group.');
+    }
+  }
+
   /** Name of the customer who owns the group, so a member knows whose it is. */
   private async describePrimary(primaryCustomerId?: string) {
     if (!primaryCustomerId) return null;
@@ -115,9 +138,19 @@ export class CustomerFamilyGroupController {
     const existing = await this.groupRepository.findOne({
       where: {primaryCustomerId, isDeleted: false},
     });
-    
+
     if (existing) {
       throw new HttpErrors.Conflict('You already have a family group.');
+    }
+
+    // One group per customer: already being someone else's member blocks this too.
+    const existingMembership = await this.memberRepository.findOne({
+      where: {customerId: primaryCustomerId, isDeleted: false},
+    });
+    if (existingMembership) {
+      throw new HttpErrors.Conflict(
+        'You already belong to a family group. Leave it before creating your own.',
+      );
     }
 
     const group = await this.groupRepository.create({primaryCustomerId, name: body.name});
@@ -210,6 +243,8 @@ export class CustomerFamilyGroupController {
       if (body.customerId === primaryCustomerId) {
         throw new HttpErrors.BadRequest('You cannot add yourself as a family member.');
       }
+      // One group per customer.
+      await this.assertNotInAnyGroup(body.customerId);
     }
 
     const member = await this.memberRepository.create({
@@ -267,6 +302,14 @@ export class CustomerFamilyGroupController {
     const member = await this.memberRepository.findById(memberId);
     if (member.groupId !== group.id || member.isDeleted) {
       throw new HttpErrors.Forbidden('You do not have permission to update this member.');
+    }
+
+    // Linking this member row to a customer account: that customer must be free.
+    if (body.customerId && body.customerId !== member.customerId) {
+      if (body.customerId === primaryCustomerId) {
+        throw new HttpErrors.BadRequest('You cannot add yourself as a family member.');
+      }
+      await this.assertNotInAnyGroup(body.customerId, memberId);
     }
 
     await this.memberRepository.updateById(memberId, body);
