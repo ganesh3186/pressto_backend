@@ -1,5 +1,6 @@
 import {authenticate} from '@loopback/authentication';
-import {repository} from '@loopback/repository';
+import {inject} from '@loopback/core';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {
   del,
   get,
@@ -11,12 +12,25 @@ import {
   response,
 } from '@loopback/rest';
 import {authorize} from '../authorization';
+import {PresstoDataSource} from '../datasources';
 import {ContactRelationship} from '../models/contact-relationship.enum';
 import {
   CustomerFamilyGroupMemberRepository,
   CustomerFamilyGroupRepository,
   CustomerRepository,
+  RolesRepository,
+  UserRolesRepository,
+  UsersRepository,
 } from '../repositories';
+import {BcryptHasher} from '../services/hash.password.bcrypt';
+import {SecurityDepositService} from '../services/security-deposit.service';
+import {WalletService} from '../services/wallet.service';
+
+/** Role a family member's login is created under, in order of preference. */
+const CUSTOMER_ROLE_VALUES = ['customer', 'client'];
+
+/** Same starter password the full customer form uses. */
+const DEFAULT_MEMBER_PASSWORD = 'Pressto@1234';
 
 export class AdminFamilyGroupController {
   constructor(
@@ -26,6 +40,20 @@ export class AdminFamilyGroupController {
     private groupRepository: CustomerFamilyGroupRepository,
     @repository(CustomerFamilyGroupMemberRepository)
     private memberRepository: CustomerFamilyGroupMemberRepository,
+    @repository(UsersRepository)
+    private usersRepository: UsersRepository,
+    @repository(RolesRepository)
+    private rolesRepository: RolesRepository,
+    @repository(UserRolesRepository)
+    private userRolesRepository: UserRolesRepository,
+    @inject('datasources.pressto')
+    private dataSource: PresstoDataSource,
+    @inject('service.hasher')
+    private hasher: BcryptHasher,
+    @inject('services.wallet')
+    private walletService: WalletService,
+    @inject('services.security-deposit')
+    private securityDepositService: SecurityDepositService,
   ) {}
 
   /** The group this customer OWNS — required for every write path. */
@@ -80,6 +108,60 @@ export class AdminFamilyGroupController {
     }
   }
 
+  /** The role every customer login carries — mirrors CustomerController. */
+  private async resolveCustomerRole() {
+    for (const value of CUSTOMER_ROLE_VALUES) {
+      const role = await this.rolesRepository.findOne({where: {value}});
+      if (role) return role;
+    }
+    throw new HttpErrors.BadRequest(
+      'Customer role not found. Add a role with value "customer" in Role Master, then try again.',
+    );
+  }
+
+  private async generateUniqueUsername(email: string, fullName: string): Promise<string> {
+    const base = email
+      ? email.split('@')[0].toLowerCase()
+      : fullName.trim().toLowerCase().replace(/\s+/g, '.');
+    let username = base;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const existing = await this.usersRepository.findOne({where: {username}});
+      if (!existing) return username;
+      username = `${base}${Math.floor(1000 + Math.random() * 9000)}`;
+    }
+    throw new HttpErrors.InternalServerError('Could not generate a unique username');
+  }
+
+  private async generateCustomerCode(): Promise<string> {
+    const last = await this.customerRepository.findOne({
+      order: ['createdAt DESC'],
+      fields: {customerCode: true},
+    });
+    if (!last?.customerCode) return 'CUST0001';
+    const numPart = parseInt(last.customerCode.replace('CUST', ''), 10);
+    return `CUST${String((isNaN(numPart) ? 0 : numPart) + 1).padStart(4, '0')}`;
+  }
+
+  /** Owner of the group, so the UI can list them alongside the members. */
+  private async describePrimary(primaryCustomerId?: string) {
+    if (!primaryCustomerId) return null;
+    const c = await this.customerRepository.findOne({
+      where: {id: primaryCustomerId, isDeleted: false},
+    });
+    if (!c) return null;
+    const user = c.userId
+      ? await this.usersRepository.findOne({where: {id: c.userId}})
+      : null;
+    return {
+      id: c.id,
+      name: `${c.firstName ?? ''} ${c.lastName ?? ''}`.trim(),
+      customerCode: c.customerCode,
+      phone: user?.phone ?? null,
+      countryCode: user?.countryCode ?? null,
+      email: c.email ?? user?.email ?? null,
+    };
+  }
+
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['family_group:read']})
   @get('/admin/customers/{customerId}/family-group')
@@ -92,7 +174,13 @@ export class AdminFamilyGroupController {
     const members = await this.memberRepository.find({
       where: {groupId: group.id, isDeleted: false},
     });
-    return {...group, role, members};
+    return {
+      ...group,
+      role, // 'primary' = this customer owns the group, 'member' = added to it
+      canManage: role === 'primary', // only the primary may add/edit/remove
+      primaryCustomer: await this.describePrimary(group.primaryCustomerId),
+      members,
+    };
   }
 
   @authenticate('jwt')
@@ -189,6 +277,137 @@ export class AdminFamilyGroupController {
     });
 
     return {message: 'Family member added.', member};
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['family_group:create']})
+  @post('/admin/customers/{customerId}/family-group/members/new-customer')
+  @response(200, {description: 'Create a customer account and add them to the family in one step'})
+  async addNewCustomerMember(
+    @param.path.string('customerId') customerId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['firstName', 'phone', 'relationship'],
+            properties: {
+              firstName: {type: 'string'},
+              lastName: {type: 'string'},
+              countryCode: {type: 'string', default: '+91'},
+              phone: {type: 'string'},
+              email: {type: 'string', format: 'email'},
+              relationship: {type: 'string', enum: Object.values(ContactRelationship)},
+            },
+          },
+        },
+      },
+    })
+    body: {
+      firstName: string;
+      lastName?: string;
+      countryCode?: string;
+      phone: string;
+      email?: string;
+      relationship: ContactRelationship;
+    },
+  ): Promise<object> {
+    const group = await this.resolveGroup(customerId);
+
+    const primary = await this.customerRepository.findOne({
+      where: {id: customerId, isDeleted: false},
+    });
+    if (!primary) throw new HttpErrors.NotFound('Primary customer not found.');
+
+    const firstName = (body.firstName ?? '').trim();
+    const lastName = (body.lastName ?? '').trim();
+    const phone = (body.phone ?? '').trim();
+    const email = (body.email ?? '').trim();
+    if (!firstName) throw new HttpErrors.BadRequest('First name is required.');
+    if (!phone) throw new HttpErrors.BadRequest('Mobile number is required.');
+
+    // Same uniqueness rule as the full customer form.
+    const orConditions: object[] = [{phone}];
+    if (email) orConditions.push({email});
+    const clash = await this.usersRepository.findOne({where: {or: orConditions}});
+    if (clash) {
+      throw new HttpErrors.Conflict(
+        'A customer with this mobile number or email already exists. Search for them in the list instead.',
+      );
+    }
+
+    const role = await this.resolveCustomerRole();
+    const hashedPassword = await this.hasher.hashPassword(DEFAULT_MEMBER_PASSWORD);
+    const fullName = `${firstName} ${lastName}`.trim();
+    const username = await this.generateUniqueUsername(email, fullName);
+    const customerCode = await this.generateCustomerCode();
+
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      const user = await this.usersRepository.create(
+        {
+          fullName,
+          username,
+          ...(email && {email}),
+          countryCode: body.countryCode || '+91',
+          phone,
+          password: hashedPassword,
+          isActive: true,
+        },
+        {transaction: tx},
+      );
+
+      // Everything the member isn't asked for is inherited from the primary —
+      // same store, same type/label/group, same payment + discount defaults.
+      const customer = await this.customerRepository.create(
+        {
+          userId: user.id,
+          customerCode,
+          firstName,
+          lastName,
+          ...(email && {email}),
+          customerEntityType: primary.customerEntityType ?? 'individual',
+          customerTypeId: primary.customerTypeId,
+          customerLabelId: primary.customerLabelId,
+          customerGroupId: primary.customerGroupId,
+          preferredStoreId: primary.preferredStoreId,
+          preferredPaymentMode: primary.preferredPaymentMode,
+          defaultDiscountType: primary.defaultDiscountType,
+          defaultDiscountValue: primary.defaultDiscountValue,
+        },
+        {transaction: tx},
+      );
+
+      await this.userRolesRepository.create(
+        {usersId: user.id, rolesId: role.id},
+        {transaction: tx},
+      );
+
+      await this.walletService.createWallet(customer.id, {transaction: tx});
+      await this.securityDepositService.createDeposit(customer.id, {transaction: tx});
+
+      const member = await this.memberRepository.create(
+        {
+          groupId: group.id,
+          name: fullName,
+          phone,
+          relationship: body.relationship,
+          customerId: customer.id,
+        },
+        {transaction: tx},
+      );
+
+      await tx.commit();
+
+      return {
+        message: 'Customer created and added to the family group.',
+        member,
+        customer: {...customer, user: {...user, password: undefined}},
+      };
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
   }
 
   @authenticate('jwt')
