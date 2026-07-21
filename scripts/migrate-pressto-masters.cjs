@@ -256,14 +256,63 @@ out.service_category.push({
 
 const price = sheet('Base Service Price List');
 
-// ── Classify add-ons: distinct price count decides flat vs per-item ───────────
-// Add-ons from the AddonServiceList sheet (name -> {code, name}).
+// ── Service master: exactly the 7 services the client asked for ──────────────
+const SERVICE_NAMES = [
+  'Clean',
+  'Iron',
+  'Shoes-Bags',
+  'Curtain-Carpet',
+  'Wash&Fold',
+  'Presstoke',
+  'Repair',
+];
+const serviceIdByName = {};
+const svcCodes = new Set();
+SERVICE_NAMES.forEach((name, index) => {
+  const code = uniqueCode(slugBase(name).slice(0, 40), svcCodes);
+  const id = keepId(prevService, norm(name));
+  out.service.push({
+    id,
+    name,
+    code,
+    serviceCategoryId: svcCatId,
+    sequence: index + 1, // POS order follows the client's list
+    estimatedDurationInHours: 24,
+    description: name,
+    isActive: true,
+    isDeleted: false,
+  });
+  serviceIdByName[name] = id;
+});
+report.service = out.service.length;
+
+// Which of the 7 a price row belongs to — decided by its Product Name first,
+// falling back to the Service Name for the garment cleaning/pressing rows.
+const SHOES_BAGS = ['shoes', 'boots', 'bags', 'belt', 'wallet', 'kids accessories'];
+const CURTAIN_CARPET = ['curtain', 'carpet', 'sofa cover'];
+const REPAIR_PRODUCTS = ['alteration', 'darning'];
+const WASH_FOLD = ['wash, dry & fold'];
+
+function targetService(productName, serviceName) {
+  const p = norm(productName);
+  const s = norm(serviceName);
+  if (SHOES_BAGS.includes(p)) return 'Shoes-Bags';
+  if (CURTAIN_CARPET.includes(p)) return 'Curtain-Carpet';
+  if (WASH_FOLD.includes(p)) return 'Wash&Fold';
+  if (REPAIR_PRODUCTS.includes(p)) return 'Repair';
+  if (/clean/.test(s)) return 'Clean';
+  if (/press|iron/.test(s)) return 'Iron';
+  return null;
+}
+
+// ── Additional charges: every add-on from the sheet + the packaging/misc list ──
+// These stay selectable as charges; their price rows still feed the mappings
+// below (an item is offered under one of the 7, add-ons are charged on top).
 const addonByName = new Map();
 sheet('AddonServiceListMaster').forEach((a) => {
   const n = String(a.ServiceDesc || '').trim();
   if (n) addonByName.set(norm(n), {code: String(a.ServiceCode || '').trim(), name: n});
 });
-// Distinct base prices per service name across the price list.
 const pricesByName = new Map();
 price.forEach((r) => {
   const key = norm(r['Service Name']);
@@ -271,101 +320,71 @@ price.forEach((r) => {
   if (!pricesByName.has(key)) pricesByName.set(key, new Set());
   pricesByName.get(key).add(Number(r['Base Price']) || 0);
 });
-// Flat add-ons (≤1 distinct price) → additional charges; the rest stay services.
-const flatAddonKeys = new Set();
-const variableAddonKeys = new Set();
-addonByName.forEach((_v, key) => {
-  const p = pricesByName.get(key);
-  if (p && p.size > 1) variableAddonKeys.add(key);
-  else flatAddonKeys.add(key);
-});
 
-// ── Additional Charge Master (flat add-ons only) ──────────────────────────────
+const chargeKeys = new Set();
 const chargeCodes = new Set();
-flatAddonKeys.forEach((key) => {
-  const a = addonByName.get(key);
-  const p = pricesByName.get(key);
-  const code = uniqueCode(a.code || slugBase(a.name).slice(0, 40), chargeCodes);
+function addCharge(displayName, key) {
+  if (!key || chargeKeys.has(key)) return;
+  const priceSet = pricesByName.get(key);
+  const prices = priceSet ? [...priceSet].filter((n) => Number.isFinite(n)) : [];
+  const addon = addonByName.get(key);
+  const code = uniqueCode(addon ? addon.code : slugBase(displayName).slice(0, 40), chargeCodes);
   out.additional_charge_master.push({
     id: keepId(prevCharge, code),
-    name: a.name,
+    name: displayName,
     code,
     chargeScope: 'item',
     chargeType: 'standard',
-    defaultAmount: p ? [...p][0] : 0, // single flat price (0 if never priced)
+    defaultAmount: prices.length ? Math.min(...prices) : 0, // lowest seen
     isTaxable: true,
     isActive: true,
     isDeleted: false,
   });
-});
+  chargeKeys.add(key);
+}
+addonByName.forEach((a, key) => addCharge(a.name, key));
+FORCE_TO_CHARGE.forEach((n) => addCharge(n, norm(n)));
 report.additional_charge_master = out.additional_charge_master.length;
 
-// ── Service (primary services + variable add-ons; flat add-ons excluded) ──────
-const serviceByName = {};
-const svcCodes = new Set();
-const distinctSvc = new Map(); // norm -> original display name
-price.forEach((r) => {
-  const raw = String(r['Service Name'] || '').trim();
-  const key = norm(raw);
-  if (raw && !flatAddonKeys.has(key)) distinctSvc.set(key, raw);
-});
-distinctSvc.forEach((name, key) => {
-  const id = keepId(prevService, key);
-  out.service.push({
-    id,
-    name,
-    code: uniqueCode(slugBase(name).slice(0, 40), svcCodes),
-    serviceCategoryId: svcCatId,
-    sequence: 0,
-    estimatedDurationInHours: 24, // model requires it; sheet has no TAT
-    description: name,
-    isActive: true,
-    isDeleted: false,
-  });
-  serviceByName[key] = id;
-});
-report.service = out.service.length;
-report.variableAddonsKeptAsService = variableAddonKeys.size;
-
-// ── Service Item Mapping (price list; flat add-ons skipped — they're charges) ──
-const seen = new Set();
+// ── Service Item Mapping: one row per (item, service) at the LOWEST price ─────
+const best = new Map();
 let unmatchedItem = 0;
-let unmatchedSvc = 0;
-let dup = 0;
-let skippedFlatAddon = 0;
+let unassigned = 0;
 const unmatchedItemSamples = new Set();
+const unassignedSamples = new Set();
+
 price.forEach((r) => {
-  const svcKey = norm(r['Service Name']);
-  if (flatAddonKeys.has(svcKey)) {
-    skippedFlatAddon += 1;
+  const target = targetService(r['Product Name'], r['Service Name']);
+  if (!target) {
+    unassigned += 1;
+    if (unassignedSamples.size < 12) {
+      unassignedSamples.add(
+        `${String(r['Product Name'] || '').trim()}  /  ${String(r['Service Name'] || '').trim()}`,
+      );
+    }
     return;
   }
-  const serviceId = serviceByName[svcKey];
-  // Try the "New Name" first, then the raw "Iteam Name".
-  const itemId =
-    itemByName[norm(r['New Name'])] || itemByName[norm(r['Iteam Name'])] || null;
+  const itemId = itemByName[norm(r['New Name'])] || itemByName[norm(r['Iteam Name'])] || null;
   if (!itemId) {
     unmatchedItem += 1;
-    if (unmatchedItemSamples.size < 15) {
+    if (unmatchedItemSamples.size < 12) {
       unmatchedItemSamples.add(String(r['New Name'] || r['Iteam Name'] || '').trim());
     }
     return;
   }
-  if (!serviceId) {
-    unmatchedSvc += 1;
-    return;
-  }
-  const key = `${itemId}:${serviceId}`;
-  if (seen.has(key)) {
-    dup += 1;
-    return;
-  }
-  seen.add(key);
+  const serviceId = serviceIdByName[target];
+  const key = `${serviceId}:${itemId}`;
+  const amount = Number(r['Base Price']) || 0;
+  const current = best.get(key);
+  if (!current || amount < current.basePrice) best.set(key, {serviceId, itemId, basePrice: amount});
+});
+
+best.forEach((v, key) => {
   out.service_item_mapping.push({
-    id: keepId(prevMapping, `${serviceId}:${itemId}`),
-    serviceId,
-    itemId,
-    basePrice: Number(r['Base Price']) || 0,
+    id: keepId(prevMapping, key),
+    serviceId: v.serviceId,
+    itemId: v.itemId,
+    basePrice: v.basePrice,
     estimatedDurationInDays: 1,
     additionalServiceIds: [],
     isActive: true,
@@ -374,64 +393,22 @@ price.forEach((r) => {
 });
 report.service_item_mapping = out.service_item_mapping.length;
 report.priceRowsTotal = price.length;
-report.priceSkippedFlatAddon = skippedFlatAddon;
+report.priceUnassignedToAny7 = unassigned;
 report.priceUnmatchedItem = unmatchedItem;
-report.priceUnmatchedService = unmatchedSvc;
-report.priceDuplicatePair = dup;
 
-// ── Orphan services → additional charges ─────────────────────────────────────
-// Only services that actually map to an item stay services. Anything left over
-// (its price rows never matched an item) is unusable as a service, so it becomes
-// a flat charge instead — priced at the lowest amount seen in the price list.
-const usedServiceIds = new Set(out.service_item_mapping.map((m) => m.serviceId));
-const forcedToCharge = new Set(FORCE_TO_CHARGE.map(norm));
-const keptServices = [];
-const movedMultiPrice = [];
-const movedServiceIds = new Set();
-out.service.forEach((s) => {
-  // Keep only services that map to an item AND aren't on the force-to-charge list.
-  if (usedServiceIds.has(s.id) && !forcedToCharge.has(norm(s.name))) {
-    keptServices.push(s);
-    return;
-  }
-  movedServiceIds.add(s.id);
-  const key = norm(s.name);
-  const priceSet = pricesByName.get(key);
-  const prices = priceSet ? [...priceSet].filter((n) => Number.isFinite(n)) : [];
-  if (prices.length > 1) movedMultiPrice.push(`${s.name} (${Math.min(...prices)}–${Math.max(...prices)})`);
-  const addon = addonByName.get(key);
-  const code = uniqueCode(addon ? addon.code : slugBase(s.name).slice(0, 40), chargeCodes);
-  out.additional_charge_master.push({
-    id: keepId(prevCharge, code),
-    name: s.name,
-    code,
-    chargeScope: 'item',
-    chargeType: 'standard',
-    defaultAmount: prices.length ? Math.min(...prices) : 0,
-    isTaxable: true,
-    isActive: true,
-    isDeleted: false,
-  });
+const perService = {};
+out.service_item_mapping.forEach((m) => {
+  perService[m.serviceId] = (perService[m.serviceId] || 0) + 1;
 });
-report.servicesMovedToCharge = out.service.length - keptServices.length;
-out.service = keptServices;
-// A moved service can't keep its mappings — drop them.
-const mappingsBefore = out.service_item_mapping.length;
-out.service_item_mapping = out.service_item_mapping.filter((m) => !movedServiceIds.has(m.serviceId));
-report.mappingsDroppedWithMovedServices = mappingsBefore - out.service_item_mapping.length;
-report.service = out.service.length;
-report.service_item_mapping = out.service_item_mapping.length;
-report.additional_charge_master = out.additional_charge_master.length;
 
 fs.writeFileSync(OUT_PATH, JSON.stringify(out, null, 2));
 
 console.log('Wrote', path.relative(process.cwd(), OUT_PATH));
 console.log('\n── Summary ──');
-Object.entries(report).forEach(([k, v]) => console.log('  ' + k.padEnd(22) + v));
-console.log('\n── Sample unmatched price-list items (need attention) ──');
+Object.entries(report).forEach(([k, v]) => console.log('  ' + k.padEnd(30) + v));
+console.log('\n── Mappings per service ──');
+out.service.forEach((s) => console.log('  ' + String(perService[s.id] || 0).padStart(5) + '  ' + s.name));
+console.log('\n── Price rows not assigned to any of the 7 (sample) ──');
+[...unassignedSamples].forEach((s) => console.log('  •', s));
+console.log('\n── Items not found in ItemMaster (sample) ──');
 [...unmatchedItemSamples].forEach((s) => console.log('  •', s));
-
-if (movedMultiPrice.length) {
-  console.log('\n── Moved to charges but had a price RANGE (flattened to the lowest) ──');
-  movedMultiPrice.forEach((s) => console.log('  •', s));
-}

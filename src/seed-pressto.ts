@@ -40,6 +40,25 @@ async function seedPresstoMasters() {
   await app.boot();
   await app.start();
 
+  // Empty the master tables first so each run replaces the previous data instead
+  // of layering on top of it. Children are cleared before parents.
+  // Pass --keep to skip this and only insert what's missing.
+  if (!process.argv.includes('--keep')) {
+    console.log('Clearing existing master data…');
+    for (const {table, repoClass} of [...TABLES].reverse()) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const repo = (await app.getRepository(repoClass as any)) as any;
+      try {
+        const res = await repo.deleteAll();
+        const removed = res && typeof res.count === 'number' ? res.count : 0;
+        if (removed) console.log(`  ${table.padEnd(24)} cleared: ${removed}`);
+      } catch (err) {
+        console.error(`  ${table.padEnd(24)} ✗ ${(err as Error).message}`);
+      }
+    }
+    console.log('');
+  }
+
   for (const {table, repoClass} of TABLES) {
     const rows = data[table];
     if (!Array.isArray(rows) || !rows.length) {
