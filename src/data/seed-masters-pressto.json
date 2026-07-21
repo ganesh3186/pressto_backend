@@ -5814,13 +5814,13 @@
       "isDeleted": false
     },
     {
-      "id": "31d26734-da78-4b1c-a0af-101501346fba",
-      "name": "Iron",
-      "code": "iron",
+      "id": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "name": "Press",
+      "code": "press",
       "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
       "sequence": 2,
       "estimatedDurationInHours": 24,
-      "description": "Iron",
+      "description": "Press",
       "isActive": true,
       "isDeleted": false
     },
@@ -5847,24 +5847,24 @@
       "isDeleted": false
     },
     {
-      "id": "49e0f375-a47e-4d1a-9fdd-9344d12390e5",
-      "name": "Wash&Fold",
-      "code": "wash_fold",
+      "id": "bcefd141-aa0b-40a4-83cd-b889a8d7fdb4",
+      "name": "Wash Dry Fold",
+      "code": "wash_dry_fold",
       "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
       "sequence": 5,
       "estimatedDurationInHours": 24,
-      "description": "Wash&Fold",
+      "description": "Wash Dry Fold",
       "isActive": true,
       "isDeleted": false
     },
     {
       "id": "03f4a8f1-81c8-4221-b096-acf97e1679e8",
-      "name": "Presstoke",
+      "name": "PresstoKe",
       "code": "presstoke",
       "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
       "sequence": 6,
       "estimatedDurationInHours": 24,
-      "description": "Presstoke",
+      "description": "PresstoKe",
       "isActive": true,
       "isDeleted": false
     },
@@ -5876,6 +5876,50 @@
       "sequence": 7,
       "estimatedDurationInHours": 24,
       "description": "Repair",
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "name": "Colouring",
+      "code": "colouring",
+      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
+      "sequence": 8,
+      "estimatedDurationInHours": 24,
+      "description": "Colouring",
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "e325b7de-fbea-4edf-9364-ec0231435052",
+      "name": "CC-Repair",
+      "code": "cc_repair",
+      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
+      "sequence": 9,
+      "estimatedDurationInHours": 24,
+      "description": "CC-Repair",
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "99f7a441-8451-4a53-a7d7-56f769dff309",
+      "name": "Packing",
+      "code": "packing",
+      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
+      "sequence": 10,
+      "estimatedDurationInHours": 24,
+      "description": "Packing",
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
+      "name": "Others",
+      "code": "others",
+      "serviceCategoryId": "a73ced3a-d3e1-449d-9fdb-4a08fec9c1cb",
+      "sequence": 11,
+      "estimatedDurationInHours": 24,
+      "description": "Others",
       "isActive": true,
       "isDeleted": false
     }
@@ -7696,6 +7740,16 @@
       "isDeleted": false
     },
     {
+      "id": "1e694c0d-71eb-40de-8b20-058c6deb3570",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "e4746c39-ff65-4a0c-b8b0-a424869c1320",
+      "basePrice": 5754,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
       "id": "086d11a0-621c-4467-ab43-f5a5265cffd5",
       "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
       "itemId": "73662267-a1bb-42a5-97e8-73b524273d88",
@@ -7726,10 +7780,20 @@
       "isDeleted": false
     },
     {
-      "id": "730f3c7d-8b1d-4a58-b122-b8726f0ad165",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "bf741eb9-a0c3-49fe-ae53-76c1b4fb8093",
+      "serviceId": "6ba72dfc-a53c-4712-84ca-7b936e66c9c0",
       "itemId": "3285a4dc-a9db-4688-ad8e-fb750806a020",
       "basePrice": 1602,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "cf5b37c4-ded0-4bf0-a341-5b6788df3b1c",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "3285a4dc-a9db-4688-ad8e-fb750806a020",
+      "basePrice": 4796,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -7786,6 +7850,16 @@
       "isDeleted": false
     },
     {
+      "id": "65f60807-538a-4df5-901c-bdab0d2a16f9",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "a0c4174d-1459-4a78-8911-20f233c0e01d",
+      "basePrice": 3838,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
       "id": "6e9e14dd-e863-4a57-aa13-b736072ef82d",
       "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
       "itemId": "cd9849ac-9058-4c7b-b8d4-aa7f7ad86399",
@@ -7820,6 +7894,16 @@
       "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
       "itemId": "34956381-59a5-433c-99f9-c0a2ed20ef3e",
       "basePrice": 478,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "bd552926-3f0f-4e53-b5e7-3202eed60d6f",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "34956381-59a5-433c-99f9-c0a2ed20ef3e",
+      "basePrice": 1382,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -7866,6 +7950,16 @@
       "isDeleted": false
     },
     {
+      "id": "d0808a4b-a57f-4fdb-a7c6-a6cbe70da12c",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "0c233e3e-dd5b-4417-9541-17a6b6fba29e",
+      "basePrice": 2242,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
       "id": "d24dd4d3-9dd0-4f5f-9773-5a0ee71f9939",
       "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
       "itemId": "672f25f0-93c3-4383-870f-00613169fef7",
@@ -7906,6 +8000,16 @@
       "isDeleted": false
     },
     {
+      "id": "b471cb78-fcf8-4bad-bc96-689504a0196b",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "9608ffa1-ae36-470c-a118-37caf92c583a",
+      "basePrice": 1897,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
       "id": "37434216-40b9-45d8-89e8-3498b252c33c",
       "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
       "itemId": "50b59c37-c74c-421f-b99c-16ce56e33da0",
@@ -7926,8 +8030,18 @@
       "isDeleted": false
     },
     {
-      "id": "28c280c2-6069-4678-8797-27109e6704ce",
-      "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
+      "id": "42e00948-9525-4b10-b153-4049f1431e1e",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "5b9f87ae-afc5-49c0-97ba-f2aca3bd170a",
+      "basePrice": 1202,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "34506ed6-2b46-4deb-a481-2b951ec0a0ca",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
       "itemId": "2c87737a-5d57-45cf-baa7-e80e215aec26",
       "basePrice": 3599,
       "estimatedDurationInDays": 1,
@@ -7936,8 +8050,38 @@
       "isDeleted": false
     },
     {
-      "id": "ff9fd452-51b2-4d2e-8f28-1eaf201374de",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "9efe3b68-3afb-4b3f-9733-b4f632fade54",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "382bdc4f-d5db-47b1-8e52-b7cc7f7898d1",
+      "basePrice": 1202,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "83495986-c18e-4d45-be3f-1cb5689532bd",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "d61eb46a-52d8-4d8b-b8f7-ea14d90ac940",
+      "basePrice": 3599,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "ebf23a75-f945-4f99-8bac-b3d3976e088c",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "b057b8c1-08b7-4e27-b60b-9c0580e466b6",
+      "basePrice": 3599,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "ef4df638-2bdc-4208-ad18-7ba4d1891598",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "9261aeb3-26c2-4bc8-b7a7-7c78e69c2246",
       "basePrice": 1923,
       "estimatedDurationInDays": 1,
@@ -7946,8 +8090,8 @@
       "isDeleted": false
     },
     {
-      "id": "ea956879-c85f-412e-bbc1-dced52e6bbda",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "61d7c21f-3096-47fa-a763-e5d2ee987022",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "ed31014b-74e0-4286-a474-8a635b14e76d",
       "basePrice": 1764,
       "estimatedDurationInDays": 1,
@@ -7956,8 +8100,8 @@
       "isDeleted": false
     },
     {
-      "id": "bd693731-0699-46d6-9431-8288a4014265",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "d93dc8c3-b762-4523-b52c-566766d7a6c4",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "1a99ec41-8244-40f7-bff6-f9e0bbafcfc0",
       "basePrice": 1443,
       "estimatedDurationInDays": 1,
@@ -7966,8 +8110,18 @@
       "isDeleted": false
     },
     {
-      "id": "06a1efe1-2d5a-416c-9f35-b04fd2fa5517",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "91abb634-698a-4e2d-bbab-74493590467d",
+      "serviceId": "99f7a441-8451-4a53-a7d7-56f769dff309",
+      "itemId": "37f25d9c-f02c-47e7-94c0-1ce120db6866",
+      "basePrice": 320,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "161f78ec-14ba-447b-bc20-2f58f4e5b847",
+      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
       "itemId": "d916d7de-adae-4952-8893-dda7e39e8435",
       "basePrice": 747,
       "estimatedDurationInDays": 1,
@@ -7989,6 +8143,16 @@
       "id": "6bbc038f-58b7-40d4-877a-47121e0638da",
       "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
       "itemId": "17f3e9b3-c2fc-416f-bb23-7972b86b02ea",
+      "basePrice": 681,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "c26f8dba-c81c-4424-b182-c468ae7eb322",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "17f3e9b3-c2fc-416f-bb23-7972b86b02ea",
       "basePrice": 200,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
@@ -7999,7 +8163,17 @@
       "id": "4126b7b1-44f6-4b0a-84ae-896ddc474e4f",
       "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
       "itemId": "df934b82-ddbf-4973-8c73-c09867da6070",
-      "basePrice": 200,
+      "basePrice": 817,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "da7e9336-76d5-452c-8ec7-840a2b37851c",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "117d8b91-3f11-4ce9-8399-fc6f2826bcd2",
+      "basePrice": 3599,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8046,8 +8220,8 @@
       "isDeleted": false
     },
     {
-      "id": "f06a5911-57b9-4f9e-b6b1-0d6f1a970e9b",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "a51b1ba2-ec86-406d-87d1-bd66af11d6c3",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "d29c93b2-6e75-406d-bec8-a5e02b532a69",
       "basePrice": 1284,
       "estimatedDurationInDays": 1,
@@ -8056,8 +8230,28 @@
       "isDeleted": false
     },
     {
-      "id": "544bdf9c-8eca-4fcc-8037-f9b188f794c9",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "420e7b06-ffb4-4466-8f31-2c73247ffbd4",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "e177d978-df1d-4af4-9854-c2e6dae70556",
+      "basePrice": 3599,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "f9957925-f7ce-4691-9293-8bedf4bbfb2e",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "683463b6-b10e-4c43-bb20-64c1a6059e04",
+      "basePrice": 2139,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "bf719226-71a8-421b-a100-d165046e2ec4",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "a53af818-7977-48a3-8e7c-e6a68eca5115",
       "basePrice": 796,
       "estimatedDurationInDays": 1,
@@ -8066,8 +8260,8 @@
       "isDeleted": false
     },
     {
-      "id": "f7f50e5c-0be8-4732-ad69-27e6910c24fc",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "8b53c037-76e6-4011-bf33-21918898aab4",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "30dbbbe2-2718-4f5b-8d13-28e7c43e22b9",
       "basePrice": 580,
       "estimatedDurationInDays": 1,
@@ -8076,8 +8270,8 @@
       "isDeleted": false
     },
     {
-      "id": "6cf19ca4-5b7c-449d-b4e0-ffe46dc7d628",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "db2dd306-2ed6-4eff-990d-d496b58dd5fd",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "a8e26aa1-d520-4c2c-852c-7386525cf33a",
       "basePrice": 724,
       "estimatedDurationInDays": 1,
@@ -8086,8 +8280,18 @@
       "isDeleted": false
     },
     {
-      "id": "4056d024-5719-4e20-89df-7ea53f75d8b3",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "22e7e87c-f3a0-4084-b35e-4fec3a3382cd",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "a8e26aa1-d520-4c2c-852c-7386525cf33a",
+      "basePrice": 2879,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "39350883-230a-4a19-83de-8c989456a2d9",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "0db68f97-ad20-4e3c-80c3-b95df70ce38a",
       "basePrice": 868,
       "estimatedDurationInDays": 1,
@@ -8356,8 +8560,8 @@
       "isDeleted": false
     },
     {
-      "id": "452dee61-1518-46d9-b260-7d28ad695c7e",
-      "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
+      "id": "b630f3cd-6b2c-41e7-afab-bd99880eca1d",
+      "serviceId": "e325b7de-fbea-4edf-9364-ec0231435052",
       "itemId": "eaeb174a-cba8-4e9f-a5ca-32706cffd778",
       "basePrice": 92,
       "estimatedDurationInDays": 1,
@@ -8366,8 +8570,8 @@
       "isDeleted": false
     },
     {
-      "id": "f5ae4ae0-4ea7-49d2-a4df-e7b34152883c",
-      "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
+      "id": "cd8ee0a6-3ada-44b6-af7f-4a465f4764f8",
+      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
       "itemId": "cc89c109-4f7d-4751-aa48-997a2055583a",
       "basePrice": 305,
       "estimatedDurationInDays": 1,
@@ -8376,8 +8580,8 @@
       "isDeleted": false
     },
     {
-      "id": "d0fc1909-83d4-488b-a15a-056110c51535",
-      "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
+      "id": "652eff3f-40ef-4349-8bcf-f1d2fe70df82",
+      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
       "itemId": "8b4e0d55-beda-43e6-8537-55b41b759c10",
       "basePrice": 396,
       "estimatedDurationInDays": 1,
@@ -8389,7 +8593,7 @@
       "id": "bfcf0793-d3cc-4a9e-a540-8f91f0c74421",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "57654d25-b488-4176-ab14-48e47f7a4d55",
-      "basePrice": 312,
+      "basePrice": 724,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8399,7 +8603,7 @@
       "id": "555bd64c-b1b6-4b0b-b073-aebf271dcdb7",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "7a9b4b20-c9df-468e-a80a-95c6b12f1a13",
-      "basePrice": 42,
+      "basePrice": 870,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8409,7 +8613,7 @@
       "id": "b02e6698-87a5-41f2-a1ac-2c5c9ce831ca",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "8e6cc0b8-6fcf-48e1-a53b-59f91232a61b",
-      "basePrice": 238,
+      "basePrice": 552,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8419,7 +8623,7 @@
       "id": "bb3447c2-506d-45a8-ab46-a570ed3d83a3",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "ac52ee77-22fc-4fa6-8ecf-883e3d9922ce",
-      "basePrice": 238,
+      "basePrice": 717,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8429,7 +8633,7 @@
       "id": "30543813-6728-4005-ba85-57eacf715a4b",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "8624e695-bea5-4624-b14e-a12e246650ee",
-      "basePrice": 272,
+      "basePrice": 629,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8439,7 +8643,7 @@
       "id": "e4e871eb-f717-4bb4-a33f-2a6ac6856d82",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "3f9c531a-0302-48f2-be54-9ff222828dc7",
-      "basePrice": 272,
+      "basePrice": 694,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8449,7 +8653,7 @@
       "id": "97dc7573-bb22-4678-85ac-a539506d869b",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "77b3cbf7-8cae-482b-aad0-10c8afd60900",
-      "basePrice": 204,
+      "basePrice": 473,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8459,7 +8663,7 @@
       "id": "e5ca99bd-de9f-4e39-8f9c-c693baff6573",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "fc1fbd31-3257-45fa-be0c-e7efe48fbad1",
-      "basePrice": 204,
+      "basePrice": 567,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8469,7 +8673,7 @@
       "id": "9d39d2bc-c68b-4f88-9f17-9da85ad0c77b",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "ac4f54aa-32cf-4540-ae31-34446b2827b5",
-      "basePrice": 136,
+      "basePrice": 361,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8479,7 +8683,7 @@
       "id": "ea2bacb8-34f7-43f2-b41a-f0493353a7e3",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "d3e1ba75-b050-45dc-93f6-7285fd65ada6",
-      "basePrice": 136,
+      "basePrice": 467,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8489,7 +8693,7 @@
       "id": "1c7a0bb9-5f88-475f-82d7-10497088f5bc",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "d9150b63-ba84-4b58-9a21-ccb5c9561825",
-      "basePrice": 68,
+      "basePrice": 180,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8499,7 +8703,7 @@
       "id": "51c10405-95cf-4931-95c8-8c37ff4db802",
       "serviceId": "19188fa6-b1b5-47f6-8d9a-50794ea6e03f",
       "itemId": "17087046-5e9e-42c6-8315-90c50db383c7",
-      "basePrice": 68,
+      "basePrice": 235,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -8866,8 +9070,8 @@
       "isDeleted": false
     },
     {
-      "id": "6e04c474-3f49-4711-bbd2-e55c7de7376f",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "3c3a9023-a0ff-4e04-a638-edc99d21a09b",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "7c2ec74e-d50e-4efc-aecd-e5fccae67211",
       "basePrice": 1003,
       "estimatedDurationInDays": 1,
@@ -8876,8 +9080,8 @@
       "isDeleted": false
     },
     {
-      "id": "b85a797a-466a-4955-9360-1720481abaea",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "727b605b-cb6b-4402-b6e4-312fa46baeb6",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "899f7be9-190d-4636-8781-184034477800",
       "basePrice": 869,
       "estimatedDurationInDays": 1,
@@ -10006,8 +10210,8 @@
       "isDeleted": false
     },
     {
-      "id": "7fa035aa-4b62-480d-aeec-c2c395982929",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "e47a5b84-6400-4464-be4e-6e023cb3e4f5",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "c5757cde-5c0a-46bb-91d1-b0f711149282",
       "basePrice": 1719,
       "estimatedDurationInDays": 1,
@@ -10016,8 +10220,8 @@
       "isDeleted": false
     },
     {
-      "id": "2379e5c9-e234-4696-8e59-c435ec7fa692",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "17e6360a-e9d2-497c-9e9d-acbb02dd5dd8",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "43aaed51-e598-4757-a71a-ce3aa29dc2a5",
       "basePrice": 1011,
       "estimatedDurationInDays": 1,
@@ -10026,8 +10230,8 @@
       "isDeleted": false
     },
     {
-      "id": "e3873697-5575-4ae0-9f7b-8c5e093470f5",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "b3d28ea8-7ab7-47e5-b1d1-683c8bcc2fd4",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "c1e64ea4-ddf3-4a19-b17c-d9fa2351e586",
       "basePrice": 764,
       "estimatedDurationInDays": 1,
@@ -10036,8 +10240,8 @@
       "isDeleted": false
     },
     {
-      "id": "4533fe9c-d8f4-4e4b-a484-e06a6f1ffc8c",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "ded9eac1-b0ea-4248-bf1d-e3cf0defd60c",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "5bbc26f0-c751-4c7a-a889-8813b3c61c88",
       "basePrice": 315,
       "estimatedDurationInDays": 1,
@@ -10586,8 +10790,8 @@
       "isDeleted": false
     },
     {
-      "id": "cad6f288-24bd-4748-a7b2-b953c953a05d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "fbfc87cd-e759-4a4e-89ee-769413a9d0b6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "bd9e92c5-406c-4526-9a40-27f2611d7981",
       "basePrice": 201,
       "estimatedDurationInDays": 1,
@@ -10596,8 +10800,8 @@
       "isDeleted": false
     },
     {
-      "id": "04f734e3-ba01-4f55-bdf3-298ebca8e0ad",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c500e784-f9c0-4c9b-a92b-3986c396bb83",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "94360ca3-9b3a-431f-ad0f-515ffb3e62a2",
       "basePrice": 241,
       "estimatedDurationInDays": 1,
@@ -10606,8 +10810,8 @@
       "isDeleted": false
     },
     {
-      "id": "ff7f5bde-2980-4f30-8215-b12a1872b1dc",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "791f61bf-bd52-4d18-ae5f-54a0db4bf62e",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "85fa872a-d39d-4038-9aa6-60301603c761",
       "basePrice": 158,
       "estimatedDurationInDays": 1,
@@ -10616,8 +10820,8 @@
       "isDeleted": false
     },
     {
-      "id": "a7a38bd7-7644-4971-829a-9af7ac512d9d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "4338f9af-de7c-4749-b04a-5b24546967af",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a72945fc-bd1a-4c87-85f7-a42f993d09e3",
       "basePrice": 144,
       "estimatedDurationInDays": 1,
@@ -10626,8 +10830,8 @@
       "isDeleted": false
     },
     {
-      "id": "fcf30288-eda4-49c9-9818-15ade8016761",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "79db557c-9b5a-4b06-b828-a14a44318295",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "46babc81-abfa-43f8-87bd-54d12511ba7e",
       "basePrice": 261,
       "estimatedDurationInDays": 1,
@@ -10636,8 +10840,8 @@
       "isDeleted": false
     },
     {
-      "id": "9170c8b8-9a28-4d87-9ada-854e17f0be4b",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "94203f4c-a1a0-494d-b66b-9955be8b8b5c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ac834033-1b63-4f95-a736-1d5c02e0ecd9",
       "basePrice": 261,
       "estimatedDurationInDays": 1,
@@ -10646,8 +10850,8 @@
       "isDeleted": false
     },
     {
-      "id": "b26485c6-d92d-4606-8d2c-24992afe4f97",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "275844cf-e09a-492d-ae30-e8313f7c393e",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "c4d2b6d7-3c93-45da-a35a-60dfc8448724",
       "basePrice": 183,
       "estimatedDurationInDays": 1,
@@ -10656,8 +10860,8 @@
       "isDeleted": false
     },
     {
-      "id": "010b1e99-d922-4d65-83c4-1abdf3b6c154",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "5c0effe0-9457-45a0-9459-e8ec9bececbc",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ad45eda4-bc92-44a8-b5ca-11e5eab4e360",
       "basePrice": 183,
       "estimatedDurationInDays": 1,
@@ -10666,8 +10870,8 @@
       "isDeleted": false
     },
     {
-      "id": "8f7006ee-01a4-4a34-a149-88ee9d3a15fc",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "47cc30b7-04a8-41e8-9604-70c489607392",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "cb9dbdef-e045-47f0-8228-a651bbc4a437",
       "basePrice": 72,
       "estimatedDurationInDays": 1,
@@ -10676,8 +10880,8 @@
       "isDeleted": false
     },
     {
-      "id": "df956cbf-50df-4931-8cf7-03ba57d4da04",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "f87714d1-7976-4a81-aaeb-27fac5a9f4e5",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "09f0b25b-5914-4ebf-8711-8393afc882b7",
       "basePrice": 72,
       "estimatedDurationInDays": 1,
@@ -10686,8 +10890,8 @@
       "isDeleted": false
     },
     {
-      "id": "98f18d0f-a01b-4913-ac0d-3e493f363920",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "f58fafba-8e51-4453-be3f-4db3e0b1c3c3",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "14fa0945-431d-4950-8c06-776e4f33774f",
       "basePrice": 281,
       "estimatedDurationInDays": 1,
@@ -10696,8 +10900,8 @@
       "isDeleted": false
     },
     {
-      "id": "40773cb0-0a9d-4d17-9096-8024a875d55d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "64950b41-0b12-4205-980e-6a4400346727",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "11b27399-f95d-4116-b51f-ae878afcb338",
       "basePrice": 72,
       "estimatedDurationInDays": 1,
@@ -10706,8 +10910,8 @@
       "isDeleted": false
     },
     {
-      "id": "591d086c-5eb9-4ccd-a162-9ddf5857de88",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "face2bb4-bc7e-466e-b54b-a6e1da25392c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "1834573d-a32f-44f2-aae2-07f55b47597e",
       "basePrice": 108,
       "estimatedDurationInDays": 1,
@@ -10716,8 +10920,8 @@
       "isDeleted": false
     },
     {
-      "id": "9eb0c639-0bc6-49ca-a810-c73d66608c29",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b8c662f1-b26c-44e8-9aca-a4b34ee5b005",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "e92f68fa-d36c-438e-9d74-35b732a4d4d3",
       "basePrice": 117,
       "estimatedDurationInDays": 1,
@@ -10726,8 +10930,8 @@
       "isDeleted": false
     },
     {
-      "id": "9dbb37ea-c670-4f36-a2f1-3eba1fffc9f0",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "5a471aab-1581-4913-8f08-53abd22eae47",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "9072cdc5-3b31-4637-89b2-56d2b0576bfa",
       "basePrice": 133,
       "estimatedDurationInDays": 1,
@@ -10736,8 +10940,8 @@
       "isDeleted": false
     },
     {
-      "id": "bdf9bd49-0fe5-4990-9f2c-b0c9b04618b0",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "fb1f67ae-5e17-4bc7-8727-28f6e8288fbd",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "98e44fd0-3fe7-4268-acf4-ceea5de9a895",
       "basePrice": 98,
       "estimatedDurationInDays": 1,
@@ -10746,8 +10950,8 @@
       "isDeleted": false
     },
     {
-      "id": "f3c31bd0-2cae-4f22-9af4-55d713af2d6d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "644bae73-7556-4edc-8b2f-e447a13705f6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f1ebdd2a-7dd7-4c06-898f-03facd3c6356",
       "basePrice": 98,
       "estimatedDurationInDays": 1,
@@ -10756,8 +10960,8 @@
       "isDeleted": false
     },
     {
-      "id": "7a14010f-be15-4f0f-b202-aaa3614042c4",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "32586a9e-214d-4210-946f-09dc24f77f38",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d7b95a15-0ae0-412b-a06d-e0cb7a190996",
       "basePrice": 98,
       "estimatedDurationInDays": 1,
@@ -10766,8 +10970,8 @@
       "isDeleted": false
     },
     {
-      "id": "c1d31b13-eba9-4fad-977e-0c3a9823c3f8",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "326988fa-74b2-4d56-82b0-4b9c41d2f6c0",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "8b6a82fe-6d38-43bd-b227-c23afb4a777c",
       "basePrice": 98,
       "estimatedDurationInDays": 1,
@@ -10776,8 +10980,128 @@
       "isDeleted": false
     },
     {
-      "id": "b916c002-474c-4904-934e-8c9466aa488d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b181423a-9e2b-4966-bf37-0c1aa4efc084",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "57654d25-b488-4176-ab14-48e47f7a4d55",
+      "basePrice": 312,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "e7b0b7d4-f134-414b-a864-fdb8674ad1b7",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "7a9b4b20-c9df-468e-a80a-95c6b12f1a13",
+      "basePrice": 312,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "29e955b0-0649-41fa-bf6e-2818f2b49107",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "8e6cc0b8-6fcf-48e1-a53b-59f91232a61b",
+      "basePrice": 238,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "adacbbcc-912c-4e4b-912b-c3e15fecc70a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "ac52ee77-22fc-4fa6-8ecf-883e3d9922ce",
+      "basePrice": 238,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "3603c28c-1094-4bd3-a89e-e1a14971fce2",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "8624e695-bea5-4624-b14e-a12e246650ee",
+      "basePrice": 272,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "a5fbff3e-2905-4e40-8a29-03d0c799fe15",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "3f9c531a-0302-48f2-be54-9ff222828dc7",
+      "basePrice": 272,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "8be12a46-d1de-4709-b52e-ca8201d5d73a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "77b3cbf7-8cae-482b-aad0-10c8afd60900",
+      "basePrice": 204,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "d06fdc60-e510-4fb9-ba1b-c364b6755acc",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "fc1fbd31-3257-45fa-be0c-e7efe48fbad1",
+      "basePrice": 204,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "a3ef7a7e-476b-461a-8a72-c9672e60a43a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "ac4f54aa-32cf-4540-ae31-34446b2827b5",
+      "basePrice": 136,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "dbe15ba0-e026-4321-a209-f6aafebb6096",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "d3e1ba75-b050-45dc-93f6-7285fd65ada6",
+      "basePrice": 136,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "d51cbeef-24b7-432a-a95a-b478ea258d8e",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "d9150b63-ba84-4b58-9a21-ccb5c9561825",
+      "basePrice": 68,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "b7a184ce-4a01-463f-9152-bd0f48a1a976",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
+      "itemId": "17087046-5e9e-42c6-8315-90c50db383c7",
+      "basePrice": 68,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "ff9ac90c-51a1-4b6a-a724-bb40ad188921",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "512cc61a-b449-4c60-b7ee-a93933f155a4",
       "basePrice": 102,
       "estimatedDurationInDays": 1,
@@ -10786,8 +11110,8 @@
       "isDeleted": false
     },
     {
-      "id": "2512a1a1-140a-47e3-9554-abffe609e851",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "5c73c24b-2697-4209-bef4-d00dc28657e0",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ad281948-3d9e-4938-b662-1e374161d334",
       "basePrice": 102,
       "estimatedDurationInDays": 1,
@@ -10796,8 +11120,8 @@
       "isDeleted": false
     },
     {
-      "id": "b33f12af-a433-46f4-97ae-76202df69f1d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "6f85c968-020f-4596-9cbb-3c5c69145039",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "8e199ac6-671c-46e1-b4f2-892718c6d80a",
       "basePrice": 70,
       "estimatedDurationInDays": 1,
@@ -10806,8 +11130,8 @@
       "isDeleted": false
     },
     {
-      "id": "90b788de-8eaf-476f-9403-428845221680",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3f5e25b7-9193-462b-9d57-50d0523357e6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "e9e0aa28-499a-4528-86a6-2217b5e7cf7e",
       "basePrice": 112,
       "estimatedDurationInDays": 1,
@@ -10816,8 +11140,8 @@
       "isDeleted": false
     },
     {
-      "id": "0230deab-bed1-4421-b015-844876e129aa",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c18a57d0-80ca-41db-9780-a9544b395ae1",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f81771ed-87e1-41ae-86ed-d90d96419b96",
       "basePrice": 112,
       "estimatedDurationInDays": 1,
@@ -10826,8 +11150,8 @@
       "isDeleted": false
     },
     {
-      "id": "b9cd8b4e-127d-46bb-a3e5-48489a9f4dce",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a54f9492-c0b2-47f1-b029-e7db1aeb49c3",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d36c2528-e043-4154-bc5c-b03c3c296809",
       "basePrice": 186,
       "estimatedDurationInDays": 1,
@@ -10836,8 +11160,8 @@
       "isDeleted": false
     },
     {
-      "id": "55ea795a-f619-44bd-bab9-cc4379f54db3",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "097e0111-29c1-43af-b979-ec7efe3acd97",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "df392ede-70c5-4f83-912f-c82edb4c0e7a",
       "basePrice": 186,
       "estimatedDurationInDays": 1,
@@ -10846,8 +11170,8 @@
       "isDeleted": false
     },
     {
-      "id": "7d8c3a1f-f813-4de4-a28c-a2584ab15ee6",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "312c4b61-3dbc-4fff-8d38-f3ce10b261ec",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a78db3e4-870b-4168-94fd-6dcbb1b77836",
       "basePrice": 131,
       "estimatedDurationInDays": 1,
@@ -10856,8 +11180,8 @@
       "isDeleted": false
     },
     {
-      "id": "cadafac9-10cf-4010-aaf7-b690e28866d7",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c9a926aa-59ca-4840-8e04-4c295689ed93",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "bf21f137-caf1-4b5d-8ac5-684c8ad92ec2",
       "basePrice": 212,
       "estimatedDurationInDays": 1,
@@ -10866,8 +11190,8 @@
       "isDeleted": false
     },
     {
-      "id": "74b88d72-9f19-4e1d-847a-3e2ae558f822",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "4b7c9535-1840-40af-95b2-a4da3218057f",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "c0de1ee1-8c14-47b1-8386-de8b6d3c9fbb",
       "basePrice": 186,
       "estimatedDurationInDays": 1,
@@ -10876,8 +11200,8 @@
       "isDeleted": false
     },
     {
-      "id": "607d4daa-d0fb-4083-b954-76a49e6b0293",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c99135b4-6899-41ac-ac8e-588eeab69737",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "aae1f4c2-4650-4309-8ecc-224419dd212d",
       "basePrice": 201,
       "estimatedDurationInDays": 1,
@@ -10886,8 +11210,8 @@
       "isDeleted": false
     },
     {
-      "id": "379a3277-fd93-4811-9e3e-40eccc1e9c61",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "34bc83b7-418b-498d-8344-cfe275c5fca8",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "0a4f516f-351f-4e86-b1e1-c9a83235fe60",
       "basePrice": 265,
       "estimatedDurationInDays": 1,
@@ -10896,8 +11220,8 @@
       "isDeleted": false
     },
     {
-      "id": "cb68051c-725b-40dd-95c0-792994bc9567",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "935a1cfd-265d-47e3-9e10-180f55dcb8bb",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "da768742-469b-4081-a0d8-4b993b9ea98e",
       "basePrice": 201,
       "estimatedDurationInDays": 1,
@@ -10906,8 +11230,8 @@
       "isDeleted": false
     },
     {
-      "id": "26bcbac3-1dd1-4576-8253-191c763288f0",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "cec7af82-eb94-4195-a284-b9adede04178",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "e9a87e7b-ae61-4ef9-b066-8513c50063a3",
       "basePrice": 239,
       "estimatedDurationInDays": 1,
@@ -10916,8 +11240,8 @@
       "isDeleted": false
     },
     {
-      "id": "73fd0203-af4e-4f2b-b831-fdca94574076",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "0412c70e-fcd0-4c3f-bb92-5a192e18d4b8",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "b1ff4d1b-48fc-4477-8d14-5d4150146ecf",
       "basePrice": 416,
       "estimatedDurationInDays": 1,
@@ -10926,8 +11250,8 @@
       "isDeleted": false
     },
     {
-      "id": "88d221ec-ade8-4599-8229-17523db47c92",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "d428e94a-879b-431e-92a4-1f139ffd31ba",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f54f2731-a793-4fc8-9a93-6deb19fd5943",
       "basePrice": 142,
       "estimatedDurationInDays": 1,
@@ -10936,8 +11260,8 @@
       "isDeleted": false
     },
     {
-      "id": "3905d5db-49e4-4d67-9e7b-cf2e84de5650",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "967ac79d-15f0-40ea-b554-599b3739e672",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "6d743278-6387-434f-aa20-e1121123b262",
       "basePrice": 142,
       "estimatedDurationInDays": 1,
@@ -10946,8 +11270,8 @@
       "isDeleted": false
     },
     {
-      "id": "dfaa9a0d-c218-4052-96c9-5146fcea018b",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "938d237c-10c1-46df-a456-80af13412a3d",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "0d1dab72-669a-4ad5-af2a-709a7a85c422",
       "basePrice": 601,
       "estimatedDurationInDays": 1,
@@ -10956,8 +11280,8 @@
       "isDeleted": false
     },
     {
-      "id": "642dcc5f-7e9d-4fa5-ade6-d3149179a580",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "bc0cb778-1e69-48b4-aa20-d7af393314c8",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a2ab1c4b-a5c4-4d3f-acb6-429abfa4ee79",
       "basePrice": 83,
       "estimatedDurationInDays": 1,
@@ -10966,8 +11290,8 @@
       "isDeleted": false
     },
     {
-      "id": "f6da71ca-02e4-442c-af42-fdb3dd782c0a",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3b889fa6-851f-469f-9fd7-ec6ffee0a1a7",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "b248c5ab-dc83-4841-b7f2-fd4792c5e257",
       "basePrice": 83,
       "estimatedDurationInDays": 1,
@@ -10976,8 +11300,8 @@
       "isDeleted": false
     },
     {
-      "id": "5b93d1ec-296a-4f80-b5fb-bb15793cc59a",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "203edc65-75f3-41b8-95fa-4b4271697efc",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "c5370d5c-3aa2-433d-a969-963837863c99",
       "basePrice": 123,
       "estimatedDurationInDays": 1,
@@ -10986,8 +11310,8 @@
       "isDeleted": false
     },
     {
-      "id": "a4e7b573-d375-4405-a2de-b1b2b9004d30",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b038d520-1703-4fbb-9069-333e7ac3caee",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a3ebd3c1-c207-46a7-bbc0-e4a8146d6b3f",
       "basePrice": 56,
       "estimatedDurationInDays": 1,
@@ -10996,8 +11320,8 @@
       "isDeleted": false
     },
     {
-      "id": "a586a07f-6469-4f40-b4b6-3688978e3fcf",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "be2036c2-b6a1-424b-baa2-b0d470178571",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "09e3c6a4-ace2-4667-a0ad-2ff3f5d51b6f",
       "basePrice": 109,
       "estimatedDurationInDays": 1,
@@ -11006,8 +11330,8 @@
       "isDeleted": false
     },
     {
-      "id": "43586266-e346-4b87-8a31-d6570c4c1e6b",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b11eb558-3327-470c-aba4-e4a48addc980",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ad0521c4-02af-46ce-a48c-20ac94117525",
       "basePrice": 141,
       "estimatedDurationInDays": 1,
@@ -11016,8 +11340,8 @@
       "isDeleted": false
     },
     {
-      "id": "84525198-8337-479e-b8eb-fd28fd9aed7f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "d0eb87bb-af5a-47c4-8589-3c899a85f003",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "14c7be73-85e1-4e39-ac49-740483d7981c",
       "basePrice": 228,
       "estimatedDurationInDays": 1,
@@ -11026,8 +11350,8 @@
       "isDeleted": false
     },
     {
-      "id": "47b433e8-c320-4ca0-b93b-50882417159a",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "1fae8f12-d44f-46e4-951e-240f11b80b7b",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "0b5cb8ef-f451-4a7a-a65f-c8c0495710bd",
       "basePrice": 228,
       "estimatedDurationInDays": 1,
@@ -11036,8 +11360,8 @@
       "isDeleted": false
     },
     {
-      "id": "544e9605-f0d0-410c-840f-536afc1d0004",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "11c0e209-3468-4d68-a839-ae4da9ae2b83",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "6f34a13d-ad38-4a55-8a46-5b5f2368797f",
       "basePrice": 161,
       "estimatedDurationInDays": 1,
@@ -11046,8 +11370,8 @@
       "isDeleted": false
     },
     {
-      "id": "80d38516-177d-49b5-9cf9-6f0c7557492f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ffc74db0-bcc7-4c47-aca6-63c25a17a396",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ccaa8816-d12c-49e1-bf4c-4c35e22bb7bd",
       "basePrice": 235,
       "estimatedDurationInDays": 1,
@@ -11056,8 +11380,8 @@
       "isDeleted": false
     },
     {
-      "id": "a7bf3dad-f51d-4b11-9f3b-d7ac258e60f3",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "657ad096-bcb1-492c-8c1e-4a85f1b2f6af",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a5f8aed3-664f-48f4-aa03-dd0999e5fead",
       "basePrice": 235,
       "estimatedDurationInDays": 1,
@@ -11066,8 +11390,8 @@
       "isDeleted": false
     },
     {
-      "id": "65f2a0e5-58cf-4f36-958e-991d07b5bd31",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a81ae87b-a512-40a3-9695-5720ed2e1870",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "01d98613-aeeb-4e39-85da-e32f65f84728",
       "basePrice": 142,
       "estimatedDurationInDays": 1,
@@ -11076,8 +11400,8 @@
       "isDeleted": false
     },
     {
-      "id": "edfbc1af-e026-4003-af89-2b1b65fc9a6a",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3e1fe375-44cc-481d-9b99-7fb55268b24a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "01045eca-064b-4732-aaef-8f71fbdbd167",
       "basePrice": 142,
       "estimatedDurationInDays": 1,
@@ -11086,8 +11410,8 @@
       "isDeleted": false
     },
     {
-      "id": "d3e66421-4090-4bdb-9466-7bd3cd55a71f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "417bdc95-1dea-4e8d-9d45-0d0d06c4bb33",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "db01fa26-9fd3-4fb6-90de-0cd2aab04382",
       "basePrice": 99,
       "estimatedDurationInDays": 1,
@@ -11096,8 +11420,8 @@
       "isDeleted": false
     },
     {
-      "id": "ea7a4b46-0865-4e60-a078-e90ca18473f6",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "9099d56f-1aa7-4317-af30-b94370c656ba",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "2adaae45-01e9-40a6-8594-703da79ba641",
       "basePrice": 210,
       "estimatedDurationInDays": 1,
@@ -11106,8 +11430,8 @@
       "isDeleted": false
     },
     {
-      "id": "dc745ac1-a627-4c04-acad-19585148cd72",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3690e9ed-958e-4f75-b6ee-08ba0cdc5b99",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ec555d04-cdda-4260-8924-e780174607cd",
       "basePrice": 210,
       "estimatedDurationInDays": 1,
@@ -11116,8 +11440,8 @@
       "isDeleted": false
     },
     {
-      "id": "34b62bf8-5643-488d-82a8-cdfa6d4e2632",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "66c7d408-8047-46b5-93c2-7a85c1d6a919",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "517c8ad1-aac4-4d6b-b323-c6f7ee1de0b0",
       "basePrice": 716,
       "estimatedDurationInDays": 1,
@@ -11126,8 +11450,8 @@
       "isDeleted": false
     },
     {
-      "id": "8d37504b-d7e7-42a3-8d42-1df7ba4666d1",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "66371785-57ae-46dd-81b2-c98b41b0f2d5",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a7ae40d3-b935-456f-a4c4-237e430a812f",
       "basePrice": 149,
       "estimatedDurationInDays": 1,
@@ -11136,8 +11460,8 @@
       "isDeleted": false
     },
     {
-      "id": "d3454427-35e3-4b11-93a1-5cdf9563ed14",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "44a6fa6d-21d8-44ec-b123-943c6cbad5fe",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "db65fa96-598b-4f23-b5b3-09cae2061172",
       "basePrice": 314,
       "estimatedDurationInDays": 1,
@@ -11146,8 +11470,8 @@
       "isDeleted": false
     },
     {
-      "id": "44acac5f-b90f-4eb3-84b0-0caa5fe02315",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "fff8d04f-8677-4847-a498-e3d1d2f60df0",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "e8ca9c2b-cd79-460e-98b5-cbebe80e127b",
       "basePrice": 273,
       "estimatedDurationInDays": 1,
@@ -11156,8 +11480,8 @@
       "isDeleted": false
     },
     {
-      "id": "6788c202-3b79-4972-afb8-7847238e0281",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "2f58ef58-d8b3-4dea-946a-86913cecfcfc",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "3438356c-1747-4e41-9c23-a63a770101f7",
       "basePrice": 294,
       "estimatedDurationInDays": 1,
@@ -11166,8 +11490,8 @@
       "isDeleted": false
     },
     {
-      "id": "84b4041e-b81c-463d-9999-bcfe8bcb59e1",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "bfd58771-696c-41a1-8f46-bb626f187c42",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "157c2c06-a698-432c-857e-3e676872efc5",
       "basePrice": 86,
       "estimatedDurationInDays": 1,
@@ -11176,8 +11500,8 @@
       "isDeleted": false
     },
     {
-      "id": "80df171d-76ad-4cdc-9716-e194fde0b4b0",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "91aa7175-a0fb-453c-af32-2569a9978567",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f02d36ec-0607-4b90-9505-6d017ff2e657",
       "basePrice": 86,
       "estimatedDurationInDays": 1,
@@ -11186,8 +11510,8 @@
       "isDeleted": false
     },
     {
-      "id": "db955c04-9be5-45e7-b841-59e52c80b7be",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "46412a47-5348-4fb5-8472-a1b60d0b45fd",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "b1698979-296f-47d5-8d95-a8fb21aed69a",
       "basePrice": 259,
       "estimatedDurationInDays": 1,
@@ -11196,8 +11520,8 @@
       "isDeleted": false
     },
     {
-      "id": "c02b25be-38c5-431d-8e79-e4f567979adf",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "bc454c1b-a97c-4115-8ef5-1540aa3a8e81",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a30f675a-1dc6-47cd-b00d-23b9ebfb85b4",
       "basePrice": 259,
       "estimatedDurationInDays": 1,
@@ -11206,8 +11530,8 @@
       "isDeleted": false
     },
     {
-      "id": "bb52a30a-b4b6-45cc-9fea-59656935f93c",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "f952e9cc-e1db-4b9b-82aa-cbe59f2b72d9",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "5da52765-2a65-4849-95f7-334b01aa138f",
       "basePrice": 180,
       "estimatedDurationInDays": 1,
@@ -11216,8 +11540,8 @@
       "isDeleted": false
     },
     {
-      "id": "0ecc8d6d-3353-4af5-8aad-80c92728fd1f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a02014e0-ac0e-4234-b62a-d534a0a20182",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d377ec77-4677-49a0-8183-23b3cd5c71d8",
       "basePrice": 259,
       "estimatedDurationInDays": 1,
@@ -11226,8 +11550,8 @@
       "isDeleted": false
     },
     {
-      "id": "6dbef798-db16-4ffd-a756-df94c73453e8",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "d5c78d9d-1a1c-4931-8716-27a102629bdb",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "87093c4a-2e52-4520-a768-022ec279541c",
       "basePrice": 259,
       "estimatedDurationInDays": 1,
@@ -11236,8 +11560,8 @@
       "isDeleted": false
     },
     {
-      "id": "34fb8d5d-f254-451d-a0e2-55c9c5c62097",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "f4be27bd-a1b6-4dfe-9f70-aca8a7605415",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "4d1f1911-d010-4087-81ed-f34cb77039d8",
       "basePrice": 272,
       "estimatedDurationInDays": 1,
@@ -11246,8 +11570,8 @@
       "isDeleted": false
     },
     {
-      "id": "4dc66596-97eb-4a23-ae47-38ed7f53c141",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "7f64e07b-7108-4775-ae9a-e697c0a6d07e",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "3f4a1e14-b26e-41f6-a2b8-1f14861fc7a4",
       "basePrice": 272,
       "estimatedDurationInDays": 1,
@@ -11256,8 +11580,8 @@
       "isDeleted": false
     },
     {
-      "id": "c6e06fad-a7ed-4e6b-9b7b-b5a9f9232f49",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "59c58f9b-8268-4942-84b7-a68d304991df",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "1e9e4723-a0db-4611-af4d-f3699a0aadd0",
       "basePrice": 320,
       "estimatedDurationInDays": 1,
@@ -11266,8 +11590,8 @@
       "isDeleted": false
     },
     {
-      "id": "7e0c03ec-bf86-4e53-b3ff-91dfffc0f5fa",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "76026601-45d2-44d5-8d17-b852f66e80c6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d4e5dc05-43a3-4dbf-820f-204c7481effa",
       "basePrice": 320,
       "estimatedDurationInDays": 1,
@@ -11276,8 +11600,8 @@
       "isDeleted": false
     },
     {
-      "id": "6147c003-83e4-45b3-a924-f0d54eb5c889",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "24fbecaa-bc08-4b1f-afcc-cf5e8c713a39",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "01a746bb-656e-4ead-8733-d85ab29247ca",
       "basePrice": 172,
       "estimatedDurationInDays": 1,
@@ -11286,8 +11610,8 @@
       "isDeleted": false
     },
     {
-      "id": "77f30be3-26e3-473f-b704-c7017a92b0c8",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "321d5447-caa5-4a32-b867-6c55257e7aa4",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "64589457-202b-4fd0-a83a-729fd66c9f52",
       "basePrice": 120,
       "estimatedDurationInDays": 1,
@@ -11296,8 +11620,8 @@
       "isDeleted": false
     },
     {
-      "id": "b946d158-677a-4d1a-abc9-9ce7996c340e",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "38a4e3e0-9b6f-41ea-b79d-bfd8efbc390f",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d1b286d0-9649-41df-a7a3-6c21721872db",
       "basePrice": 172,
       "estimatedDurationInDays": 1,
@@ -11306,8 +11630,8 @@
       "isDeleted": false
     },
     {
-      "id": "da93ec54-d531-4423-8329-f19fac4043ef",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "695b806c-f6f5-4f9e-a619-6000e4719301",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "def69ccb-520d-405f-b5f8-aa43698782ab",
       "basePrice": 314,
       "estimatedDurationInDays": 1,
@@ -11316,8 +11640,8 @@
       "isDeleted": false
     },
     {
-      "id": "6f268a6e-b7ff-4aec-902e-e9d17a36044e",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c42374b2-f185-4774-b0c6-abfd37646ecc",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "3ec9bd5a-a032-425e-b779-bd82f62eeb03",
       "basePrice": 314,
       "estimatedDurationInDays": 1,
@@ -11326,8 +11650,8 @@
       "isDeleted": false
     },
     {
-      "id": "c700b6d3-6661-45d5-965f-7f21ae74c751",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ea371a5d-5350-4a9a-a84f-1a1e15030d58",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "964a5c68-5698-47e2-b228-dea906b0b5ad",
       "basePrice": 222,
       "estimatedDurationInDays": 1,
@@ -11336,8 +11660,8 @@
       "isDeleted": false
     },
     {
-      "id": "4bbb504e-9e10-4627-856d-8d9bc60044db",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "bcf374bb-076f-4b16-93bc-8c7df3f2de03",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "0f04d5cd-51bc-426a-a9d7-c36e129e8cf5",
       "basePrice": 222,
       "estimatedDurationInDays": 1,
@@ -11346,8 +11670,8 @@
       "isDeleted": false
     },
     {
-      "id": "cb03e181-4498-4a51-bdf0-89497acbf3dc",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "4d2b919f-3b38-49a5-82b5-7a72760c4631",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "661f50bb-fd7b-4a06-8201-982baf6f7cdd",
       "basePrice": 172,
       "estimatedDurationInDays": 1,
@@ -11356,8 +11680,8 @@
       "isDeleted": false
     },
     {
-      "id": "54e0a240-103e-4cdf-b481-58f1a4af4e41",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "79361b79-2814-4ff5-a8cf-f80804734869",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "29823ee8-893e-4c1d-9738-d70febfdc95e",
       "basePrice": 172,
       "estimatedDurationInDays": 1,
@@ -11366,8 +11690,8 @@
       "isDeleted": false
     },
     {
-      "id": "27bd41a7-33bd-4ad2-a843-5653898ccec4",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "814e541c-2d68-44ca-b01a-9693d8b35e61",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "194dcdcf-b87b-4289-84c5-12a000e47a41",
       "basePrice": 120,
       "estimatedDurationInDays": 1,
@@ -11376,8 +11700,8 @@
       "isDeleted": false
     },
     {
-      "id": "e551f466-f5b3-4a01-b8e0-4bb0bae02fe1",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "734473d9-4737-4b0d-9d9a-50dd5bdc7dcf",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "9409c73d-b594-4fd3-948f-ed06fe239be0",
       "basePrice": 172,
       "estimatedDurationInDays": 1,
@@ -11386,8 +11710,8 @@
       "isDeleted": false
     },
     {
-      "id": "d529bc90-862e-4100-a151-161f8d854d07",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ea93192b-45dd-4fa5-8989-a8e3b10c3fe7",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "b5a7545d-beb8-4432-92dc-39fc66fea6e7",
       "basePrice": 172,
       "estimatedDurationInDays": 1,
@@ -11396,8 +11720,8 @@
       "isDeleted": false
     },
     {
-      "id": "5f00bc3f-cd7d-44cc-a161-5b4d85693505",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "e2a54eb9-772a-4f3f-ba20-de63a859476c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "10cf2cc9-d59c-401a-8ebd-e94317a97902",
       "basePrice": 118,
       "estimatedDurationInDays": 1,
@@ -11406,8 +11730,8 @@
       "isDeleted": false
     },
     {
-      "id": "a1b282b3-7f2f-4d20-8fbe-60d9edcbb335",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "98b81fd4-42c3-4574-827c-538139f6160f",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "8cd1df45-c4d2-4826-86e0-3f6779274ca8",
       "basePrice": 118,
       "estimatedDurationInDays": 1,
@@ -11416,8 +11740,8 @@
       "isDeleted": false
     },
     {
-      "id": "70bd47f2-82f0-4deb-9106-95a31271f33e",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "d472cd32-0db7-4b99-a171-1472ac141e31",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "b55d1359-f338-4454-a6ca-da36bedf1ee0",
       "basePrice": 84,
       "estimatedDurationInDays": 1,
@@ -11426,8 +11750,8 @@
       "isDeleted": false
     },
     {
-      "id": "7a221951-c936-4fb3-9dfc-38477e5aacef",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "9b5fe51e-5e24-42b4-990a-407ed7da4c69",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "82636454-b4f8-46d2-8d93-3f678eb4997a",
       "basePrice": 118,
       "estimatedDurationInDays": 1,
@@ -11436,8 +11760,8 @@
       "isDeleted": false
     },
     {
-      "id": "31101462-6a36-424a-b67a-d99c7e9eafd8",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b579b087-bb2b-42fb-801a-0f6e3c2449fa",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "7c3841b3-613c-41bb-9c72-490545f0714b",
       "basePrice": 149,
       "estimatedDurationInDays": 1,
@@ -11446,8 +11770,8 @@
       "isDeleted": false
     },
     {
-      "id": "880cbc73-2fba-4d21-986d-980b00cc8906",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3672a017-75fc-4618-ae01-7e8dd7b730c5",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "1b511b6c-2dbc-4411-a16e-98fedb7f6b28",
       "basePrice": 196,
       "estimatedDurationInDays": 1,
@@ -11456,8 +11780,8 @@
       "isDeleted": false
     },
     {
-      "id": "5284a92b-192e-4c67-ab21-3208ce9e9962",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "72471833-4413-4859-b791-71a6c1069a79",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "463394cb-2533-4429-a560-cad3f663f127",
       "basePrice": 196,
       "estimatedDurationInDays": 1,
@@ -11466,8 +11790,8 @@
       "isDeleted": false
     },
     {
-      "id": "7968017e-1f27-4685-9b52-2cbdbdb2a83c",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "49d2fe16-313c-4c35-8237-584656f28b54",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "5e193489-c866-481c-b3eb-d64f403871ae",
       "basePrice": 590,
       "estimatedDurationInDays": 1,
@@ -11476,8 +11800,8 @@
       "isDeleted": false
     },
     {
-      "id": "2fce8db5-48ea-4e80-9a27-b3071e519db2",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c7277ac7-3110-408f-b82e-4c86c0626dea",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "89f1475f-f3ff-4000-9d99-5816b6075ca8",
       "basePrice": 138,
       "estimatedDurationInDays": 1,
@@ -11486,8 +11810,8 @@
       "isDeleted": false
     },
     {
-      "id": "49b6c4fb-390d-4775-882b-3157e85200ef",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "0b6f8ce7-de8f-4899-b817-9b73536ccdd9",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "2e9d1720-adb1-449d-86c8-a2585dfdcaca",
       "basePrice": 295,
       "estimatedDurationInDays": 1,
@@ -11496,8 +11820,8 @@
       "isDeleted": false
     },
     {
-      "id": "11184438-1de2-489d-b0fa-7cf36e8558d1",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ce9cb635-f613-4cb7-9d63-2bafd9eeff80",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "e6b42995-e4e5-4ae4-9e44-1c5fce253995",
       "basePrice": 196,
       "estimatedDurationInDays": 1,
@@ -11506,8 +11830,8 @@
       "isDeleted": false
     },
     {
-      "id": "553cfcd0-430f-4906-85ac-509512a3d789",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "f4cdaf73-3d3e-4745-b117-0985b52b2dc5",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "37e82e2c-1df8-404f-8e80-32842802f9d8",
       "basePrice": 196,
       "estimatedDurationInDays": 1,
@@ -11516,8 +11840,8 @@
       "isDeleted": false
     },
     {
-      "id": "1d473e21-0c2f-485f-8b3b-225b9e19c89a",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a45b73a8-6f55-44ae-9fc5-632f3d7a2dbc",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "9aeb2ed7-1aa0-445e-bbbb-7ae507fcf2a6",
       "basePrice": 236,
       "estimatedDurationInDays": 1,
@@ -11526,8 +11850,8 @@
       "isDeleted": false
     },
     {
-      "id": "fa3b3a8a-dd98-4ab1-92af-9e548ad47106",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "d2a833ae-1e71-443b-8488-bd0c0ce9cdac",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "1b057188-6eac-4b9c-84a6-141023086d1d",
       "basePrice": 236,
       "estimatedDurationInDays": 1,
@@ -11536,8 +11860,8 @@
       "isDeleted": false
     },
     {
-      "id": "c7f55a7b-1986-4bff-ac2b-37ac51c005f3",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3f3ffb28-1435-4de0-ac8c-3008c6e38d91",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "da85f51a-ceca-4276-8a41-5fcc08965d0a",
       "basePrice": 165,
       "estimatedDurationInDays": 1,
@@ -11546,8 +11870,8 @@
       "isDeleted": false
     },
     {
-      "id": "b1a9cf01-00de-457c-999a-2768b24bd421",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c9d2a23f-99a8-4133-963d-0950dcda1bd1",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "5363aa3b-4663-4df0-a43d-4a24c366fba6",
       "basePrice": 269,
       "estimatedDurationInDays": 1,
@@ -11556,8 +11880,8 @@
       "isDeleted": false
     },
     {
-      "id": "cac11962-0e24-4881-b0ae-ece35e010fd9",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "de46e2c0-b8e2-41b7-8ed1-31abd246ff74",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "65fa62c9-3523-4350-a03a-67fc41aca07e",
       "basePrice": 236,
       "estimatedDurationInDays": 1,
@@ -11566,8 +11890,8 @@
       "isDeleted": false
     },
     {
-      "id": "d18a0557-cfe7-4949-b5b1-79020535abf5",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3000016d-e81c-4838-816e-7ab5373e71a3",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a6fb796c-1500-40e9-a498-42f3e04b6634",
       "basePrice": 144,
       "estimatedDurationInDays": 1,
@@ -11576,8 +11900,8 @@
       "isDeleted": false
     },
     {
-      "id": "81a27135-4226-47e4-80d0-e4a7a84a1ebc",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "f4c76019-c361-4053-85ec-0e5f3a917b0d",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "555de379-2766-4aed-8833-d85973f66e83",
       "basePrice": 144,
       "estimatedDurationInDays": 1,
@@ -11586,8 +11910,8 @@
       "isDeleted": false
     },
     {
-      "id": "4fc99c9d-2e5e-4e9d-9041-943a9eb44498",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "275e4c8d-a490-45b4-8498-3cb7a36b25b6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "073f9f66-2a96-4716-92d0-f9767b0099bf",
       "basePrice": 101,
       "estimatedDurationInDays": 1,
@@ -11596,8 +11920,8 @@
       "isDeleted": false
     },
     {
-      "id": "fafc2207-85c7-4673-8833-ab7f9a15fccf",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "adbe83fd-a54e-4834-a0c2-60b7f4b7fe5d",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a63c155c-af95-48b0-9dd6-59146bf4b7ac",
       "basePrice": 195,
       "estimatedDurationInDays": 1,
@@ -11606,8 +11930,8 @@
       "isDeleted": false
     },
     {
-      "id": "78339a55-101f-4aaa-be29-9a93df11bd62",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "7814170c-f6d5-410c-b526-5ff35ee1e928",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "04f574a2-de68-461a-9cd6-dbceb4374622",
       "basePrice": 242,
       "estimatedDurationInDays": 1,
@@ -11616,8 +11940,8 @@
       "isDeleted": false
     },
     {
-      "id": "e94cbb5e-bfe9-4bdf-a38c-2a64a004fb83",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "4bde4845-f277-4f17-ba9c-71dc113c491a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "8f69d134-c0e7-4f9d-8a1b-583c7acaa4b9",
       "basePrice": 244,
       "estimatedDurationInDays": 1,
@@ -11626,8 +11950,8 @@
       "isDeleted": false
     },
     {
-      "id": "6af89d37-032b-4fc2-aeb3-0e4cd03c3e50",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "6f7b7a62-8c33-4646-b334-666775c36c9d",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ca42f183-e006-4c14-a060-789ad8c7acb2",
       "basePrice": 244,
       "estimatedDurationInDays": 1,
@@ -11636,8 +11960,8 @@
       "isDeleted": false
     },
     {
-      "id": "012bd795-aca8-44d0-97ab-afda6ebc3117",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "f0489140-8ae7-49b8-9fdc-e3e21e998d24",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "fdaef594-c154-4a0e-9770-5ed75dc82fcc",
       "basePrice": 531,
       "estimatedDurationInDays": 1,
@@ -11646,8 +11970,8 @@
       "isDeleted": false
     },
     {
-      "id": "5912849b-dfec-48b4-89c4-e57690e716ac",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "2bc7fff0-c593-4407-9437-83d7b1f5a8d3",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a287c907-ca20-418d-8371-094a02ef07e2",
       "basePrice": 169,
       "estimatedDurationInDays": 1,
@@ -11656,8 +11980,8 @@
       "isDeleted": false
     },
     {
-      "id": "cffd43c2-54b2-4e49-8704-494d13296c2b",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b784b734-6137-463d-9a0d-6576684e5d2a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "e5c8b467-0059-4a67-88df-9d52e919e04e",
       "basePrice": 445,
       "estimatedDurationInDays": 1,
@@ -11666,8 +11990,8 @@
       "isDeleted": false
     },
     {
-      "id": "d293e267-0ba7-4a4b-b5df-424bbf000c81",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "e970039d-b940-4a2f-a130-ec7de4147882",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "86bf10ab-a84e-4598-8a4d-5532450cfd70",
       "basePrice": 244,
       "estimatedDurationInDays": 1,
@@ -11676,8 +12000,8 @@
       "isDeleted": false
     },
     {
-      "id": "c50bd15f-a2fc-4dd9-b204-9a574c25475c",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "07a4dda2-3e6f-45b1-889d-47da4648b071",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f5c3b5ef-09f4-4157-9c0d-a5a4181e1527",
       "basePrice": 244,
       "estimatedDurationInDays": 1,
@@ -11686,8 +12010,8 @@
       "isDeleted": false
     },
     {
-      "id": "6c532902-da04-4448-aba8-49e3fdc83245",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "88fd811c-6402-4cb7-ac6f-2f060342d3a4",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "b13b30cb-7602-4bea-8e6d-582b7b0b47c5",
       "basePrice": 92,
       "estimatedDurationInDays": 1,
@@ -11696,8 +12020,8 @@
       "isDeleted": false
     },
     {
-      "id": "ea60e183-56e5-4dcb-ba2d-cf5767d8099f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "88fb6a0d-5aad-4eb4-ae93-fd4cf931c52b",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "29eaa3a2-54a7-48b0-8087-51960bdefc8a",
       "basePrice": 92,
       "estimatedDurationInDays": 1,
@@ -11706,8 +12030,8 @@
       "isDeleted": false
     },
     {
-      "id": "01ba6ba5-9d93-43d9-af1f-5b4ccaafcc46",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "2f186789-2363-467c-9c78-d794f06afdae",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "3fb39e51-1a88-48f0-9789-8e242bb5ccde",
       "basePrice": 64,
       "estimatedDurationInDays": 1,
@@ -11716,8 +12040,8 @@
       "isDeleted": false
     },
     {
-      "id": "099593c2-298b-440c-9c8c-7faaf77158ac",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "2040d854-917f-4272-9985-9eb9a412b7d7",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "764f6ce5-be56-47c8-9bcb-01758bd973e7",
       "basePrice": 92,
       "estimatedDurationInDays": 1,
@@ -11726,8 +12050,8 @@
       "isDeleted": false
     },
     {
-      "id": "06684386-42ac-452a-bb8c-4e19a144d6fb",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "918c9603-f793-416c-8875-575d2e803ea5",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "bfbf8ca9-ba08-4faa-9c08-e83c70216bfd",
       "basePrice": 92,
       "estimatedDurationInDays": 1,
@@ -11736,8 +12060,8 @@
       "isDeleted": false
     },
     {
-      "id": "2bd66443-ae4d-4e44-8bcb-4a3e57c660dd",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "788a7ff3-f131-4a55-979f-e36be7d2f82d",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "5df8c2d0-f3c8-45c6-997d-e6df9738b427",
       "basePrice": 103,
       "estimatedDurationInDays": 1,
@@ -11746,8 +12070,8 @@
       "isDeleted": false
     },
     {
-      "id": "b28d4dd3-5692-4ec3-87be-1693cff2b497",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c0b366de-c800-45ae-8867-1fe1fa081c10",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f4795be4-5614-4d91-9ac2-674b1e67196b",
       "basePrice": 103,
       "estimatedDurationInDays": 1,
@@ -11756,8 +12080,8 @@
       "isDeleted": false
     },
     {
-      "id": "24212349-3691-4034-bcb5-0f465deb955e",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "d7de8442-20a7-4c32-94ed-8937f978b5c5",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "16bc6df2-ab19-485b-8a95-740ec65e3ae4",
       "basePrice": 72,
       "estimatedDurationInDays": 1,
@@ -11766,8 +12090,8 @@
       "isDeleted": false
     },
     {
-      "id": "a99dd49f-08b2-432f-a5e8-ae597a05bf70",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ac9f6fa3-06f4-4a48-a68e-e9ad07dc3e65",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "86da185a-493d-4229-89fe-76ca77dd4251",
       "basePrice": 103,
       "estimatedDurationInDays": 1,
@@ -11776,8 +12100,8 @@
       "isDeleted": false
     },
     {
-      "id": "d18e99e5-6ba0-45b3-9aaa-c7777994d5ad",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c7249493-3ca2-42c4-bd5d-8cb15ff72e8a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "e982f482-54f9-4209-a4b4-4675ccb552e1",
       "basePrice": 103,
       "estimatedDurationInDays": 1,
@@ -11786,8 +12110,8 @@
       "isDeleted": false
     },
     {
-      "id": "eb6c3ea2-f542-4d94-96ff-35ff688e3c4a",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b4431671-42fb-4424-bca5-b9e06accd69c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "794d3711-428e-4173-b6bb-8524432cdedb",
       "basePrice": 204,
       "estimatedDurationInDays": 1,
@@ -11796,8 +12120,8 @@
       "isDeleted": false
     },
     {
-      "id": "888be487-318b-4d48-9bad-12479e31781a",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "9a4b0f2f-729b-4ea2-b146-c432fcbe6448",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "baebda4b-af78-4000-bc1c-996e79dcef6c",
       "basePrice": 204,
       "estimatedDurationInDays": 1,
@@ -11806,8 +12130,8 @@
       "isDeleted": false
     },
     {
-      "id": "13e20259-4dd8-464e-bc94-e90532ff28f9",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "0cb970e9-1949-48c6-8280-6b2ccab4e086",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f809b744-c75f-4b4f-88aa-dea25b187913",
       "basePrice": 308,
       "estimatedDurationInDays": 1,
@@ -11816,8 +12140,8 @@
       "isDeleted": false
     },
     {
-      "id": "f68622b5-de26-4dbf-a425-4f05202ed253",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "714a84ca-da91-4a11-8ec9-568317a87b3f",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d3589a7e-e039-4a5e-b71a-2cf237f4abe6",
       "basePrice": 144,
       "estimatedDurationInDays": 1,
@@ -11826,8 +12150,8 @@
       "isDeleted": false
     },
     {
-      "id": "4f945843-a4ab-4914-906b-07c55ce3b10e",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a207294e-aa76-42a0-a9ca-02d942e5f95a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "80262bdc-e56e-43ed-bdfd-b08f55f3faca",
       "basePrice": 204,
       "estimatedDurationInDays": 1,
@@ -11836,8 +12160,8 @@
       "isDeleted": false
     },
     {
-      "id": "9b38f0ed-53cf-4684-81c9-f4545e3404bd",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a54c97f7-7981-4130-af3c-e48df8eea79f",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "766f020e-1196-4c75-8af8-bff1f79ee5b6",
       "basePrice": 204,
       "estimatedDurationInDays": 1,
@@ -11846,8 +12170,8 @@
       "isDeleted": false
     },
     {
-      "id": "bf070907-93c1-4cd3-91f1-95cdf9a2bf33",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "42c1873e-3def-4a1d-9eaf-0869695c8fdc",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f45afc48-84fa-4548-862a-50d6b165d84f",
       "basePrice": 144,
       "estimatedDurationInDays": 1,
@@ -11856,8 +12180,8 @@
       "isDeleted": false
     },
     {
-      "id": "73725b35-7142-4d05-9b72-3bdefcd19f38",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3e1811f9-ff4a-4405-8473-87d1afc207fe",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "e2c2efbf-cbb8-4371-9e8a-d2d0c1017524",
       "basePrice": 108,
       "estimatedDurationInDays": 1,
@@ -11866,8 +12190,8 @@
       "isDeleted": false
     },
     {
-      "id": "bbf6fd6a-5239-411e-8311-9f45803cc3dd",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3befdab8-3baa-44d9-a8c4-6acc9d584188",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "c6c51521-b29b-449e-b6e0-1820dd48ed08",
       "basePrice": 75,
       "estimatedDurationInDays": 1,
@@ -11876,8 +12200,8 @@
       "isDeleted": false
     },
     {
-      "id": "ccf1a98c-dbc0-4b6d-9277-b5cd5e8eb320",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "00085e11-565a-446f-800b-7b7cced83e9a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "6820eb47-da58-4013-a0b4-4abf0232a97d",
       "basePrice": 82,
       "estimatedDurationInDays": 1,
@@ -11886,8 +12210,8 @@
       "isDeleted": false
     },
     {
-      "id": "1b59c969-ad89-4ced-a1f7-68f42e82f3ee",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ddf5bfc9-711d-4fba-99e3-971afb908d28",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d7978f07-6644-494f-a5b8-a614bdd24865",
       "basePrice": 84,
       "estimatedDurationInDays": 1,
@@ -11896,8 +12220,8 @@
       "isDeleted": false
     },
     {
-      "id": "fc466faf-7464-4b83-b1cb-92394647248f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b5b7410f-0526-4171-be7c-af64e3fa0b2e",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "3cdf0b9f-3e34-4a61-bccd-faac25b56e8e",
       "basePrice": 57,
       "estimatedDurationInDays": 1,
@@ -11906,8 +12230,8 @@
       "isDeleted": false
     },
     {
-      "id": "69fb7608-559a-4a04-a94b-856884f3cb85",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "30710206-80c7-4a51-a395-7317e67bb7f6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "91523af9-daca-4da9-8066-9c76f6c3575b",
       "basePrice": 57,
       "estimatedDurationInDays": 1,
@@ -11916,8 +12240,8 @@
       "isDeleted": false
     },
     {
-      "id": "de714267-8e3a-4058-aac6-149c152ae3d5",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "27ace985-7d27-4951-8064-9cb0a31be46f",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f906a019-3080-4294-93ea-aa58084f75fb",
       "basePrice": 83,
       "estimatedDurationInDays": 1,
@@ -11926,8 +12250,8 @@
       "isDeleted": false
     },
     {
-      "id": "e38d1c1e-4543-499e-8e3c-14b3fe22c921",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "d8fbed33-7a81-4735-9891-9e67b95e4804",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "95194c59-4d69-4581-850e-b62cd729c558",
       "basePrice": 83,
       "estimatedDurationInDays": 1,
@@ -11936,8 +12260,8 @@
       "isDeleted": false
     },
     {
-      "id": "91507fff-eec9-4457-9c9b-f1b890533b68",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a5e44421-a762-4644-b70b-5d8aa2eaf7ad",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "c84ac973-f3a1-4270-9c80-3b48f1e4096e",
       "basePrice": 56,
       "estimatedDurationInDays": 1,
@@ -11946,8 +12270,8 @@
       "isDeleted": false
     },
     {
-      "id": "bd218b1e-8978-4e92-bce8-068c814eb5e7",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "48fc3376-6d24-4d19-82e7-481e4626eeb6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "9143c0cd-2853-4301-887c-f8f03dd72f2c",
       "basePrice": 83,
       "estimatedDurationInDays": 1,
@@ -11956,8 +12280,8 @@
       "isDeleted": false
     },
     {
-      "id": "fa14bf63-8d20-4e82-9510-d78fbb95cc12",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "78d88be0-c5c1-4e3e-b356-11be9997500a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d0eb721b-c97b-46c6-b724-d6b0b2829256",
       "basePrice": 83,
       "estimatedDurationInDays": 1,
@@ -11966,8 +12290,8 @@
       "isDeleted": false
     },
     {
-      "id": "33b5eaf6-708c-479c-b12b-54cf3b3d21e1",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "5aa8edb5-cbf8-4532-9794-8bd4fc85c5be",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "7dc62b84-f94a-4cac-a32c-e0e5461647a9",
       "basePrice": 128,
       "estimatedDurationInDays": 1,
@@ -11976,8 +12300,8 @@
       "isDeleted": false
     },
     {
-      "id": "18daca77-5d45-4882-a440-dd7186e2a900",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "f174bac9-fb38-4b26-a39a-0b89b6a29008",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "9cc86e84-f88e-4101-ba79-243ffe6d8cbe",
       "basePrice": 128,
       "estimatedDurationInDays": 1,
@@ -11986,8 +12310,8 @@
       "isDeleted": false
     },
     {
-      "id": "e55baf44-4412-4a8b-8743-c408cb0c65fa",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b5e57883-07c0-492d-8a87-e228920d410b",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "bc5c67f5-b918-4319-b557-0f21d864769e",
       "basePrice": 91,
       "estimatedDurationInDays": 1,
@@ -11996,8 +12320,8 @@
       "isDeleted": false
     },
     {
-      "id": "7a108972-25be-48af-93c8-f778057a647d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "68dd8a24-57bd-4779-9044-ba4901332a67",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "0687ddc6-cdfc-4a30-8754-3a19d7b1cda8",
       "basePrice": 91,
       "estimatedDurationInDays": 1,
@@ -12006,8 +12330,8 @@
       "isDeleted": false
     },
     {
-      "id": "b31d3d71-7cf5-4755-86bd-008e6e6c54ac",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "6878e3f2-be53-45d8-acd1-cbf6a4be47aa",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f61b7fc4-fbd4-473a-b5a1-1ec38b0a7b68",
       "basePrice": 128,
       "estimatedDurationInDays": 1,
@@ -12016,8 +12340,8 @@
       "isDeleted": false
     },
     {
-      "id": "589f6195-60bf-4263-be2b-8ea1177e84a4",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c25c1273-a315-4bb4-8dbf-2b15c763d4d8",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "cda826b2-6d9b-469b-acd5-a287979553e5",
       "basePrice": 128,
       "estimatedDurationInDays": 1,
@@ -12026,8 +12350,8 @@
       "isDeleted": false
     },
     {
-      "id": "393114ec-69c8-4f89-a6d2-5111f1166049",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "6a368ab0-ecc6-4e85-9bdb-c2d2dd6dd52d",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "757c42b4-9571-4f08-9d9a-78d57e47198b",
       "basePrice": 101,
       "estimatedDurationInDays": 1,
@@ -12036,8 +12360,8 @@
       "isDeleted": false
     },
     {
-      "id": "4e514a02-07e8-4f84-a2a8-2e3f51939f04",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "00ea2d43-8493-43c2-ac78-20b96252dc80",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "5fdc1c57-79b9-456e-a01f-68f3e7c6f36c",
       "basePrice": 69,
       "estimatedDurationInDays": 1,
@@ -12046,8 +12370,8 @@
       "isDeleted": false
     },
     {
-      "id": "91cfdeec-c8dc-4ac6-89b0-5e8bc1b9a86d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "2879ab8b-9122-47d5-b675-8f52de293985",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "1bcb2407-464c-42e9-9891-4744dd422fcc",
       "basePrice": 101,
       "estimatedDurationInDays": 1,
@@ -12056,8 +12380,8 @@
       "isDeleted": false
     },
     {
-      "id": "a08179c7-614f-4386-9735-647a4cbdf90f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b93f16ee-0237-40b8-861b-4d2b4d66eaf6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a8af492c-d467-465e-b126-1cc880c0c471",
       "basePrice": 93,
       "estimatedDurationInDays": 1,
@@ -12066,8 +12390,8 @@
       "isDeleted": false
     },
     {
-      "id": "198ff2ce-41b7-46e2-adba-9ac27ec583fa",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b9d39541-171d-4dd4-a1a4-45d957069968",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "42620104-e0ff-434d-a0ba-c2339e8302fe",
       "basePrice": 93,
       "estimatedDurationInDays": 1,
@@ -12076,8 +12400,8 @@
       "isDeleted": false
     },
     {
-      "id": "f7f49ee2-4024-40d0-a615-8490ff0ab81c",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "e861a281-4da3-4bdb-86e8-733383106378",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d3d5807c-87b3-4672-8797-f36068c441f9",
       "basePrice": 66,
       "estimatedDurationInDays": 1,
@@ -12086,8 +12410,8 @@
       "isDeleted": false
     },
     {
-      "id": "82dc87c2-db9b-48db-8e95-7a864e638aaa",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b5749e2a-0e58-4f6d-9235-c17744faa23c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "308ddf25-f110-441f-8901-4bddb281cf60",
       "basePrice": 93,
       "estimatedDurationInDays": 1,
@@ -12096,8 +12420,8 @@
       "isDeleted": false
     },
     {
-      "id": "445f18b2-e4c4-463e-8402-3590da6b336f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "417bdea8-f341-4653-a5c1-c8205b27c722",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "1943315d-6a10-4af6-8395-b69cde71c524",
       "basePrice": 93,
       "estimatedDurationInDays": 1,
@@ -12106,8 +12430,8 @@
       "isDeleted": false
     },
     {
-      "id": "e4b39ed2-611f-4932-9034-a1d25c8fae9d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "667e8975-c992-48c9-be60-f431a02841f8",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "33cd6869-9a7e-4449-8e54-594daf361625",
       "basePrice": 151,
       "estimatedDurationInDays": 1,
@@ -12116,8 +12440,8 @@
       "isDeleted": false
     },
     {
-      "id": "aff72d2b-2a3f-4a2d-9a8e-dd7e83dc5f28",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "bc0ecabc-1c92-41ab-92e3-98e332d3d1fd",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "b71a25ee-3dd3-4aad-bb30-220807ee43a8",
       "basePrice": 151,
       "estimatedDurationInDays": 1,
@@ -12126,8 +12450,8 @@
       "isDeleted": false
     },
     {
-      "id": "e724db4a-f60e-40b9-9599-0a05ff0286b9",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "9464fc73-87bb-48b7-b68d-0e4f2de1ffbc",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "474931d3-47f2-4ab6-a068-6e08a31e26a2",
       "basePrice": 105,
       "estimatedDurationInDays": 1,
@@ -12136,8 +12460,8 @@
       "isDeleted": false
     },
     {
-      "id": "5e2981b3-2272-42af-a67d-d57e08348df4",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "3f82b32c-c8dd-489a-96af-ec383e04fb93",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "efb6a595-32d0-466f-b8d3-c3083e219ccb",
       "basePrice": 151,
       "estimatedDurationInDays": 1,
@@ -12146,8 +12470,8 @@
       "isDeleted": false
     },
     {
-      "id": "2520188e-cd5b-48c2-892e-77fb8ffb8116",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "08e5f897-c838-43e4-a93d-9999e811383a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "87e3065c-a9d2-4b0a-93cf-365020aefe6e",
       "basePrice": 151,
       "estimatedDurationInDays": 1,
@@ -12156,8 +12480,8 @@
       "isDeleted": false
     },
     {
-      "id": "b96c9c2d-4357-4d2e-8dce-a72ab12290a2",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ed28bbd2-c1c0-4e5f-b779-1564cf8a6726",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "6e5e7aa7-e0c2-4b96-9025-cfc3f301afd0",
       "basePrice": 91,
       "estimatedDurationInDays": 1,
@@ -12166,8 +12490,8 @@
       "isDeleted": false
     },
     {
-      "id": "4f750932-cb58-4106-8d6f-d95619e70beb",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b39a2840-97c6-4609-b058-f86bdbaef655",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ed2aaea6-b3a8-4a7f-9323-efe0a38e4482",
       "basePrice": 91,
       "estimatedDurationInDays": 1,
@@ -12176,8 +12500,8 @@
       "isDeleted": false
     },
     {
-      "id": "fbf846d7-0a16-4f68-9adc-eb3257b3bae5",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "eb2d97fa-496e-45a9-b9c3-c59325c10169",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d034e518-a127-4219-a3ee-7a85ea78ee17",
       "basePrice": 63,
       "estimatedDurationInDays": 1,
@@ -12186,8 +12510,8 @@
       "isDeleted": false
     },
     {
-      "id": "b80537c6-34ab-4203-881a-a2e1135a4398",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "b7232fa7-9a6f-4189-af26-351e824b1a4c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "b3cc9e41-4e72-4475-85d3-8eb394b1452f",
       "basePrice": 91,
       "estimatedDurationInDays": 1,
@@ -12196,8 +12520,8 @@
       "isDeleted": false
     },
     {
-      "id": "c693cbd8-8e9a-445d-abb9-da22d5e08864",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ea649d71-9f9c-49e5-a113-30af47af1459",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "854c8b7d-13c8-443e-b790-adc4a490e8a3",
       "basePrice": 91,
       "estimatedDurationInDays": 1,
@@ -12206,8 +12530,8 @@
       "isDeleted": false
     },
     {
-      "id": "edd8eb53-b558-4b95-90fd-834878a37e3b",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "8be4c378-fb56-47d7-bb52-d5116243039e",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "14eebdf6-cde0-419e-9fee-34e85827aa54",
       "basePrice": 86,
       "estimatedDurationInDays": 1,
@@ -12216,8 +12540,8 @@
       "isDeleted": false
     },
     {
-      "id": "353161cb-ad4e-4f74-97d8-3e32c469f78c",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "07a699cc-d5bb-470a-9112-0d98bb99b853",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "e318fa22-a717-4b54-8f37-4a1ab7bfd205",
       "basePrice": 86,
       "estimatedDurationInDays": 1,
@@ -12226,8 +12550,8 @@
       "isDeleted": false
     },
     {
-      "id": "107b5130-7c7b-4a2a-9c07-685e482de97b",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "07917e8a-cbe9-4d81-accb-73706ea2f38a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "52091e04-7378-450e-bd3a-7b3de9b8e468",
       "basePrice": 134,
       "estimatedDurationInDays": 1,
@@ -12236,8 +12560,8 @@
       "isDeleted": false
     },
     {
-      "id": "a1529f44-4b97-4910-a362-998380607e11",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "35266003-d991-499f-a513-76816a732414",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "f9f93fa8-3912-4799-a0dc-37f689d88fd7",
       "basePrice": 134,
       "estimatedDurationInDays": 1,
@@ -12246,8 +12570,8 @@
       "isDeleted": false
     },
     {
-      "id": "4defbb5c-89eb-4095-a903-e33fa333a734",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ee5e09e9-e09b-49c3-869e-d1b9f3b49282",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "fab8934e-efa1-4306-ae97-f732abbce74d",
       "basePrice": 93,
       "estimatedDurationInDays": 1,
@@ -12256,8 +12580,8 @@
       "isDeleted": false
     },
     {
-      "id": "bd5b440b-6d2a-4165-8adc-49471ea2e22d",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "7bcaa748-050c-4b53-bdd4-5f65681c2a7f",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "725fd795-e2fd-4dfb-b4b3-532e94812120",
       "basePrice": 134,
       "estimatedDurationInDays": 1,
@@ -12266,8 +12590,8 @@
       "isDeleted": false
     },
     {
-      "id": "e4c0d368-5346-4ee0-a890-e090807bf5f4",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "69eaaf8e-cb7d-49d4-abd0-ad3b2db70ec6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "7814b811-c0ca-4955-a7c1-4c327b7a2a54",
       "basePrice": 134,
       "estimatedDurationInDays": 1,
@@ -12276,8 +12600,28 @@
       "isDeleted": false
     },
     {
-      "id": "00272830-9616-4fe6-9d76-97c59cc90e7a",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "7c0736db-ae6b-4257-8732-076abcae4c70",
+      "serviceId": "e325b7de-fbea-4edf-9364-ec0231435052",
+      "itemId": "52c8775e-4d4f-44f9-a5cc-77a893af1e56",
+      "basePrice": 19,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "7f1935f6-b5cc-4df0-be88-ee8fcb1a301a",
+      "serviceId": "e325b7de-fbea-4edf-9364-ec0231435052",
+      "itemId": "f88a54af-3459-4ca9-a8bc-d2cb32441f59",
+      "basePrice": 22,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "8c7e6338-0784-4874-aa19-1e4d2120b650",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "07575a42-24db-4690-b0a2-68db5c0e87aa",
       "basePrice": 144,
       "estimatedDurationInDays": 1,
@@ -12286,8 +12630,8 @@
       "isDeleted": false
     },
     {
-      "id": "3ea7ccdf-54d5-49d5-b450-e2dd008e202a",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "6f95ccdd-21db-4eb0-ab84-d9c515460780",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "eada203b-1a04-48a2-93d7-209f0f755834",
       "basePrice": 86,
       "estimatedDurationInDays": 1,
@@ -12296,8 +12640,8 @@
       "isDeleted": false
     },
     {
-      "id": "fd2c4bf7-303e-4b09-9ebf-0318a77f56dd",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "e88efe4e-5e83-43a8-8c9f-77b8c219ffbf",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ae52749d-4c67-48fe-86b1-5bce8ecbd466",
       "basePrice": 42,
       "estimatedDurationInDays": 1,
@@ -12306,8 +12650,8 @@
       "isDeleted": false
     },
     {
-      "id": "8248c0d9-1354-4f9f-95bb-2b0881ac3653",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "5963771a-d571-4c8e-8656-73d08aaa1f09",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a527b47f-898a-4066-a64a-923e12f8dd6f",
       "basePrice": 66,
       "estimatedDurationInDays": 1,
@@ -12316,8 +12660,8 @@
       "isDeleted": false
     },
     {
-      "id": "fa4f3393-7beb-4f49-aeb1-ca0e617d7794",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "5133f69c-308f-4a4f-b737-5348aebe5f3c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "633627ea-8509-4efd-9442-f3dd3806127d",
       "basePrice": 30,
       "estimatedDurationInDays": 1,
@@ -12326,8 +12670,8 @@
       "isDeleted": false
     },
     {
-      "id": "08261d95-564c-4471-ad6c-7d7d4128cb8e",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "18a97603-23b5-4bf5-a0ad-c23a0ae527c0",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ab90e7ed-07e9-4144-bd1d-8bb718e18fd6",
       "basePrice": 66,
       "estimatedDurationInDays": 1,
@@ -12356,8 +12700,8 @@
       "isDeleted": false
     },
     {
-      "id": "4c13249f-c05e-4dfc-b9bc-c0e14313a860",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "70304daa-e64d-4285-95d8-956152f6f448",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "0acb541a-e2ff-445e-a130-e19037c346ef",
       "basePrice": 588,
       "estimatedDurationInDays": 1,
@@ -12376,8 +12720,8 @@
       "isDeleted": false
     },
     {
-      "id": "eec80fae-8cac-4ad7-8c3f-49ca74e50ce3",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "e66aa0a1-4c77-4874-ba12-35d755222a1b",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "361bf52c-ae5d-4a43-a971-b17dae73bf3f",
       "basePrice": 144,
       "estimatedDurationInDays": 1,
@@ -12396,8 +12740,8 @@
       "isDeleted": false
     },
     {
-      "id": "96739e55-2be4-4870-ac89-af0a7fe75960",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "dfaa7e55-56ef-4fde-865f-e4f2cfd53ccb",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "6099df60-0021-4e6a-980d-a3f5979f8c3d",
       "basePrice": 151,
       "estimatedDurationInDays": 1,
@@ -12416,8 +12760,8 @@
       "isDeleted": false
     },
     {
-      "id": "79c43563-f061-4b78-b875-c8f6b0208106",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "eff073bf-0f0b-4ffe-9707-b72eda5ba3ba",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "4fb6544a-650c-4d2d-89bd-e3e409a669bf",
       "basePrice": 859,
       "estimatedDurationInDays": 1,
@@ -12486,8 +12830,8 @@
       "isDeleted": false
     },
     {
-      "id": "b2a3e4b1-ce0a-424e-b9ee-ed5a7897e8eb",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "e8af6a48-4059-488f-945d-31255f972550",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "57d373fc-70ba-45ca-95e1-c3b3e3a6b789",
       "basePrice": 4229,
       "estimatedDurationInDays": 1,
@@ -12496,10 +12840,20 @@
       "isDeleted": false
     },
     {
-      "id": "856b92dc-e512-40c1-8b19-ee2b9ffd4076",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "d1f07458-6808-4855-9f28-e287089105ef",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "7c21b117-6820-4636-afc5-7d73bceee4fe",
       "basePrice": 4800,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "8e3fe637-6d0b-4bd7-8cc8-cb37f2e83cca",
+      "serviceId": "99f7a441-8451-4a53-a7d7-56f769dff309",
+      "itemId": "6be5f4be-009d-46cd-a4c8-db2b9779781e",
+      "basePrice": 52,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -12546,10 +12900,50 @@
       "isDeleted": false
     },
     {
-      "id": "cbd8b385-8005-46cc-b226-2d4ed56e507d",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "ba94c5f4-3ebb-4bdd-acaf-0180a3f4c230",
+      "serviceId": "6ba72dfc-a53c-4712-84ca-7b936e66c9c0",
+      "itemId": "d29c93b2-6e75-406d-bec8-a5e02b532a69",
+      "basePrice": 273,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "2f9b449e-978c-493c-855b-67916dc39b84",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "f35e863c-f29d-442b-af3b-ddc6c54dae10",
       "basePrice": 306,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "e54386b6-e9e5-45fd-822f-1516eb206faf",
+      "serviceId": "6ba72dfc-a53c-4712-84ca-7b936e66c9c0",
+      "itemId": "f35e863c-f29d-442b-af3b-ddc6c54dae10",
+      "basePrice": 273,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "d53ebf93-1830-4d5a-90b6-643393cc82c1",
+      "serviceId": "6ba72dfc-a53c-4712-84ca-7b936e66c9c0",
+      "itemId": "34956381-59a5-433c-99f9-c0a2ed20ef3e",
+      "basePrice": 711,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "4a2a4f3e-5248-4e15-90df-5bdbb536d169",
+      "serviceId": "6ba72dfc-a53c-4712-84ca-7b936e66c9c0",
+      "itemId": "59935ab4-984c-44ba-a9c8-d51d5494a5ac",
+      "basePrice": 656,
       "estimatedDurationInDays": 1,
       "additionalServiceIds": [],
       "isActive": true,
@@ -12586,8 +12980,8 @@
       "isDeleted": false
     },
     {
-      "id": "57d66b87-cce8-4999-a51d-bf4d28df0da8",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "f84fa627-5715-4ef3-97aa-50e08aad621d",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "3557a26e-b93d-45c4-9749-50b015a3d764",
       "basePrice": 1202,
       "estimatedDurationInDays": 1,
@@ -12596,8 +12990,8 @@
       "isDeleted": false
     },
     {
-      "id": "2f0b25b1-c371-48c8-b763-6879aafd083a",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "a76d1426-8a83-470f-bbc8-8fc78b571805",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "e017a412-94d4-44ef-9273-466309b8f8de",
       "basePrice": 874,
       "estimatedDurationInDays": 1,
@@ -12606,8 +13000,18 @@
       "isDeleted": false
     },
     {
-      "id": "248cdf6b-d51e-49be-9556-a78e90703cdc",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "3e799892-22bf-4426-b6f7-36e9639f47c7",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
+      "itemId": "55b6a580-a2d2-4355-89c8-48a38d12d3ee",
+      "basePrice": 874,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "87177411-f2a8-4a8f-bbd1-482f3b761adf",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "1ac83ec8-c37a-4e85-823c-380c5cad2b96",
       "basePrice": 1202,
       "estimatedDurationInDays": 1,
@@ -12616,8 +13020,8 @@
       "isDeleted": false
     },
     {
-      "id": "1bbc29cb-5a4f-4584-9cdc-8fd9b0213125",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "c62ebbd3-9ad0-4958-b337-b1d403927643",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "5b9f87ae-afc5-49c0-97ba-f2aca3bd170a",
       "basePrice": 1202,
       "estimatedDurationInDays": 1,
@@ -12626,8 +13030,8 @@
       "isDeleted": false
     },
     {
-      "id": "4205dbd9-157f-4d74-bf17-4306c80fd772",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "eae132f0-c31e-4762-bf38-6720718f7d25",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "991a86c9-c745-462a-bed0-b3a7cbc06bd7",
       "basePrice": 4369,
       "estimatedDurationInDays": 1,
@@ -12636,8 +13040,8 @@
       "isDeleted": false
     },
     {
-      "id": "99b2b53a-a848-47b8-90e5-fd712a6606c4",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "97502379-211c-4c52-85fa-d450788318f1",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "a14cebf6-b212-44ce-b10a-c9f53f693701",
       "basePrice": 7646,
       "estimatedDurationInDays": 1,
@@ -12646,8 +13050,8 @@
       "isDeleted": false
     },
     {
-      "id": "a1756084-c9cc-4648-98b9-c2f6495f97ac",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "74800650-1e05-49ba-bed5-8c51898024b9",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "100a9bff-cf25-4d45-b0a8-b9367b0de9ad",
       "basePrice": 14200,
       "estimatedDurationInDays": 1,
@@ -12656,8 +13060,8 @@
       "isDeleted": false
     },
     {
-      "id": "9827453c-fb76-420f-8805-515fa9f62c63",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "b878789c-dca4-40e8-8771-8e1a5f8ca026",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "eb3a2b20-09ed-4fe6-ac97-f3de29c0a7b8",
       "basePrice": 6554,
       "estimatedDurationInDays": 1,
@@ -12666,8 +13070,8 @@
       "isDeleted": false
     },
     {
-      "id": "7c58e981-e47e-4d0e-86f2-6a2f0680321b",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "7af3fbd2-d2e4-4f77-b999-cc7a9ae3a89f",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "d177427c-0ce5-433e-9310-5bc2bc57ebf4",
       "basePrice": 9831,
       "estimatedDurationInDays": 1,
@@ -12676,8 +13080,8 @@
       "isDeleted": false
     },
     {
-      "id": "17618811-c337-4e8c-81de-3b5e85780189",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "781cb907-f8b0-4032-b48f-40342fb59053",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "4d2e5425-5921-4fda-9941-64bd7d5532f4",
       "basePrice": 16385,
       "estimatedDurationInDays": 1,
@@ -12686,8 +13090,8 @@
       "isDeleted": false
     },
     {
-      "id": "0a20d648-85f8-44b7-b821-026e137444fa",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "ccf2f319-aa96-48c3-9852-1ec9b26357b5",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "09889817-7191-4cd0-b532-ce8675b840b7",
       "basePrice": 3276,
       "estimatedDurationInDays": 1,
@@ -12696,8 +13100,8 @@
       "isDeleted": false
     },
     {
-      "id": "28bd7122-ad4d-49e1-a682-2a2d72fb874a",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "9ca358b5-e8b3-423c-8f36-f34e5fa59d93",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "eb140ff4-6555-4097-b2de-a9a34005455d",
       "basePrice": 5461,
       "estimatedDurationInDays": 1,
@@ -12706,8 +13110,8 @@
       "isDeleted": false
     },
     {
-      "id": "335c7cfc-3a6a-4066-966b-66cd35abc129",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "322bc276-9b65-417f-be67-ba677920ff79",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "36819cfe-4dbd-4c62-bb93-7f3068ae2feb",
       "basePrice": 9831,
       "estimatedDurationInDays": 1,
@@ -12716,8 +13120,8 @@
       "isDeleted": false
     },
     {
-      "id": "e9015eae-dd4b-4319-9053-8491c9b2b79c",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "a58ceccb-3a14-40c8-9bc3-f8c6a8a65411",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "4320895f-ddbd-42e3-854f-0797128aa131",
       "basePrice": 5461,
       "estimatedDurationInDays": 1,
@@ -12726,8 +13130,8 @@
       "isDeleted": false
     },
     {
-      "id": "7c08f037-ae0f-491c-8780-840d4546fe09",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "25603168-eeca-4a11-a28e-d0b3eeda43ea",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "50fe4bae-065c-42db-a4ad-68043427f12a",
       "basePrice": 8738,
       "estimatedDurationInDays": 1,
@@ -12736,8 +13140,8 @@
       "isDeleted": false
     },
     {
-      "id": "4530ee9e-d581-40db-85c1-385f4b0f1b95",
-      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
+      "id": "e95297fa-cdf8-46a5-a9c2-4f51de578832",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "c0662c72-d03c-4036-8d09-eb2e0e5a1d7c",
       "basePrice": 15293,
       "estimatedDurationInDays": 1,
@@ -12776,8 +13180,8 @@
       "isDeleted": false
     },
     {
-      "id": "6dd09f0d-3be7-49e5-bb51-f750639e348c",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "80a1c243-94e1-41d5-85e9-55a52b4ec0c1",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "f052c2df-454f-4249-a96e-85880ae3139e",
       "basePrice": 2705,
       "estimatedDurationInDays": 1,
@@ -12786,8 +13190,8 @@
       "isDeleted": false
     },
     {
-      "id": "f2721348-6a00-495f-81e8-99d1f2342de9",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "de239984-8837-43c3-803b-2085efea9420",
+      "serviceId": "598d4ba8-5db9-41b5-a40b-2b049cd803fe",
       "itemId": "6e2840aa-5342-4656-bb72-527e95b25ab0",
       "basePrice": 2393,
       "estimatedDurationInDays": 1,
@@ -12806,8 +13210,8 @@
       "isDeleted": false
     },
     {
-      "id": "efc7fffd-0f67-4af4-8d2a-35f5ef57fe04",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "dfba4226-8562-416f-9f82-052d775da100",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "4e4916b2-3e74-4726-a5a5-59c9d2c9bfae",
       "basePrice": 164,
       "estimatedDurationInDays": 1,
@@ -12826,8 +13230,8 @@
       "isDeleted": false
     },
     {
-      "id": "4fe880be-8625-4596-9947-2597b1ae6930",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "ae70c968-f8b5-4907-8bb6-6c16a32d6364",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "1346ffc3-e3ca-4954-909c-663ebb3a6c0b",
       "basePrice": 219,
       "estimatedDurationInDays": 1,
@@ -12846,8 +13250,8 @@
       "isDeleted": false
     },
     {
-      "id": "635263ba-41e9-47c7-b147-5e2c60e28207",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "785e6be4-754b-43fd-917a-cffe23604fa3",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "db68df0e-b2d2-41b4-91af-04b29fccb684",
       "basePrice": 359,
       "estimatedDurationInDays": 1,
@@ -12866,8 +13270,8 @@
       "isDeleted": false
     },
     {
-      "id": "24c857bb-2fa2-4bf9-be96-d90b43ee7ed5",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a5c7fe5f-d121-4ede-9089-f3dc836a485f",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "b6b4b64d-4602-4f1e-a09d-c7c918826249",
       "basePrice": 297,
       "estimatedDurationInDays": 1,
@@ -12886,8 +13290,8 @@
       "isDeleted": false
     },
     {
-      "id": "7300b44c-c1ba-47e7-b7f4-616fd137bccb",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "419f56aa-6bc2-4dd0-bdec-56ebba926230",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "050a20e2-b683-4fc8-a2b8-63d7ecb98812",
       "basePrice": 320,
       "estimatedDurationInDays": 1,
@@ -12906,8 +13310,8 @@
       "isDeleted": false
     },
     {
-      "id": "74754459-54c0-436c-b58b-0d42ee82f970",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "14777f1a-4a75-40e6-b47f-01de30ba1da0",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "189121fe-13af-41be-90b9-aa3dd6a03e59",
       "basePrice": 63,
       "estimatedDurationInDays": 1,
@@ -12926,8 +13330,8 @@
       "isDeleted": false
     },
     {
-      "id": "4cde8f6a-aef1-4ec9-8dcf-5906164254f0",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c575a963-1482-402a-8bbc-abc8eb2e2c94",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "d0491873-ecf9-42e0-892f-93d7cef37884",
       "basePrice": 109,
       "estimatedDurationInDays": 1,
@@ -12946,8 +13350,8 @@
       "isDeleted": false
     },
     {
-      "id": "16d8727c-3ff2-473a-99de-e61064faaf55",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "56b5f2eb-01e7-477a-b99f-5305994bb1da",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "62c95ded-57ff-4884-8b5f-1c6bd5ec97f7",
       "basePrice": 336,
       "estimatedDurationInDays": 1,
@@ -12966,8 +13370,8 @@
       "isDeleted": false
     },
     {
-      "id": "d46c77b9-4386-4992-b92c-feb761d4249e",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "fbdd8451-06e5-451d-9014-c25e77f4ac56",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "6afb49c3-e8d1-410a-bdfa-6a7005c13c05",
       "basePrice": 235,
       "estimatedDurationInDays": 1,
@@ -12986,8 +13390,8 @@
       "isDeleted": false
     },
     {
-      "id": "fa3d63d1-0435-4861-bbb0-1b96549083cd",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "20cc89d6-c4aa-499b-b290-20242109cbb8",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "bb90a44e-4ff7-47dc-a329-2fbc6606e698",
       "basePrice": 180,
       "estimatedDurationInDays": 1,
@@ -13006,8 +13410,8 @@
       "isDeleted": false
     },
     {
-      "id": "44c38c27-1024-477f-8f14-353e204b021f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a4ec26c6-05da-4ffe-8d28-84346e8aa397",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "12071cd0-b9db-4f00-b187-20189917f0a3",
       "basePrice": 180,
       "estimatedDurationInDays": 1,
@@ -13026,8 +13430,8 @@
       "isDeleted": false
     },
     {
-      "id": "a97c6990-37ed-4e1f-9aa0-1349622bfaf5",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "6a4756b1-18cc-415c-bc59-674ebb7c46c7",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "0cd7ebe0-3c43-415f-a35e-bc94b61a5fb7",
       "basePrice": 167,
       "estimatedDurationInDays": 1,
@@ -13046,8 +13450,8 @@
       "isDeleted": false
     },
     {
-      "id": "88775f86-c7cc-4cc8-8c21-b97f21c5fcf5",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "9b8e937e-90ad-401c-aa1b-5778eb3f044b",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "abdaa637-8483-4e4b-ae34-5ad76d084a1c",
       "basePrice": 133,
       "estimatedDurationInDays": 1,
@@ -13066,8 +13470,8 @@
       "isDeleted": false
     },
     {
-      "id": "9ff04064-5f49-4240-ae1a-71675b0fde49",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "35b29a5e-7761-4eca-9747-acb168a8ba1c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a6e62f75-0907-48d1-b562-c869b2b8d76d",
       "basePrice": 164,
       "estimatedDurationInDays": 1,
@@ -13086,8 +13490,8 @@
       "isDeleted": false
     },
     {
-      "id": "4a036aec-4cea-4bc2-afe0-dac42082f8d8",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c27e82f2-deb6-4964-8ae6-8b0eb794ba8c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "c3d24d9d-83bc-4245-b261-ff8bcd4f811c",
       "basePrice": 180,
       "estimatedDurationInDays": 1,
@@ -13096,8 +13500,8 @@
       "isDeleted": false
     },
     {
-      "id": "59776c98-5843-4c29-b883-f10129dd6d17",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "2214a098-944d-4060-88b4-3ef73beb12fe",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "dff5723e-9f3c-4e61-812f-e56c5142f29f",
       "basePrice": 124,
       "estimatedDurationInDays": 1,
@@ -13106,8 +13510,8 @@
       "isDeleted": false
     },
     {
-      "id": "298c133d-23c1-4d2d-b045-4012290f8c4f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "952ef172-546d-4647-b91e-0647399aa665",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "9df5b1b7-0542-4f8f-bd2f-af0cb818d341",
       "basePrice": 163,
       "estimatedDurationInDays": 1,
@@ -13126,8 +13530,8 @@
       "isDeleted": false
     },
     {
-      "id": "20f8e28b-a062-4ef4-b724-047ada789336",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "bc838d58-b5e5-4936-a086-bc548453592e",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "9c555a31-5f9e-440f-9c48-c210eb4e1cae",
       "basePrice": 547,
       "estimatedDurationInDays": 1,
@@ -13166,8 +13570,8 @@
       "isDeleted": false
     },
     {
-      "id": "41a8f1c8-cddb-4f6f-96bb-002937ffadbe",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "41f7b6d5-61ba-40b3-aa66-c261986b8be6",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "30af11ee-ce7e-4029-a23a-19681cb134a7",
       "basePrice": 265,
       "estimatedDurationInDays": 1,
@@ -13196,8 +13600,8 @@
       "isDeleted": false
     },
     {
-      "id": "b13aa3cd-d95f-46c4-963b-9e85d7f76fa3",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "a02a176f-85d6-475e-83fc-541853b1b9af",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "496a5554-c6ea-4a8d-bc32-c8118ba74f62",
       "basePrice": 86,
       "estimatedDurationInDays": 1,
@@ -13236,8 +13640,8 @@
       "isDeleted": false
     },
     {
-      "id": "ef5e0bae-599c-4aac-bb99-9ffa46889c98",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "7dbd3ade-15fa-4802-bb50-8df1089e6738",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "a664fcd2-bdba-4412-996f-850555e998b5",
       "basePrice": 250,
       "estimatedDurationInDays": 1,
@@ -13266,8 +13670,8 @@
       "isDeleted": false
     },
     {
-      "id": "b41faec1-e797-47e7-92f8-56bf915ad222",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "22416faa-24de-420f-9e5a-9d3e792937a2",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "ceea1a00-ef4f-49b1-98dd-966b22d8b689",
       "basePrice": 359,
       "estimatedDurationInDays": 1,
@@ -13286,8 +13690,8 @@
       "isDeleted": false
     },
     {
-      "id": "63fab44e-34d4-4b12-9588-3cd993308071",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "7ca01f85-e94a-42f8-93a1-8fbb5b86730a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "bf71e9c8-f775-4cfd-b5cd-7955ed02372c",
       "basePrice": 124,
       "estimatedDurationInDays": 1,
@@ -13326,8 +13730,8 @@
       "isDeleted": false
     },
     {
-      "id": "6f21ff1d-1655-48ac-a4e4-29e4a92a176f",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "c5a4fe11-498c-4e89-9beb-604c0f6e6f84",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "6256b361-e593-4b21-8ac9-65c63a4325a8",
       "basePrice": 273,
       "estimatedDurationInDays": 1,
@@ -13346,8 +13750,8 @@
       "isDeleted": false
     },
     {
-      "id": "5a49a2e8-f95b-40c9-a5c3-d7233cc1a4fa",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "031faa43-d559-496a-b396-025d4d988312",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "c29d132f-a3bb-44b9-9b7e-7257ec136933",
       "basePrice": 195,
       "estimatedDurationInDays": 1,
@@ -13356,8 +13760,8 @@
       "isDeleted": false
     },
     {
-      "id": "a7727d90-ad6f-4b9c-9567-fdb1fb3fea85",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "368edb3c-d5e9-405c-a115-358a263e7c4a",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "c8951a51-e030-42a2-87b6-7658831dd9c4",
       "basePrice": 133,
       "estimatedDurationInDays": 1,
@@ -13366,8 +13770,8 @@
       "isDeleted": false
     },
     {
-      "id": "30fb99a1-de2a-490d-9a03-b98dd6af1543",
-      "serviceId": "31d26734-da78-4b1c-a0af-101501346fba",
+      "id": "0e8ba6fa-a5fc-45ed-893b-0af4b14fc25c",
+      "serviceId": "5efb7c88-c6f6-42f1-a58a-1975c5402efd",
       "itemId": "8280cdea-1c3c-48f7-ac81-37ca781a7e0d",
       "basePrice": 201,
       "estimatedDurationInDays": 1,
@@ -13386,8 +13790,8 @@
       "isDeleted": false
     },
     {
-      "id": "391145c0-cef8-454f-b390-1306a5777fa8",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "38595daa-0780-47b0-a2b6-35a3d98a67bf",
+      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
       "itemId": "5e92fd15-6503-4b68-a77a-736e9fda05cd",
       "basePrice": 1873,
       "estimatedDurationInDays": 1,
@@ -13396,8 +13800,28 @@
       "isDeleted": false
     },
     {
-      "id": "b3b2cc9e-8a23-433e-8865-ba157e6a00b4",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "8c0bdca7-e49d-47f3-9eb6-a0c2a0fc46ee",
+      "serviceId": "e325b7de-fbea-4edf-9364-ec0231435052",
+      "itemId": "7a9b4b20-c9df-468e-a80a-95c6b12f1a13",
+      "basePrice": 42,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "b9ecdfab-338b-4a4e-8d0c-30e0ad87a80d",
+      "serviceId": "3bc45694-2cbf-4ef3-bad1-fef9ff66f0d4",
+      "itemId": "df934b82-ddbf-4973-8c73-c09867da6070",
+      "basePrice": 200,
+      "estimatedDurationInDays": 1,
+      "additionalServiceIds": [],
+      "isActive": true,
+      "isDeleted": false
+    },
+    {
+      "id": "3725904c-ff1d-44d1-b433-f62c0d14268f",
+      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
       "itemId": "e78fda3d-42aa-4613-bb64-d3732291a66b",
       "basePrice": 1469,
       "estimatedDurationInDays": 1,
@@ -13406,8 +13830,8 @@
       "isDeleted": false
     },
     {
-      "id": "ef87933f-722b-4455-9a8e-4cccfc01350f",
-      "serviceId": "3567fb54-77d4-4f07-b046-e03df1ebc594",
+      "id": "9091aa7e-478c-46bb-9937-4fd030857bfe",
+      "serviceId": "847fb0b8-66f5-457c-95e6-dcd71babd845",
       "itemId": "86fc69d9-a5d1-499b-b153-818ca0084219",
       "basePrice": 509,
       "estimatedDurationInDays": 1,

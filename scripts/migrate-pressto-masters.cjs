@@ -17,7 +17,9 @@ const crypto = require('crypto');
 // xlsx isn't a backend dependency; borrow the copy from the admin-panel sibling.
 const XLSX = require(path.resolve(__dirname, '../../pressto-admin-panel/node_modules/xlsx'));
 
-const WB_PATH = path.resolve(__dirname, '../../Pressto_Pulse_Master (1).xlsx');
+// Defaults to the client's latest workbook; pass a path to override.
+const WB_PATH =
+  process.argv[2] || path.resolve(__dirname, '../../Pressto_Pulse_Master ---new (1) (1).xlsx');
 const OUT_PATH = path.resolve(__dirname, '../src/data/seed-masters-pressto.json');
 
 const uuid = () => crypto.randomUUID();
@@ -256,76 +258,78 @@ out.service_category.push({
 
 const price = sheet('Base Service Price List');
 
-// ── Service master: exactly the 7 services the client asked for ──────────────
-const SERVICE_NAMES = [
-  'Clean',
-  'Iron',
-  'Shoes-Bags',
-  'Curtain-Carpet',
-  'Wash&Fold',
-  'Presstoke',
-  'Repair',
+// ── Service master: taken straight from the sheet's "Service Name" column ────
+// The client's updated workbook does the grouping itself: "Service Name" is the
+// top-level service and the old granular names moved to "Service SubType Name".
+// Preferred POS order first, then anything else alphabetically.
+const SERVICE_ORDER = [
+  'clean',
+  'press',
+  'shoes-bags',
+  'curtain-carpet',
+  'wash dry fold',
+  'presstoke',
+  'repair',
+  'colouring',
+  'cc-repair',
+  'packing',
+  'others',
 ];
-const serviceIdByName = {};
+const serviceDisplay = new Map(); // norm -> display name as written in the sheet
+price.forEach((r) => {
+  const raw = String(r['Service Name'] || '').trim();
+  if (raw) serviceDisplay.set(norm(raw), raw);
+});
+const orderedServiceKeys = [...serviceDisplay.keys()].sort((a, b) => {
+  const ia = SERVICE_ORDER.indexOf(a);
+  const ib = SERVICE_ORDER.indexOf(b);
+  if (ia !== -1 && ib !== -1) return ia - ib;
+  if (ia !== -1) return -1;
+  if (ib !== -1) return 1;
+  return a.localeCompare(b);
+});
+
+const serviceIdByKey = {};
 const svcCodes = new Set();
-SERVICE_NAMES.forEach((name, index) => {
+orderedServiceKeys.forEach((key, index) => {
+  const name = serviceDisplay.get(key);
   const code = uniqueCode(slugBase(name).slice(0, 40), svcCodes);
-  const id = keepId(prevService, norm(name));
+  const id = keepId(prevService, key);
   out.service.push({
     id,
     name,
     code,
     serviceCategoryId: svcCatId,
-    sequence: index + 1, // POS order follows the client's list
+    sequence: index + 1,
     estimatedDurationInHours: 24,
     description: name,
     isActive: true,
     isDeleted: false,
   });
-  serviceIdByName[name] = id;
+  serviceIdByKey[key] = id;
 });
 report.service = out.service.length;
 
-// Which of the 7 a price row belongs to — decided by its Product Name first,
-// falling back to the Service Name for the garment cleaning/pressing rows.
-const SHOES_BAGS = ['shoes', 'boots', 'bags', 'belt', 'wallet', 'kids accessories'];
-const CURTAIN_CARPET = ['curtain', 'carpet', 'sofa cover'];
-const REPAIR_PRODUCTS = ['alteration', 'darning'];
-const WASH_FOLD = ['wash, dry & fold'];
-
-function targetService(productName, serviceName) {
-  const p = norm(productName);
-  const s = norm(serviceName);
-  if (SHOES_BAGS.includes(p)) return 'Shoes-Bags';
-  if (CURTAIN_CARPET.includes(p)) return 'Curtain-Carpet';
-  if (WASH_FOLD.includes(p)) return 'Wash&Fold';
-  if (REPAIR_PRODUCTS.includes(p)) return 'Repair';
-  if (/clean/.test(s)) return 'Clean';
-  if (/press|iron/.test(s)) return 'Iron';
-  return null;
-}
-
-// ── Additional charges: every add-on from the sheet + the packaging/misc list ──
-// These stay selectable as charges; their price rows still feed the mappings
-// below (an item is offered under one of the 7, add-ons are charged on top).
+// ── Additional charges: the add-on catalogue, priced from the sub-type rows ───
 const addonByName = new Map();
 sheet('AddonServiceListMaster').forEach((a) => {
   const n = String(a.ServiceDesc || '').trim();
   if (n) addonByName.set(norm(n), {code: String(a.ServiceCode || '').trim(), name: n});
 });
-const pricesByName = new Map();
+// Granular prices now live under "Service SubType Name".
+const pricesBySubType = new Map();
 price.forEach((r) => {
-  const key = norm(r['Service Name']);
+  const key = norm(r['Service SubType Name']);
   if (!key) return;
-  if (!pricesByName.has(key)) pricesByName.set(key, new Set());
-  pricesByName.get(key).add(Number(r['Base Price']) || 0);
+  if (!pricesBySubType.has(key)) pricesBySubType.set(key, new Set());
+  pricesBySubType.get(key).add(Number(r['Base Price']) || 0);
 });
 
-const chargeKeys = new Set();
 const chargeCodes = new Set();
+const chargeKeys = new Set();
 function addCharge(displayName, key) {
   if (!key || chargeKeys.has(key)) return;
-  const priceSet = pricesByName.get(key);
+  const priceSet = pricesBySubType.get(key);
   const prices = priceSet ? [...priceSet].filter((n) => Number.isFinite(n)) : [];
   const addon = addonByName.get(key);
   const code = uniqueCode(addon ? addon.code : slugBase(displayName).slice(0, 40), chargeCodes);
@@ -349,30 +353,31 @@ report.additional_charge_master = out.additional_charge_master.length;
 // ── Service Item Mapping: one row per (item, service) at the LOWEST price ─────
 const best = new Map();
 let unmatchedItem = 0;
-let unassigned = 0;
+let placeholderX = 0;
+let noService = 0;
 const unmatchedItemSamples = new Set();
-const unassignedSamples = new Set();
 
 price.forEach((r) => {
-  const target = targetService(r['Product Name'], r['Service Name']);
-  if (!target) {
-    unassigned += 1;
-    if (unassignedSamples.size < 12) {
-      unassignedSamples.add(
-        `${String(r['Product Name'] || '').trim()}  /  ${String(r['Service Name'] || '').trim()}`,
-      );
-    }
+  const svcKey = norm(r['Service Name']);
+  const serviceId = serviceIdByKey[svcKey];
+  if (!serviceId) {
+    noService += 1;
     return;
   }
-  const itemId = itemByName[norm(r['New Name'])] || itemByName[norm(r['Iteam Name'])] || null;
+  const a = norm(r['New Name']);
+  const b = norm(r['Iteam Name']);
+  const itemId = itemByName[a] || itemByName[b] || null;
   if (!itemId) {
-    unmatchedItem += 1;
-    if (unmatchedItemSamples.size < 12) {
-      unmatchedItemSamples.add(String(r['New Name'] || r['Iteam Name'] || '').trim());
+    // "X" is a placeholder the source system leaves when no product is named.
+    if (a === 'x' || b === 'x') placeholderX += 1;
+    else {
+      unmatchedItem += 1;
+      if (unmatchedItemSamples.size < 12) {
+        unmatchedItemSamples.add(String(r['New Name'] || r['Iteam Name'] || '(blank)').trim());
+      }
     }
     return;
   }
-  const serviceId = serviceIdByName[target];
   const key = `${serviceId}:${itemId}`;
   const amount = Number(r['Base Price']) || 0;
   const current = best.get(key);
@@ -393,8 +398,9 @@ best.forEach((v, key) => {
 });
 report.service_item_mapping = out.service_item_mapping.length;
 report.priceRowsTotal = price.length;
-report.priceUnassignedToAny7 = unassigned;
+report.priceRowsPlaceholderX = placeholderX;
 report.priceUnmatchedItem = unmatchedItem;
+report.priceNoServiceName = noService;
 
 const perService = {};
 out.service_item_mapping.forEach((m) => {
@@ -403,12 +409,11 @@ out.service_item_mapping.forEach((m) => {
 
 fs.writeFileSync(OUT_PATH, JSON.stringify(out, null, 2));
 
+console.log('Source workbook:', path.basename(WB_PATH));
 console.log('Wrote', path.relative(process.cwd(), OUT_PATH));
 console.log('\n── Summary ──');
 Object.entries(report).forEach(([k, v]) => console.log('  ' + k.padEnd(30) + v));
-console.log('\n── Mappings per service ──');
-out.service.forEach((s) => console.log('  ' + String(perService[s.id] || 0).padStart(5) + '  ' + s.name));
-console.log('\n── Price rows not assigned to any of the 7 (sample) ──');
-[...unassignedSamples].forEach((s) => console.log('  •', s));
+console.log('\n── Mappings per service (POS order) ──');
+out.service.forEach((s) => console.log('  seq ' + String(s.sequence).padStart(2) + '  ' + String(perService[s.id] || 0).padStart(4) + '  ' + s.name));
 console.log('\n── Items not found in ItemMaster (sample) ──');
 [...unmatchedItemSamples].forEach((s) => console.log('  •', s));
