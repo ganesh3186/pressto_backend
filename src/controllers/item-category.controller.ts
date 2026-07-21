@@ -69,7 +69,6 @@ export class ItemCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['item_category:read']})
   @get('/item-categories/count')
   @response(200, {
     description: 'ItemCategory model count',
@@ -82,7 +81,6 @@ export class ItemCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['item_category:read']})
   @get('/item-categories')
   @response(200, {
     description: 'Array of ItemCategory model instances',
@@ -130,7 +128,6 @@ export class ItemCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['item_category:read']})
   @get('/item-categories/{id}')
   @response(200, {
     description: 'ItemCategory model instance',

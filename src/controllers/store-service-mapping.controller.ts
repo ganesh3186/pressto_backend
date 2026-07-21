@@ -49,7 +49,6 @@ export class StoreServiceMappingController {
   // (the Create Order screen shows available/filled; no hard block here).
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:read']})
   @get('/stores/{storeId}/service-capacity')
   @response(200, {description: 'Per-service capacity (available / filled) for a store on a date'})
   async serviceCapacity(
@@ -149,7 +148,6 @@ export class StoreServiceMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:read']})
   @get('/store-service-mappings/count')
   @response(200, {
     description: 'StoreServiceMapping model count',
@@ -160,7 +158,6 @@ export class StoreServiceMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:read']})
   @get('/store-service-mappings')
   @response(200, {
     description: 'Array of StoreServiceMapping model instances',
@@ -207,7 +204,6 @@ export class StoreServiceMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store_service_mapping:read']})
   @get('/store-service-mappings/{id}')
   @response(200, {
     description: 'StoreServiceMapping model instance',

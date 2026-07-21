@@ -61,7 +61,6 @@ export class ClusterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['cluster:read']})
   @get('/clusters/count')
   @response(200, {
     description: 'Cluster model count',
@@ -72,7 +71,6 @@ export class ClusterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['cluster:read']})
   @get('/clusters')
   @response(200, {
     description: 'Array of Cluster model instances',
@@ -118,7 +116,6 @@ export class ClusterController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['cluster:read']})
   @get('/clusters/{id}')
   @response(200, {
     description: 'Cluster model instance',

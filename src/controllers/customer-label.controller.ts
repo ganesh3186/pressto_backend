@@ -61,7 +61,6 @@ export class CustomerLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['customer_label:read']})
   @get('/customer-labels/count')
   @response(200, {
     description: 'CustomerLabel model count',
@@ -74,7 +73,6 @@ export class CustomerLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['customer_label:read']})
   @get('/customer-labels')
   @response(200, {
     description: 'Array of CustomerLabel model instances',
@@ -115,7 +113,6 @@ export class CustomerLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['customer_label:read']})
   @get('/customer-labels/{id}')
   @response(200, {
     description: 'CustomerLabel model instance',

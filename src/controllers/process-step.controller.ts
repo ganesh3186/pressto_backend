@@ -71,7 +71,6 @@ export class ProcessStepController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['process_step:read']})
   @get('/process-steps/count')
   @response(200, {
     description: 'ProcessStep model count',
@@ -84,7 +83,6 @@ export class ProcessStepController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['process_step:read']})
   @get('/process-steps')
   @response(200, {
     description: 'Array of ProcessStep model instances',
@@ -132,7 +130,6 @@ export class ProcessStepController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['process_step:read']})
   @get('/process-steps/{id}')
   @response(200, {
     description: 'ProcessStep model instance',

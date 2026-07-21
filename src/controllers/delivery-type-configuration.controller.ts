@@ -51,7 +51,6 @@ export class DeliveryTypeConfigurationController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['delivery_type_configuration:read']})
   @get('/delivery-type-configuration')
   @response(200, {
     description: 'DeliveryTypeConfiguration singleton',

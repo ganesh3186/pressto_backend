@@ -81,7 +81,6 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:read']})
   @get('/service-process-mappings/by-service/{serviceId}')
   @response(200, {description: 'Process steps mapped to a service, ordered by sequence'})
   async findByService(
@@ -118,7 +117,6 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:read']})
   @get('/service-process-mappings/count')
   @response(200, {
     description: 'ServiceProcessMapping model count',
@@ -131,7 +129,6 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:read']})
   @get('/service-process-mappings')
   @response(200, {
     description: 'Array of ServiceProcessMapping model instances',
@@ -177,7 +174,6 @@ export class ServiceProcessMappingController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service_process_mapping:read']})
   @get('/service-process-mappings/{id}')
   @response(200, {
     description: 'ServiceProcessMapping model instance',

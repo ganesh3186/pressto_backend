@@ -61,7 +61,6 @@ export class CustomerDiscountGroupController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['customer_discount_group:read']})
   @get('/customer-discount-groups/count')
   @response(200, {
     description: 'CustomerDiscountGroup model count',
@@ -74,7 +73,6 @@ export class CustomerDiscountGroupController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['customer_discount_group:read']})
   @get('/customer-discount-groups')
   @response(200, {
     description: 'Array of CustomerDiscountGroup model instances',
@@ -115,7 +113,6 @@ export class CustomerDiscountGroupController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['customer_discount_group:read']})
   @get('/customer-discount-groups/{id}')
   @response(200, {
     description: 'CustomerDiscountGroup model instance',

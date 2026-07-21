@@ -69,7 +69,6 @@ export class ItemController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['item:read']})
   @get('/items/count')
   @response(200, {
     description: 'Item model count',
@@ -80,7 +79,6 @@ export class ItemController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['item:read']})
   @get('/items')
   @response(200, {
     description: 'Array of Item model instances',
@@ -126,7 +124,6 @@ export class ItemController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['item:read']})
   @get('/items/{id}')
   @response(200, {
     description: 'Item model instance',

@@ -63,7 +63,6 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['damage_type:read']})
   @get('/damage-types/count')
   @response(200, {
     description: 'DamageType model count',
@@ -76,7 +75,6 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['damage_type:read']})
   @get('/damage-types')
   @response(200, {
     description: 'Array of DamageType model instances',
@@ -117,7 +115,6 @@ export class DamageTypeController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['damage_type:read']})
   @get('/damage-types/{id}')
   @response(200, {
     description: 'DamageType model instance',

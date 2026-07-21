@@ -61,7 +61,6 @@ export class RegionController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['region:read']})
   @get('/regions/count')
   @response(200, {
     description: 'Region model count',
@@ -72,7 +71,6 @@ export class RegionController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['region:read']})
   @get('/regions')
   @response(200, {
     description: 'Array of Region model instances',
@@ -111,7 +109,6 @@ export class RegionController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['region:read']})
   @get('/regions/{id}')
   @response(200, {
     description: 'Region model instance',

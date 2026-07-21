@@ -63,7 +63,6 @@ export class StainController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['stain:read']})
   @get('/stains/count')
   @response(200, {
     description: 'Stain model count',
@@ -74,7 +73,6 @@ export class StainController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['stain:read']})
   @get('/stains')
   @response(200, {
     description: 'Array of Stain model instances',
@@ -113,7 +111,6 @@ export class StainController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['stain:read']})
   @get('/stains/{id}')
   @response(200, {
     description: 'Stain model instance',

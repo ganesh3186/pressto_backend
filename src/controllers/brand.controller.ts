@@ -63,7 +63,6 @@ export class BrandController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['brand:read']})
   @get('/brands/count')
   @response(200, {
     description: 'Brand model count',
@@ -74,7 +73,6 @@ export class BrandController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['brand:read']})
   @get('/brands')
   @response(200, {
     description: 'Array of Brand model instances',
@@ -113,7 +111,6 @@ export class BrandController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['brand:read']})
   @get('/brands/{id}')
   @response(200, {
     description: 'Brand model instance',

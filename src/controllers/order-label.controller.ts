@@ -56,7 +56,6 @@ export class OrderLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['order_label:read']})
   @get('/order-labels/count')
   @response(200, {
     description: 'OrderLabel model count',
@@ -69,7 +68,6 @@ export class OrderLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['order_label:read']})
   @get('/order-labels')
   @response(200, {
     description: 'Array of OrderLabel model instances',
@@ -110,7 +108,6 @@ export class OrderLabelController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['order_label:read']})
   @get('/order-labels/{id}')
   @response(200, {
     description: 'OrderLabel model instance',

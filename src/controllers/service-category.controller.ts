@@ -61,7 +61,6 @@ export class ServiceCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service_category:read']})
   @get('/service-categories/count')
   @response(200, {
     description: 'ServiceCategory model count',
@@ -74,7 +73,6 @@ export class ServiceCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service_category:read']})
   @get('/service-categories')
   @response(200, {
     description: 'Array of ServiceCategory model instances',
@@ -115,7 +113,6 @@ export class ServiceCategoryController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service_category:read']})
   @get('/service-categories/{id}')
   @response(200, {
     description: 'ServiceCategory model instance',

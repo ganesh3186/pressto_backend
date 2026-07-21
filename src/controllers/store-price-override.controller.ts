@@ -58,7 +58,6 @@ export class StorePriceOverrideController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store_price_override:read']})
   @get('/store-price-overrides/count')
   @response(200, {
     description: 'StorePriceOverride model count',
@@ -69,7 +68,6 @@ export class StorePriceOverrideController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store_price_override:read']})
   @get('/store-price-overrides')
   @response(200, {
     description: 'Array of StorePriceOverride model instances',
@@ -115,7 +113,6 @@ export class StorePriceOverrideController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store_price_override:read']})
   @get('/store-price-overrides/{id}')
   @response(200, {
     description: 'StorePriceOverride model instance',

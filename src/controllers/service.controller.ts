@@ -69,7 +69,6 @@ export class ServiceController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service:read']})
   @get('/services/count')
   @response(200, {
     description: 'Service model count',
@@ -80,7 +79,6 @@ export class ServiceController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service:read']})
   @get('/services')
   @response(200, {
     description: 'Array of Service model instances',
@@ -129,7 +127,6 @@ export class ServiceController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['service:read']})
   @get('/services/{id}')
   @response(200, {
     description: 'Service model instance',

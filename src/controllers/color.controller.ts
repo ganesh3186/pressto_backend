@@ -58,7 +58,6 @@ export class ColorController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['color:read']})
   @get('/colors/count')
   @response(200, {
     description: 'Color model count',
@@ -69,7 +68,6 @@ export class ColorController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['color:read']})
   @get('/colors')
   @response(200, {
     description: 'Array of Color model instances',
@@ -108,7 +106,6 @@ export class ColorController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['color:read']})
   @get('/colors/{id}')
   @response(200, {
     description: 'Color model instance',

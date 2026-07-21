@@ -74,7 +74,6 @@ export class PriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['price_list:read']})
   @get('/price-lists/count')
   @response(200, {
     description: 'PriceList model count',
@@ -85,7 +84,6 @@ export class PriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['price_list:read']})
   @get('/price-lists')
   @response(200, {
     description: 'Array of PriceList model instances',
@@ -108,7 +106,6 @@ export class PriceListController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['price_list:read']})
   @get('/price-lists/{id}')
   @response(200, {
     description: 'PriceList model instance',

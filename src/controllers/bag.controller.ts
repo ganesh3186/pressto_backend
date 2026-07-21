@@ -43,7 +43,6 @@ export class BagController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['bag:read']})
   @get('/bags/count')
   @response(200, {
     description: 'Bag model count',
@@ -54,7 +53,6 @@ export class BagController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['bag:read']})
   @get('/bags')
   @response(200, {
     description: 'Array of Bag model instances',
@@ -72,7 +70,6 @@ export class BagController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['bag:read']})
   @get('/bags/{id}')
   @response(200, {
     description: 'Bag model instance',

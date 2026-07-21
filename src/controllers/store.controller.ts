@@ -61,7 +61,6 @@ export class StoreController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store:read']})
   @get('/stores/count')
   @response(200, {
     description: 'Store model count',
@@ -72,7 +71,6 @@ export class StoreController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store:read']})
   @get('/stores')
   @response(200, {
     description: 'Array of Store model instances',
@@ -116,7 +114,6 @@ export class StoreController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['store:read']})
   @get('/stores/{id}')
   @response(200, {
     description: 'Store model instance',
