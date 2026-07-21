@@ -136,6 +136,7 @@ export class OrderController {
     @param.query.string('dateTo') dateTo?: string,
     @param.query.string('orderType') orderType?: string,
     @param.query.string('status') status?: string,
+    @param.query.string('customerId') customerId?: string,
     @param.query.number('limit') limit?: number,
     @param.query.number('skip') skip?: number,
   ): Promise<object> {
@@ -147,6 +148,10 @@ export class OrderController {
       dateTo,
       orderType,
       status,
+      // Scopes the list to one customer — POS uses this for Club & Pay and the
+      // customer's recent orders. Undeclared params are dropped by LoopBack, so
+      // this must be an explicit param, not part of a `filter` object.
+      customerId,
       limit,
       skip,
       storeIds,

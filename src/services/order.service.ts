@@ -1076,12 +1076,16 @@ export class OrderService {
     const customerIds = [...new Set(orders.map(o => o.customerId))];
     const parentOrderIds = [...new Set(orders.map(o => (o as any).parentOrderId).filter(Boolean))];
 
-    const [customers, paymentTxns, parentOrders] = await Promise.all([
+    const [customers, paymentTxns, parentOrders, orderItems] = await Promise.all([
       this.customerRepo.find({where: {id: {inq: customerIds}} as any}),
       this.paymentTransactionRepo.find({where: {orderId: {inq: orderIds}} as any}),
       parentOrderIds.length
         ? this.orderRepo.find({where: {id: {inq: parentOrderIds}} as any, fields: {id: true, orderNumber: true} as any})
         : Promise.resolve([]),
+      this.orderItemRepo.find({
+        where: {orderId: {inq: orderIds}} as any,
+        fields: {orderId: true, quantity: true} as any,
+      }),
     ]);
 
     const userIds = [...new Set(customers.map(c => c.userId).filter(Boolean))];
@@ -1095,6 +1099,13 @@ export class OrderService {
     const customerMap = new Map(customers.map(c => [c.id, c]));
     const userMap = new Map(users.map(u => [u.id, u]));
     const parentOrderMap = new Map(parentOrders.map(o => [o.id, (o as any).orderNumber]));
+
+    // Pieces in the order (3 shirts + 1 trouser = 4), not the number of item rows.
+    const itemsCountByOrder = new Map<string, number>();
+    for (const oi of orderItems) {
+      const qty = Number(oi.quantity ?? 0) || 0;
+      itemsCountByOrder.set(oi.orderId, (itemsCountByOrder.get(oi.orderId) ?? 0) + qty);
+    }
 
     const paymentsByOrder = new Map<string, number>();
     const lastPaymentByOrder = new Map<string, {mode: string | null; paidAt: Date | null}>();
@@ -1136,6 +1147,7 @@ export class OrderService {
         deliveryType: order.deliveryType,
         createdAt: order.createdAt,
         deliveryDate: order.deliveryDate,
+        orderItemsCount: itemsCountByOrder.get(order.id) ?? 0,
         subtotal: order.subtotal,
         discountAmount: order.discountAmount,
         taxAmount: order.taxAmount,
