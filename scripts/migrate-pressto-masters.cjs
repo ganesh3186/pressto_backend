@@ -23,6 +23,25 @@ const OUT_PATH = path.resolve(__dirname, '../src/data/seed-masters-pressto.json'
 const uuid = () => crypto.randomUUID();
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
+// Services that are really charges (packaging / misc), not things an item is
+// "serviced" with. These are forced into additional_charge_master even though the
+// price list maps them to an item.
+const FORCE_TO_CHARGE = [
+  'Freshener',
+  'Miscelleneous Xtra Large',
+  'Premium Packing M-39',
+  'Premium Packing M-40',
+  'Premium Packing M-41',
+  'Premium Packing M-42',
+  'Premium Packing M-43',
+  'Premium Packing M-44',
+  'Premium Packing M-45',
+  'Premium Packing F-37',
+  'Premium Packing F-39',
+  'Premium Packing M Discounted',
+  'Premium Packing W Discounted',
+];
+
 // Region code → state (the model requires `state`; the sheet doesn't carry it).
 const REGION_STATE = {
   BLR: 'Karnataka',
@@ -365,13 +384,17 @@ report.priceDuplicatePair = dup;
 // (its price rows never matched an item) is unusable as a service, so it becomes
 // a flat charge instead — priced at the lowest amount seen in the price list.
 const usedServiceIds = new Set(out.service_item_mapping.map((m) => m.serviceId));
+const forcedToCharge = new Set(FORCE_TO_CHARGE.map(norm));
 const keptServices = [];
 const movedMultiPrice = [];
+const movedServiceIds = new Set();
 out.service.forEach((s) => {
-  if (usedServiceIds.has(s.id)) {
+  // Keep only services that map to an item AND aren't on the force-to-charge list.
+  if (usedServiceIds.has(s.id) && !forcedToCharge.has(norm(s.name))) {
     keptServices.push(s);
     return;
   }
+  movedServiceIds.add(s.id);
   const key = norm(s.name);
   const priceSet = pricesByName.get(key);
   const prices = priceSet ? [...priceSet].filter((n) => Number.isFinite(n)) : [];
@@ -392,7 +415,12 @@ out.service.forEach((s) => {
 });
 report.servicesMovedToCharge = out.service.length - keptServices.length;
 out.service = keptServices;
+// A moved service can't keep its mappings — drop them.
+const mappingsBefore = out.service_item_mapping.length;
+out.service_item_mapping = out.service_item_mapping.filter((m) => !movedServiceIds.has(m.serviceId));
+report.mappingsDroppedWithMovedServices = mappingsBefore - out.service_item_mapping.length;
 report.service = out.service.length;
+report.service_item_mapping = out.service_item_mapping.length;
 report.additional_charge_master = out.additional_charge_master.length;
 
 fs.writeFileSync(OUT_PATH, JSON.stringify(out, null, 2));
