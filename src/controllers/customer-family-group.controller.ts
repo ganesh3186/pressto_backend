@@ -37,12 +37,56 @@ export class CustomerFamilyGroupController {
     return customer.id;
   }
 
+  /**
+   * The group this customer OWNS. Used by every write path — only the primary
+   * customer may rename the group or add/edit/remove members.
+   */
   private async resolveGroup(primaryCustomerId: string) {
     const group = await this.groupRepository.findOne({
       where: {primaryCustomerId, isDeleted: false},
     });
     if (!group) throw new HttpErrors.NotFound('Family group not found. Create one first.');
     return group;
+  }
+
+  /**
+   * The group this customer can SEE — the one they own, or failing that the one
+   * they were added to as a member. Members get read access so they can tell
+   * which family they belong to; they still cannot modify it.
+   */
+  private async resolveVisibleGroup(customerId: string) {
+    const owned = await this.groupRepository.findOne({
+      where: {primaryCustomerId: customerId, isDeleted: false},
+    });
+    if (owned) return {group: owned, role: 'primary' as const, membership: null};
+
+    const membership = await this.memberRepository.findOne({
+      where: {customerId, isDeleted: false},
+      order: ['createdAt ASC'],
+    });
+    if (membership?.groupId) {
+      const group = await this.groupRepository.findOne({
+        where: {id: membership.groupId, isDeleted: false},
+      });
+      if (group) return {group, role: 'member' as const, membership};
+    }
+
+    throw new HttpErrors.NotFound('You do not belong to any family group yet.');
+  }
+
+  /** Name of the customer who owns the group, so a member knows whose it is. */
+  private async describePrimary(primaryCustomerId?: string) {
+    if (!primaryCustomerId) return null;
+    const c = await this.customerRepository.findOne({
+      where: {id: primaryCustomerId, isDeleted: false},
+      fields: {id: true, firstName: true, lastName: true, customerCode: true},
+    });
+    if (!c) return null;
+    return {
+      id: c.id,
+      name: `${c.firstName ?? ''} ${c.lastName ?? ''}`.trim(),
+      customerCode: c.customerCode,
+    };
   }
 
   // ─── Group ────────────────────────────────────────────────────────────────
@@ -86,12 +130,20 @@ export class CustomerFamilyGroupController {
   async getGroup(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
-    const primaryCustomerId = await this.resolveCustomerId(currentUser[securityId]);
-    const group = await this.resolveGroup(primaryCustomerId);
+    const customerId = await this.resolveCustomerId(currentUser[securityId]);
+    // Works for the owner AND for someone who was added as a member.
+    const {group, role, membership} = await this.resolveVisibleGroup(customerId);
     const members = await this.memberRepository.find({
       where: {groupId: group.id, isDeleted: false},
     });
-    return {...group, members};
+    return {
+      ...group,
+      role, // 'primary' = you own it, 'member' = you were added to it
+      canManage: role === 'primary',
+      primaryCustomer: await this.describePrimary(group.primaryCustomerId),
+      myMemberId: membership?.id ?? null,
+      members,
+    };
   }
 
   @authenticate('jwt')
@@ -177,12 +229,13 @@ export class CustomerFamilyGroupController {
   async listMembers(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
-    const primaryCustomerId = await this.resolveCustomerId(currentUser[securityId]);
-    const group = await this.resolveGroup(primaryCustomerId);
+    const customerId = await this.resolveCustomerId(currentUser[securityId]);
+    // Readable by the owner and by any member of the group.
+    const {group, role} = await this.resolveVisibleGroup(customerId);
     const members = await this.memberRepository.find({
       where: {groupId: group.id, isDeleted: false},
     });
-    return {members};
+    return {members, role, canManage: role === 'primary'};
   }
 
   @authenticate('jwt')
