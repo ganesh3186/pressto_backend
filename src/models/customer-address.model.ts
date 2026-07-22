@@ -1,4 +1,5 @@
 import {Entity, belongsTo, model, property} from '@loopback/repository';
+import {AddressType} from './address-type.enum';
 import {Customer} from './customer.model';
 
 @model({
@@ -21,8 +22,16 @@ export class CustomerAddress extends Entity {
   @belongsTo(() => Customer)
   customerId: string;
 
+  // What kind of place this is — see AddressType (home, office, hotel, other).
+  // Left unconstrained because legacy rows still hold role values like
+  // 'billing', which the business-customer GST flow depends on.
   @property({type: 'string'})
   addressType?: string;
+
+  // What the customer calls it, e.g. "Father's home", "2nd office". Free text,
+  // because two addresses can share a type and still need telling apart.
+  @property({type: 'string'})
+  addressName?: string;
 
   @property({type: 'string', required: true, postgresql: {dataType: 'text'}})
   addressLine1: string;

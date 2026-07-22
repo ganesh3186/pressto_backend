@@ -42,6 +42,7 @@ export class CustomerAddressController {
             properties: {
               customerId: {type: 'string', format: 'uuid'},
               addressType: {type: 'string'},
+              addressName: {type: 'string', description: "e.g. Father's home, 2nd office"},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               landmark: {type: 'string'},
@@ -59,7 +60,10 @@ export class CustomerAddressController {
     })
     body: {
       customerId: string;
+      // See AddressType — not typed as the enum while legacy role values
+      // ('billing', 'primary') still flow through this field.
       addressType?: string;
+      addressName?: string;
       addressLine1: string;
       addressLine2?: string;
       landmark?: string;
@@ -116,6 +120,7 @@ export class CustomerAddressController {
             type: 'object',
             properties: {
               addressType: {type: 'string'},
+              addressName: {type: 'string', description: "e.g. Father's home, 2nd office"},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               landmark: {type: 'string'},

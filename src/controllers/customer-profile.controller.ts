@@ -243,6 +243,7 @@ export class CustomerProfileController {
             required: ['addressLine1', 'city', 'state', 'pincode'],
             properties: {
               addressType: {type: 'string'},
+              addressName: {type: 'string', description: "e.g. Father's home, 2nd office"},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               landmark: {type: 'string'},
@@ -277,6 +278,7 @@ export class CustomerProfileController {
             type: 'object',
             properties: {
               addressType: {type: 'string'},
+              addressName: {type: 'string', description: "e.g. Father's home, 2nd office"},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               landmark: {type: 'string'},

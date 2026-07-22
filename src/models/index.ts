@@ -47,6 +47,7 @@ export * from './security-deposit-status.enum';
 export * from './security-deposit-transaction-type.enum';
 export * from './reference-type.enum';
 export * from './contact-relationship.enum';
+export * from './address-type.enum';
 export * from './customer-address.model';
 export * from './customer-contact.model';
 export * from './customer-phone.model';
