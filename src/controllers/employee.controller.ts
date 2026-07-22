@@ -114,12 +114,23 @@ export class EmployeeController {
       pincode: string;
     },
   ): Promise<object> {
-    // Pre-transaction validations
+    // Customers and employees share the users table, and login resolves a single
+    // user by email. So when this phone or email already belongs to someone —
+    // typically a customer who has now been hired — the employee record is
+    // attached to that existing login rather than refused. One person, one
+    // account, roles on top. Only a genuine second employee record is rejected.
     const existingUser = await this.usersRepository.findOne({
       where: {or: [{email: body.email}, {phone: body.phone}]},
     });
     if (existingUser) {
-      throw new HttpErrors.BadRequest('Email or phone already in use.');
+      const alreadyEmployee = await this.employeeRepository.findOne({
+        where: {userId: existingUser.id, isDeleted: false},
+      });
+      if (alreadyEmployee) {
+        throw new HttpErrors.Conflict(
+          `That phone or email already belongs to employee ${alreadyEmployee.employeeCode}.`,
+        );
+      }
     }
 
     const roles = await Promise.all(
@@ -139,22 +150,26 @@ export class EmployeeController {
     const employeeCode = `EMP${String(maxNum + 1).padStart(3, '0')}`;
 
     const hashedPassword = await this.hasher.hashPassword(body.password);
-    const username = await this.generateUniqueUsername(body.email);
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
-      const user = await this.usersRepository.create(
-        {
-          fullName: `${body.firstName} ${body.lastName}`,
-          username,
-          email: body.email,
-          countryCode: body.countryCode || '+91',
-          phone: body.phone,
-          password: hashedPassword,
-          isActive: true,
-        },
-        {transaction: tx},
-      );
+      // Reuse the existing login when this person is already in the system —
+      // their password is left alone, since changing it would lock them out of
+      // the account they already use.
+      const user = existingUser
+        ? existingUser
+        : await this.usersRepository.create(
+            {
+              fullName: `${body.firstName} ${body.lastName}`,
+              username: await this.generateUniqueUsername(body.email),
+              email: body.email,
+              countryCode: body.countryCode || '+91',
+              phone: body.phone,
+              password: hashedPassword,
+              isActive: true,
+            },
+            {transaction: tx},
+          );
 
       const employee = await this.employeeRepository.create(
         {
@@ -177,6 +192,15 @@ export class EmployeeController {
       );
 
       for (const role of roles) {
+        // An existing login may already hold some of these — adding the same
+        // role twice would leave duplicate rows behind.
+        const alreadyAssigned = existingUser
+          ? await this.userRolesRepository.findOne({
+              where: {usersId: user.id, rolesId: role.id},
+            })
+          : null;
+        if (alreadyAssigned) continue;
+
         await this.userRolesRepository.create(
           {usersId: user.id, rolesId: role.id},
           {transaction: tx},
@@ -281,6 +305,7 @@ export class EmployeeController {
               email: {type: 'string', format: 'email'},
               countryCode: {type: 'string'},
               phone: {type: 'string'},
+              password: {type: 'string', minLength: 6, description: 'Resets the login password'},
               isActive: {type: 'boolean'},
               // employee fields
               employeeCode: {type: 'string'},
@@ -310,6 +335,7 @@ export class EmployeeController {
       email?: string;
       countryCode?: string;
       phone?: string;
+      password?: string;
       isActive?: boolean;
       employeeCode?: string;
       firstName?: string;
@@ -331,10 +357,16 @@ export class EmployeeController {
   ): Promise<void> {
     const employee = await this.employeeRepository.findById(id);
 
-    const {roleValues, ...rest} = body;
+    const {roleValues, password, ...rest} = body;
 
     const userFields: Record<string, unknown> = {};
     const employeeFields: Record<string, unknown> = {};
+
+    // A new password is hashed here — never written through as plain text.
+    // Blank means "leave it alone", so the form can submit an empty field.
+    if (password?.trim()) {
+      userFields.password = await this.hasher.hashPassword(password.trim());
+    }
 
     const userKeys = ['fullName', 'email', 'countryCode', 'phone', 'isActive'];
     const employeeKeys = [
