@@ -63,7 +63,7 @@ export class CustomerPhoneController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  // @authorize({roles: ['super_admin']})
   @get('/customer-phones')
   @response(200, {
     description: 'Array of CustomerPhone model instances for a customer',
@@ -80,7 +80,7 @@ export class CustomerPhoneController {
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin']})
-  @get('/customer-phones/{id}')
+  // @get('/customer-phones/{id}')
   @response(200, {
     description: 'CustomerPhone model instance',
     content: {'application/json': {schema: getModelSchemaRef(CustomerPhone)}},

@@ -81,7 +81,7 @@ export class CustomerAddressController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  // @authorize({roles: ['super_admin']})
   @get('/customer-addresses')
   @response(200, {
     description: 'Array of CustomerAddress model instances for a customer',
@@ -97,7 +97,7 @@ export class CustomerAddressController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  // @authorize({roles: ['super_admin']})
   @get('/customer-addresses/{id}')
   @response(200, {
     description: 'CustomerAddress model instance',
