@@ -118,6 +118,19 @@ function roundRupee(value: unknown): number {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
+/**
+ * What is still owed, in whole rupees.
+ *
+ * Money is compared at rupee resolution everywhere — order totals are stored
+ * rounded, and subtracting raw floats otherwise produces noise like
+ * `2685.1099999999997`, which then rejects a perfectly good ₹2685.11 payment.
+ * Rounding both sides before subtracting also means a legacy order carrying
+ * paise can still settle to exactly zero.
+ */
+function rupeeBalance(totalAmount: unknown, collected: unknown): number {
+  return Math.max(0, roundRupee(totalAmount) - roundRupee(collected));
+}
+
 @injectable({scope: BindingScope.TRANSIENT})
 export class OrderService {
   constructor(
@@ -684,7 +697,7 @@ export class OrderService {
         payments: createdPayments,
         walletAmountDeducted: walletAmount,
         totalCollected,
-        balanceDue: Math.max(0, totalAmount - totalCollected),
+        balanceDue: rupeeBalance(totalAmount, totalCollected),
       };
     } catch (err) {
       await tx.rollback();
@@ -728,6 +741,304 @@ export class OrderService {
     }
 
     return {};
+  }
+
+  // ─── Edit Order Items ───────────────────────────────────────────────────────
+  // The counter changing what is on an order after it was booked — a customer
+  // ringing up to add a shirt, or handing over one fewer than counted.
+  //
+  // Allowed up to in_inspection: past that the pieces are on the factory floor.
+  // Takes the full desired item list and diffs it, so it mirrors the POS cart.
+  // Garments are reconciled to match, and the order total is recalculated from
+  // scratch using the same rules as order creation. Money is not touched — the
+  // difference simply becomes balance due, collected through the normal flow.
+
+  private static readonly ITEM_EDITABLE_STATUSES = new Set<OrderStatus>([
+    OrderStatus.DRAFT,
+    OrderStatus.CONFIRMED,
+    OrderStatus.RECEIVED_AT_STORE,
+    OrderStatus.IN_INSPECTION,
+  ]);
+
+  async updateOrderItems(
+    orderId: string,
+    desiredItems: {
+      serviceId: string;
+      itemId: string;
+      quantity: number;
+      additionalServiceIds?: string[];
+      additionalChargeIds?: string[];
+      specialInstructions?: string;
+      specialInstructionMediaIds?: string[];
+      remarks?: string;
+    }[],
+    changedBy: string,
+  ): Promise<object> {
+    const {v4} = await import('uuid');
+
+    const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    if (!OrderService.ITEM_EDITABLE_STATUSES.has(order.status as OrderStatus)) {
+      throw new HttpErrors.BadRequest(
+        `Items cannot be changed once the order is '${order.status}'. ` +
+          'They are editable up to inspection only.',
+      );
+    }
+
+    if (!desiredItems?.length) {
+      throw new HttpErrors.BadRequest('An order must have at least one item.');
+    }
+    if (desiredItems.some(i => !i.serviceId || !i.itemId || Number(i.quantity) < 1)) {
+      throw new HttpErrors.BadRequest('Every item needs a service, an item and a quantity of at least 1.');
+    }
+
+    // A line is identified by service + item, matching how POS keys its cart.
+    const lineKey = (serviceId: string, itemId: string) => `${serviceId}::${itemId}`;
+    const desiredByKey = new Map(desiredItems.map(i => [lineKey(i.serviceId, i.itemId), i]));
+    if (desiredByKey.size !== desiredItems.length) {
+      throw new HttpErrors.BadRequest('The same service and item appears twice — merge them into one line.');
+    }
+
+    const existingItems = await this.orderItemRepo.find({where: {orderId}});
+    const existingByKey = new Map(existingItems.map(oi => [lineKey(oi.serviceId, oi.itemId), oi]));
+
+    // Removals are only safe while every garment on the line is still untouched.
+    const removableGarments = await this.collectRemovableGarments(
+      existingItems,
+      desiredByKey,
+      lineKey,
+    );
+
+    const deliveryMultiplier = 1 + (Number(order.deliveryTypePercentage) || 0) / 100;
+    const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED' as any});
+
+    try {
+      // ── Lines that stay or arrive ──────────────────────────────────────────
+      for (const [key, desired] of desiredByKey) {
+        const pricing = await this.resolvePricing(order.storeId!, desired.serviceId, desired.itemId);
+
+        let additionalServicesUnitPrice = 0;
+        for (const addlServiceId of desired.additionalServiceIds ?? []) {
+          const addl = await this.resolvePricing(order.storeId!, addlServiceId, desired.itemId, {
+            additional: true,
+          });
+          additionalServicesUnitPrice += addl.resolvedPrice;
+        }
+
+        const unitPrice = parseFloat(
+          ((pricing.resolvedPrice + additionalServicesUnitPrice) * deliveryMultiplier).toFixed(2),
+        );
+        const totalPrice = parseFloat((unitPrice * desired.quantity).toFixed(2));
+
+        // Note: estimatedDurationInDays is deliberately not stored — OrderItem
+        // has no such column. Creation only uses it in memory to derive the
+        // order's delivery date, which an edit leaves alone (see below).
+        const fields = {
+          quantity: desired.quantity,
+          basePrice: pricing.basePrice,
+          appliedPercentage: pricing.appliedPercentage ?? undefined,
+          priceSource: pricing.priceSource,
+          resolvedPrice: pricing.resolvedPrice,
+          unitPrice,
+          totalPrice,
+          specialInstructions: desired.specialInstructions,
+          specialInstructionMediaIds: desired.specialInstructionMediaIds,
+          remarks: desired.remarks,
+          additionalServiceIds: desired.additionalServiceIds,
+        };
+
+        const existing = existingByKey.get(key);
+        const orderItemId = existing
+          ? (await this.orderItemRepo.updateById(existing.id, fields, {transaction: tx}), existing.id)
+          : (
+              await this.orderItemRepo.create(
+                {orderId, serviceId: desired.serviceId, itemId: desired.itemId, ...fields},
+                {transaction: tx},
+              )
+            ).id;
+
+        // Item-level charges are replaced wholesale — simpler than diffing, and
+        // they are always sent together with the line.
+        await this.orderItemChargeRepo.deleteAll({orderItemId} as any, {transaction: tx});
+        for (const chargeId of desired.additionalChargeIds ?? []) {
+          const charge = await this.additionalChargeRepo.findById(chargeId);
+          await this.orderItemChargeRepo.create(
+            {orderItemId, additionalChargeId: chargeId, amount: Number(charge.defaultAmount)},
+            {transaction: tx},
+          );
+        }
+      }
+
+      // ── Lines that leave ───────────────────────────────────────────────────
+      for (const existing of existingItems) {
+        if (desiredByKey.has(lineKey(existing.serviceId, existing.itemId))) continue;
+        await this.orderItemChargeRepo.deleteAll({orderItemId: existing.id} as any, {transaction: tx});
+        await this.orderItemRepo.deleteById(existing.id, {transaction: tx});
+      }
+
+      // ── Garments that leave ────────────────────────────────────────────────
+      const now = new Date();
+      for (const garment of removableGarments) {
+        await this.garmentRepo.updateById(
+          garment.id,
+          {isDeleted: true, deletedAt: now as unknown as Date},
+          {transaction: tx},
+        );
+      }
+
+      await tx.commit();
+    } catch (err) {
+      await tx.rollback();
+      throw err;
+    }
+
+    // Garments for added items and increased quantities. Runs outside the
+    // transaction because autoCreateGarments manages its own sequence, and it
+    // only applies once the order has physically arrived.
+    let garmentsCreated = 0;
+    if (order.status !== OrderStatus.DRAFT && order.status !== OrderStatus.CONFIRMED) {
+      garmentsCreated = (await this.autoCreateGarments(orderId, changedBy, v4)).length;
+    }
+
+    const totals = await this.recalculateOrderTotals(orderId);
+
+    await this.statusHistoryRepo.create({
+      id: v4(),
+      orderId,
+      status: order.status!,
+      changedAt: new Date(),
+      changedBy,
+      remarks: `Items edited at counter — total now ₹${totals.totalAmount}`,
+    });
+
+    return {
+      message: 'Order items updated.',
+      ...totals,
+      garmentsCreated,
+      garmentsRemoved: removableGarments.length,
+    };
+  }
+
+  /**
+   * Garments to drop for lines that shrank or disappeared — newest tag first, so
+   * the pieces already handled keep their identity.
+   *
+   * Refuses rather than guesses: if a garment has moved past inspection, is on
+   * hold or was returned, the line cannot shrink and the caller is told why.
+   */
+  private async collectRemovableGarments(
+    existingItems: {id: string; serviceId: string; itemId: string; quantity: number}[],
+    desiredByKey: Map<string, {quantity: number}>,
+    lineKey: (serviceId: string, itemId: string) => string,
+  ) {
+    const shrinking = existingItems
+      .map(oi => {
+        const desired = desiredByKey.get(lineKey(oi.serviceId, oi.itemId));
+        const targetQty = desired ? Number(desired.quantity) : 0;
+        return {orderItem: oi, drop: oi.quantity - targetQty};
+      })
+      .filter(row => row.drop > 0);
+
+    if (!shrinking.length) return [];
+
+    const doomed: {id: string; garmentTagNumber?: string}[] = [];
+    for (const {orderItem, drop} of shrinking) {
+      const garments = await this.garmentRepo.find({
+        where: {orderItemId: orderItem.id, isDeleted: false} as any,
+        order: ['garmentTagNumber DESC'],
+      });
+      if (!garments.length) continue; // nothing tagged yet — order item alone is enough
+
+      const blocked = garments.find(
+        g =>
+          g.status !== GarmentStatus.RECEIVED && g.status !== GarmentStatus.IN_INSPECTION,
+      );
+      if (blocked) {
+        throw new HttpErrors.Conflict(
+          `Cannot remove pieces: garment ${blocked.garmentTagNumber} is '${blocked.status}'. ` +
+            'Only pieces still at the counter or inspection desk can be removed.',
+        );
+      }
+
+      doomed.push(...garments.slice(0, drop));
+    }
+
+    return doomed;
+  }
+
+  /**
+   * Rebuilds subtotal, discount, tax and total from whatever is currently on the
+   * order, using the same rules as creation. Never lowers the total below what
+   * has already been collected — refunds are a separate decision.
+   */
+  private async recalculateOrderTotals(orderId: string) {
+    const order = await this.orderRepo.findById(orderId);
+    const customer = await this.customerRepo.findById(order.customerId);
+
+    const items = await this.orderItemRepo.find({where: {orderId}});
+    const itemIds = items.map(i => i.id);
+    const [itemCharges, orderCharges] = await Promise.all([
+      itemIds.length
+        ? this.orderItemChargeRepo.find({where: {orderItemId: {inq: itemIds}} as any})
+        : Promise.resolve([]),
+      this.orderChargeRepo.find({where: {orderId}}),
+    ]);
+
+    const itemsSubtotal = parseFloat(
+      (
+        items.reduce((s, i) => s + Number(i.totalPrice ?? 0), 0) +
+        itemCharges.reduce((s, c) => s + Number(c.amount ?? 0), 0)
+      ).toFixed(2),
+    );
+    const orderChargesTotal = orderCharges.reduce((s, c) => s + Number(c.amount ?? 0), 0);
+    const subtotal = parseFloat((itemsSubtotal + orderChargesTotal).toFixed(2));
+
+    const {discountAmount, discountType} = this.applyCustomerDiscount(
+      subtotal,
+      customer.defaultDiscountType,
+      customer.defaultDiscountValue ? Number(customer.defaultDiscountValue) : 0,
+    );
+
+    const gstConfig = await this.gstConfigRepo.findOne({where: {isActive: true, isDeleted: false}});
+    const taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
+    const gstRate = gstConfig
+      ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
+      : 0;
+    const taxAmount = gstRate > 0 ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2)) : 0;
+    const totalAmount = roundRupee(taxableAmount + taxAmount);
+
+    // Dropping the total below what the customer already paid would leave the
+    // order owing them money, and the refund route is not decided yet.
+    const payments = await this.paymentTransactionRepo.find({where: {orderId}});
+    const paid = payments.reduce(
+      (s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)),
+      0,
+    );
+    const collected = Number(order.allocatedPayment ?? 0) > 0 ? Number(order.allocatedPayment) : paid;
+    if (roundRupee(totalAmount) < roundRupee(collected)) {
+      throw new HttpErrors.Conflict(
+        `New total ₹${roundRupee(totalAmount)} is below the ₹${roundRupee(collected)} already ` +
+          'collected. Refund the difference first, then edit the items.',
+      );
+    }
+
+    await this.orderRepo.updateById(orderId, {
+      subtotal,
+      discountAmount,
+      discountType,
+      taxAmount,
+      totalAmount,
+    });
+
+    return {
+      subtotal,
+      discountAmount,
+      taxAmount,
+      totalAmount,
+      totalCollected: collected,
+      balanceDue: rupeeBalance(totalAmount, collected),
+    };
   }
 
   // ─── Counter inspection completed ───────────────────────────────────────────
@@ -997,7 +1308,7 @@ export class OrderService {
     // counted toward what the customer has paid.
     const payments = await this.paymentTransactionRepo.find({where: {orderId: params.orderId}});
     const paid = payments.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)), 0);
-    const balanceDue = Math.round((Number(order.totalAmount ?? 0) - paid) * 100) / 100;
+    const balanceDue = rupeeBalance(order.totalAmount, paid);
     if (balanceDue > 0) {
       throw new HttpErrors.BadRequest(
         `Cannot hand over: ₹${balanceDue} is still due. Collect the balance first.`,
@@ -1365,11 +1676,11 @@ export class OrderService {
       // Regular orders: use transaction total
       const totalCollected = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
       const totalAmount = Number(order.totalAmount ?? 0);
-      const balanceDue = Math.max(0, totalAmount - totalCollected);
+      const balanceDue = rupeeBalance(totalAmount, totalCollected);
 
       let paymentStatus: string;
-      if (totalAmount === 0) paymentStatus = 'pending';
-      else if (totalCollected >= totalAmount) paymentStatus = 'paid';
+      if (roundRupee(totalAmount) === 0) paymentStatus = 'pending';
+      else if (balanceDue === 0) paymentStatus = 'paid';
       else if (totalCollected > 0) paymentStatus = 'partial';
       else paymentStatus = 'pending';
 
@@ -1556,7 +1867,7 @@ export class OrderService {
     // Regular order: transaction total
     const totalCollected = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
     const totalAmount = Number(order.totalAmount ?? 0);
-    const balanceDue = Math.max(0, totalAmount - totalCollected);
+    const balanceDue = rupeeBalance(totalAmount, totalCollected);
 
     return {
       order: {
@@ -1598,7 +1909,14 @@ export class OrderService {
       paymentTransactions,
       totalCollected,
       balanceDue,
-      paymentStatus: totalAmount === 0 ? 'pending' : totalCollected >= totalAmount ? 'paid' : totalCollected > 0 ? 'partial' : 'pending',
+      paymentStatus:
+        roundRupee(totalAmount) === 0
+          ? 'pending'
+          : balanceDue === 0
+            ? 'paid'
+            : totalCollected > 0
+              ? 'partial'
+              : 'pending',
     };
   }
 
@@ -1915,7 +2233,7 @@ export class OrderService {
         subOrderItems: createdSubItems,
         garmentsSplit: garments.length,
         allocatedPayment,
-        balanceDue: Math.max(0, subOrderTotal - allocatedPayment),
+        balanceDue: rupeeBalance(subOrderTotal, allocatedPayment),
       };
     } catch (err) {
       await tx.rollback();
@@ -1941,13 +2259,15 @@ export class OrderService {
     // Check how much is still due
     const existing = await this.paymentTransactionRepo.find({where: {orderId}});
     const alreadyPaid = existing.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
-    const due = Math.max(0, Number(order.totalAmount) - alreadyPaid);
+    const due = rupeeBalance(order.totalAmount, alreadyPaid);
 
     const thisPayment = Number(payment?.amount ?? 0);
     const thisWallet = Number(walletAmount ?? 0);
     const thisTotal = thisPayment + thisWallet;
 
-    if (thisTotal > due) {
+    // Compared at rupee resolution, so ₹2685.11 against a ₹2685 balance passes
+    // instead of tripping on a fraction of a paisa.
+    if (roundRupee(thisTotal) > due) {
       throw new HttpErrors.BadRequest(
         `Payment amount ₹${thisTotal} exceeds balance due ₹${due}.`,
       );
@@ -2023,7 +2343,7 @@ export class OrderService {
         walletPayment,
         walletAmountDeducted: thisWallet,
         totalCollected: newPaid,
-        balanceDue: Math.max(0, Number(order.totalAmount) - newPaid),
+        balanceDue: rupeeBalance(order.totalAmount, newPaid),
       };
     } catch (err) {
       await tx.rollback();

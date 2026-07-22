@@ -8,6 +8,7 @@ import {
   param,
   patch,
   post,
+  put,
   requestBody,
   response,
 } from '@loopback/rest';
@@ -242,6 +243,64 @@ export class OrderController {
       response.note = `${(result as any).garments.length} garments auto-created. Add brand, color and inspection details to each.`;
     }
     return response;
+  }
+
+  // ─── Edit Order Items ─────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @put('/orders/{id}/items')
+  @response(200, {description: 'Order items replaced, totals and garments reconciled'})
+  async updateOrderItems(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['items'],
+            properties: {
+              items: {
+                type: 'array',
+                description:
+                  'The complete desired item list. Lines missing from it are removed, ' +
+                  'so send the full cart, not a delta.',
+                items: {
+                  type: 'object',
+                  required: ['serviceId', 'itemId', 'quantity'],
+                  properties: {
+                    serviceId: {type: 'string', format: 'uuid'},
+                    itemId: {type: 'string', format: 'uuid'},
+                    quantity: {type: 'number', minimum: 1},
+                    additionalServiceIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+                    additionalChargeIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+                    specialInstructions: {type: 'string'},
+                    specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
+                    remarks: {type: 'string'},
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {
+      items: {
+        serviceId: string;
+        itemId: string;
+        quantity: number;
+        additionalServiceIds?: string[];
+        additionalChargeIds?: string[];
+        specialInstructions?: string;
+        specialInstructionMediaIds?: string[];
+        remarks?: string;
+      }[];
+    },
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
+    return this.orderService.updateOrderItems(id, body.items, currentUser[securityId]);
   }
 
   // ─── Counter Inspection ───────────────────────────────────────────────────
