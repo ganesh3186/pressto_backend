@@ -43,6 +43,9 @@ export class CustomerContact extends Entity {
   @property({type: 'boolean', default: false})
   isPrimary?: boolean;
 
+  @property({type: 'string', required: false})
+  remarks?: string;
+
   @property({type: 'boolean', default: true})
   isActive?: boolean;
 

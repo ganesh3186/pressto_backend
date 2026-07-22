@@ -10,5 +10,6 @@ export enum ContactRelationship {
   DRIVER = 'driver',
   COLLEAGUE = 'colleague',
   FRIEND = 'friend',
+  HOUSEHELP = 'househelp',
   OTHER = 'other',
 }
