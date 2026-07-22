@@ -61,6 +61,38 @@ export class GarmentProcessController {
     return this.processService.advanceProcess(id, currentUser[securityId], body?.qrCode);
   }
 
+  // ─── Complete All Steps ───────────────────────────────────────────────────
+  // "Mark all processes done" — closes every remaining step in one call and
+  // moves the garment to QUALITY_CHECK, instead of advancing step by step.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin']})
+  @post('/garments/{id}/process/complete-all')
+  @response(200, {description: 'All remaining process steps completed'})
+  async completeAllProcesses(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      required: false,
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              qrCode: {
+                type: 'string',
+                description: 'Scanned QR code value. Required when QR_SCAN_REQUIRED=true.',
+              },
+            },
+          },
+        },
+      },
+    })
+    body?: {qrCode?: string},
+  ): Promise<object> {
+    return this.processService.completeAllProcesses(id, currentUser[securityId], body?.qrCode);
+  }
+
   // ─── Reverse Step ─────────────────────────────────────────────────────────
   // Undoes the last completed process step — marks it back to in_progress.
   // If the garment had advanced to quality_check, it returns to in_process.

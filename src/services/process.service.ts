@@ -230,6 +230,110 @@ export class ProcessService {
     }
   }
 
+  // ─── Complete All Steps ───────────────────────────────────────────────────
+  // "Mark all processes done" — closes every remaining step on the garment in
+  // one go instead of advancing them one at a time, then moves the garment to
+  // QUALITY_CHECK exactly as the final advance would.
+
+  async completeAllProcesses(
+    garmentId: string,
+    performedBy: string,
+    qrCode?: string,
+  ): Promise<object> {
+    const {v4} = await import('uuid');
+
+    const garment = await this.garmentRepo.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+
+    if (garment.status !== GarmentStatus.IN_PROCESS) {
+      throw new HttpErrors.BadRequest(
+        `Garment must be in 'in_process' status to complete processing. Current: ${garment.status}`,
+      );
+    }
+
+    // Same QR rule as a single advance — bulk must not be a way around it.
+    if (this.qrScanRequired) {
+      if (!qrCode) {
+        throw new HttpErrors.BadRequest('QR code is required (QR_SCAN_REQUIRED is enabled).');
+      }
+      const expected = garment.qrCode ?? garment.garmentTagNumber;
+      if (qrCode !== expected) {
+        throw new HttpErrors.BadRequest('QR code does not match this garment.');
+      }
+    }
+
+    const now = new Date();
+    const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED' as any});
+
+    try {
+      const allLogs = await this.processLogRepo.find({
+        where: {garmentId} as any,
+        order: ['serviceSequence ASC', 'stepSequence ASC'],
+      });
+
+      if (!allLogs.length) {
+        throw new HttpErrors.BadRequest(
+          'Process not initialised for this garment. Call POST /garments/:id/process/init first.',
+        );
+      }
+
+      const remaining = allLogs.filter(
+        l => l.status === ProcessLogStatus.PENDING || l.status === ProcessLogStatus.IN_PROGRESS,
+      );
+      if (!remaining.length) {
+        throw new HttpErrors.Conflict('All process steps are already completed.');
+      }
+
+      for (const log of remaining) {
+        await this.processLogRepo.updateById(
+          log.id,
+          {
+            status: ProcessLogStatus.COMPLETED,
+            // A step closed straight from pending was never started — stamp it
+            // now so the log still reads as a complete record.
+            ...(log.startedAt ? {} : {startedAt: now, startedBy: performedBy}),
+            completedAt: now,
+            completedBy: performedBy,
+            qrScanned: this.qrScanRequired || !!qrCode,
+          },
+          {transaction: tx},
+        );
+      }
+
+      await this.garmentRepo.updateById(
+        garmentId,
+        {status: GarmentStatus.QUALITY_CHECK},
+        {transaction: tx},
+      );
+      await this.garmentStatusHistoryRepo.create(
+        {
+          id: v4(),
+          garmentId,
+          status: GarmentStatus.QUALITY_CHECK,
+          changedAt: now,
+          changedBy: performedBy,
+          remarks: 'All process steps marked done',
+        },
+        {transaction: tx},
+      );
+
+      await tx.commit();
+
+      // Roll the order status up now that this garment finished processing.
+      await this.syncOrderStatusFromGarment(garmentId, performedBy);
+
+      return {
+        message: 'All process steps completed. Garment moved to Quality Check.',
+        stepsCompleted: remaining.length,
+        stepsTotal: allLogs.length,
+        allDone: true,
+      };
+    } catch (err) {
+      await tx.rollback();
+      throw err;
+    }
+  }
+
   // ─── Reverse Last Step ────────────────────────────────────────────────────
   // Marks the most recent completed step back to pending, re-opens it.
   // Also resets the garment to IN_PROCESS if it had advanced to QUALITY_CHECK.
