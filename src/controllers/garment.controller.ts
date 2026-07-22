@@ -14,7 +14,11 @@ import {
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {GarmentImageType} from '../models/garment-image-type.enum';
-import {GarmentStatus, GARMENT_STATUS_TRANSITIONS} from '../models/garment-status.enum';
+import {
+  GarmentStatus,
+  GARMENT_STATUS_RANK,
+  GARMENT_STATUS_TRANSITIONS,
+} from '../models/garment-status.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {UnprocessedHandlingMode} from '../models/unprocessed-handling-mode.enum';
 import {
@@ -738,17 +742,7 @@ export class GarmentController {
     }
 
     // Rank every status so we can find the bottleneck (minimum rank among active garments)
-    const STATUS_RANK: Record<GarmentStatus, number> = {
-      [GarmentStatus.RECEIVED]:         0,
-      [GarmentStatus.IN_INSPECTION]:    1,
-      [GarmentStatus.IN_PROCESS]:       2,
-      [GarmentStatus.QUALITY_CHECK]:    3,
-      [GarmentStatus.READY]:            4,
-      [GarmentStatus.OUT_FOR_DELIVERY]: 5,
-      [GarmentStatus.DELIVERED]:        6,
-      [GarmentStatus.ON_HOLD]:         -1,
-      [GarmentStatus.RETURNED_TO_CUSTOMER]: -1,
-    };
+    const STATUS_RANK = GARMENT_STATUS_RANK;
 
     const RANK_TO_ORDER_STATUS: Record<number, OrderStatus> = {
       0: OrderStatus.RECEIVED_AT_STORE,

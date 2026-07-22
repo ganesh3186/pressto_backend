@@ -244,6 +244,58 @@ export class OrderController {
     return response;
   }
 
+  // ─── Counter Inspection ───────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
+  @post('/orders/{id}/inspection/complete')
+  @response(200, {description: 'All items inspected at the counter — order moved to processing'})
+  async completeCounterInspection(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
+    return this.orderService.completeCounterInspection(id, currentUser[securityId]);
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
+  @post('/orders/{id}/inspection/mark')
+  @response(200, {description: 'Record which units were inspected at the counter'})
+  async markUnitsInspected(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['units'],
+            properties: {
+              units: {
+                type: 'array',
+                description: 'Units inspected at the counter, identified by line and position',
+                items: {
+                  type: 'object',
+                  required: ['serviceId', 'itemId', 'unitIndex'],
+                  properties: {
+                    serviceId: {type: 'string', format: 'uuid'},
+                    itemId: {type: 'string', format: 'uuid'},
+                    unitIndex: {type: 'number'},
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {units: {serviceId: string; itemId: string; unitIndex: number}[]},
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
+    return this.orderService.markUnitsInspected(id, body.units, currentUser[securityId]);
+  }
+
   // ─── Split Order ─────────────────────────────────────────────────────────
 
   @authenticate('jwt')

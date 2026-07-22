@@ -9,7 +9,11 @@ import {ContactRelationship} from '../models/contact-relationship.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderType} from '../models/order-type.enum';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
-import {GarmentStatus} from '../models/garment-status.enum';
+import {
+  deriveGarmentGroupStatus,
+  GarmentStatus,
+  isActiveGarmentStatus,
+} from '../models/garment-status.enum';
 import {
   AdditionalChargeMasterRepository,
   ClusterPriceListRepository,
@@ -726,6 +730,236 @@ export class OrderService {
     return {};
   }
 
+  // ─── Counter inspection completed ───────────────────────────────────────────
+  // When the counter staff inspect every piece while booking the order, there is
+  // nothing left for the inspection desk to do — the whole order moves straight
+  // to processing. Walks each garment forward to in_process one legal hop at a
+  // time (received → in_inspection → in_process), then walks the order itself,
+  // so the state machine and both history tables stay honest.
+
+  /** Order must be live and past draft before any counter inspection is recorded. */
+  private async assertInspectableOrder(orderId: string) {
+    const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.CANCELLED) {
+      throw new HttpErrors.BadRequest(`Order is already '${order.status}'.`);
+    }
+    if (order.status === OrderStatus.DRAFT) {
+      throw new HttpErrors.BadRequest('Confirm the order before recording inspection.');
+    }
+    return order;
+  }
+
+  /**
+   * Moves an order forward to `target` one legal hop at a time, so every
+   * intermediate transition is validated and written to history. Never moves
+   * backwards. `received_at_store` is the hop that auto-creates garments.
+   */
+  private async stepOrderForward(
+    orderId: string,
+    target: OrderStatus,
+    changedBy: string,
+    remarks: string,
+  ): Promise<void> {
+    const PATH = [
+      OrderStatus.CONFIRMED,
+      OrderStatus.RECEIVED_AT_STORE,
+      OrderStatus.IN_INSPECTION,
+      OrderStatus.IN_PROCESS,
+    ];
+    const current = (await this.orderRepo.findById(orderId)).status!;
+    const targetIdx = PATH.indexOf(target);
+    if (targetIdx < 0) return;
+
+    // on_hold sits outside the path but may resume straight to in_process.
+    if (current === OrderStatus.ON_HOLD && target === OrderStatus.IN_PROCESS) {
+      await this.changeStatus(orderId, target, changedBy, remarks);
+      return;
+    }
+
+    let idx = PATH.indexOf(current);
+    if (idx < 0 || idx >= targetIdx) return; // unknown status, or already there
+    while (idx < targetIdx) {
+      idx++;
+      await this.changeStatus(orderId, PATH[idx], changedBy, remarks);
+    }
+  }
+
+  /** Garments of an order, grouped by item and ordered so unit N maps to garment N. */
+  private async garmentsByOrderItem(orderId: string) {
+    const orderItems = await this.orderItemRepo.find({where: {orderId}});
+    const orderItemIds = orderItems.map(i => i.id);
+    const garments = orderItemIds.length
+      ? await this.garmentRepo.find({
+          where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any,
+          order: ['garmentTagNumber ASC'],
+        })
+      : [];
+
+    const byItem = new Map<string, typeof garments>();
+    for (const g of garments) {
+      const list = byItem.get(g.orderItemId) ?? [];
+      list.push(g);
+      byItem.set(g.orderItemId, list);
+    }
+    return {orderItems, garments, byItem};
+  }
+
+  /**
+   * Walks one garment forward along received → in_inspection → in_process,
+   * stopping at `target`. Returns true if it actually moved.
+   */
+  private async stepGarmentForward(
+    garment: {id: string; status?: GarmentStatus},
+    target: GarmentStatus,
+    changedBy: string,
+    remarks: string,
+    v4: () => string,
+  ): Promise<boolean> {
+    const PATH = [GarmentStatus.RECEIVED, GarmentStatus.IN_INSPECTION, GarmentStatus.IN_PROCESS];
+    // On-hold and returned garments are out of the pipeline — leave them be.
+    if (!isActiveGarmentStatus(garment.status)) return false;
+
+    let idx = PATH.indexOf(garment.status as GarmentStatus);
+    const targetIdx = PATH.indexOf(target);
+    if (idx < 0 || targetIdx < 0 || idx >= targetIdx) return false; // already there or past it
+
+    const now = new Date();
+    while (idx < targetIdx) {
+      idx++;
+      await this.garmentRepo.updateById(garment.id, {status: PATH[idx]});
+      await this.garmentStatusHistoryRepo.create({
+        id: v4(),
+        garmentId: garment.id,
+        status: PATH[idx],
+        changedAt: now,
+        changedBy,
+        remarks,
+      });
+    }
+    return true;
+  }
+
+  async completeCounterInspection(orderId: string, changedBy: string): Promise<object> {
+    const {v4} = await import('uuid');
+    await this.assertInspectableOrder(orderId);
+
+    // Garments only exist from received_at_store onward, and changeStatus creates
+    // them on that hop — so get the order there first.
+    await this.stepOrderForward(
+      orderId,
+      OrderStatus.RECEIVED_AT_STORE,
+      changedBy,
+      'Received at counter',
+    );
+
+    const {garments} = await this.garmentsByOrderItem(orderId);
+    if (!garments.length) {
+      throw new HttpErrors.BadRequest('This order has no garments to inspect.');
+    }
+
+    let advanced = 0;
+    for (const garment of garments) {
+      const moved = await this.stepGarmentForward(
+        garment as any,
+        GarmentStatus.IN_PROCESS,
+        changedBy,
+        'Inspected at counter',
+        v4,
+      );
+      if (moved) advanced++;
+    }
+
+    await this.stepOrderForward(
+      orderId,
+      OrderStatus.IN_PROCESS,
+      changedBy,
+      'All items inspected at counter',
+    );
+
+    const updated = await this.orderRepo.findById(orderId);
+    return {
+      message: 'Counter inspection completed. Order moved to processing.',
+      orderStatus: updated.status,
+      garmentsAdvanced: advanced,
+      garmentsTotal: garments.length,
+    };
+  }
+
+  // ─── Partial counter inspection ─────────────────────────────────────────────
+  // Only some pieces were looked at while booking. Those garments move to
+  // in_inspection; the rest stay received, so the order sits at the bottleneck
+  // and the inspection desk still picks up what is left.
+
+  async markUnitsInspected(
+    orderId: string,
+    units: {serviceId: string; itemId: string; unitIndex: number}[],
+    changedBy: string,
+  ): Promise<object> {
+    const {v4} = await import('uuid');
+    await this.assertInspectableOrder(orderId);
+
+    if (!units?.length) {
+      throw new HttpErrors.BadRequest('No inspected units supplied.');
+    }
+
+    await this.stepOrderForward(
+      orderId,
+      OrderStatus.RECEIVED_AT_STORE,
+      changedBy,
+      'Received at counter',
+    );
+
+    const {orderItems, garments, byItem} = await this.garmentsByOrderItem(orderId);
+    if (!garments.length) {
+      throw new HttpErrors.BadRequest('This order has no garments to inspect.');
+    }
+
+    // A cart line is one order item, keyed by service + item.
+    const itemKey = (serviceId: string, itemId: string) => `${serviceId}::${itemId}`;
+    const itemByKey = new Map(orderItems.map(oi => [itemKey(oi.serviceId, oi.itemId), oi]));
+
+    let advanced = 0;
+    for (const unit of units) {
+      const orderItem = itemByKey.get(itemKey(unit.serviceId, unit.itemId));
+      if (!orderItem) continue;
+      const garment = (byItem.get(orderItem.id) ?? [])[unit.unitIndex];
+      if (!garment) continue;
+
+      const moved = await this.stepGarmentForward(
+        garment as any,
+        GarmentStatus.IN_INSPECTION,
+        changedBy,
+        'Inspected at counter',
+        v4,
+      );
+      if (moved) advanced++;
+    }
+
+    // The order is only as far along as its least advanced garment.
+    const current = await this.garmentRepo.find({
+      where: {orderItemId: {inq: orderItems.map(i => i.id)}, isDeleted: false} as any,
+      fields: {id: true, status: true} as any,
+    });
+    const bottleneck = deriveGarmentGroupStatus(current.map(g => g.status));
+    if (bottleneck === GarmentStatus.IN_INSPECTION) {
+      await this.stepOrderForward(
+        orderId,
+        OrderStatus.IN_INSPECTION,
+        changedBy,
+        'Inspection started at counter',
+      );
+    }
+
+    const updated = await this.orderRepo.findById(orderId);
+    return {
+      message: 'Counter inspection recorded.',
+      orderStatus: updated.status,
+      garmentsAdvanced: advanced,
+      garmentsTotal: garments.length,
+    };
+  }
+
   // ─── In-store Handover (counter pickup) ─────────────────────────────────────
   // Records who collected the order at the counter and marks it delivered. This
   // is the no-rider dispatch path. Steps:
@@ -1277,6 +1511,11 @@ export class OrderService {
     // ── Assemble enriched items ───────────────────────────────────────────────
     const enrichedItems = orderItems.map(oi => ({
       id: oi.id,
+      // order_item has no status column — an item is exactly as far along as its
+      // least advanced garment, so it is derived rather than stored.
+      status: deriveGarmentGroupStatus(
+        (garmentsByItem.get(oi.id) ?? []).map(g => g.status),
+      ),
       serviceId: oi.serviceId,
       serviceName: serviceMap.get(oi.serviceId)?.name ?? null,
       itemId: oi.itemId,
