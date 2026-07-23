@@ -223,6 +223,57 @@ export class CustomerApprovalController {
     });
   }
 
+  // ─── Track my reprocess requests ───────────────────────────────────────────
+  // The approvals list above is upgrade-only and garment-scoped, so it would
+  // never show these. Kept separate rather than widened, so responding to an
+  // upgrade stays distinct from tracking a complaint.
+
+  @authenticate('jwt')
+  @get('/profile/customer/orders/{orderId}/reprocess-requests')
+  @response(200, {description: 'Reprocess requests this customer raised on the order'})
+  async myReprocessRequests(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('orderId') orderId: string,
+  ): Promise<object> {
+    const customer = await this.resolveCustomer(currentUser);
+    // Throws if the order is not theirs.
+    await this.ownedGarmentIds(orderId, customer.id);
+
+    const requests = await this.approvalRequestRepo.find({
+      where: {
+        type: ApprovalRequestType.REPROCESS,
+        entityType: 'order',
+        entityId: orderId,
+      } as any,
+      order: ['createdAt DESC'],
+    });
+
+    const media = await Promise.all(
+      requests.map(r => this.approvalService.resolveMedia(r.mediaIds)),
+    );
+
+    return {
+      orderId,
+      pendingCount: requests.filter(r => r.status === ApprovalRequestStatus.PENDING).length,
+      requests: requests.map((request, index) => {
+        const metadata = (request.metadata ?? {}) as Record<string, unknown>;
+        return {
+          id: request.id,
+          status: request.status,
+          reason: metadata.reason ?? null,
+          remarks: request.requestReason ?? null,
+          garmentIds: Array.isArray(metadata.garmentIds) ? metadata.garmentIds : [],
+          // Present once approved — the free rework order raised from this.
+          reworkOrderId: metadata.reworkOrderId ?? null,
+          reworkOrderNumber: metadata.reworkOrderNumber ?? null,
+          media: media[index],
+          createdAt: request.createdAt,
+          updatedAt: request.updatedAt,
+        };
+      }),
+    };
+  }
+
   // ─── Respond: approve / reject+return / reject+process ─────────────────────
 
   @authenticate('jwt')
