@@ -62,6 +62,16 @@ export class Order extends Entity {
   @property({type: 'number', default: 0, postgresql: {dataType: 'numeric'}})
   allocatedPayment?: number;
 
+  /**
+   * Set on a free rework order: the delivered order whose items are being redone
+   * because the customer reported a quality problem.
+   *
+   * Deliberately separate from parentOrderId — a rework order carries ₹0 by
+   * design, and counting it as a split child would read as a lost sale.
+   */
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  reprocessOfOrderId?: string;
+
   // Calculated by backend: createdAt + ceil(maxEstimatedDurationInDays / expressMultiplier)
   @property({type: 'date'})
   deliveryDate?: Date;

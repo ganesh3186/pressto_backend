@@ -21,7 +21,13 @@ import {ContactRelationship} from '../models/contact-relationship.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderRepository, OrderStatusHistoryRepository} from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
+import {
+  REPROCESS_REASON_LABELS,
+  ReprocessReason,
+  reprocessWindowDays,
+} from '../models/reprocess-reason.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
+import {ReprocessService} from '../services/reprocess.service';
 import {StoreScopeService} from '../services/store-scope.service';
 
 const PAYMENT_ITEM_SCHEMA = {
@@ -60,6 +66,8 @@ export class OrderController {
     private orderService: OrderService,
     @inject('services.store-scope')
     private storeScopeService: StoreScopeService,
+    @inject('services.reprocess')
+    private reprocessService: ReprocessService,
   ) {}
 
   /**
@@ -308,6 +316,72 @@ export class OrderController {
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser);
     return this.orderService.updateOrderItems(id, body.items, currentUser[securityId]);
+  }
+
+  // ─── Reprocess after delivery ─────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/reprocess-reasons')
+  @response(200, {description: 'Reason options and the claim window, for the reprocess form'})
+  async reprocessReasons(): Promise<object> {
+    return {
+      // Served rather than hardcoded in each panel, so admin and customer app
+      // always offer the same wording and the same window.
+      reasons: Object.values(ReprocessReason).map(value => ({
+        value,
+        label: REPROCESS_REASON_LABELS[value],
+        requiresRemarks: value === ReprocessReason.OTHER,
+      })),
+      windowDays: reprocessWindowDays(),
+    };
+  }
+  // Customer says a delivered item was not done properly. Raises an approval
+  // request; on approval a free ₹0 rework order is created automatically.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @post('/orders/{id}/reprocess-request')
+  @response(200, {description: 'Reprocess request raised, awaiting approval'})
+  async requestReprocess(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['reason'],
+            properties: {
+              reason: {type: 'string', enum: Object.values(ReprocessReason)},
+              remarks: {type: 'string', description: 'Required when reason is "other"'},
+              mediaIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              garmentIds: {
+                type: 'array',
+                items: {type: 'string', format: 'uuid'},
+                description: 'Pieces to redo. Omit to send the whole order.',
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {
+      reason: ReprocessReason;
+      remarks?: string;
+      mediaIds?: string[];
+      garmentIds?: string[];
+    },
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
+    return this.reprocessService.raiseRequest({
+      orderId: id,
+      garmentIds: body.garmentIds,
+      reason: body.reason,
+      remarks: body.remarks,
+      mediaIds: body.mediaIds,
+      requestedBy: currentUser[securityId],
+      source: 'store',
+    });
   }
 
   // ─── Counter Inspection ───────────────────────────────────────────────────

@@ -18,7 +18,9 @@ import {
   OrderItemRepository,
   OrderRepository,
 } from '../repositories';
+import {ReprocessReason} from '../models/reprocess-reason.enum';
 import {ApprovalService} from '../services/approval.service';
+import {ReprocessService} from '../services/reprocess.service';
 
 // Request types a customer is allowed to see and act on. Everything else
 // (item_damaged, reprocess, cheque_payment, …) is routed to internal roles and
@@ -44,6 +46,7 @@ const CUSTOMER_FACING_TYPES: ApprovalRequestType[] = [ApprovalRequestType.UPGRAD
 export class CustomerApprovalController {
   constructor(
     @inject('services.approval') private approvalService: ApprovalService,
+    @inject('services.reprocess') private reprocessService: ReprocessService,
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
@@ -162,6 +165,62 @@ export class CustomerApprovalController {
     await this.assertOwnsApproval(request, customer.id);
 
     return this.approvalService.getUpgradeView(request);
+  }
+
+  // ─── Report a problem with a delivered order ───────────────────────────────
+  // The customer's own way in. Same request and same approval queue as the
+  // counter's — only the recorded source differs.
+
+  @authenticate('jwt')
+  @post('/profile/customer/orders/{orderId}/reprocess-request')
+  @response(200, {description: 'Reprocess request raised, awaiting store approval'})
+  async requestReprocess(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('orderId') orderId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['reason'],
+            properties: {
+              reason: {type: 'string', enum: Object.values(ReprocessReason)},
+              remarks: {type: 'string', description: 'Required when reason is "other"'},
+              mediaIds: {
+                type: 'array',
+                items: {type: 'string', format: 'uuid'},
+                description: 'Photos of the problem',
+              },
+              garmentIds: {
+                type: 'array',
+                items: {type: 'string', format: 'uuid'},
+                description: 'Items to redo. Omit to report the whole order.',
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {
+      reason: ReprocessReason;
+      remarks?: string;
+      mediaIds?: string[];
+      garmentIds?: string[];
+    },
+  ): Promise<object> {
+    const customer = await this.resolveCustomer(currentUser);
+    // Throws if the order is not theirs.
+    await this.ownedGarmentIds(orderId, customer.id);
+
+    return this.reprocessService.raiseRequest({
+      orderId,
+      garmentIds: body.garmentIds,
+      reason: body.reason,
+      remarks: body.remarks,
+      mediaIds: body.mediaIds,
+      requestedBy: currentUser[securityId],
+      source: 'customer',
+    });
   }
 
   // ─── Respond: approve / reject+return / reject+process ─────────────────────

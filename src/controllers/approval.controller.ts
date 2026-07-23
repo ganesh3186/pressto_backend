@@ -98,6 +98,64 @@ export class ApprovalController {
     // URLs, even for non-garment requests (payments carry cheque photos).
     const media = await this.approvalService.resolveMedia(req.mediaIds);
 
+    // Order-scoped requests (post-delivery reprocess) name the order directly
+    // and carry their garments in metadata — without this they would show as a
+    // bare uuid with no order number and no items.
+    if (req.entityType === 'order') {
+      const order = await this.orderRepo.findOne({where: {id: req.entityId}});
+      const metadata = (req.metadata ?? {}) as Record<string, unknown>;
+      const garmentIds = Array.isArray(metadata.garmentIds)
+        ? (metadata.garmentIds as string[])
+        : [];
+
+      const garments = garmentIds.length
+        ? await this.garmentRepo.find({where: {id: {inq: garmentIds}} as any})
+        : [];
+
+      const orderItemIds = [...new Set(garments.map(g => g.orderItemId).filter(Boolean))];
+      const orderItems = orderItemIds.length
+        ? await this.orderItemRepo.find({where: {id: {inq: orderItemIds}} as any})
+        : [];
+      const itemIds = [...new Set(orderItems.map(oi => oi.itemId).filter(Boolean))];
+      const items = itemIds.length
+        ? await this.itemRepo.find({where: {id: {inq: itemIds}} as any})
+        : [];
+
+      const itemNameById = new Map(items.map(i => [i.id, i.name]));
+      const itemNameByOrderItem = new Map(
+        orderItems.map(oi => [oi.id, itemNameById.get(oi.itemId) ?? null]),
+      );
+
+      return {
+        ...req,
+        orderId: req.entityId,
+        orderNumber: (order as any)?.orderNumber ?? null,
+        orderStatus: order?.status ?? null,
+        // One row per piece, so the approver can see exactly what is being redone.
+        garments: garments.map(g => ({
+          id: g.id,
+          garmentTag: g.garmentTagNumber,
+          status: g.status,
+          itemName: itemNameByOrderItem.get(g.orderItemId) ?? null,
+        })),
+        garmentTag: garments.map(g => g.garmentTagNumber).filter(Boolean).join(', ') || null,
+        // The list renders a single garmentStatus per row. These pieces are all
+        // delivered in practice, but join the distinct values rather than pick
+        // one, so a mixed set is never misreported as uniform.
+        garmentStatus:
+          [...new Set(garments.map(g => g.status).filter(Boolean))].join(', ') || null,
+        itemName:
+          [...new Set(garments.map(g => itemNameByOrderItem.get(g.orderItemId)).filter(Boolean))].join(
+            ', ',
+          ) || null,
+        reprocessReason: metadata.reason ?? null,
+        requestSource: metadata.source ?? null,
+        reworkOrderId: metadata.reworkOrderId ?? null,
+        reworkOrderNumber: metadata.reworkOrderNumber ?? null,
+        media,
+      };
+    }
+
     if (req.entityType !== 'garment') return {...req, media};
 
     const garment = await this.garmentRepo.findOne({where: {id: req.entityId}});

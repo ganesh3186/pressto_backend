@@ -227,6 +227,17 @@ export class ApprovalService {
   // ─── Downstream effects on APPROVE ───────────────────────────────────────
 
   private async _applyApproveEffect(request: ApprovalRequest, performedBy: string): Promise<void> {
+    // Post-delivery reprocess is raised against the ORDER, not a garment — the
+    // pieces have left the building and their garments are terminal. Handled
+    // before the garment guard below, which would otherwise drop it.
+    if (
+      request.type === ApprovalRequestType.REPROCESS &&
+      request.entityType === 'order'
+    ) {
+      await this._applyPostDeliveryReprocess(request, performedBy);
+      return;
+    }
+
     if (request.entityType !== 'garment') return;
 
     const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
@@ -372,6 +383,57 @@ export class ApprovalService {
   }
 
   // ─── Reprocess: reset process logs + return garment to in_process ──────────
+
+  /**
+   * Post-delivery reprocess approved: raise the free rework order.
+   *
+   * The original order and its garments are left exactly as they are — they are
+   * the record of the first pass, and a delivered garment has no legal next
+   * status. The rework runs on new garments with new tags.
+   */
+  private async _applyPostDeliveryReprocess(
+    request: ApprovalRequest,
+    performedBy: string,
+  ): Promise<void> {
+    const metadata = (request.metadata ?? {}) as Record<string, unknown>;
+    const garmentIds = Array.isArray(metadata.garmentIds)
+      ? (metadata.garmentIds as string[])
+      : [];
+
+    if (!garmentIds.length) {
+      throw new HttpErrors.BadRequest(
+        'This reprocess request does not name any garments, so no rework order can be raised.',
+      );
+    }
+
+    const result = await this.orderService.createReworkOrder({
+      originalOrderId: request.entityId,
+      garmentIds,
+      createdBy: performedBy,
+      reason: typeof metadata.reason === 'string' ? metadata.reason : undefined,
+      remarks: request.requestReason,
+    });
+
+    // Recorded on the request so staff can jump straight to the rework order.
+    await this.approvalRequestRepo.updateById(request.id, {
+      metadata: {
+        ...metadata,
+        reworkOrderId: result.order.id,
+        reworkOrderNumber: result.order.orderNumber,
+      },
+    });
+
+    const {v4} = await import('uuid');
+    await this.approvalAuditLogRepo.create({
+      id: v4(),
+      approvalRequestId: request.id,
+      eventType: 'reprocess_order_created',
+      remarks:
+        `Free rework order ${result.order.orderNumber} created with ` +
+        `${result.garmentsCreated} garment(s).`,
+      performedBy,
+    });
+  }
 
   private async _applyReprocess(request: ApprovalRequest, performedBy: string): Promise<void> {
     const garmentId = request.entityId;

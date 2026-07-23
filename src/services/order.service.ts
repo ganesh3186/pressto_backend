@@ -2,6 +2,7 @@ import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {PresstoDataSource} from '../datasources';
+import {Order} from '../models/order.model';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {OrderStatus, ORDER_STATUS_TRANSITIONS} from '../models/order-status.enum';
@@ -760,6 +761,144 @@ export class OrderService {
     }
 
     return {};
+  }
+
+  // ─── Rework Order (free reprocess) ──────────────────────────────────────────
+  // A delivered item was not done properly, so it comes back through the factory
+  // at no charge. That rework is a NEW order at ₹0, linked to the original —
+  // never a reopening of the delivered one, whose garments are terminal and
+  // whose record should stay a true account of the first pass.
+  //
+  // Called from the approval effect, once a store exec has approved the request.
+
+  async createReworkOrder(params: {
+    originalOrderId: string;
+    garmentIds: string[];
+    createdBy: string;
+    reason?: string;
+    remarks?: string;
+  }): Promise<{order: Order; garmentsCreated: number}> {
+    const {v4} = await import('uuid');
+
+    const original = await this.orderRepo.findOne({
+      where: {id: params.originalOrderId, isDeleted: false},
+    });
+    if (!original) throw new HttpErrors.NotFound('Original order not found.');
+
+    const garments = await this.garmentRepo.find({
+      where: {id: {inq: params.garmentIds}, isDeleted: false} as any,
+    });
+    if (!garments.length) {
+      throw new HttpErrors.BadRequest('None of the requested garments exist.');
+    }
+
+    // Group the pieces by the order item they came from, so the rework order
+    // carries one line per item with the right quantity.
+    const originalItems = await this.orderItemRepo.find({
+      where: {orderId: params.originalOrderId},
+    });
+    const itemById = new Map(originalItems.map(oi => [oi.id, oi]));
+
+    const countByItem = new Map<string, number>();
+    for (const garment of garments) {
+      const orderItem = itemById.get(garment.orderItemId);
+      if (!orderItem) continue; // garment from a different order — ignore
+      countByItem.set(orderItem.id, (countByItem.get(orderItem.id) ?? 0) + 1);
+    }
+    if (!countByItem.size) {
+      throw new HttpErrors.BadRequest('The selected garments do not belong to this order.');
+    }
+
+    const count = await this.orderRepo.count();
+    const orderNumber = `ORD${String(count.count + 1).padStart(6, '0')}`;
+    const now = new Date();
+
+    const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED' as any});
+    let reworkOrder: Order;
+    try {
+      // Every money field is zero by design — the customer already paid for this
+      // work once. Starts at received_at_store because the pieces are physically
+      // back with us.
+      reworkOrder = await this.orderRepo.create(
+        {
+          orderNumber,
+          customerId: original.customerId,
+          storeId: original.storeId,
+          orderType: original.orderType,
+          status: OrderStatus.RECEIVED_AT_STORE,
+          reprocessOfOrderId: original.id,
+          expressMultiplier: 1,
+          deliveryType: original.deliveryType,
+          deliveryTypePercentage: 0,
+          subtotal: 0,
+          discountAmount: 0,
+          taxAmount: 0,
+          totalAmount: 0,
+          allocatedPayment: 0,
+          remarks: [`Rework of ${original.orderNumber}`, params.reason, params.remarks]
+            .filter(Boolean)
+            .join(' — '),
+        },
+        {transaction: tx},
+      );
+
+      for (const [orderItemId, quantity] of countByItem) {
+        const source = itemById.get(orderItemId)!;
+        await this.orderItemRepo.create(
+          {
+            orderId: reworkOrder.id,
+            serviceId: source.serviceId,
+            itemId: source.itemId,
+            quantity,
+            // Priced at zero throughout — this is the free redo.
+            basePrice: 0,
+            resolvedPrice: 0,
+            unitPrice: 0,
+            totalPrice: 0,
+            priceSource: source.priceSource,
+            additionalServiceIds: source.additionalServiceIds,
+            remarks: `Rework of order item ${source.id}`,
+          },
+          {transaction: tx},
+        );
+      }
+
+      await this.statusHistoryRepo.create(
+        {
+          id: v4(),
+          orderId: reworkOrder.id,
+          status: OrderStatus.RECEIVED_AT_STORE,
+          changedAt: now,
+          changedBy: params.createdBy,
+          remarks: `Free rework raised against ${original.orderNumber}`,
+        },
+        {transaction: tx},
+      );
+
+      // Recorded on the original too, so its history shows the complaint.
+      await this.statusHistoryRepo.create(
+        {
+          id: v4(),
+          orderId: original.id,
+          status: original.status!,
+          changedAt: now,
+          changedBy: params.createdBy,
+          remarks: `Rework order ${orderNumber} raised for ${garments.length} item(s)`,
+        },
+        {transaction: tx},
+      );
+
+      await tx.commit();
+    } catch (err) {
+      await tx.rollback();
+      throw err;
+    }
+
+    // Fresh garments with new tags — the originals stay delivered. Outside the
+    // transaction because autoCreateGarments manages its own tag sequence.
+    const created = await this.autoCreateGarments(reworkOrder.id, params.createdBy, v4);
+
+    return {order: reworkOrder, garmentsCreated: created.length};
   }
 
   // ─── Edit Order Items ───────────────────────────────────────────────────────
@@ -1698,8 +1837,9 @@ export class OrderService {
       const balanceDue = rupeeBalance(totalAmount, totalCollected);
 
       let paymentStatus: string;
-      if (roundRupee(totalAmount) === 0) paymentStatus = 'pending';
-      else if (balanceDue === 0) paymentStatus = 'paid';
+      // A ₹0 order owes nothing — a free rework, or one fully covered by wallet
+      // or advance. Reporting it as pending puts it in collections chasing zero.
+      if (balanceDue === 0) paymentStatus = 'paid';
       else if (totalCollected > 0) paymentStatus = 'partial';
       else paymentStatus = 'pending';
 
@@ -1723,6 +1863,8 @@ export class OrderService {
         lastPaidAt: lastPaymentByOrder.get(order.id)?.paidAt ?? null,
         parentOrderId: (order as any).parentOrderId ?? null,
         parentOrderNumber: (order as any).parentOrderId ? (parentOrderMap.get((order as any).parentOrderId) ?? null) : null,
+        // Marks a free rework so a ₹0 row in the list is explicable.
+        reprocessOfOrderId: (order as any).reprocessOfOrderId ?? null,
         customer: customer
           ? {
               id: customer.id,
@@ -1763,8 +1905,9 @@ export class OrderService {
     const itemIds = [...new Set(orderItems.map(i => i.itemId))];
 
     // ── Parallel batch 2: customer, services, items, garments, item charges ──
-    const [customer, services, items, garments, itemCharges, parentOrder] = await Promise.all([
-      this.customerRepo.findOne({where: {id: order.customerId, isDeleted: false}}),
+    const [customer, services, items, garments, itemCharges, parentOrder, reprocessOfOrder] =
+      await Promise.all([
+        this.customerRepo.findOne({where: {id: order.customerId, isDeleted: false}}),
       serviceIds.length ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as any}) : Promise.resolve([]),
       itemIds.length ? this.itemRepo.find({where: {id: {inq: itemIds}} as any}) : Promise.resolve([]),
       orderItemIds.length ? this.garmentRepo.find({where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any}) : Promise.resolve([]),
@@ -1774,6 +1917,14 @@ export class OrderService {
       order.parentOrderId
         ? this.orderRepo.findOne({
             where: {id: order.parentOrderId} as any,
+            fields: {id: true, orderNumber: true, status: true} as any,
+          })
+        : Promise.resolve(null),
+      // This is a free rework — name the order it is redoing, so a ₹0 total
+      // does not read as a billing error.
+      order.reprocessOfOrderId
+        ? this.orderRepo.findOne({
+            where: {id: order.reprocessOfOrderId} as any,
             fields: {id: true, orderNumber: true, status: true} as any,
           })
         : Promise.resolve(null),
@@ -1907,6 +2058,9 @@ export class OrderService {
         // this order was split off another. parentOrderId itself comes through
         // the spread above.
         parentOrderNumber: (parentOrder as any)?.orderNumber ?? null,
+        // Free rework: the delivered order being redone. reprocessOfOrderId
+        // itself comes through the spread above.
+        reprocessOfOrderNumber: (reprocessOfOrder as any)?.orderNumber ?? null,
         parentOrder: parentOrder
           ? {
               id: parentOrder.id,
@@ -1928,14 +2082,8 @@ export class OrderService {
       paymentTransactions,
       totalCollected,
       balanceDue,
-      paymentStatus:
-        roundRupee(totalAmount) === 0
-          ? 'pending'
-          : balanceDue === 0
-            ? 'paid'
-            : totalCollected > 0
-              ? 'partial'
-              : 'pending',
+      // Nothing outstanding = paid, including a ₹0 free rework order.
+      paymentStatus: balanceDue === 0 ? 'paid' : totalCollected > 0 ? 'partial' : 'pending',
     };
   }
 
