@@ -105,7 +105,13 @@ export interface CreateOrderInput {
   specialInstructions?: string;
   specialInstructionMediaIds?: string[];
   remarks?: string;
-  expressMultiplier?: number;  // 1 = standard, 2 = 2x faster/costlier; backend calculates deliveryDate
+  expressMultiplier?: number;  // 1 = standard, 2 = 2x faster/costlier; drives the computed deliveryDate
+  /**
+   * Promised delivery date, when the counter picked one. Overrides the ETA the
+   * backend would otherwise derive from item TATs and expressMultiplier. Omit
+   * to keep that computed date.
+   */
+  deliveryDate?: string;
   payments?: OrderPaymentInput[];
   walletAmount?: number;
 }
@@ -444,9 +450,22 @@ export class OrderService {
       0,
     );
     const etaDays = maxDays > 0 ? Math.ceil(maxDays / expressMultiplier) : null;
-    const deliveryDate = etaDays
+    const computedDeliveryDate = etaDays
       ? new Date(Date.now() + etaDays * 24 * 60 * 60 * 1000)
       : undefined;
+
+    // The counter may promise a specific date — a customer collecting on their
+    // way back, or a slot the store can actually staff. An explicit date wins;
+    // without one the computed ETA stands, which is what every existing caller
+    // relies on.
+    let deliveryDate = computedDeliveryDate;
+    if (input.deliveryDate) {
+      const requested = new Date(input.deliveryDate);
+      if (isNaN(requested.getTime())) {
+        throw new HttpErrors.BadRequest('deliveryDate is not a valid date.');
+      }
+      deliveryDate = requested;
+    }
 
     const orderChargeDetails: Array<{id: string; amount: number}> = [];
     let orderChargesTotal = 0;

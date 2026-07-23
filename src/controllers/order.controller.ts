@@ -95,7 +95,14 @@ export class OrderController {
               expressMultiplier: {
                 type: 'number',
                 minimum: 1,
-                description: 'Urgency multiplier (1 = standard, 2 = 2x faster/costlier). Backend calculates deliveryDate from this.',
+                description: 'Urgency multiplier (1 = standard, 2 = 2x faster/costlier). Drives the calculated deliveryDate.',
+              },
+              deliveryDate: {
+                type: 'string',
+                format: 'date-time',
+                description:
+                  'Promised delivery date. Overrides the ETA the backend derives from item ' +
+                  'TATs and expressMultiplier. Omit to use that computed date.',
               },
               specialInstructions: {type: 'string'},
               specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
