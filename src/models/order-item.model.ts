@@ -65,6 +65,18 @@ export class OrderItem extends Entity {
   })
   additionalServiceIds?: string[];
 
+  // Reject-at-intake: the customer brought this piece but it was declined at the
+  // counter — recorded so the order shows it came in, priced at ₹0, and never
+  // given a garment or put through processing. No approval flow.
+  @property({type: 'boolean', default: false})
+  rejectedAtIntake?: boolean;
+
+  @property({type: 'string'})
+  rejectionReason?: string;
+
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  rejectionRemarks?: string;
+
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 

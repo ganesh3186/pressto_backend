@@ -80,6 +80,11 @@ export interface UnitInspectionInput {
   itemPhotoMediaIds?: string[];     // already-uploaded Media record IDs
   instructions?: string;            // stored as customerRemarks on Garment
   qrPrintCount?: number;
+  // Reject-at-intake from the POS inspection popup: this piece is declined at
+  // the counter — recorded but not billed, not processed, no garment.
+  rejectedAtIntake?: boolean;
+  rejectionReason?: string;
+  rejectionRemarks?: string;
 }
 
 export interface CreateOrderItemInput {
@@ -402,9 +407,55 @@ export class OrderService {
       additionalChargeIds?: string[];
       additionalServiceIds?: string[];
       additionalChargesTotal: number;
+      rejectedAtIntake?: boolean;
+      rejectionReason?: string;
+      rejectionRemarks?: string;
+      units?: UnitInspectionInput[];
     }> = [];
 
+    // Reject-at-intake splits a line: units the counter declined become a
+    // separate ₹0 line here, so the rest of the pipeline (pricing, garment
+    // creation) treats accepted and rejected pieces uniformly and index
+    // alignment with itemPricings/createdItems is preserved.
+    const workingItems: Array<
+      CreateOrderItemInput & {
+        rejectedAtIntake?: boolean;
+        rejectionReason?: string;
+        rejectionRemarks?: string;
+      }
+    > = [];
     for (const item of input.items) {
+      const units = item.units ?? [];
+      const rejectedUnits = units.filter(u => u?.rejectedAtIntake);
+      if (!rejectedUnits.length) {
+        workingItems.push(item);
+        continue;
+      }
+
+      const acceptedUnits = units.filter(u => !u?.rejectedAtIntake);
+      // Quantity may exceed the inspected units; the surplus counts as accepted.
+      const impliedAccepted = Math.max(0, item.quantity - units.length);
+      const acceptedCount = acceptedUnits.length + impliedAccepted;
+
+      if (acceptedCount > 0) {
+        workingItems.push({...item, quantity: acceptedCount, units: acceptedUnits});
+      }
+
+      workingItems.push({
+        ...item,
+        quantity: rejectedUnits.length,
+        units: rejectedUnits,
+        // A declined line carries no charges or add-ons.
+        additionalChargeIds: [],
+        additionalServiceIds: [],
+        rejectedAtIntake: true,
+        rejectionReason: rejectedUnits[0]?.rejectionReason,
+        rejectionRemarks:
+          rejectedUnits.map(u => u?.rejectionRemarks).filter(Boolean).join('; ') || undefined,
+      });
+    }
+
+    for (const item of workingItems) {
       const pricing = await this.resolvePricing(input.storeId, item.serviceId, item.itemId);
 
       // Resolve price + TAT for each additional service (sequential — prices and days both sum up)
@@ -418,25 +469,35 @@ export class OrderService {
         additionalServicesDays += addlPricing.estimatedDurationInDays ?? 0;
       }
 
-      const unitPrice = parseFloat(
-        ((pricing.resolvedPrice + additionalServicesUnitPrice) * deliveryMultiplier).toFixed(2),
-      );
+      // A rejected line is recorded but never billed — everything payable is 0,
+      // so it falls out of every subtotal while still appearing on documents.
+      const rejected = Boolean(item.rejectedAtIntake);
+
+      const unitPrice = rejected
+        ? 0
+        : parseFloat(
+            ((pricing.resolvedPrice + additionalServicesUnitPrice) * deliveryMultiplier).toFixed(2),
+          );
       const totalPrice = parseFloat((unitPrice * item.quantity).toFixed(2));
-      const estimatedDurationInDays =
-        (pricing.estimatedDurationInDays ?? 0) + additionalServicesDays || null;
+      // A declined piece needs no turnaround — it is not being processed.
+      const estimatedDurationInDays = rejected
+        ? null
+        : (pricing.estimatedDurationInDays ?? 0) + additionalServicesDays || null;
 
       let additionalChargesTotal = 0;
-      for (const chargeId of item.additionalChargeIds ?? []) {
-        const charge = await this.additionalChargeRepo.findById(chargeId);
-        additionalChargesTotal += Number(charge.defaultAmount);
+      if (!rejected) {
+        for (const chargeId of item.additionalChargeIds ?? []) {
+          const charge = await this.additionalChargeRepo.findById(chargeId);
+          additionalChargesTotal += Number(charge.defaultAmount);
+        }
       }
 
       itemPricings.push({
         ...item,
-        basePrice: pricing.basePrice,
+        basePrice: rejected ? 0 : pricing.basePrice,
         appliedPercentage: pricing.appliedPercentage,
         priceSource: pricing.priceSource,
-        resolvedPrice: pricing.resolvedPrice,
+        resolvedPrice: rejected ? 0 : pricing.resolvedPrice,
         unitPrice,
         totalPrice,
         estimatedDurationInDays,
@@ -562,16 +623,22 @@ export class OrderService {
             specialInstructionMediaIds: item.specialInstructionMediaIds,
             remarks: item.remarks,
             additionalServiceIds: item.additionalServiceIds,
+            rejectedAtIntake: item.rejectedAtIntake ?? false,
+            rejectionReason: item.rejectionReason,
+            rejectionRemarks: item.rejectionRemarks,
           },
           {transaction: tx},
         );
 
-        for (const chargeId of item.additionalChargeIds ?? []) {
-          const charge = await this.additionalChargeRepo.findById(chargeId);
-          await this.orderItemChargeRepo.create(
-            {orderItemId: orderItem.id, additionalChargeId: chargeId, amount: Number(charge.defaultAmount)},
-            {transaction: tx},
-          );
+        // Rejected lines carry no charges (they were stripped during the split).
+        if (!item.rejectedAtIntake) {
+          for (const chargeId of item.additionalChargeIds ?? []) {
+            const charge = await this.additionalChargeRepo.findById(chargeId);
+            await this.orderItemChargeRepo.create(
+              {orderItemId: orderItem.id, additionalChargeId: chargeId, amount: Number(charge.defaultAmount)},
+              {transaction: tx},
+            );
+          }
         }
 
         createdItems.push(orderItem);
@@ -609,7 +676,11 @@ export class OrderService {
 
         for (let itemIdx = 0; itemIdx < createdItems.length; itemIdx++) {
           const orderItem = createdItems[itemIdx];
-          const inputItem = input.items[itemIdx];
+          const inputItem = workingItems[itemIdx];
+
+          // A rejected piece is declined at the counter — no garment, no
+          // processing. It stays a ₹0 record on the order.
+          if (inputItem?.rejectedAtIntake) continue;
 
           for (let unitIdx = 0; unitIdx < orderItem.quantity; unitIdx++) {
             const unitInspection = inputItem.units?.[unitIdx];
@@ -2002,6 +2073,10 @@ export class OrderService {
       itemId: oi.itemId,
       itemName: itemMap.get(oi.itemId)?.name ?? null,
       quantity: oi.quantity,
+      // Declined at the counter — recorded, ₹0, no garments.
+      rejectedAtIntake: oi.rejectedAtIntake ?? false,
+      rejectionReason: oi.rejectionReason ?? null,
+      rejectionRemarks: oi.rejectionRemarks ?? null,
       basePrice: oi.basePrice,
       resolvedPrice: oi.resolvedPrice,
       unitPrice: oi.unitPrice,

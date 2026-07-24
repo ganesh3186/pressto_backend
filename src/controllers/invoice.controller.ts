@@ -70,6 +70,9 @@ export class InvoiceController {
       unitPrice: Number(oi.unitPrice) || 0,
       totalPrice: Number(oi.totalPrice) || 0,
       additionalServiceIds: oi.additionalServiceIds ?? [],
+      // Shown on the invoice as a ₹0 "Rejected at intake" line for the record.
+      rejectedAtIntake: oi.rejectedAtIntake ?? false,
+      rejectionReason: oi.rejectionReason ?? null,
     }));
 
     const subtotal = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0);
