@@ -120,6 +120,11 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'employee:read',   description: 'View employees'},
   {permission: 'employee:update', description: 'Update an employee'},
   {permission: 'employee:delete', description: 'Delete an employee'},
+  // Rider
+  {permission: 'rider:create', description: 'Create a rider'},
+  {permission: 'rider:read',   description: 'View riders'},
+  {permission: 'rider:update', description: 'Update a rider'},
+  {permission: 'rider:delete', description: 'Delete a rider'},
   // Role
   {permission: 'role:create', description: 'Create a role'},
   {permission: 'role:read',   description: 'View roles'},
@@ -399,6 +404,16 @@ const ROLES: RoleSeed[] = [
       ro('order'),
       cr('file_upload'),
     ),
+  },
+  {
+    value: 'rider',
+    label: 'Rider',
+    description: 'Rider app account — signs in by phone + OTP. No admin access.',
+    isLocked: true,
+    // No admin-panel login; the rider authenticates on the rider app instead.
+    loginAccess: false,
+    // Rider-app permissions are defined when that app is built; nothing yet.
+    permissions: [],
   },
 
   // ── Example roles (editable) ───────────────────────────────────────────

@@ -1,6 +1,7 @@
 export * from './cluster-price-list.repository';
 export * from './additional-charge-master.repository';
 export * from './employee.repository';
+export * from './rider.repository';
 export * from './gst-tax-configuration.repository';
 export * from './delivery-type-configuration.repository';
 export * from './wallet-configuration.repository';
