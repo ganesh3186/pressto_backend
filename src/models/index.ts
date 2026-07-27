@@ -3,6 +3,7 @@ export * from './additional-charge-master.model';
 export * from './employee.model';
 export * from './rider.model';
 export * from './rider-type.enum';
+export * from './rider-attendance.model';
 export * from './gst-tax-configuration.model';
 export * from './delivery-type-configuration.model';
 export * from './delivery-type.enum';
