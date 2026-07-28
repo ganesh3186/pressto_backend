@@ -13,6 +13,7 @@ import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {JWTService} from '../services/jwt-service';
 import {SecurityDepositService} from '../services/security-deposit.service';
 import {WalletService} from '../services/wallet.service';
+import {PROTECTED_ROLES, sortCustomerRoleFirst} from '../utils/role-guard';
 
 export class CustomerAuthController {
   constructor(
@@ -93,35 +94,80 @@ export class CustomerAuthController {
       password?: string;
     },
   ): Promise<{message: string; username: string}> {
-    // Check uniqueness
+    // This endpoint is public and unauthenticated — there is no operator here
+    // to show a "link to existing account?" confirmation like the admin panel
+    // does. So a phone/email match is handled differently depending on what's
+    // already there:
+    //   - already a customer  -> genuine duplicate, reject.
+    //   - protected account (super_admin) -> never touch it, reject.
+    //   - an existing login with no customer profile yet (e.g. an employee
+    //     self-registering as a customer) -> only auto-link if BOTH phone AND
+    //     email match that account exactly. An exact match on both fields is
+    //     the one signal a public endpoint can trust without an operator or
+    //     an OTP step; a partial match (phone right, email wrong, or missing)
+    //     is treated as a stranger and rejected, not silently linked.
     const orConditions: object[] = [{phone: body.phone}];
     if (body.email) orConditions.push({email: body.email});
-    const existingUser = await this.usersRepository.findOne({where: {or: orConditions}});
+    const existingUser = await this.usersRepository.findOne({
+      where: {or: orConditions},
+      include: [{relation: 'roles'}],
+    });
+
+    let linkedUser: typeof existingUser | null = null;
+
     if (existingUser) {
-      throw new HttpErrors.BadRequest('Phone or email already in use.');
+      const existingRoleValues = (existingUser.roles ?? []).map(r => r.value);
+      if (PROTECTED_ROLES.some(r => existingRoleValues.includes(r))) {
+        throw new HttpErrors.Conflict('That phone or email belongs to a protected system account.');
+      }
+
+      const alreadyCustomer = await this.customerRepository.findOne({
+        where: {userId: existingUser.id, isDeleted: false},
+      });
+      if (alreadyCustomer) {
+        throw new HttpErrors.BadRequest(
+          'An account with this phone or email is already registered. Please log in instead.',
+        );
+      }
+
+      const phoneMatches = existingUser.phone === body.phone;
+      const emailMatches =
+        Boolean(body.email) &&
+        Boolean(existingUser.email) &&
+        existingUser.email!.toLowerCase() === body.email!.toLowerCase();
+
+      if (!phoneMatches || !emailMatches) {
+        throw new HttpErrors.Conflict(
+          'That phone or email is already linked to a different account. ' +
+            'Provide the exact phone and email already on file, or contact support.',
+        );
+      }
+
+      linkedUser = existingUser;
     }
 
-    const rawPassword = body.password ?? 'Pressto@1234';
-    const hashedPassword = await this.hasher.hashPassword(rawPassword);
-    const username = await this.generateUniqueUsername(body.email, `${body.firstName} ${body.lastName}`);
     const customerCode = await this.generateCustomerCode();
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
-      const user = await this.usersRepository.create(
-        {
-          fullName: `${body.firstName} ${body.lastName}`,
-          username,
-          ...(body.email && {email: body.email}),
-          countryCode: body.countryCode || '+91',
-          phone: body.phone,
-          password: hashedPassword,
-          isActive: true,
-        },
-        {transaction: tx},
-      );
+      // Reuse the existing login when it's a confirmed exact match — never
+      // touch its identity fields (name/email/phone/password stay as-is).
+      const user = linkedUser
+        ? linkedUser
+        : await this.usersRepository.create(
+            {
+              fullName: `${body.firstName} ${body.lastName}`,
+              username: await this.generateUniqueUsername(body.email, `${body.firstName} ${body.lastName}`),
+              ...(body.email && {email: body.email}),
+              countryCode: body.countryCode || '+91',
+              phone: body.phone,
+              password: await this.hasher.hashPassword(body.password ?? 'Pressto@1234'),
+              isActive: true,
+            },
+            {transaction: tx},
+          );
 
-      // Get or create 'client' role
+      // Get or create 'customer' role
       let customerRole = await this.rolesRepository.findOne({where: {value: 'customer'}});
       if (!customerRole) {
         customerRole = await this.rolesRepository.create(
@@ -130,10 +176,17 @@ export class CustomerAuthController {
         );
       }
 
-      await this.userRolesRepository.create(
-        {usersId: user.id, rolesId: customerRole.id},
-        {transaction: tx},
-      );
+      const alreadyHasRole = linkedUser
+        ? await this.userRolesRepository.findOne({
+            where: {usersId: user.id, rolesId: customerRole.id},
+          })
+        : null;
+      if (!alreadyHasRole) {
+        await this.userRolesRepository.create(
+          {usersId: user.id, rolesId: customerRole.id},
+          {transaction: tx},
+        );
+      }
 
       const customer = await this.customerRepository.create(
         {
@@ -151,7 +204,7 @@ export class CustomerAuthController {
 
       await tx.commit();
 
-      return {message: 'Customer registered successfully', username};
+      return {message: 'Customer registered successfully', username: user.username};
     } catch (error) {
       await tx.rollback();
       throw error;
@@ -263,8 +316,11 @@ export class CustomerAuthController {
       loginOtpExpires: undefined,
     });
 
-    // Generate JWT token
-    const roles = (user.roles ?? []).map((r: any) => r.value);
+    // Generate JWT token. This is the *customer* app session — a login also
+    // linked to a staff role (see register()'s exact-match linking) must
+    // still present as "customer" first here, never as whatever staff role
+    // it also holds. Mirrors pickStaffRole on the admin-login side.
+    const roles = sortCustomerRoleFirst(user.roles ?? []).map(r => r.value);
     const userProfile = {
       [securityId]: user.id!,
       id: user.id!,
