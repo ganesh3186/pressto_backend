@@ -26,7 +26,7 @@ export class CustomerPhoneController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_phone:create']})
   @post('/customer-phones')
   @response(200, {
     description: 'CustomerPhone model instance',
@@ -63,7 +63,7 @@ export class CustomerPhoneController {
   }
 
   @authenticate('jwt')
-  // @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_phone:read']})
   @get('/customer-phones')
   @response(200, {
     description: 'Array of CustomerPhone model instances for a customer',
@@ -79,8 +79,8 @@ export class CustomerPhoneController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
-  // @get('/customer-phones/{id}')
+  @authorize({roles: ['super_admin'], permissions: ['customer_phone:read']})
+  @get('/customer-phones/{id}')
   @response(200, {
     description: 'CustomerPhone model instance',
     content: {'application/json': {schema: getModelSchemaRef(CustomerPhone)}},
@@ -90,7 +90,7 @@ export class CustomerPhoneController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_phone:update']})
   @patch('/customer-phones/{id}')
   @response(204, {description: 'CustomerPhone PATCH success'})
   async updateById(
@@ -117,7 +117,7 @@ export class CustomerPhoneController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_phone:delete']})
   @del('/customer-phones/{id}')
   @response(204, {description: 'CustomerPhone soft delete success'})
   async deleteById(@param.path.string('id') id: string): Promise<void> {

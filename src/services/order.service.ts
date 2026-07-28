@@ -74,6 +74,9 @@ export interface UnitDamageMarkInput {
 export interface UnitInspectionInput {
   brandId?: string;
   colorId?: string;
+  // Metres — required per unit when the item is priced by measurement
+  // (Item.isMeasurement), e.g. curtains billed per running metre.
+  length?: number;
   additionalChargeIds?: string[];   // add-ons + requirements for this specific unit
   stainMarks?: UnitStainMarkInput[];
   damageMarks?: UnitDamageMarkInput[];
@@ -478,7 +481,36 @@ export class OrderService {
         : parseFloat(
             ((pricing.resolvedPrice + additionalServicesUnitPrice) * deliveryMultiplier).toFixed(2),
           );
-      const totalPrice = parseFloat((unitPrice * item.quantity).toFixed(2));
+
+      // Measurement items (e.g. curtains) are billed per running metre: each
+      // unit's contribution is unitPrice × its own length, not a flat
+      // per-piece price — so the line total sums per-unit amounts instead of
+      // multiplying by quantity. Every accepted unit must carry a length.
+      const catalogItem = rejected ? null : await this.itemRepo.findById(item.itemId);
+      const isMeasurement = Boolean(catalogItem?.isMeasurement);
+
+      let totalPrice: number;
+      if (!rejected && isMeasurement) {
+        const units = item.units ?? [];
+        if (units.length < item.quantity) {
+          throw new HttpErrors.BadRequest(
+            `Length is required for every unit of a measurement item (itemId: ${item.itemId}).`,
+          );
+        }
+        let lengthTotal = 0;
+        for (const unit of units) {
+          const length = Number(unit?.length);
+          if (!Number.isFinite(length) || length <= 0) {
+            throw new HttpErrors.BadRequest(
+              `Each unit of a measurement item (itemId: ${item.itemId}) needs a length greater than 0.`,
+            );
+          }
+          lengthTotal += length;
+        }
+        totalPrice = parseFloat((unitPrice * lengthTotal).toFixed(2));
+      } else {
+        totalPrice = parseFloat((unitPrice * item.quantity).toFixed(2));
+      }
       // A declined piece needs no turnaround — it is not being processed.
       const estimatedDurationInDays = rejected
         ? null
@@ -694,6 +726,7 @@ export class OrderService {
                 status: GarmentStatus.RECEIVED,
                 brandId: unitInspection?.brandId,
                 colorId: unitInspection?.colorId,
+                length: unitInspection?.length,
                 qrPrintCount: unitInspection?.qrPrintCount ?? 1,
                 customerRemarks: unitInspection?.instructions,
               },
@@ -2095,6 +2128,7 @@ export class OrderService {
         status: g.status,
         brandId: g.brandId,
         colorId: g.colorId,
+        length: g.length,
         customerRemarks: g.customerRemarks,
         inspectionRemarks: g.inspectionRemarks,
         isTagPrinted: g.isTagPrinted ?? false,
