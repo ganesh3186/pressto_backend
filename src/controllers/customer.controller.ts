@@ -26,6 +26,7 @@ import {
 import { BcryptHasher } from '../services/hash.password.bcrypt';
 import { SecurityDepositService } from '../services/security-deposit.service';
 import { WalletService } from '../services/wallet.service';
+import { assertNoProtectedRoles, PROTECTED_ROLES } from '../utils/role-guard';
 
 export class CustomerController {
   constructor(
@@ -110,6 +111,13 @@ export class CustomerController {
               notes: { type: 'string' },
               defaultDiscountType: { type: 'string' },
               defaultDiscountValue: { type: 'number' },
+              linkExistingAccount: {
+                type: 'boolean',
+                description:
+                  'Must be explicitly true to attach this customer profile to an existing ' +
+                  'login found by phone/email (e.g. an employee who is also a customer). ' +
+                  'Without it, a match returns a 409 so the operator can confirm before accounts are linked.',
+              },
             },
           },
         },
@@ -137,14 +145,57 @@ export class CustomerController {
       notes?: string;
       defaultDiscountType?: string;
       defaultDiscountValue?: number;
+      linkExistingAccount?: boolean;
     },
   ): Promise<object> {
-    // Check uniqueness
+    // super_admin is created exactly once, through the dedicated registration
+    // endpoint — never reachable from generic customer role management.
+    assertNoProtectedRoles(body.roleValues);
+
+    // Employees and customers share the users table. A phone/email match here
+    // is a real scenario (staff who's also a paying customer) — but, mirroring
+    // the same guard on the employee side, it must never land on the
+    // super_admin account, and it must never happen silently: the caller has
+    // to resend with linkExistingAccount: true after being shown who they'd
+    // be linking to. The existing login's own identity fields are left as-is.
     const orConditions: object[] = [{ phone: body.phone }];
     if (body.email) orConditions.push({ email: body.email });
-    const existingUser = await this.usersRepository.findOne({ where: { or: orConditions } });
+    const existingUser = await this.usersRepository.findOne({
+      where: { or: orConditions },
+      include: [{ relation: 'roles' }],
+    });
     if (existingUser) {
-      throw new HttpErrors.BadRequest('Email or phone already in use.');
+      const existingRoleValues = (existingUser.roles ?? []).map(r => r.value);
+      if (PROTECTED_ROLES.some(r => existingRoleValues.includes(r))) {
+        throw new HttpErrors.Conflict(
+          'That phone or email belongs to a protected system account and cannot be turned into a customer.',
+        );
+      }
+
+      const alreadyCustomer = await this.customerRepository.findOne({
+        where: { userId: existingUser.id, isDeleted: false },
+      });
+      if (alreadyCustomer) {
+        throw new HttpErrors.Conflict(
+          `That phone or email already belongs to customer ${alreadyCustomer.customerCode}.`,
+        );
+      }
+
+      if (!body.linkExistingAccount) {
+        throw new HttpErrors.Conflict(
+          JSON.stringify({
+            code: 'EXISTING_ACCOUNT_MATCH',
+            message: 'That phone or email already belongs to an existing account. ' +
+              'Resend with linkExistingAccount: true to attach a customer profile to it.',
+            existingAccount: {
+              fullName: existingUser.fullName,
+              email: existingUser.email,
+              phone: existingUser.phone,
+              roles: existingRoleValues,
+            },
+          }),
+        );
+      }
     }
 
     const roles = await Promise.all(
@@ -157,23 +208,26 @@ export class CustomerController {
 
     const rawPassword = body.password ?? 'Pressto@1234';
     const hashedPassword = await this.hasher.hashPassword(rawPassword);
-    const username = await this.generateUniqueUsername(body.email, `${body.firstName} ${body.lastName}`);
     const customerCode = await this.generateCustomerCode();
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
-      const user = await this.usersRepository.create(
-        {
-          fullName: `${body.firstName} ${body.lastName}`,
-          username,
-          ...(body.email && { email: body.email }),
-          countryCode: body.countryCode || '+91',
-          phone: body.phone,
-          password: hashedPassword,
-          isActive: true,
-        },
-        { transaction: tx },
-      );
+      // Reuse the existing login when linking to an already-confirmed match —
+      // their password and identity fields are left alone.
+      const user = existingUser
+        ? existingUser
+        : await this.usersRepository.create(
+            {
+              fullName: `${body.firstName} ${body.lastName}`,
+              username: await this.generateUniqueUsername(body.email, `${body.firstName} ${body.lastName}`),
+              ...(body.email && { email: body.email }),
+              countryCode: body.countryCode || '+91',
+              phone: body.phone,
+              password: hashedPassword,
+              isActive: true,
+            },
+            { transaction: tx },
+          );
 
       const customer = await this.customerRepository.create(
         {
@@ -200,6 +254,15 @@ export class CustomerController {
       );
 
       for (const role of roles) {
+        // An existing login may already hold some of these — adding the same
+        // role twice would leave duplicate rows behind.
+        const alreadyAssigned = existingUser
+          ? await this.userRolesRepository.findOne({
+              where: { usersId: user.id, rolesId: role.id },
+            })
+          : null;
+        if (alreadyAssigned) continue;
+
         await this.userRolesRepository.create(
           { usersId: user.id, rolesId: role.id },
           { transaction: tx },
@@ -366,6 +429,10 @@ export class CustomerController {
       roleValues?: string[];
     },
   ): Promise<void> {
+    // super_admin must never be grantable — or revocable — through customer
+    // role management.
+    assertNoProtectedRoles(body.roleValues);
+
     const customer = await this.customerRepository.findById(id);
 
     const { roleValues, ...rest } = body;
@@ -389,6 +456,20 @@ export class CustomerController {
     if (rest.dateOfBirth) customerFields.dateOfBirth = new Date(rest.dateOfBirth);
     // isActive must be kept in sync on both tables
     if (rest.isActive !== undefined) customerFields.isActive = rest.isActive;
+
+    // Create() checks phone/email uniqueness up front; edits must too, or a
+    // typo silently gives two different logins the same phone/email.
+    if (userFields.phone || userFields.email) {
+      const orConditions: object[] = [];
+      if (userFields.phone) orConditions.push({ phone: userFields.phone });
+      if (userFields.email) orConditions.push({ email: userFields.email });
+      const collision = await this.usersRepository.findOne({
+        where: { and: [{ or: orConditions }, { id: { neq: customer.userId } }] },
+      });
+      if (collision) {
+        throw new HttpErrors.Conflict('That phone or email is already used by another account.');
+      }
+    }
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {

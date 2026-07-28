@@ -22,6 +22,7 @@ import {
 } from '../repositories';
 import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {MediaService} from '../services/media.service';
+import {assertNoProtectedRoles, PROTECTED_ROLES} from '../utils/role-guard';
 
 export class EmployeeController {
   constructor(
@@ -89,6 +90,13 @@ export class EmployeeController {
               city: {type: 'string'},
               state: {type: 'string'},
               pincode: {type: 'string'},
+              linkExistingAccount: {
+                type: 'boolean',
+                description:
+                  'Must be explicitly true to attach this employee profile to an existing ' +
+                  'login found by phone/email (e.g. a customer who is now staff). Without it, ' +
+                  'a match returns a 409 so the operator can confirm before accounts are linked.',
+              },
             },
           },
         },
@@ -112,23 +120,57 @@ export class EmployeeController {
       city: string;
       state: string;
       pincode: string;
+      linkExistingAccount?: boolean;
     },
   ): Promise<object> {
+    // super_admin is created exactly once, through the dedicated registration
+    // endpoint. It must never be reachable from generic employee role management.
+    assertNoProtectedRoles(body.roleValues);
+
     // Customers and employees share the users table, and login resolves a single
     // user by email. So when this phone or email already belongs to someone —
-    // typically a customer who has now been hired — the employee record is
-    // attached to that existing login rather than refused. One person, one
-    // account, roles on top. Only a genuine second employee record is rejected.
+    // typically a customer who has now been hired — the employee record can be
+    // attached to that existing login instead of refused. But this must be a
+    // deliberate choice, not a silent side effect of a phone-number typo:
+    //   - it is NEVER allowed onto the super_admin account, full stop.
+    //   - for any other account, the caller must resend with
+    //     linkExistingAccount: true after being shown who they'd be linking to.
+    // The existing account's own identity (name/email/phone) is left untouched —
+    // whatever was typed into this form for those fields is discarded once linked.
     const existingUser = await this.usersRepository.findOne({
       where: {or: [{email: body.email}, {phone: body.phone}]},
+      include: [{relation: 'roles'}],
     });
     if (existingUser) {
+      const existingRoleValues = (existingUser.roles ?? []).map(r => r.value);
+      if (PROTECTED_ROLES.some(r => existingRoleValues.includes(r))) {
+        throw new HttpErrors.Conflict(
+          'That phone or email belongs to a protected system account and cannot be turned into an employee.',
+        );
+      }
+
       const alreadyEmployee = await this.employeeRepository.findOne({
         where: {userId: existingUser.id, isDeleted: false},
       });
       if (alreadyEmployee) {
         throw new HttpErrors.Conflict(
           `That phone or email already belongs to employee ${alreadyEmployee.employeeCode}.`,
+        );
+      }
+
+      if (!body.linkExistingAccount) {
+        throw new HttpErrors.Conflict(
+          JSON.stringify({
+            code: 'EXISTING_ACCOUNT_MATCH',
+            message: 'That phone or email already belongs to an existing account. ' +
+              'Resend with linkExistingAccount: true to attach an employee profile to it.',
+            existingAccount: {
+              fullName: existingUser.fullName,
+              email: existingUser.email,
+              phone: existingUser.phone,
+              roles: existingRoleValues,
+            },
+          }),
         );
       }
     }
@@ -355,6 +397,14 @@ export class EmployeeController {
       roleValues?: string[];
     },
   ): Promise<void> {
+    // super_admin must never be grantable — or revocable — through employee
+    // role management. (It's also the only thing standing between this and a
+    // previously-live incident: a customer's phone number collided with the
+    // super admin's, bug in create() attached an Employee row to that same
+    // login, and editing that "employee"'s role here would have silently
+    // deleted the real super admin's role via the deleteAll+recreate below.)
+    assertNoProtectedRoles(body.roleValues);
+
     const employee = await this.employeeRepository.findById(id);
 
     const {roleValues, password, ...rest} = body;
@@ -384,6 +434,21 @@ export class EmployeeController {
     if (rest.joiningDate) employeeFields.joiningDate = new Date(rest.joiningDate);
     // isActive must be kept in sync on both tables
     if (rest.isActive !== undefined) employeeFields.isActive = rest.isActive;
+
+    // Create() checks phone/email uniqueness up front; edits must too, or a
+    // typo silently gives two different logins the same phone/email — which
+    // is exactly how the earlier incident's duplicate-phone accounts happened.
+    if (userFields.phone || userFields.email) {
+      const orConditions: object[] = [];
+      if (userFields.phone) orConditions.push({phone: userFields.phone});
+      if (userFields.email) orConditions.push({email: userFields.email});
+      const collision = await this.usersRepository.findOne({
+        where: {and: [{or: orConditions}, {id: {neq: employee.userId}}]},
+      });
+      if (collision) {
+        throw new HttpErrors.Conflict('That phone or email is already used by another account.');
+      }
+    }
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {

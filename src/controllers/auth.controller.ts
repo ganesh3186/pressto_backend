@@ -11,6 +11,7 @@ import { RbacService } from '../services/rbac.service';
 import { MyUserService } from '../services/user-service';
 import { OtpService } from '../services/otp.service';
 import { StoreScopeService } from '../services/store-scope.service';
+import { pickStaffRole } from '../utils/role-guard';
 
 export class AuthController {
   constructor(
@@ -196,10 +197,17 @@ export class AuthController {
       throw new HttpErrors.Unauthorized('Invalid credentials');
     }
 
+    // A user linked as both employee and customer holds both roles on one
+    // login (see EmployeeController/CustomerController's linkExistingAccount
+    // flow) — roles[0] is whatever order the DB join returns, not necessarily
+    // the staff one. This is the *staff* login, so always prefer whichever
+    // role actually carries admin-panel permissions.
+    const primaryRole = pickStaffRole(user.roles);
+
     // Resolve the role's permissions so they can be embedded in the token.
     // Without this the JWT carries only roles, so any non-super_admin user gets
     // an empty permission set and the frontend hides everything.
-    const roleValue = user.roles[0].value;
+    const roleValue = primaryRole.value;
     let permissions: string[] = [];
     try {
       const resolved = await this.rbacService.getUserRoleAndPermissionsByRole(user.id!, roleValue);
