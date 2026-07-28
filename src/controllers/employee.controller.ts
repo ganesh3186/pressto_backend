@@ -22,7 +22,7 @@ import {
 } from '../repositories';
 import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {MediaService} from '../services/media.service';
-import {assertNoProtectedRoles, PROTECTED_ROLES} from '../utils/role-guard';
+import {assertNoProtectedRoles, NON_STAFF_ROLES, PROTECTED_ROLES} from '../utils/role-guard';
 
 export class EmployeeController {
   constructor(
@@ -266,6 +266,19 @@ export class EmployeeController {
     }
   }
 
+  // A dual-linked login (employee + customer, see create()'s linkExistingAccount
+  // flow) carries both roles on the one shared user. Employee Master only ever
+  // means the employee side of that person — customer/client roles are noise
+  // here at best and misleading at worst (looks like the person isn't really
+  // staff). Strip them from the embedded user.roles before returning.
+  private stripNonStaffRoles(employee: Employee): Employee {
+    const user = (employee as unknown as {user?: {roles?: Array<{value: string}>}}).user;
+    if (Array.isArray(user?.roles)) {
+      user!.roles = user!.roles.filter(r => !NON_STAFF_ROLES.includes(r.value));
+    }
+    return employee;
+  }
+
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['employee:read']})
   @get('/employees')
@@ -281,7 +294,7 @@ export class EmployeeController {
     },
   })
   async find(@param.filter(Employee) filter?: Filter<Employee>): Promise<Employee[]> {
-    return this.employeeRepository.find({
+    const results = await this.employeeRepository.find({
       ...filter,
       where: {and: [{isDeleted: false}, filter?.where ?? {}]},
       order: ['createdAt DESC'],
@@ -297,6 +310,7 @@ export class EmployeeController {
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
+    return results.map(e => this.stripNonStaffRoles(e));
   }
 
   @authenticate('jwt')
@@ -314,7 +328,7 @@ export class EmployeeController {
     @param.path.string('id') id: string,
     @param.filter(Employee, {exclude: 'where'}) filter?: FilterExcludingWhere<Employee>,
   ): Promise<Employee> {
-    return this.employeeRepository.findById(id, {
+    const result = await this.employeeRepository.findById(id, {
       ...filter,
       include: [
         {
@@ -328,6 +342,7 @@ export class EmployeeController {
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
+    return this.stripNonStaffRoles(result);
   }
 
   @authenticate('jwt')
