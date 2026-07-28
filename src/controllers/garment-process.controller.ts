@@ -16,7 +16,7 @@ export class GarmentProcessController {
   // Creates all pending log rows for every service × step on this garment.
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['processing:update']})
   @post('/garments/{id}/process/init')
   @response(200, {description: 'Process initialised — pending log rows created for all steps'})
   async initProcess(
@@ -35,7 +35,7 @@ export class GarmentProcessController {
   // If QR_SCAN_REQUIRED=true (env), qrCode in the body is mandatory.
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['processing:update']})
   @post('/garments/{id}/process/advance')
   @response(200, {description: 'Process advanced one step'})
   async advanceProcess(
@@ -66,7 +66,7 @@ export class GarmentProcessController {
   // moves the garment to QUALITY_CHECK, instead of advancing step by step.
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['processing:update']})
   @post('/garments/{id}/process/complete-all')
   @response(200, {description: 'All remaining process steps completed'})
   async completeAllProcesses(
@@ -98,7 +98,7 @@ export class GarmentProcessController {
   // If the garment had advanced to quality_check, it returns to in_process.
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['processing:update']})
   @post('/garments/{id}/process/reverse')
   @response(200, {description: 'Last completed step reversed'})
   async reverseStep(
@@ -111,7 +111,7 @@ export class GarmentProcessController {
   // ─── Process Status ───────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['processing:read']})
   @get('/garments/{id}/process-status')
   @response(200, {description: 'Full process status for a garment — all services and steps'})
   async getProcessStatus(@param.path.string('id') id: string): Promise<object> {
