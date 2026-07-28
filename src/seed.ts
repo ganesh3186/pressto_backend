@@ -125,6 +125,11 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'rider:read',   description: 'View riders'},
   {permission: 'rider:update', description: 'Update a rider'},
   {permission: 'rider:delete', description: 'Delete a rider'},
+  // Rider roster
+  {permission: 'rider_roster:create', description: 'Create a rider roster entry'},
+  {permission: 'rider_roster:read',   description: 'View rider roster'},
+  {permission: 'rider_roster:update', description: 'Update a rider roster entry'},
+  {permission: 'rider_roster:delete', description: 'Delete a rider roster entry'},
   // Role
   {permission: 'role:create', description: 'Create a role'},
   {permission: 'role:read',   description: 'View roles'},

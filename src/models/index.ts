@@ -4,6 +4,8 @@ export * from './employee.model';
 export * from './rider.model';
 export * from './rider-type.enum';
 export * from './rider-attendance.model';
+export * from './rider-roster.model';
+export * from './rider-roster-type.enum';
 export * from './gst-tax-configuration.model';
 export * from './delivery-type-configuration.model';
 export * from './delivery-type.enum';
