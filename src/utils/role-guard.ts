@@ -33,3 +33,16 @@ export const NON_STAFF_ROLES = ['client', 'customer'];
 export function pickStaffRole<T extends {value: string}>(roles: T[]): T {
   return roles.find(r => !NON_STAFF_ROLES.includes(r.value)) ?? roles[0];
 }
+
+// Mirror image for the customer app: a dual-linked login authenticating
+// through customer OTP must always present as "customer" first, never as
+// whatever staff role the same login also happens to hold. Keeps every role
+// in the list (some callers may still care the login is also staff) but
+// guarantees index 0 — "the" role for display purposes — is the customer one.
+export function sortCustomerRoleFirst<T extends {value: string}>(roles: T[]): T[] {
+  return [...roles].sort((a, b) => {
+    const aIsCustomer = NON_STAFF_ROLES.includes(a.value) ? 0 : 1;
+    const bIsCustomer = NON_STAFF_ROLES.includes(b.value) ? 0 : 1;
+    return aIsCustomer - bIsCustomer;
+  });
+}
