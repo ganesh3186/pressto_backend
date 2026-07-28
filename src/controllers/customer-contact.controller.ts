@@ -26,7 +26,7 @@ export class CustomerContactController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_contact:create']})
   @post('/customer-contacts')
   @response(200, {
     description: 'CustomerContact model instance',
@@ -65,7 +65,7 @@ export class CustomerContactController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_contact:read']})
   @get('/customer-contacts')
   @response(200, {
     description: 'Array of CustomerContact model instances for a customer',
@@ -81,7 +81,7 @@ export class CustomerContactController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_contact:read']})
   @get('/customer-contacts/{id}')
   @response(200, {
     description: 'CustomerContact model instance',
@@ -92,7 +92,7 @@ export class CustomerContactController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_contact:update']})
   @patch('/customer-contacts/{id}')
   @response(204, {description: 'CustomerContact PATCH success'})
   async updateById(
@@ -120,7 +120,7 @@ export class CustomerContactController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin']})
+  @authorize({roles: ['super_admin'], permissions: ['customer_contact:delete']})
   @del('/customer-contacts/{id}')
   @response(204, {description: 'CustomerContact soft delete success'})
   async deleteById(@param.path.string('id') id: string): Promise<void> {
