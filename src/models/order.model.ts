@@ -1,5 +1,7 @@
-import {Entity, model, property} from '@loopback/repository';
+import {Entity, hasMany, model, property} from '@loopback/repository';
 import {DeliveryType} from './delivery-type.enum';
+import {OrderLabel} from './order-label.model';
+import {OrderLabelAssignment} from './order-label-assignment.model';
 import {OrderStatus} from './order-status.enum';
 import {OrderType} from './order-type.enum';
 
@@ -118,10 +120,15 @@ export class Order extends Entity {
   @property({type: 'date'})
   deletedAt?: Date;
 
+  @hasMany(() => OrderLabel, {through: {model: () => OrderLabelAssignment}})
+  orderLabels: OrderLabel[];
+
   constructor(data?: Partial<Order>) {
     super(data);
   }
 }
 
-export interface OrderRelations {}
+export interface OrderRelations {
+  orderLabels?: OrderLabel[];
+}
 export type OrderWithRelations = Order & OrderRelations;

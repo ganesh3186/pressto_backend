@@ -16,6 +16,7 @@ import { PresstoDataSource } from '../datasources';
 import { Customer } from '../models';
 import { PaymentMode } from '../models/payment-mode.enum';
 import {
+  CustomerLabelAssignmentRepository,
   CustomerRepository,
   CustomerSecurityDepositRepository,
   RolesRepository,
@@ -40,6 +41,8 @@ export class CustomerController {
     private userRolesRepository: UserRolesRepository,
     @repository(CustomerSecurityDepositRepository)
     private customerSecurityDepositRepository: CustomerSecurityDepositRepository,
+    @repository(CustomerLabelAssignmentRepository)
+    private customerLabelAssignmentRepository: CustomerLabelAssignmentRepository,
     @repository(WalletRepository)
     private walletRepository: WalletRepository,
     @inject('datasources.pressto')
@@ -99,7 +102,7 @@ export class CustomerController {
               password: { type: 'string', minLength: 6 },
               customerEntityType: { type: 'string', enum: ['individual', 'business'] },
               // customerTypeId: {type: 'string', format: 'uuid'},
-              customerLabelId: { type: 'string', format: 'uuid' },
+              customerLabelIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
               customerGroupId: { type: 'string', format: 'uuid' },
               gstNumber: { type: 'string' },
               panNumber: { type: 'string' },
@@ -133,7 +136,7 @@ export class CustomerController {
       password?: string;
       customerEntityType?: 'individual' | 'business';
       // customerTypeId: string;
-      customerLabelId: string;
+      customerLabelIds?: string[];
       customerGroupId: string;
       gstNumber?: string;
       panNumber?: string;
@@ -238,7 +241,6 @@ export class CustomerController {
           ...(body.email && { email: body.email }),
           dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : undefined,
           customerEntityType: body.customerEntityType ?? 'individual',
-          customerLabelId: body.customerLabelId,
           customerGroupId: body.customerGroupId,
           gstNumber: body.gstNumber,
           panNumber: body.panNumber,
@@ -265,6 +267,13 @@ export class CustomerController {
 
         await this.userRolesRepository.create(
           { usersId: user.id, rolesId: role.id },
+          { transaction: tx },
+        );
+      }
+
+      for (const labelId of body.customerLabelIds ?? []) {
+        await this.customerLabelAssignmentRepository.create(
+          { customerId: customer.id, customerLabelId: labelId },
           { transaction: tx },
         );
       }
@@ -313,9 +322,9 @@ export class CustomerController {
           },
         },
         {
-          relation: 'customerLabel',
+          relation: 'customerLabels',
           scope: {
-            fields: { id: true, name: true },
+            fields: { id: true, name: true, code: true },
           },
         }
       ],
@@ -345,6 +354,12 @@ export class CustomerController {
           scope: {
             fields: { id: true, fullName: true, email: true, countryCode: true, phone: true, username: true, isActive: true },
             include: [{ relation: 'roles' }],
+          },
+        },
+        {
+          relation: 'customerLabels',
+          scope: {
+            fields: { id: true, name: true, code: true },
           },
         },
       ],
@@ -382,7 +397,7 @@ export class CustomerController {
               dateOfBirth: { type: 'string', format: 'date' },
               customerEntityType: { type: 'string', enum: ['individual', 'business'] },
               // customerTypeId: { type: 'string', format: 'uuid' },
-              customerLabelId: { type: 'string', format: 'uuid' },
+              customerLabelIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
               customerGroupId: { type: 'string', format: 'uuid' },
               gstNumber: { type: 'string' },
               panNumber: { type: 'string' },
@@ -413,7 +428,7 @@ export class CustomerController {
       dateOfBirth?: string;
       customerEntityType?: 'individual' | 'business';
       // customerTypeId?: string;
-      customerLabelId?: string;
+      customerLabelIds?: string[];
       customerGroupId?: string;
       gstNumber?: string;
       panNumber?: string;
@@ -435,14 +450,14 @@ export class CustomerController {
 
     const customer = await this.customerRepository.findById(id);
 
-    const { roleValues, ...rest } = body;
+    const { roleValues, customerLabelIds, ...rest } = body;
 
     const userFields: Record<string, unknown> = {};
     const customerFields: Record<string, unknown> = {};
 
     const userKeys = ['fullName', 'email', 'countryCode', 'phone', 'isActive'];
     const customerKeys = [
-      'firstName', 'lastName', 'customerEntityType', 'customerLabelId', 'customerGroupId',
+      'firstName', 'lastName', 'customerEntityType', 'customerGroupId',
       'gstNumber', 'panNumber', 'companyName', 'preferredPaymentMode', 'loyaltyPoints', 'defaultDiscountType',
       'defaultDiscountValue', 'preferredStoreId', 'sensitivityScore', 'notes',
       'statusChangeRemark',
@@ -496,6 +511,22 @@ export class CustomerController {
         for (const role of roles) {
           await this.userRolesRepository.create(
             { usersId: customer.userId, rolesId: role.id },
+            { transaction: tx },
+          );
+        }
+      }
+
+      // Distinguish "field omitted" (leave labels alone) from "sent as []"
+      // (clear every label) — unlike roleValues, a customer can validly have
+      // zero labels, so an empty array must actually take effect.
+      if (customerLabelIds !== undefined) {
+        await this.customerLabelAssignmentRepository.deleteAll(
+          { customerId: id },
+          { transaction: tx },
+        );
+        for (const labelId of customerLabelIds) {
+          await this.customerLabelAssignmentRepository.create(
+            { customerId: id, customerLabelId: labelId },
             { transaction: tx },
           );
         }

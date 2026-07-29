@@ -175,6 +175,16 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'customer:read',   description: 'View customers'},
   {permission: 'customer:update', description: 'Update a customer'},
   {permission: 'customer:delete', description: 'Delete a customer'},
+  // Customer Address
+  {permission: 'customer_address:create', description: 'Add a customer address'},
+  {permission: 'customer_address:read',   description: 'View customer addresses'},
+  {permission: 'customer_address:update', description: 'Update a customer address'},
+  {permission: 'customer_address:delete', description: 'Delete a customer address'},
+  // Customer Phone
+  {permission: 'customer_phone:create', description: 'Add a customer phone number'},
+  {permission: 'customer_phone:read',   description: 'View customer phone numbers'},
+  {permission: 'customer_phone:update', description: 'Update a customer phone number'},
+  {permission: 'customer_phone:delete', description: 'Delete a customer phone number'},
   // Order
   {permission: 'order:create', description: 'Create an order'},
   {permission: 'order:read',   description: 'View orders'},
@@ -330,6 +340,7 @@ const ROLES: RoleSeed[] = [
       cru('store_service_mapping'),
       cru('store_price_override'),
       crud('order'), crud('garment'), crud('customer'), crud('approval'), crud('family_group'),
+      crud('customer_address'), crud('customer_phone'),
       cru('bag'),
       cr('customer_recharge'),
       cr('employee'),
@@ -349,7 +360,7 @@ const ROLES: RoleSeed[] = [
     scope: 'cluster',
     permissions: flat(
       readAll(MASTER_RESOURCES),
-      ro('order'), ro('garment'), ro('customer'),
+      ro('order'), ro('garment'), ro('customer'), ro('customer_address'), ro('customer_phone'),
       cru('approval'),
       ro('customer_recharge'),
       ro('employee'),
@@ -369,7 +380,7 @@ const ROLES: RoleSeed[] = [
     permissions: flat(
       readAll(['service', 'item', 'item_category', 'service_category', 'brand', 'color',
         'store', 'price_list', 'additional_charge_master', 'delivery_type_configuration', 'bag']),
-      cru('order'), cru('garment'), cru('customer'),
+      cru('order'), cru('garment'), cru('customer'), cru('customer_address'), cru('customer_phone'),
       cr('approval'), cr('family_group'), cr('customer_recharge'),
       cr('file_upload'),
       ru('profile'),
@@ -385,7 +396,7 @@ const ROLES: RoleSeed[] = [
     loginAccess: true,
     permissions: flat(
       cru('order'),        // order:create records a payment, order:update is club-pay
-      ro('customer'),
+      ro('customer'), ro('customer_address'), ro('customer_phone'),
       cr('customer_recharge'),
       crud('wallet_configuration'),
       crud('gst_tax_configuration'),
@@ -431,7 +442,7 @@ const ROLES: RoleSeed[] = [
     permissions: flat(
       readAll(['service', 'item', 'item_category', 'service_category', 'brand', 'color',
         'store', 'price_list', 'additional_charge_master', 'delivery_type_configuration', 'bag']),
-      cru('order'), cru('garment'), cru('customer'),
+      cru('order'), cru('garment'), cru('customer'), cru('customer_address'), cru('customer_phone'),
       cr('approval'), cr('customer_recharge'),
       cr('file_upload'),
       ru('profile'),

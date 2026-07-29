@@ -1,6 +1,7 @@
-import {Entity, belongsTo, model, property} from '@loopback/repository';
+import {Entity, belongsTo, hasMany, model, property} from '@loopback/repository';
 import {Users} from './users.model';
 import {CustomerLabel} from './customer-label.model';
+import {CustomerLabelAssignment} from './customer-label-assignment.model';
 import {PaymentMode} from './payment-mode.enum';
 
 @model({
@@ -126,8 +127,20 @@ export class Customer extends Entity {
   @property({type: 'date'})
   deletedAt?: Date;
 
-  @belongsTo(() => CustomerLabel)
-  customerLabelId: string;
+  // Deprecated: a customer used to carry exactly one label via this FK.
+  // Replaced by the customerLabels many-to-many below (see
+  // CustomerLabelAssignment). Left on the model — and the DB column left in
+  // place — only until `node ./dist/copy-customer-labels` has copied every
+  // existing value into the new join table; remove this property (and let
+  // `npm run migrate` drop the column) once that's confirmed done.
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  customerLabelId?: string;
+
+  @hasMany(() => CustomerLabel, {through: {model: () => CustomerLabelAssignment}})
+  customerLabels: CustomerLabel[];
 
   constructor(data?: Partial<Customer>) {
     super(data);
@@ -136,6 +149,7 @@ export class Customer extends Entity {
 
 export interface CustomerRelations {
   user?: Users;
+  customerLabels?: CustomerLabel[];
 }
 
 export type CustomerWithRelations = Customer & CustomerRelations;

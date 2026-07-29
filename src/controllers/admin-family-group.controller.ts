@@ -17,6 +17,7 @@ import {ContactRelationship} from '../models/contact-relationship.enum';
 import {
   CustomerFamilyGroupMemberRepository,
   CustomerFamilyGroupRepository,
+  CustomerLabelAssignmentRepository,
   CustomerRepository,
   RolesRepository,
   UserRolesRepository,
@@ -46,6 +47,8 @@ export class AdminFamilyGroupController {
     private rolesRepository: RolesRepository,
     @repository(UserRolesRepository)
     private userRolesRepository: UserRolesRepository,
+    @repository(CustomerLabelAssignmentRepository)
+    private customerLabelAssignmentRepository: CustomerLabelAssignmentRepository,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
     @inject('service.hasher')
@@ -368,7 +371,6 @@ export class AdminFamilyGroupController {
           ...(email && {email}),
           customerEntityType: primary.customerEntityType ?? 'individual',
           customerTypeId: primary.customerTypeId,
-          customerLabelId: primary.customerLabelId,
           customerGroupId: primary.customerGroupId,
           preferredStoreId: primary.preferredStoreId,
           preferredPaymentMode: primary.preferredPaymentMode,
@@ -382,6 +384,18 @@ export class AdminFamilyGroupController {
         {usersId: user.id, rolesId: role.id},
         {transaction: tx},
       );
+
+      // Labels inherit too, same as everything above — copy every label
+      // currently on the primary onto the new member.
+      const primaryLabels = await this.customerLabelAssignmentRepository.find({
+        where: {customerId: primary.id, isDeleted: false},
+      });
+      for (const label of primaryLabels) {
+        await this.customerLabelAssignmentRepository.create(
+          {customerId: customer.id, customerLabelId: label.customerLabelId},
+          {transaction: tx},
+        );
+      }
 
       await this.walletService.createWallet(customer.id, {transaction: tx});
       await this.securityDepositService.createDeposit(customer.id, {transaction: tx});

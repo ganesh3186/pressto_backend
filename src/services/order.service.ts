@@ -39,6 +39,8 @@ import {
   OrderItemAdditionalChargeRepository,
   OrderHandoverRepository,
   OrderItemRepository,
+  OrderLabelAssignmentRepository,
+  OrderLabelRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
   PaymentTransactionRepository,
@@ -75,8 +77,9 @@ export interface UnitInspectionInput {
   brandId?: string;
   colorId?: string;
   // Metres — required per unit when the item is priced by measurement
-  // (Item.isMeasurement), e.g. curtains billed per running metre.
+  // (Item.isMeasurement), e.g. curtains billed per square metre (length × width).
   length?: number;
+  width?: number;
   additionalChargeIds?: string[];   // add-ons + requirements for this specific unit
   stainMarks?: UnitStainMarkInput[];
   damageMarks?: UnitDamageMarkInput[];
@@ -123,6 +126,7 @@ export interface CreateOrderInput {
   deliveryDate?: string;
   payments?: OrderPaymentInput[];
   walletAmount?: number;
+  orderLabelIds?: string[];
 }
 
 // The final order/invoice/challan total is always a whole rupee (≥ .5 rounds up).
@@ -178,6 +182,8 @@ export class OrderService {
     @repository(CustomerFamilyGroupRepository) private familyGroupRepo: CustomerFamilyGroupRepository,
     @repository(CustomerFamilyGroupMemberRepository) private familyMemberRepo: CustomerFamilyGroupMemberRepository,
     @repository(OrderHandoverRepository) private orderHandoverRepo: OrderHandoverRepository,
+    @repository(OrderLabelAssignmentRepository) private orderLabelAssignmentRepo: OrderLabelAssignmentRepository,
+    @repository(OrderLabelRepository) private orderLabelRepo: OrderLabelRepository,
     @repository(UsersRepository) private userRepo: UsersRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
@@ -529,10 +535,11 @@ export class OrderService {
             ((pricing.resolvedPrice + additionalServicesUnitPrice) * deliveryMultiplier).toFixed(2),
           );
 
-      // Measurement items (e.g. curtains) are billed per running metre: each
-      // unit's contribution is unitPrice × its own length, not a flat
-      // per-piece price — so the line total sums per-unit amounts instead of
-      // multiplying by quantity. Every accepted unit must carry a length.
+      // Measurement items (e.g. curtains) are billed per square metre: each
+      // unit's contribution is unitPrice × its own area (length × width), not
+      // a flat per-piece price — so the line total sums per-unit amounts
+      // instead of multiplying by quantity. Every accepted unit must carry
+      // both a length and a width.
       const catalogItem = rejected ? null : await this.itemRepo.findById(item.itemId);
       const isMeasurement = Boolean(catalogItem?.isMeasurement);
 
@@ -541,20 +548,21 @@ export class OrderService {
         const units = item.units ?? [];
         if (units.length < item.quantity) {
           throw new HttpErrors.BadRequest(
-            `Length is required for every unit of a measurement item (itemId: ${item.itemId}).`,
+            `Length and width are required for every unit of a measurement item (itemId: ${item.itemId}).`,
           );
         }
-        let lengthTotal = 0;
+        let areaTotal = 0;
         for (const unit of units) {
           const length = Number(unit?.length);
-          if (!Number.isFinite(length) || length <= 0) {
+          const width = Number(unit?.width);
+          if (!Number.isFinite(length) || length <= 0 || !Number.isFinite(width) || width <= 0) {
             throw new HttpErrors.BadRequest(
-              `Each unit of a measurement item (itemId: ${item.itemId}) needs a length greater than 0.`,
+              `Each unit of a measurement item (itemId: ${item.itemId}) needs a length and width greater than 0.`,
             );
           }
-          lengthTotal += length;
+          areaTotal += length * width;
         }
-        totalPrice = parseFloat((unitPrice * lengthTotal).toFixed(2));
+        totalPrice = parseFloat((unitPrice * areaTotal).toFixed(2));
       } else {
         totalPrice = parseFloat((unitPrice * item.quantity).toFixed(2));
       }
@@ -784,6 +792,7 @@ export class OrderService {
                 brandId: unitInspection?.brandId,
                 colorId: unitInspection?.colorId,
                 length: unitInspection?.length,
+                width: unitInspection?.width,
                 qrPrintCount: unitInspection?.qrPrintCount ?? 1,
                 customerRemarks: unitInspection?.instructions,
               },
@@ -867,6 +876,13 @@ export class OrderService {
           {transaction: tx},
         );
         createdPayments.push(walletPt);
+      }
+
+      for (const orderLabelId of input.orderLabelIds ?? []) {
+        await this.orderLabelAssignmentRepo.create(
+          {orderId: order.id, orderLabelId},
+          {transaction: tx},
+        );
       }
 
       await tx.commit();
@@ -1947,7 +1963,7 @@ export class OrderService {
     const customerIds = [...new Set(orders.map(o => o.customerId))];
     const parentOrderIds = [...new Set(orders.map(o => (o as any).parentOrderId).filter(Boolean))];
 
-    const [customers, paymentTxns, parentOrders, orderItems] = await Promise.all([
+    const [customers, paymentTxns, parentOrders, orderItems, labelAssignments] = await Promise.all([
       this.customerRepo.find({where: {id: {inq: customerIds}} as any}),
       this.paymentTransactionRepo.find({where: {orderId: {inq: orderIds}} as any}),
       parentOrderIds.length
@@ -1957,7 +1973,22 @@ export class OrderService {
         where: {orderId: {inq: orderIds}} as any,
         fields: {orderId: true, quantity: true} as any,
       }),
+      this.orderLabelAssignmentRepo.find({where: {orderId: {inq: orderIds}, isDeleted: false} as any}),
     ]);
+
+    const labelIds = [...new Set(labelAssignments.map(a => a.orderLabelId))];
+    const labels = labelIds.length
+      ? await this.orderLabelRepo.find({where: {id: {inq: labelIds}} as any})
+      : [];
+    const labelById = new Map(labels.map(l => [l.id, l]));
+    const labelsByOrder = new Map<string, {id: string; name: string; code: string}[]>();
+    for (const a of labelAssignments) {
+      const label = labelById.get(a.orderLabelId);
+      if (!label) continue;
+      const list = labelsByOrder.get(a.orderId) ?? [];
+      list.push({id: label.id, name: label.name, code: label.code});
+      labelsByOrder.set(a.orderId, list);
+    }
 
     const userIds = [...new Set(customers.map(c => c.userId).filter(Boolean))];
     const users = userIds.length
@@ -2033,6 +2064,7 @@ export class OrderService {
         parentOrderNumber: (order as any).parentOrderId ? (parentOrderMap.get((order as any).parentOrderId) ?? null) : null,
         // Marks a free rework so a ₹0 row in the list is explicable.
         reprocessOfOrderId: (order as any).reprocessOfOrderId ?? null,
+        orderLabels: labelsByOrder.get(order.id) ?? [],
         customer: customer
           ? {
               id: customer.id,
@@ -2059,13 +2091,18 @@ export class OrderService {
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     // ── Parallel batch 1: order sub-tables ───────────────────────────────────
-    const [orderItems, orderCharges, statusHistory, paymentTransactions, splitChildren] = await Promise.all([
+    const [orderItems, orderCharges, statusHistory, paymentTransactions, splitChildren, orderLabelAssignments] = await Promise.all([
       this.orderItemRepo.find({where: {orderId}}),
       this.orderChargeRepo.find({where: {orderId}}),
       this.statusHistoryRepo.find({where: {orderId}, order: ['changedAt ASC']}),
       this.paymentTransactionRepo.find({where: {orderId}}),
       this.orderRepo.find({where: {parentOrderId: orderId, isDeleted: false} as any, fields: {id: true, orderNumber: true, status: true, totalAmount: true, allocatedPayment: true} as any}),
+      this.orderLabelAssignmentRepo.find({where: {orderId, isDeleted: false} as any}),
     ]);
+
+    const orderLabels = orderLabelAssignments.length
+      ? await this.orderLabelRepo.find({where: {id: {inq: orderLabelAssignments.map(a => a.orderLabelId)}} as any})
+      : [];
 
     const orderItemIds = orderItems.map(i => i.id);
     const additionalSvcIds = orderItems.flatMap(i => (i.additionalServiceIds as string[] | null) ?? []);
@@ -2193,6 +2230,7 @@ export class OrderService {
         brandId: g.brandId,
         colorId: g.colorId,
         length: g.length,
+        width: g.width,
         customerRemarks: g.customerRemarks,
         inspectionRemarks: g.inspectionRemarks,
         isTagPrinted: g.isTagPrinted ?? false,
@@ -2215,6 +2253,7 @@ export class OrderService {
     return {
       order: {
         ...order,
+        orderLabels: orderLabels.map(l => ({id: l.id, name: l.name, code: l.code})),
         customer: customer
           ? {
               id: customer.id,
