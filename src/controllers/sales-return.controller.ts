@@ -7,10 +7,12 @@ import {authorize} from '../authorization';
 import {SalesReturn, SalesReturnStatus} from '../models/sales-return.model';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {ReferenceType} from '../models/reference-type.enum';
+import {ORDER_STATUS_TRANSITIONS, OrderStatus} from '../models/order-status.enum';
 import {
   InvoiceRepository,
   OrderItemRepository,
   OrderRepository,
+  OrderStatusHistoryRepository,
   SalesReturnRepository,
   ChallanRepository,
   WalletRepository,
@@ -27,6 +29,7 @@ export class SalesReturnController {
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
+    @repository(OrderStatusHistoryRepository) private statusHistoryRepo: OrderStatusHistoryRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -152,10 +155,13 @@ export class SalesReturnController {
       throw new HttpErrors.BadRequest(`Sales return is already ${record.status}.`);
     }
 
+    const order = await this.orderRepo.findOne({where: {id: record.orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const {v4} = await import('uuid');
     const creditAppliedAs = body.creditAppliedAs ?? 'adjustment';
 
     if (creditAppliedAs === 'wallet') {
-      const {v4} = await import('uuid');
       let wallet = await this.walletRepo.findOne({where: {customerId: record.customerId}});
       if (!wallet) {
         wallet = await this.walletRepo.create({
@@ -213,6 +219,41 @@ export class SalesReturnController {
       resolvedAt: new Date(),
       creditAppliedAs: creditAppliedAs,
     } as Partial<SalesReturn>);
+
+    // If every item on the order now has an approved return covering its full
+    // quantity, the order itself is done — nothing is left to deliver/track.
+    // ORDER_STATUS_TRANSITIONS only allows this jump from a post-fulfillment
+    // state, so an order returned before it ever reached that stage is left
+    // as-is rather than forced into an invalid transition.
+    const orderItems = await this.orderItemRepo.find({where: {orderId: record.orderId} as any});
+    const approvedReturns = await this.salesReturnRepo.find({
+      where: {orderId: record.orderId, status: SalesReturnStatus.APPROVED} as any,
+    });
+    const returnedQtyByItem = new Map<string, number>();
+    for (const ret of approvedReturns) {
+      for (const line of (ret.returnedItems ?? []) as Array<{orderItemId?: string; quantity?: number}>) {
+        if (!line.orderItemId) continue;
+        returnedQtyByItem.set(
+          line.orderItemId,
+          (returnedQtyByItem.get(line.orderItemId) ?? 0) + (Number(line.quantity) || 0),
+        );
+      }
+    }
+    const fullyReturned =
+      orderItems.length > 0 &&
+      orderItems.every(oi => (returnedQtyByItem.get(oi.id) ?? 0) >= (Number(oi.quantity) || 0));
+
+    if (fullyReturned && ORDER_STATUS_TRANSITIONS[order.status!]?.includes(OrderStatus.RETURNED)) {
+      await this.orderRepo.updateById(record.orderId, {status: OrderStatus.RETURNED});
+      await this.statusHistoryRepo.create({
+        id: v4(),
+        orderId: record.orderId,
+        status: OrderStatus.RETURNED,
+        changedAt: new Date(),
+        changedBy: currentUser[securityId],
+        remarks: `Auto-set: all items returned via credit note ${record.creditNoteNumber}`,
+      });
+    }
 
     return {message: 'Sales return approved. Credit note issued.', creditNoteNumber: record.creditNoteNumber};
   }

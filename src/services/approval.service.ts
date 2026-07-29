@@ -13,6 +13,7 @@ import {ItemRepository} from '../repositories/item.repository';
 import {MediaRepository} from '../repositories/media.repository';
 import {OrderItemRepository} from '../repositories/order-item.repository';
 import {OrderRepository} from '../repositories/order.repository';
+import {OrderStatusHistoryRepository} from '../repositories/order-status-history.repository';
 import {PaymentTransactionRepository} from '../repositories/payment-transaction.repository';
 import {ServiceRepository} from '../repositories/service.repository';
 import {WalletRepository} from '../repositories/wallet.repository';
@@ -21,6 +22,7 @@ import {ApprovalActionType, CUSTOMER_UPGRADE_ACTIONS} from '../models/approval-a
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
+import {ORDER_STATUS_TRANSITIONS, OrderStatus} from '../models/order-status.enum';
 import {ProcessLogStatus} from '../models/process-log-status.enum';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {ReferenceType} from '../models/reference-type.enum';
@@ -29,10 +31,16 @@ import {APPROVAL_ROLE_ROUTING, ApprovalRequest} from '../models/approval-request
 import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
 
-// What status to set on the garment immediately when a request is CREATED
+// What status to set on the garment immediately when a request is CREATED.
+// Every garment-level approval type is held the instant it's raised, so the
+// waiting period never gets silently attributed to whatever pipeline stage
+// (in_process, quality_check, ...) the garment happened to be sitting in —
+// the piece is frozen there until someone decides.
 const GARMENT_STATUS_ON_CREATE: Partial<Record<ApprovalRequestType, GarmentStatus>> = {
-  // Upgrade: put on hold right away so no further processing happens until customer approves
   [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.ON_HOLD,
+  [ApprovalRequestType.RETURN_ITEM]: GarmentStatus.ON_HOLD,
+  [ApprovalRequestType.ITEM_DAMAGED]: GarmentStatus.ON_HOLD,
+  [ApprovalRequestType.REPROCESS]: GarmentStatus.ON_HOLD,
 };
 
 // What status to set on the garment when request is APPROVED
@@ -95,6 +103,7 @@ export class ApprovalService {
     @repository(MediaRepository) private mediaRepo: MediaRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
+    @repository(OrderStatusHistoryRepository) private orderStatusHistoryRepo: OrderStatusHistoryRepository,
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
@@ -254,7 +263,9 @@ export class ApprovalService {
       await this._applyUpgradeOnOrderItem(garment.orderItemId, request, performedBy);
     }
 
-    // Item damaged approved: log it (no status change — garment stays on_hold until manually resolved)
+    // Item damaged approved: no further status change — the garment stays
+    // on_hold (set at request creation) until someone manually resolves it
+    // via reprocess or return.
 
     // Reprocess approved: reset the process logs and send the garment back into
     // processing so the workshop redoes every step. The garment_status_history
@@ -279,6 +290,12 @@ export class ApprovalService {
     if (!orderItem) return;
     const order = await this.orderRepo.findOne({where: {id: orderItem.orderId, isDeleted: false}});
     if (!order) return;
+
+    // If this was the last garment on the order still outstanding, the order
+    // itself is done — nothing is left to deliver. Checked unconditionally,
+    // ahead of the pricing/refund logic below, so a ₹0 garment (free rework,
+    // fully discounted) still closes out the order correctly.
+    await this._maybeMarkOrderReturned(order.id, garment.garmentTagNumber, request.id, performedBy);
 
     // The order total is intentionally LEFT UNCHANGED — the order stays the
     // record of what was ordered. A return is handled as money going back to the
@@ -484,10 +501,13 @@ export class ApprovalService {
       return;
     }
 
-    // Plain reject, or declined + carry on with the original service. Either way
-    // the garment just comes off hold: orderItem.serviceId was never touched, so
-    // processing resumes on the OLD service with no further action needed.
-    if (request.type === ApprovalRequestType.UPGRADE_SERVICE) {
+    // Plain reject, or declined + carry on as before. Either way, whatever the
+    // request touched was never actually applied (upgrade's serviceId swap,
+    // return's removal, reprocess's log reset all only happen on APPROVE), so
+    // the garment just comes off hold and resumes wherever it left off — no
+    // other field needs undoing. Applies to every type this service holds at
+    // creation (see GARMENT_STATUS_ON_CREATE), not just upgrades.
+    if (GARMENT_STATUS_ON_CREATE[request.type]) {
       const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
       if (garment?.status === GarmentStatus.ON_HOLD) {
         // Find the last non-on_hold status from history and restore it
@@ -500,8 +520,8 @@ export class ApprovalService {
         const restoreStatus = (prevEntry?.status as GarmentStatus) ?? GarmentStatus.IN_INSPECTION;
         const remarks =
           action === ApprovalActionType.REJECTED_AND_PROCESS
-            ? `Upgrade declined — resuming ${restoreStatus} on the original service`
-            : `Upgrade rejected — restored to ${restoreStatus}`;
+            ? `${request.type} declined — resuming ${restoreStatus}`
+            : `${request.type} rejected — restored to ${restoreStatus}`;
         await this._updateGarmentStatus(request.entityId, restoreStatus, performedBy, remarks);
       }
     }
@@ -931,6 +951,44 @@ export class ApprovalService {
       changedAt: new Date(),
       changedBy,
       remarks,
+    });
+  }
+
+  /**
+   * If every garment on the order has now been returned to the customer,
+   * flip the order itself to RETURNED. Mirrors the equivalent check the
+   * SalesReturn/credit-note flow runs on its own approve() — this is the
+   * other place a garment can end up returned (per-garment approval, not a
+   * bulk credit note), so it needs the same order-completion logic.
+   */
+  private async _maybeMarkOrderReturned(
+    orderId: string,
+    garmentTagNumber: string | undefined,
+    requestId: string,
+    performedBy: string,
+  ): Promise<void> {
+    const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
+    if (!order) return;
+    if (!ORDER_STATUS_TRANSITIONS[order.status!]?.includes(OrderStatus.RETURNED)) return;
+
+    const orderItems = await this.orderItemRepo.find({where: {orderId} as any});
+    if (!orderItems.length) return;
+    const garments = await this.garmentRepo.find({
+      where: {orderItemId: {inq: orderItems.map(i => i.id)}, isDeleted: false} as any,
+    });
+    const fullyReturned =
+      garments.length > 0 && garments.every(g => g.status === GarmentStatus.RETURNED_TO_CUSTOMER);
+    if (!fullyReturned) return;
+
+    const {v4} = await import('uuid');
+    await this.orderRepo.updateById(orderId, {status: OrderStatus.RETURNED});
+    await this.orderStatusHistoryRepo.create({
+      id: v4(),
+      orderId,
+      status: OrderStatus.RETURNED,
+      changedAt: new Date(),
+      changedBy: performedBy,
+      remarks: `Auto-set: every garment on the order has been returned (last: ${garmentTagNumber ?? requestId} via approval ${requestId})`,
     });
   }
 }

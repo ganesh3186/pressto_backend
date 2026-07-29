@@ -15,8 +15,10 @@ import {
   GarmentStatus,
   isActiveGarmentStatus,
 } from '../models/garment-status.enum';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {
   AdditionalChargeMasterRepository,
+  ApprovalRequestRepository,
   ClusterPriceListRepository,
   ClusterRepository,
   CustomerContactRepository,
@@ -187,6 +189,7 @@ export class OrderService {
     @repository(UsersRepository) private userRepo: UsersRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
+    @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -2146,12 +2149,27 @@ export class OrderService {
 
     // ── Garment stage histories ───────────────────────────────────────────────
     const garmentIds = garments.map(g => g.id);
-    const garmentHistories = garmentIds.length
-      ? await this.garmentStatusHistoryRepo.find({
-          where: {garmentId: {inq: garmentIds}} as any,
-          order: ['changedAt ASC'],
-        })
-      : [];
+    const [garmentHistories, pendingApprovals] = await Promise.all([
+      garmentIds.length
+        ? this.garmentStatusHistoryRepo.find({
+            where: {garmentId: {inq: garmentIds}} as any,
+            order: ['changedAt ASC'],
+          })
+        : Promise.resolve([]),
+      // A held garment (status on_hold) doesn't say WHY on its own — this is
+      // what lets the order-status screen show "On Hold — Return Pending" vs
+      // "On Hold — Damaged" instead of a bare, unexplained "On Hold".
+      garmentIds.length
+        ? this.approvalRequestRepo.find({
+            where: {
+              entityType: 'garment',
+              entityId: {inq: garmentIds},
+              status: ApprovalRequestStatus.PENDING,
+            } as any,
+          })
+        : Promise.resolve([]),
+    ]);
+    const pendingApprovalByGarment = new Map(pendingApprovals.map(a => [a.entityId, a.type]));
 
     // ── Build lookup maps ─────────────────────────────────────────────────────
     const serviceMap = new Map(services.map(s => [s.id, s]));
@@ -2227,6 +2245,9 @@ export class OrderService {
         orderItemId: g.orderItemId,
         garmentTagNumber: g.garmentTagNumber,
         status: g.status,
+        // Only meaningful while status is on_hold — tells the UI which
+        // approval flow (return / damage / reprocess / upgrade) is holding it.
+        pendingApprovalType: pendingApprovalByGarment.get(g.id) ?? null,
         brandId: g.brandId,
         colorId: g.colorId,
         length: g.length,

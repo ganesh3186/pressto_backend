@@ -233,8 +233,12 @@ export class OrderController {
   ): Promise<object> {
     const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
-    if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.CANCELLED) {
-      throw new HttpErrors.BadRequest('Cannot update a delivered or cancelled order.');
+    if (
+      order.status === OrderStatus.DELIVERED ||
+      order.status === OrderStatus.CANCELLED ||
+      order.status === OrderStatus.RETURNED
+    ) {
+      throw new HttpErrors.BadRequest('Cannot update a delivered, cancelled, or returned order.');
     }
 
     const {orderLabelIds, ...orderFields} = body;
@@ -650,8 +654,8 @@ export class OrderController {
   ): Promise<object> {
     const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
-    if (order.status === OrderStatus.DELIVERED) {
-      throw new HttpErrors.BadRequest('Cannot delete a delivered order.');
+    if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.RETURNED) {
+      throw new HttpErrors.BadRequest('Cannot delete a delivered or returned order.');
     }
     await this.orderRepository.updateById(id, {
       isDeleted: true,
