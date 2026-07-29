@@ -1,5 +1,6 @@
 export * from './cluster-price-list.controller';
 export * from './additional-charge-master.controller';
+export * from './additional-charge-prices.controller';
 export * from './employee.controller';
 export * from './gst-tax-configuration.controller';
 export * from './delivery-type-configuration.controller';
