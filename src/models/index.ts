@@ -12,6 +12,7 @@ export * from './brand.model';
 export * from './cluster.model';
 export * from './customer-discount-group.model';
 export * from './customer-label.model';
+export * from './customer-label-assignment.model';
 export * from './color.model';
 export * from './damage-type.model';
 export * from './item-category.model';

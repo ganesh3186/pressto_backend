@@ -31,6 +31,8 @@
     "migrate": "node ./dist/migrate",
     "preseed": "npm run build",
     "seed": "node ./dist/seed",
+    "preseed:new-permissions": "npm run build",
+    "seed:new-permissions": "node ./dist/seed-new-permissions",
     "migrate:pressto-masters": "node scripts/migrate-pressto-masters.cjs",
     "preseed:pressto": "npm run build",
     "seed:pressto": "node ./dist/seed-pressto",
