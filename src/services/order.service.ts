@@ -304,6 +304,49 @@ export class OrderService {
     return {basePrice: base, resolvedPrice: base, appliedPercentage: null, priceSource: 'base', estimatedDurationInDays};
   }
 
+  // ─── Additional Charge Pricing ──────────────────────────────────────────────
+  // Same store→cluster→region waterfall as resolvePricing(), but keyed off
+  // additionalServicePercentage (not the primary `percentage` column) and applied
+  // to AdditionalChargeMaster.defaultAmount — mirrors
+  // AdditionalChargePricesController so what actually gets billed matches what
+  // GET /additional-charge-prices showed the counter. Resolved once per order
+  // (the percentage only depends on storeId, not on which charge it's applied to).
+
+  private async resolveAdditionalChargePercentage(storeId: string): Promise<number | null> {
+    const override = await this.storePriceOverrideRepo.findOne({
+      where: {storeId, isActive: true, isDeleted: false},
+    });
+    if (override?.additionalServicePercentage != null) {
+      return Number(override.additionalServicePercentage);
+    }
+
+    const store = await this.storeRepo.findById(storeId);
+    if (!store.clusterId) return null;
+
+    const clusterPriceList = await this.clusterPriceListRepo.findOne({
+      where: {clusterId: store.clusterId, isActive: true, isDeleted: false},
+    });
+    if (clusterPriceList?.additionalServicePercentage != null) {
+      return Number(clusterPriceList.additionalServicePercentage);
+    }
+
+    const cluster = await this.clusterRepo.findById(store.clusterId);
+    if (!cluster.regionId) return null;
+
+    const priceList = await this.priceListRepo.findOne({
+      where: {regionId: cluster.regionId, isActive: true, isDeleted: false},
+    });
+    return priceList?.additionalServicePercentage != null
+      ? Number(priceList.additionalServicePercentage)
+      : null;
+  }
+
+  private applyAdditionalChargeUplift(defaultAmount: number, percentage: number | null): number {
+    return percentage !== null
+      ? parseFloat((defaultAmount * (1 + percentage / 100)).toFixed(2))
+      : defaultAmount;
+  }
+
   private applyCustomerDiscount(
     subtotal: number,
     discountType?: string,
@@ -458,6 +501,10 @@ export class OrderService {
       });
     }
 
+    // Resolved once for the whole order — depends only on storeId, reused for
+    // every item-level and order-level additional charge below.
+    const additionalChargePercentage = await this.resolveAdditionalChargePercentage(input.storeId);
+
     for (const item of workingItems) {
       const pricing = await this.resolvePricing(input.storeId, item.serviceId, item.itemId);
 
@@ -520,7 +567,10 @@ export class OrderService {
       if (!rejected) {
         for (const chargeId of item.additionalChargeIds ?? []) {
           const charge = await this.additionalChargeRepo.findById(chargeId);
-          additionalChargesTotal += Number(charge.defaultAmount);
+          additionalChargesTotal += this.applyAdditionalChargeUplift(
+            Number(charge.defaultAmount),
+            additionalChargePercentage,
+          );
         }
       }
 
@@ -565,7 +615,10 @@ export class OrderService {
     let orderChargesTotal = 0;
     for (const chargeId of input.additionalChargeIds ?? []) {
       const charge = await this.additionalChargeRepo.findById(chargeId);
-      const amount = Number(charge.defaultAmount);
+      const amount = this.applyAdditionalChargeUplift(
+        Number(charge.defaultAmount),
+        additionalChargePercentage,
+      );
       orderChargesTotal += amount;
       orderChargeDetails.push({id: chargeId, amount});
     }
@@ -666,8 +719,12 @@ export class OrderService {
         if (!item.rejectedAtIntake) {
           for (const chargeId of item.additionalChargeIds ?? []) {
             const charge = await this.additionalChargeRepo.findById(chargeId);
+            const amount = this.applyAdditionalChargeUplift(
+              Number(charge.defaultAmount),
+              additionalChargePercentage,
+            );
             await this.orderItemChargeRepo.create(
-              {orderItemId: orderItem.id, additionalChargeId: chargeId, amount: Number(charge.defaultAmount)},
+              {orderItemId: orderItem.id, additionalChargeId: chargeId, amount},
               {transaction: tx},
             );
           }
@@ -1073,6 +1130,9 @@ export class OrderService {
     );
 
     const deliveryMultiplier = 1 + (Number(order.deliveryTypePercentage) || 0) / 100;
+    // Resolved once for the whole edit — depends only on storeId, reused for
+    // every item-level additional charge below.
+    const additionalChargePercentage = await this.resolveAdditionalChargePercentage(order.storeId!);
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED' as any});
 
     try {
@@ -1125,8 +1185,12 @@ export class OrderService {
         await this.orderItemChargeRepo.deleteAll({orderItemId} as any, {transaction: tx});
         for (const chargeId of desired.additionalChargeIds ?? []) {
           const charge = await this.additionalChargeRepo.findById(chargeId);
+          const amount = this.applyAdditionalChargeUplift(
+            Number(charge.defaultAmount),
+            additionalChargePercentage,
+          );
           await this.orderItemChargeRepo.create(
-            {orderItemId, additionalChargeId: chargeId, amount: Number(charge.defaultAmount)},
+            {orderItemId, additionalChargeId: chargeId, amount},
             {transaction: tx},
           );
         }
