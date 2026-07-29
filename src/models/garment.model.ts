@@ -27,9 +27,13 @@ export class Garment extends Entity {
   colorId?: string;
 
   // Metres — only set (and only meaningful) when the item is priced by
-  // measurement (Item.isMeasurement), e.g. curtains billed per running metre.
+  // measurement (Item.isMeasurement), e.g. curtains billed per square metre.
+  // Priced as length × width (area) × the item's resolved unit price.
   @property({type: 'number', postgresql: {dataType: 'numeric'}})
   length?: number;
+
+  @property({type: 'number', postgresql: {dataType: 'numeric'}})
+  width?: number;
 
   @property({type: 'string'})
   qrCode?: string;

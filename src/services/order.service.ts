@@ -77,8 +77,9 @@ export interface UnitInspectionInput {
   brandId?: string;
   colorId?: string;
   // Metres — required per unit when the item is priced by measurement
-  // (Item.isMeasurement), e.g. curtains billed per running metre.
+  // (Item.isMeasurement), e.g. curtains billed per square metre (length × width).
   length?: number;
+  width?: number;
   additionalChargeIds?: string[];   // add-ons + requirements for this specific unit
   stainMarks?: UnitStainMarkInput[];
   damageMarks?: UnitDamageMarkInput[];
@@ -534,10 +535,11 @@ export class OrderService {
             ((pricing.resolvedPrice + additionalServicesUnitPrice) * deliveryMultiplier).toFixed(2),
           );
 
-      // Measurement items (e.g. curtains) are billed per running metre: each
-      // unit's contribution is unitPrice × its own length, not a flat
-      // per-piece price — so the line total sums per-unit amounts instead of
-      // multiplying by quantity. Every accepted unit must carry a length.
+      // Measurement items (e.g. curtains) are billed per square metre: each
+      // unit's contribution is unitPrice × its own area (length × width), not
+      // a flat per-piece price — so the line total sums per-unit amounts
+      // instead of multiplying by quantity. Every accepted unit must carry
+      // both a length and a width.
       const catalogItem = rejected ? null : await this.itemRepo.findById(item.itemId);
       const isMeasurement = Boolean(catalogItem?.isMeasurement);
 
@@ -546,20 +548,21 @@ export class OrderService {
         const units = item.units ?? [];
         if (units.length < item.quantity) {
           throw new HttpErrors.BadRequest(
-            `Length is required for every unit of a measurement item (itemId: ${item.itemId}).`,
+            `Length and width are required for every unit of a measurement item (itemId: ${item.itemId}).`,
           );
         }
-        let lengthTotal = 0;
+        let areaTotal = 0;
         for (const unit of units) {
           const length = Number(unit?.length);
-          if (!Number.isFinite(length) || length <= 0) {
+          const width = Number(unit?.width);
+          if (!Number.isFinite(length) || length <= 0 || !Number.isFinite(width) || width <= 0) {
             throw new HttpErrors.BadRequest(
-              `Each unit of a measurement item (itemId: ${item.itemId}) needs a length greater than 0.`,
+              `Each unit of a measurement item (itemId: ${item.itemId}) needs a length and width greater than 0.`,
             );
           }
-          lengthTotal += length;
+          areaTotal += length * width;
         }
-        totalPrice = parseFloat((unitPrice * lengthTotal).toFixed(2));
+        totalPrice = parseFloat((unitPrice * areaTotal).toFixed(2));
       } else {
         totalPrice = parseFloat((unitPrice * item.quantity).toFixed(2));
       }
@@ -789,6 +792,7 @@ export class OrderService {
                 brandId: unitInspection?.brandId,
                 colorId: unitInspection?.colorId,
                 length: unitInspection?.length,
+                width: unitInspection?.width,
                 qrPrintCount: unitInspection?.qrPrintCount ?? 1,
                 customerRemarks: unitInspection?.instructions,
               },
@@ -2226,6 +2230,7 @@ export class OrderService {
         brandId: g.brandId,
         colorId: g.colorId,
         length: g.length,
+        width: g.width,
         customerRemarks: g.customerRemarks,
         inspectionRemarks: g.inspectionRemarks,
         isTagPrinted: g.isTagPrinted ?? false,
