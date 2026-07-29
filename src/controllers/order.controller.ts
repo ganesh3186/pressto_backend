@@ -19,7 +19,11 @@ import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {ContactRelationship} from '../models/contact-relationship.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
-import {OrderRepository, OrderStatusHistoryRepository} from '../repositories';
+import {
+  OrderLabelAssignmentRepository,
+  OrderRepository,
+  OrderStatusHistoryRepository,
+} from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
 import {
   REPROCESS_REASON_LABELS,
@@ -62,6 +66,8 @@ export class OrderController {
     private orderRepository: OrderRepository,
     @repository(OrderStatusHistoryRepository)
     private statusHistoryRepository: OrderStatusHistoryRepository,
+    @repository(OrderLabelAssignmentRepository)
+    private orderLabelAssignmentRepository: OrderLabelAssignmentRepository,
     @inject('services.order')
     private orderService: OrderService,
     @inject('services.store-scope')
@@ -116,6 +122,7 @@ export class OrderController {
               specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
               remarks: {type: 'string'},
               additionalChargeIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              orderLabelIds: {type: 'array', items: {type: 'string', format: 'uuid'}, description: 'Order-level labels/tags'},
               items: {type: 'array', minItems: 1, items: ORDER_ITEM_SCHEMA},
               payments: {
                 type: 'array',
@@ -204,6 +211,13 @@ export class OrderController {
               specialInstructions: {type: 'string'},
               specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
               remarks: {type: 'string'},
+              orderLabelIds: {
+                type: 'array',
+                items: {type: 'string', format: 'uuid'},
+                description:
+                  'Replaces the order\'s labels wholesale. Omit to leave labels ' +
+                  'untouched; send [] to clear all of them.',
+              },
             },
           },
         },
@@ -214,6 +228,7 @@ export class OrderController {
       specialInstructions?: string;
       specialInstructionMediaIds?: string[];
       remarks?: string;
+      orderLabelIds?: string[];
     },
   ): Promise<object> {
     const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
@@ -221,7 +236,21 @@ export class OrderController {
     if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.CANCELLED) {
       throw new HttpErrors.BadRequest('Cannot update a delivered or cancelled order.');
     }
-    await this.orderRepository.updateById(id, body);
+
+    const {orderLabelIds, ...orderFields} = body;
+    if (Object.keys(orderFields).length > 0) {
+      await this.orderRepository.updateById(id, orderFields);
+    }
+
+    // Distinguish "field omitted" (leave labels alone) from "sent as []"
+    // (clear every label) — an order can validly have zero labels.
+    if (orderLabelIds !== undefined) {
+      await this.orderLabelAssignmentRepository.deleteAll({orderId: id});
+      for (const orderLabelId of orderLabelIds) {
+        await this.orderLabelAssignmentRepository.create({orderId: id, orderLabelId});
+      }
+    }
+
     return {message: 'Order updated.'};
   }
 

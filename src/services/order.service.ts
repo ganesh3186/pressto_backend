@@ -39,6 +39,8 @@ import {
   OrderItemAdditionalChargeRepository,
   OrderHandoverRepository,
   OrderItemRepository,
+  OrderLabelAssignmentRepository,
+  OrderLabelRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
   PaymentTransactionRepository,
@@ -123,6 +125,7 @@ export interface CreateOrderInput {
   deliveryDate?: string;
   payments?: OrderPaymentInput[];
   walletAmount?: number;
+  orderLabelIds?: string[];
 }
 
 // The final order/invoice/challan total is always a whole rupee (≥ .5 rounds up).
@@ -178,6 +181,8 @@ export class OrderService {
     @repository(CustomerFamilyGroupRepository) private familyGroupRepo: CustomerFamilyGroupRepository,
     @repository(CustomerFamilyGroupMemberRepository) private familyMemberRepo: CustomerFamilyGroupMemberRepository,
     @repository(OrderHandoverRepository) private orderHandoverRepo: OrderHandoverRepository,
+    @repository(OrderLabelAssignmentRepository) private orderLabelAssignmentRepo: OrderLabelAssignmentRepository,
+    @repository(OrderLabelRepository) private orderLabelRepo: OrderLabelRepository,
     @repository(UsersRepository) private userRepo: UsersRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
@@ -867,6 +872,13 @@ export class OrderService {
           {transaction: tx},
         );
         createdPayments.push(walletPt);
+      }
+
+      for (const orderLabelId of input.orderLabelIds ?? []) {
+        await this.orderLabelAssignmentRepo.create(
+          {orderId: order.id, orderLabelId},
+          {transaction: tx},
+        );
       }
 
       await tx.commit();
@@ -1947,7 +1959,7 @@ export class OrderService {
     const customerIds = [...new Set(orders.map(o => o.customerId))];
     const parentOrderIds = [...new Set(orders.map(o => (o as any).parentOrderId).filter(Boolean))];
 
-    const [customers, paymentTxns, parentOrders, orderItems] = await Promise.all([
+    const [customers, paymentTxns, parentOrders, orderItems, labelAssignments] = await Promise.all([
       this.customerRepo.find({where: {id: {inq: customerIds}} as any}),
       this.paymentTransactionRepo.find({where: {orderId: {inq: orderIds}} as any}),
       parentOrderIds.length
@@ -1957,7 +1969,22 @@ export class OrderService {
         where: {orderId: {inq: orderIds}} as any,
         fields: {orderId: true, quantity: true} as any,
       }),
+      this.orderLabelAssignmentRepo.find({where: {orderId: {inq: orderIds}, isDeleted: false} as any}),
     ]);
+
+    const labelIds = [...new Set(labelAssignments.map(a => a.orderLabelId))];
+    const labels = labelIds.length
+      ? await this.orderLabelRepo.find({where: {id: {inq: labelIds}} as any})
+      : [];
+    const labelById = new Map(labels.map(l => [l.id, l]));
+    const labelsByOrder = new Map<string, {id: string; name: string; code: string}[]>();
+    for (const a of labelAssignments) {
+      const label = labelById.get(a.orderLabelId);
+      if (!label) continue;
+      const list = labelsByOrder.get(a.orderId) ?? [];
+      list.push({id: label.id, name: label.name, code: label.code});
+      labelsByOrder.set(a.orderId, list);
+    }
 
     const userIds = [...new Set(customers.map(c => c.userId).filter(Boolean))];
     const users = userIds.length
@@ -2033,6 +2060,7 @@ export class OrderService {
         parentOrderNumber: (order as any).parentOrderId ? (parentOrderMap.get((order as any).parentOrderId) ?? null) : null,
         // Marks a free rework so a ₹0 row in the list is explicable.
         reprocessOfOrderId: (order as any).reprocessOfOrderId ?? null,
+        orderLabels: labelsByOrder.get(order.id) ?? [],
         customer: customer
           ? {
               id: customer.id,
@@ -2059,13 +2087,18 @@ export class OrderService {
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     // ── Parallel batch 1: order sub-tables ───────────────────────────────────
-    const [orderItems, orderCharges, statusHistory, paymentTransactions, splitChildren] = await Promise.all([
+    const [orderItems, orderCharges, statusHistory, paymentTransactions, splitChildren, orderLabelAssignments] = await Promise.all([
       this.orderItemRepo.find({where: {orderId}}),
       this.orderChargeRepo.find({where: {orderId}}),
       this.statusHistoryRepo.find({where: {orderId}, order: ['changedAt ASC']}),
       this.paymentTransactionRepo.find({where: {orderId}}),
       this.orderRepo.find({where: {parentOrderId: orderId, isDeleted: false} as any, fields: {id: true, orderNumber: true, status: true, totalAmount: true, allocatedPayment: true} as any}),
+      this.orderLabelAssignmentRepo.find({where: {orderId, isDeleted: false} as any}),
     ]);
+
+    const orderLabels = orderLabelAssignments.length
+      ? await this.orderLabelRepo.find({where: {id: {inq: orderLabelAssignments.map(a => a.orderLabelId)}} as any})
+      : [];
 
     const orderItemIds = orderItems.map(i => i.id);
     const additionalSvcIds = orderItems.flatMap(i => (i.additionalServiceIds as string[] | null) ?? []);
@@ -2215,6 +2248,7 @@ export class OrderService {
     return {
       order: {
         ...order,
+        orderLabels: orderLabels.map(l => ({id: l.id, name: l.name, code: l.code})),
         customer: customer
           ? {
               id: customer.id,
