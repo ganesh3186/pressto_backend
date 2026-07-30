@@ -5,26 +5,23 @@ import {get, HttpErrors, param, patch, post, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {Challan, ChallanStatus} from '../models/challan.model';
-import {
-  ChallanRepository,
-  GarmentRepository,
-  OrderItemRepository,
-  OrderRepository,
-} from '../repositories';
+import {ChallanRepository, OrderRepository} from '../repositories';
+import {OrderService} from '../services/order.service';
 import {StoreScopeService} from '../services/store-scope.service';
 
 export class ChallanController {
   constructor(
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
-    @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
-    @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @inject('services.order') private orderService: OrderService,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
   // ─── Generate Challan ─────────────────────────────────────────────────────
-  // Creates a challan snapshot for an order (at intake / on demand).
-  // Only one active challan per order at a time.
+  // Creates a challan snapshot for an order (at intake / on demand). Order
+  // creation already does this automatically (OrderService.createOrder) — this
+  // endpoint exists for the rare case a challan needs to be (re)generated
+  // manually. Only one active challan per order at a time either way.
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:update']})
@@ -40,54 +37,12 @@ export class ChallanController {
     const existing = await this.challanRepo.findOne({
       where: {orderId, status: {nin: [ChallanStatus.CONVERTED_TO_INVOICE]}} as any,
     });
-    if (existing) {
-      return {message: 'Challan already exists for this order.', challan: existing};
-    }
+    const challan = await this.orderService.generateChallanForOrder(orderId, currentUser[securityId]);
 
-    const orderItems = await this.orderItemRepo.find({where: {orderId}});
-    const items = orderItems.map(oi => ({
-      orderItemId: oi.id,
-      serviceId: oi.serviceId,
-      itemId: oi.itemId,
-      quantity: Number(oi.quantity) || 0,
-      // Postgres numeric columns come back as strings — coerce so downstream
-      // math sums numerically instead of concatenating.
-      unitPrice: Number(oi.unitPrice) || 0,
-      totalPrice: Number(oi.totalPrice) || 0,
-      additionalServiceIds: oi.additionalServiceIds ?? [],
-      // Shown on the challan as a ₹0 "Rejected at intake" line for the record.
-      rejectedAtIntake: oi.rejectedAtIntake ?? false,
-      rejectionReason: oi.rejectionReason ?? null,
-    }));
-
-    const subtotal = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0);
-    const gstRate = 0.09; // 9% CGST + 9% SGST
-    const cgst = parseFloat((subtotal * gstRate).toFixed(2));
-    const sgst = parseFloat((subtotal * gstRate).toFixed(2));
-    const discount = Number(order.discountAmount) || 0;
-    // Final total is a whole rupee (≥ .5 rounds up); components keep decimals.
-    const totalAmount = Math.round(subtotal - discount + cgst + sgst);
-
-    const totalCount = await this.challanRepo.count();
-    const challanNumber = `CHL-${String(totalCount.count + 1).padStart(6, '0')}`;
-
-    const {v4} = await import('uuid');
-    const challan = await this.challanRepo.create({
-      id: v4(),
-      orderId,
-      challanNumber,
-      generatedBy: currentUser[securityId],
-      items,
-      subtotal: parseFloat(subtotal.toFixed(2)),
-      discount,
-      deliveryCharge: 0,
-      cgst,
-      sgst,
-      totalAmount,
-      status: ChallanStatus.ISSUED,
-    } as Partial<Challan>);
-
-    return {message: 'Challan generated.', challan};
+    return {
+      message: existing ? 'Challan already exists for this order.' : 'Challan generated.',
+      challan,
+    };
   }
 
   // ─── Get Challan ──────────────────────────────────────────────────────────
