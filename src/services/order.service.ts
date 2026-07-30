@@ -3,6 +3,7 @@ import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {PresstoDataSource} from '../datasources';
 import {Order} from '../models/order.model';
+import {Challan, ChallanStatus} from '../models/challan.model';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {OrderStatus, ORDER_STATUS_TRANSITIONS} from '../models/order-status.enum';
@@ -19,6 +20,7 @@ import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {
   AdditionalChargeMasterRepository,
   ApprovalRequestRepository,
+  ChallanRepository,
   ClusterPriceListRepository,
   ClusterRepository,
   CustomerContactRepository,
@@ -190,6 +192,7 @@ export class OrderService {
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
+    @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -379,6 +382,79 @@ export class OrderService {
         );
       }
     }
+  }
+
+  /**
+   * Snapshots the order's current items into a Challan (the "Service Order"
+   * receipt handed to the customer at intake) — same computation
+   * `ChallanController.generate()` used to do inline; both now share this so
+   * the numbers can't drift out of sync between the automatic and manual path.
+   * Only one active (non-converted-to-invoice) challan exists per order — if
+   * one is already there, it's returned as-is rather than duplicated.
+   */
+  async generateChallanForOrder(
+    orderId: string,
+    generatedBy: string,
+    tx?: unknown,
+  ): Promise<Challan> {
+    // Called mid-transaction from createOrder() before the order/items are
+    // committed — every read here MUST go through the same connection (`tx`)
+    // or it sees nothing yet and this throws a false "Order not found."
+    const txOpt = tx ? {transaction: tx} : undefined;
+
+    const existing = await this.challanRepo.findOne({
+      where: {orderId, status: {nin: [ChallanStatus.CONVERTED_TO_INVOICE]}} as any,
+      ...txOpt,
+    } as any);
+    if (existing) return existing;
+
+    const order = await this.orderRepo.findOne(
+      {where: {id: orderId, isDeleted: false}},
+      txOpt,
+    );
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const orderItems = await this.orderItemRepo.find({where: {orderId}}, txOpt);
+    const items = orderItems.map(oi => ({
+      orderItemId: oi.id,
+      serviceId: oi.serviceId,
+      itemId: oi.itemId,
+      quantity: Number(oi.quantity) || 0,
+      unitPrice: Number(oi.unitPrice) || 0,
+      totalPrice: Number(oi.totalPrice) || 0,
+      additionalServiceIds: oi.additionalServiceIds ?? [],
+      rejectedAtIntake: oi.rejectedAtIntake ?? false,
+      rejectionReason: oi.rejectionReason ?? null,
+    }));
+
+    const subtotal = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0);
+    const gstRate = 0.09; // 9% CGST + 9% SGST
+    const cgst = parseFloat((subtotal * gstRate).toFixed(2));
+    const sgst = parseFloat((subtotal * gstRate).toFixed(2));
+    const discount = Number(order.discountAmount) || 0;
+    const totalAmount = Math.round(subtotal - discount + cgst + sgst);
+
+    const totalCount = await this.challanRepo.count();
+    const challanNumber = `CHL-${String(totalCount.count + 1).padStart(6, '0')}`;
+
+    const {v4} = await import('uuid');
+    return this.challanRepo.create(
+      {
+        id: v4(),
+        orderId,
+        challanNumber,
+        generatedBy,
+        items,
+        subtotal: parseFloat(subtotal.toFixed(2)),
+        discount,
+        deliveryCharge: 0,
+        cgst,
+        sgst,
+        totalAmount,
+        status: ChallanStatus.ISSUED,
+      } as Partial<Challan>,
+      txOpt,
+    );
   }
 
   private applyCustomerDiscount(
@@ -915,6 +991,11 @@ export class OrderService {
         );
       }
 
+      // Every new order gets its "Service Order" receipt (Challan) right away,
+      // in the same transaction, so it's available for the frontend to
+      // download the moment order creation succeeds.
+      const challan = await this.generateChallanForOrder(order.id, createdBy, tx);
+
       await tx.commit();
 
       return {
@@ -922,6 +1003,7 @@ export class OrderService {
         items: createdItems,
         garments: createdGarments,
         payments: createdPayments,
+        challan,
         walletAmountDeducted: walletAmount,
         totalCollected,
         balanceDue: rupeeBalance(totalAmount, totalCollected),
