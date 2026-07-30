@@ -350,6 +350,25 @@ const SERVICE_ORDER = [
   'repair',
   'cc-repair',
 ];
+
+// Per-service turnaround (days), from the client's estimation table:
+//   PRESSTOKE 7, DC 2, PRESS 2, WDF 2, SB CLEAN 5, REPAIR 7, COLOURING 21,
+//   CC 7, CC-REPAIR 7, PACKING 3
+// DC = "Dry Clean" -> Clean; SB = Shoes-Bags; CC = Curtain-Carpet. PACKING has
+// no Service row (it's routed to additional_charge_master), so it's unused
+// here. Iron isn't in the client's table, so it keeps the 1-day fallback.
+const SERVICE_TAT_DAYS = {
+  clean: 2,
+  press: 2,
+  'shoes-bags': 5,
+  'curtain-carpet': 7,
+  'wash dry fold': 2,
+  colouring: 21,
+  presstoke: 7,
+  repair: 7,
+  'cc-repair': 7,
+};
+const tatDaysForKey = (key) => SERVICE_TAT_DAYS[key] ?? 1;
 const serviceDisplay = new Map(); // norm -> display name as written in the sheet
 price.forEach((r) => {
   const raw = String(r['Service Name'] || '').trim();
@@ -397,6 +416,9 @@ orderedServiceKeys.forEach((key, index) => {
   serviceIdByKey[key] = id;
 });
 report.service = out.service.length;
+const serviceKeyByServiceId = new Map(
+  Object.entries(serviceIdByKey).map(([key, id]) => [id, key]),
+);
 report.shellServices = SHELL_SERVICES.filter((s) => serviceIdByKey[norm(s)]).join(', ');
 
 // ── Additional charges (order-level) ─────────────────────────────────────────
@@ -500,12 +522,13 @@ price.forEach((r) => {
 });
 
 best.forEach((v, key) => {
+  const svcKey = serviceKeyByServiceId.get(v.serviceId);
   out.service_item_mapping.push({
     id: keepId(prevMapping, key),
     serviceId: v.serviceId,
     itemId: v.itemId,
     basePrice: v.basePrice,
-    estimatedDurationInDays: 1,
+    estimatedDurationInDays: tatDaysForKey(svcKey),
     additionalServiceIds: [],
     isActive: true,
     isDeleted: false,
@@ -602,7 +625,7 @@ function collectSubtypePrices(shellKey) {
 }
 
 const mappingSeen = new Set(out.service_item_mapping.map((m) => `${m.serviceId}:${m.itemId}`));
-function addMapping(serviceId, itemId, basePrice, additionalServiceIds) {
+function addMapping(serviceId, itemId, basePrice, additionalServiceIds, estimatedDurationInDays) {
   const key = `${serviceId}:${itemId}`;
   if (mappingSeen.has(key)) return;
   mappingSeen.add(key);
@@ -611,7 +634,7 @@ function addMapping(serviceId, itemId, basePrice, additionalServiceIds) {
     serviceId,
     itemId,
     basePrice,
-    estimatedDurationInDays: 1,
+    estimatedDurationInDays: estimatedDurationInDays ?? 1,
     additionalServiceIds: additionalServiceIds || [],
     isActive: true,
     isDeleted: false,
@@ -650,8 +673,9 @@ SHELL_SERVICES.forEach((shellName) => {
   // Shell mapping: ₹0 base — all real pricing comes from the additional
   // service(s) attached, exactly like the "leave blank/0 for a free item"
   // convention already used for Repair/Presstoke in the admin panel.
+  const shellTatDays = tatDaysForKey(shellKey);
   namedItems.forEach((itemId) => {
-    addMapping(shellServiceId, itemId, 0, allDepIds);
+    addMapping(shellServiceId, itemId, 0, allDepIds, shellTatDays);
   });
 
   // Each dependent service gets its own price against every item in the
@@ -661,7 +685,7 @@ SHELL_SERVICES.forEach((shellName) => {
       ? realPrice.get(subtypeKey)
       : anyPrice.get(subtypeKey) || 0;
     namedItems.forEach((itemId) => {
-      addMapping(depServiceId, itemId, representativePrice, []);
+      addMapping(depServiceId, itemId, representativePrice, [], shellTatDays);
     });
   });
 });

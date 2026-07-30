@@ -67,6 +67,13 @@ export class Invoice extends Entity {
   })
   status?: InvoiceStatus;
 
+  // On Account consolidated billing: this invoice covers several orders, not
+  // just `orderId` (which is kept as a representative order so every existing
+  // single-order read path — printing, GET /orders/{id}/invoice — still
+  // resolves something sensible). The full set is in InvoiceOrderLink.
+  @property({type: 'boolean', default: false})
+  isConsolidated?: boolean;
+
   @property({type: 'boolean', default: false})
   isPrinted?: boolean;
 
