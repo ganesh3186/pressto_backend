@@ -45,6 +45,8 @@ export class CustomerAddressController {
               addressName: {type: 'string', description: "e.g. Father's home, 2nd office"},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
+              doorFloorFlat: {type: 'string', description: 'Door/floor/flat number'},
+              societyName: {type: 'string'},
               landmark: {type: 'string'},
               city: {type: 'string'},
               state: {type: 'string'},
@@ -66,6 +68,8 @@ export class CustomerAddressController {
       addressName?: string;
       addressLine1: string;
       addressLine2?: string;
+      doorFloorFlat?: string;
+      societyName?: string;
       landmark?: string;
       city: string;
       state: string;
@@ -123,6 +127,8 @@ export class CustomerAddressController {
               addressName: {type: 'string', description: "e.g. Father's home, 2nd office"},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
+              doorFloorFlat: {type: 'string', description: 'Door/floor/flat number'},
+              societyName: {type: 'string'},
               landmark: {type: 'string'},
               city: {type: 'string'},
               state: {type: 'string'},
