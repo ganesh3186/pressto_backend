@@ -9,6 +9,18 @@
  * Then load it with:  npm run seed:pressto
  *
  * Only masters are produced (roles/permissions are NOT touched — we keep ours).
+ *
+ * v2 (29.07 workbook): PresstoKe/Repair/CC-Repair are now seeded as independent
+ * services with hasOwnProcess=false (see Service.dependencyType/hasOwnProcess) —
+ * they carry no billable work of their own. Their old "AddonServiceListMaster"
+ * catalogue is now seeded as real dependent Services (dependencyType='dependent'),
+ * each with its own service_item_mapping rows, wired into the shell services'
+ * additionalServiceIds so a New Order line under Presstoke/Repair/CC-Repair can
+ * actually select them. Most of that pricing in the sheet is keyed to a placeholder
+ * "X" item (flat per-treatment pricing, not truly item-specific) — that price is
+ * broadcast across a representative sample of real items per business unit
+ * (PDC/PSBO/CC) so the feature is testable against real items, not just the
+ * handful of rows that happen to name a real item.
  */
 const path = require('path');
 const fs = require('fs');
@@ -19,7 +31,7 @@ const XLSX = require(path.resolve(__dirname, '../../pressto-admin-panel/node_mod
 
 // Defaults to the client's latest workbook; pass a path to override.
 const WB_PATH =
-  process.argv[2] || path.resolve(__dirname, '../../Pressto_Pulse_Master ---new (1) (1).xlsx');
+  process.argv[2] || path.resolve(__dirname, '../../Pressto_Pulse_Master --- new 29.07.xlsx');
 const OUT_PATH = path.resolve(__dirname, '../src/data/seed-masters-pressto.json');
 
 const uuid = () => crypto.randomUUID();
@@ -27,7 +39,7 @@ const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 // Services that are really charges (packaging / misc), not things an item is
 // "serviced" with. These are forced into additional_charge_master even though the
-// price list maps them to an item.
+// price list maps them to an item or an addon sub-type.
 const FORCE_TO_CHARGE = [
   'Freshener',
   'Miscelleneous Xtra Large',
@@ -43,6 +55,13 @@ const FORCE_TO_CHARGE = [
   'Premium Packing M Discounted',
   'Premium Packing W Discounted',
 ];
+const FORCE_TO_CHARGE_KEYS = new Set(FORCE_TO_CHARGE.map(norm));
+
+// Shell services: independent (selectable as a primary service) but carry no
+// process/pricing of their own — hasOwnProcess=false. All real work is billed
+// through the dependent addon services created below.
+const SHELL_SERVICES = ['PresstoKe', 'Repair', 'CC-Repair'];
+const SHELL_SERVICE_KEYS = new Set(SHELL_SERVICES.map(norm));
 
 // Region code → state (the model requires `state`; the sheet doesn't carry it).
 const REGION_STATE = {
@@ -51,6 +70,20 @@ const REGION_STATE = {
   MMR: 'Maharashtra',
   NCR: 'Delhi',
 };
+
+// BU Name (from the price list) → a ServiceCategory we create.
+const SERVICE_CATEGORY_BY_BU = {
+  PDC: {code: 'PDC', name: 'Garments (PDC)'},
+  PSBO: {code: 'PSBO', name: 'Shoes & Bags (PSBO)'},
+  CC: {code: 'CC', name: 'Curtain & Carpet (CC)'},
+};
+const DEFAULT_SERVICE_CATEGORY = 'PDC';
+
+// How many real items to sample per business-unit group when broadcasting a
+// shell service's addon pricing, on top of whatever items the sheet already
+// names explicitly against Repair/CC-Repair. Keeps the seed testable without
+// generating tens of thousands of mapping rows.
+const SAMPLE_ITEMS_PER_GROUP = 8;
 
 // ── ID preservation ──────────────────────────────────────────────────────────
 // Re-generating must keep the SAME ids for records that already exist, otherwise
@@ -190,12 +223,17 @@ sheet('Store Master').forEach((s) => {
 report.store = out.store.length;
 report.storeWithoutCluster = storeNoCluster;
 
-// ── Item Category (ProductGroupMaster) ───────────────────────────────────────
+// ── Item Category (ProductGroupMaster — one row per PGId/PGCode) ────────────
+// NB: "Product Group " (with trailing space) is the broader super-group (Bed,
+// Top, Shoe, Curtain, ...) used below to bucket items into PDC/PSBO/CC for the
+// dependent-service broadcast; "ProductSubGroupName" is the actual fine-grained
+// category name (Bed Spread, Bed Sheet, ...) that ItemMaster.PGId points at.
 const catByPGId = {};
+const catBroadGroupByPGId = {};
 const catCodes = new Set();
 let catBlankName = 0;
 sheet('ProductGroupMaster').forEach((p) => {
-  const name = String(p.ProductGroupName || '').trim();
+  const name = String(p.ProductSubGroupName || '').trim();
   if (!name) {
     catBlankName += 1; // model requires a name — skip blank rows
     return;
@@ -210,13 +248,27 @@ sheet('ProductGroupMaster').forEach((p) => {
     isActive: p.IsActive !== 0,
     isDeleted: false,
   });
-  if (p.Id !== '') catByPGId[String(p.Id)] = id;
+  if (p.Id !== '') {
+    catByPGId[String(p.Id)] = id;
+    catBroadGroupByPGId[String(p.Id)] = String(p['Product Group '] || '').trim();
+  }
 });
 report.item_category = out.item_category.length;
 report.itemCategoryBlankNameSkipped = catBlankName;
 
+// Bucket a broad product-group label into the same 3 business-unit groups the
+// price list already uses, so item sampling for shell-service broadcast lines
+// up with how the addon catalogue is organised.
+function resolveItemBuGroup(broadGroup) {
+  const s = norm(broadGroup);
+  if (s.includes('shoe') || s.includes('bag')) return 'PSBO';
+  if (s.includes('curtain') || s.includes('carpet')) return 'CC';
+  return 'PDC';
+}
+
 // ── Item (itemCategoryId from PGId) ──────────────────────────────────────────
 const itemByName = {};
+const itemsByBuGroup = { PDC: [], PSBO: [], CC: [] };
 const itemCodes = new Set();
 let itemNoCategory = 0;
 let itemBlankName = 0;
@@ -241,45 +293,74 @@ sheet('ItemMaster').forEach((it) => {
     isDeleted: false,
   });
   if (name) itemByName[norm(name)] = id;
+  const buGroup = resolveItemBuGroup(catBroadGroupByPGId[String(it.PGId)]);
+  itemsByBuGroup[buGroup].push({id, name});
 });
 report.item = out.item.length;
 report.itemWithoutCategory = itemNoCategory;
 report.itemBlankNameSkipped = itemBlankName;
 
-// ── Service Category (default bucket — sheet has none) ────────────────────────
-const svcCatId = keepId(prevSvcCat, 'GENERAL');
-out.service_category.push({
-  id: svcCatId,
-  name: 'General',
-  code: 'GENERAL',
-  isActive: true,
-  isDeleted: false,
+// ── Service Category (PDC / PSBO / CC, from the price list's BU Name) ───────
+const svcCatIdByCode = {};
+Object.values(SERVICE_CATEGORY_BY_BU).forEach(({code, name}) => {
+  const id = keepId(prevSvcCat, code);
+  out.service_category.push({id, name, code, isActive: true, isDeleted: false});
+  svcCatIdByCode[code] = id;
 });
+report.service_category = out.service_category.length;
 
-const price = sheet('Base Service Price List');
+const price = sheet('BaseServicePriceList');
 
-// ── Service master: taken straight from the sheet's "Service Name" column ────
-// The client's updated workbook does the grouping itself: "Service Name" is the
-// top-level service and the old granular names moved to "Service SubType Name".
-// Preferred POS order first, then anything else alphabetically.
+// ── Determine each top-level service's dominant BU (for its ServiceCategory) ─
+const buCountsByService = new Map();
+price.forEach((r) => {
+  const svc = norm(r['Service Name']);
+  const bu = String(r['BU Name'] || '').trim();
+  if (!svc || !bu) return;
+  if (!buCountsByService.has(svc)) buCountsByService.set(svc, new Map());
+  const m = buCountsByService.get(svc);
+  m.set(bu, (m.get(bu) || 0) + 1);
+});
+function dominantBuFor(svcKey) {
+  const m = buCountsByService.get(svcKey);
+  if (!m) return null;
+  let best = null;
+  let bestCount = -1;
+  m.forEach((count, bu) => {
+    if (count > bestCount) { best = bu; bestCount = count; }
+  });
+  return best;
+}
+
+// ── Service master ────────────────────────────────────────────────────────
+// Top-level services taken from the sheet's "Service Name" column, EXCLUDING
+// the ones that are really order-level charges (Packing/Logistics/Others — see
+// AddonServices-OrderLevel + FORCE_TO_CHARGE) and the shell services (handled
+// separately below with hasOwnProcess=false).
+const NON_SERVICE_NAMES = new Set(['others', 'packing', 'logistics'].map(norm));
 const SERVICE_ORDER = [
   'clean',
+  'iron',
   'press',
   'shoes-bags',
   'curtain-carpet',
   'wash dry fold',
+  'colouring',
   'presstoke',
   'repair',
-  'colouring',
   'cc-repair',
-  'packing',
-  'others',
 ];
 const serviceDisplay = new Map(); // norm -> display name as written in the sheet
 price.forEach((r) => {
   const raw = String(r['Service Name'] || '').trim();
-  if (raw) serviceDisplay.set(norm(raw), raw);
+  const key = norm(raw);
+  if (raw && !NON_SERVICE_NAMES.has(key)) serviceDisplay.set(key, raw);
 });
+// Iron never appears in the price list at all (no pricing rows in this
+// workbook) but is one of the well-known core services — seed it anyway so
+// it's browsable/orderable once pricing is added later.
+if (!serviceDisplay.has('iron')) serviceDisplay.set('iron', 'Iron');
+
 const orderedServiceKeys = [...serviceDisplay.keys()].sort((a, b) => {
   const ia = SERVICE_ORDER.indexOf(a);
   const ib = SERVICE_ORDER.indexOf(b);
@@ -295,62 +376,95 @@ orderedServiceKeys.forEach((key, index) => {
   const name = serviceDisplay.get(key);
   const code = uniqueCode(slugBase(name).slice(0, 40), svcCodes);
   const id = keepId(prevService, key);
+  const isShell = SHELL_SERVICE_KEYS.has(key);
+  const bu = dominantBuFor(key);
+  const serviceCategoryId = svcCatIdByCode[bu] || svcCatIdByCode[DEFAULT_SERVICE_CATEGORY];
   out.service.push({
     id,
     name,
     code,
-    serviceCategoryId: svcCatId,
+    serviceCategoryId,
     sequence: index + 1,
     estimatedDurationInHours: 24,
     description: name,
+    dependencyType: 'independent',
+    // Presstoke/Repair/CC-Repair carry no work of their own — every garment
+    // under them MUST have an additional (dependent) service attached.
+    hasOwnProcess: !isShell,
     isActive: true,
     isDeleted: false,
   });
   serviceIdByKey[key] = id;
 });
 report.service = out.service.length;
+report.shellServices = SHELL_SERVICES.filter((s) => serviceIdByKey[norm(s)]).join(', ');
 
-// ── Additional charges: the add-on catalogue, priced from the sub-type rows ───
-const addonByName = new Map();
-sheet('AddonServiceListMaster').forEach((a) => {
-  const n = String(a.ServiceDesc || '').trim();
-  if (n) addonByName.set(norm(n), {code: String(a.ServiceCode || '').trim(), name: n});
-});
-// Granular prices now live under "Service SubType Name".
-const pricesBySubType = new Map();
-price.forEach((r) => {
-  const key = norm(r['Service SubType Name']);
-  if (!key) return;
-  if (!pricesBySubType.has(key)) pricesBySubType.set(key, new Set());
-  pricesBySubType.get(key).add(Number(r['Base Price']) || 0);
-});
-
+// ── Additional charges (order-level) ─────────────────────────────────────────
+// AddonServices-OrderLevel is genuinely order-level, flat charges (pickup/drop,
+// curtain mounting, extra bag) — these become additional_charge_master rows
+// with chargeScope='order'.
 const chargeCodes = new Set();
 const chargeKeys = new Set();
-function addCharge(displayName, key) {
+function addOrderCharge(name, amount) {
+  const key = norm(name);
   if (!key || chargeKeys.has(key)) return;
-  const priceSet = pricesBySubType.get(key);
-  const prices = priceSet ? [...priceSet].filter((n) => Number.isFinite(n)) : [];
-  const addon = addonByName.get(key);
-  const code = uniqueCode(addon ? addon.code : slugBase(displayName).slice(0, 40), chargeCodes);
+  const code = uniqueCode(slugBase(name).slice(0, 40), chargeCodes);
   out.additional_charge_master.push({
     id: keepId(prevCharge, code),
-    name: displayName,
+    name,
     code,
-    chargeScope: 'item',
+    chargeScope: 'order',
     chargeType: 'standard',
-    defaultAmount: prices.length ? Math.min(...prices) : 0, // lowest seen
+    defaultAmount: Number(amount) || 0,
     isTaxable: true,
     isActive: true,
     isDeleted: false,
   });
   chargeKeys.add(key);
 }
-addonByName.forEach((a, key) => addCharge(a.name, key));
-FORCE_TO_CHARGE.forEach((n) => addCharge(n, norm(n)));
+sheet('AddonServices-OrderLevel').forEach((r) => {
+  const name = String(r['New Name'] || r['Item Name'] || '').trim();
+  if (!name) return;
+  addOrderCharge(name, r['Base Price']);
+});
+report.additional_charge_master_orderLevel = out.additional_charge_master.length;
+
+// FORCE_TO_CHARGE sub-types (packaging tiers etc.) become item-scoped charges,
+// priced at the lowest amount seen for that sub-type across the price list.
+const pricesBySubType = new Map();
+price.forEach((r) => {
+  const key = norm(r['Service SubType Name']);
+  if (!key) return;
+  if (!pricesBySubType.has(key)) pricesBySubType.set(key, []);
+  const n = Number(r['Base Price']);
+  if (Number.isFinite(n)) pricesBySubType.get(key).push(n);
+});
+FORCE_TO_CHARGE.forEach((displayName) => {
+  const key = norm(displayName);
+  const prices = pricesBySubType.get(key) || [];
+  if (chargeKeys.has(key)) return;
+  const code = uniqueCode(slugBase(displayName).slice(0, 40), chargeCodes);
+  out.additional_charge_master.push({
+    id: keepId(prevCharge, code),
+    name: displayName,
+    code,
+    chargeScope: 'item',
+    chargeType: 'standard',
+    defaultAmount: prices.length ? Math.min(...prices) : 0,
+    isTaxable: true,
+    isActive: true,
+    isDeleted: false,
+  });
+  chargeKeys.add(key);
+});
 report.additional_charge_master = out.additional_charge_master.length;
 
-// ── Service Item Mapping: one row per (item, service) at the LOWEST price ─────
+// ── Service Item Mapping: base services (Clean/Iron/Press/...) ──────────────
+// One row per (item, service) at the LOWEST price seen. Shell services
+// (Presstoke/Repair/CC-Repair) are excluded here — their pricing is almost
+// entirely against a placeholder "X" item (flat per-treatment pricing, not
+// item-specific) and is handled separately below via the dependent-service
+// broadcast, not as a direct base price on the shell itself.
 const best = new Map();
 let unmatchedItem = 0;
 let placeholderX = 0;
@@ -359,13 +473,14 @@ const unmatchedItemSamples = new Set();
 
 price.forEach((r) => {
   const svcKey = norm(r['Service Name']);
+  if (SHELL_SERVICE_KEYS.has(svcKey)) return; // handled by the broadcast below
   const serviceId = serviceIdByKey[svcKey];
   if (!serviceId) {
     noService += 1;
     return;
   }
   const a = norm(r['New Name']);
-  const b = norm(r['Iteam Name']);
+  const b = norm(r['Item Name']);
   const itemId = itemByName[a] || itemByName[b] || null;
   if (!itemId) {
     // "X" is a placeholder the source system leaves when no product is named.
@@ -373,7 +488,7 @@ price.forEach((r) => {
     else {
       unmatchedItem += 1;
       if (unmatchedItemSamples.size < 12) {
-        unmatchedItemSamples.add(String(r['New Name'] || r['Iteam Name'] || '(blank)').trim());
+        unmatchedItemSamples.add(String(r['New Name'] || r['Item Name'] || '(blank)').trim());
       }
     }
     return;
@@ -396,24 +511,174 @@ best.forEach((v, key) => {
     isDeleted: false,
   });
 });
-report.service_item_mapping = out.service_item_mapping.length;
+report.service_item_mapping_base = out.service_item_mapping.length;
 report.priceRowsTotal = price.length;
 report.priceRowsPlaceholderX = placeholderX;
 report.priceUnmatchedItem = unmatchedItem;
 report.priceNoServiceName = noService;
 
-const perService = {};
-out.service_item_mapping.forEach((m) => {
-  perService[m.serviceId] = (perService[m.serviceId] || 0) + 1;
+// ── Dependent services (Presstoke/Repair/CC-Repair addon catalogue) ─────────
+// Every non-charge "Service SubType Name" seen under a shell service becomes
+// its own dependent Service (dependencyType='dependent') — selectable ONLY as
+// an additional service, never as a primary one.
+const depServiceIdBySubtype = {}; // shellKey -> {subtypeKey -> serviceId}
+const depServiceNameBySubtype = {}; // subtypeKey -> display name
+const depServiceCodeSource = new Map(); // subtypeKey -> ServiceCode from AddonServiceListMaster, if any
+sheet('AddonServiceListMaster').forEach((a) => {
+  const n = norm(a.ServiceDesc);
+  if (n && a.ServiceCode) depServiceCodeSource.set(n, String(a.ServiceCode).trim());
 });
+
+const depSvcCodes = new Set();
+SHELL_SERVICES.forEach((shellName) => {
+  depServiceIdBySubtype[norm(shellName)] = {};
+});
+
+price.forEach((r) => {
+  const svcKey = norm(r['Service Name']);
+  if (!SHELL_SERVICE_KEYS.has(svcKey)) return;
+  const subtypeRaw = String(r['Service SubType Name'] || '').trim();
+  const subtypeKey = norm(subtypeRaw);
+  if (!subtypeKey || FORCE_TO_CHARGE_KEYS.has(subtypeKey)) return; // packaging tiers -> already a charge
+
+  if (!depServiceIdBySubtype[svcKey][subtypeKey]) {
+    const displayName = subtypeRaw;
+    const sourceCode = depServiceCodeSource.get(subtypeKey);
+    const code = uniqueCode((sourceCode || slugBase(displayName)).slice(0, 40), depSvcCodes);
+    const shellServiceId = serviceIdByKey[svcKey];
+    const shellServiceCategoryId = out.service.find((s) => s.id === shellServiceId)?.serviceCategoryId;
+    const id = keepId(prevService, `dep:${svcKey}:${subtypeKey}`);
+    out.service.push({
+      id,
+      name: displayName,
+      code,
+      serviceCategoryId: shellServiceCategoryId || svcCatIdByCode[DEFAULT_SERVICE_CATEGORY],
+      sequence: 0,
+      estimatedDurationInHours: 24,
+      description: `Additional service under ${serviceDisplay.get(svcKey)}`,
+      dependencyType: 'dependent',
+      hasOwnProcess: true,
+      isActive: true,
+      isDeleted: false,
+    });
+    depServiceIdBySubtype[svcKey][subtypeKey] = id;
+    depServiceNameBySubtype[subtypeKey] = displayName;
+  }
+});
+report.dependent_services = Object.values(depServiceIdBySubtype).reduce(
+  (sum, m) => sum + Object.keys(m).length,
+  0,
+);
+
+// ── Broadcast dependent-service pricing + wire shell additionalServiceIds ───
+// Representative price per (shell, subtype): prefer the lowest price seen
+// against a REAL (non-"X") item; fall back to the lowest "X"-row price.
+function collectSubtypePrices(shellKey) {
+  const realPrice = new Map(); // subtypeKey -> min price seen on a real item
+  const anyPrice = new Map(); // subtypeKey -> min price seen at all (incl. "X")
+  const realItemsBySubtype = new Map(); // subtypeKey -> Set(itemId) with a real row
+
+  price.forEach((r) => {
+    if (norm(r['Service Name']) !== shellKey) return;
+    const subtypeKey = norm(r['Service SubType Name']);
+    if (!subtypeKey || FORCE_TO_CHARGE_KEYS.has(subtypeKey)) return;
+    const amount = Number(r['Base Price']) || 0;
+    const a = norm(r['New Name']);
+    const b = norm(r['Item Name']);
+    const nameKey = a && a !== 'x' ? a : b && b !== 'x' ? b : null;
+
+    if (!anyPrice.has(subtypeKey) || amount < anyPrice.get(subtypeKey)) anyPrice.set(subtypeKey, amount);
+    if (nameKey) {
+      const itemId = itemByName[nameKey];
+      if (itemId) {
+        if (!realPrice.has(subtypeKey) || amount < realPrice.get(subtypeKey)) realPrice.set(subtypeKey, amount);
+        if (!realItemsBySubtype.has(subtypeKey)) realItemsBySubtype.set(subtypeKey, new Set());
+        realItemsBySubtype.get(subtypeKey).add(itemId);
+      }
+    }
+  });
+
+  return {realPrice, anyPrice, realItemsBySubtype};
+}
+
+const mappingSeen = new Set(out.service_item_mapping.map((m) => `${m.serviceId}:${m.itemId}`));
+function addMapping(serviceId, itemId, basePrice, additionalServiceIds) {
+  const key = `${serviceId}:${itemId}`;
+  if (mappingSeen.has(key)) return;
+  mappingSeen.add(key);
+  out.service_item_mapping.push({
+    id: keepId(prevMapping, key),
+    serviceId,
+    itemId,
+    basePrice,
+    estimatedDurationInDays: 1,
+    additionalServiceIds: additionalServiceIds || [],
+    isActive: true,
+    isDeleted: false,
+  });
+}
+
+const buGroupByShellKey = {
+  presstoke: 'PDC', // Presstoke rows are ~all against garment-type treatment
+  repair: 'PSBO',
+  'cc-repair': 'CC',
+};
+
+SHELL_SERVICES.forEach((shellName) => {
+  const shellKey = norm(shellName);
+  const shellServiceId = serviceIdByKey[shellKey];
+  const depBySubtype = depServiceIdBySubtype[shellKey] || {};
+  const allDepIds = Object.values(depBySubtype);
+  if (!shellServiceId || !allDepIds.length) return;
+
+  const {realPrice, anyPrice, realItemsBySubtype} = collectSubtypePrices(shellKey);
+
+  // Item sample this shell service will be made orderable against: every real
+  // item named anywhere in its own price rows, plus a top-up sample from its
+  // dominant business-unit group so untested/placeholder-only addons (like
+  // most of Presstoke's) still have real items to attach to.
+  const namedItems = new Set();
+  realItemsBySubtype.forEach((set) => set.forEach((id) => namedItems.add(id)));
+
+  const buGroup = buGroupByShellKey[shellKey] || 'PDC';
+  const pool = itemsByBuGroup[buGroup] || [];
+  for (const {id} of pool) {
+    if (namedItems.size >= SAMPLE_ITEMS_PER_GROUP) break;
+    namedItems.add(id);
+  }
+
+  // Shell mapping: ₹0 base — all real pricing comes from the additional
+  // service(s) attached, exactly like the "leave blank/0 for a free item"
+  // convention already used for Repair/Presstoke in the admin panel.
+  namedItems.forEach((itemId) => {
+    addMapping(shellServiceId, itemId, 0, allDepIds);
+  });
+
+  // Each dependent service gets its own price against every item in the
+  // sample, so whichever item + addon combo staff pick, pricing resolves.
+  Object.entries(depBySubtype).forEach(([subtypeKey, depServiceId]) => {
+    const representativePrice = realPrice.has(subtypeKey)
+      ? realPrice.get(subtypeKey)
+      : anyPrice.get(subtypeKey) || 0;
+    namedItems.forEach((itemId) => {
+      addMapping(depServiceId, itemId, representativePrice, []);
+    });
+  });
+});
+
+report.service_item_mapping_total = out.service_item_mapping.length;
 
 fs.writeFileSync(OUT_PATH, JSON.stringify(out, null, 2));
 
 console.log('Source workbook:', path.basename(WB_PATH));
 console.log('Wrote', path.relative(process.cwd(), OUT_PATH));
 console.log('\n── Summary ──');
-Object.entries(report).forEach(([k, v]) => console.log('  ' + k.padEnd(30) + v));
+Object.entries(report).forEach(([k, v]) => console.log('  ' + k.padEnd(34) + v));
 console.log('\n── Mappings per service (POS order) ──');
-out.service.forEach((s) => console.log('  seq ' + String(s.sequence).padStart(2) + '  ' + String(perService[s.id] || 0).padStart(4) + '  ' + s.name));
-console.log('\n── Items not found in ItemMaster (sample) ──');
+const perService = {};
+out.service_item_mapping.forEach((m) => {
+  perService[m.serviceId] = (perService[m.serviceId] || 0) + 1;
+});
+out.service.forEach((s) => console.log('  ' + s.dependencyType.padEnd(11) + String(perService[s.id] || 0).padStart(4) + '  ' + s.name));
+console.log('\n── Items not found in ItemMaster (sample, base services) ──');
 [...unmatchedItemSamples].forEach((s) => console.log('  •', s));

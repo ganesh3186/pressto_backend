@@ -109,7 +109,10 @@ export class ServiceItemPricesController {
       throw new HttpErrors.UnprocessableEntity('Store has no valid cluster assigned');
     }
 
-    // 2. Walk the price waterfall (stop at first match)
+    // 2. Walk the price waterfall (stop at first match). Additional services get
+    // the SAME percentage as the primary service — additionalServicePercentage
+    // is a separate knob reserved for Additional Charges (AdditionalChargeMaster),
+    // not for additional services.
     let priceSource: PriceSource = 'base';
     let appliedPercentage: number | null = null;
 
