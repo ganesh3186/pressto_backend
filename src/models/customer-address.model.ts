@@ -40,6 +40,12 @@ export class CustomerAddress extends Entity {
   addressLine2?: string;
 
   @property({type: 'string'})
+  doorFloorFlat?: string;
+
+  @property({type: 'string'})
+  societyName?: string;
+
+  @property({type: 'string'})
   landmark?: string;
 
   @property({type: 'string', required: true})
