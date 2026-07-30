@@ -223,38 +223,41 @@ sheet('Store Master').forEach((s) => {
 report.store = out.store.length;
 report.storeWithoutCluster = storeNoCluster;
 
-// ── Item Category (ProductGroupMaster — one row per PGId/PGCode) ────────────
-// NB: "Product Group " (with trailing space) is the broader super-group (Bed,
-// Top, Shoe, Curtain, ...) used below to bucket items into PDC/PSBO/CC for the
-// dependent-service broadcast; "ProductSubGroupName" is the actual fine-grained
-// category name (Bed Spread, Bed Sheet, ...) that ItemMaster.PGId points at.
-const catByPGId = {};
-const catBroadGroupByPGId = {};
+// ── Item Category (fixed 20-category taxonomy, per client's exact list) ────
+// The client wants item_category to be exactly these 20 broad groups, not the
+// old fine-grained ProductGroupMaster sub-groups. These line up with the
+// "Product Group" column ItemMaster already carries directly per row — no PGId
+// indirection needed. Sequence follows the order the client gave.
+const ITEM_CATEGORIES = [
+  'Shirt', 'Bottom', 'Top', 'Jacket', 'Dress', 'Indian Top', 'Indian Bottom',
+  'Saree-Dupatta', 'Shawl', 'Small Items', 'Accessory', 'Bed', 'Pillow',
+  'Table', 'Upholstrey', 'Bag', 'Shoe', 'Others', 'Carpet', 'Curtain',
+];
+// The sheet spells two of these slightly differently ("Other" / "Upholstery").
+const ITEM_CATEGORY_ALIASES = {other: 'others', upholstery: 'upholstrey'};
+
 const catCodes = new Set();
-let catBlankName = 0;
-sheet('ProductGroupMaster').forEach((p) => {
-  const name = String(p.ProductSubGroupName || '').trim();
-  if (!name) {
-    catBlankName += 1; // model requires a name — skip blank rows
-    return;
-  }
-  const code = uniqueCode(String(p.PGCode || '').trim() || slugBase(name), catCodes);
+const catIdByNormName = new Map();
+ITEM_CATEGORIES.forEach((name, index) => {
+  const code = uniqueCode(slugBase(name), catCodes);
   const id = keepId(prevItemCat, code);
   out.item_category.push({
     id,
     name,
     code,
-    sequence: 0,
-    isActive: p.IsActive !== 0,
+    sequence: index + 1,
+    isActive: true,
     isDeleted: false,
   });
-  if (p.Id !== '') {
-    catByPGId[String(p.Id)] = id;
-    catBroadGroupByPGId[String(p.Id)] = String(p['Product Group '] || '').trim();
-  }
+  catIdByNormName.set(norm(name), id);
 });
 report.item_category = out.item_category.length;
-report.itemCategoryBlankNameSkipped = catBlankName;
+
+function resolveItemCategoryId(rawGroup) {
+  const key = norm(rawGroup);
+  if (!key) return null;
+  return catIdByNormName.get(ITEM_CATEGORY_ALIASES[key] || key) || null;
+}
 
 // Bucket a broad product-group label into the same 3 business-unit groups the
 // price list already uses, so item sampling for shell-service broadcast lines
@@ -266,7 +269,7 @@ function resolveItemBuGroup(broadGroup) {
   return 'PDC';
 }
 
-// ── Item (itemCategoryId from PGId) ──────────────────────────────────────────
+// ── Item (itemCategoryId from ItemMaster's own "Product Group" column) ─────
 const itemByName = {};
 const itemsByBuGroup = { PDC: [], PSBO: [], CC: [] };
 const itemCodes = new Set();
@@ -278,7 +281,8 @@ sheet('ItemMaster').forEach((it) => {
     itemBlankName += 1; // model requires a name — skip blank rows
     return;
   }
-  const itemCategoryId = catByPGId[String(it.PGId)] || null;
+  const broadGroup = String(it['Product Group'] || '').trim();
+  const itemCategoryId = resolveItemCategoryId(broadGroup);
   if (!itemCategoryId) itemNoCategory += 1;
   const code = uniqueCode(String(it.ItemCode || '').trim() || slugBase(name), itemCodes);
   const id = keepId(prevItem, code);
@@ -293,7 +297,7 @@ sheet('ItemMaster').forEach((it) => {
     isDeleted: false,
   });
   if (name) itemByName[norm(name)] = id;
-  const buGroup = resolveItemBuGroup(catBroadGroupByPGId[String(it.PGId)]);
+  const buGroup = resolveItemBuGroup(broadGroup);
   itemsByBuGroup[buGroup].push({id, name});
 });
 report.item = out.item.length;
@@ -340,7 +344,6 @@ function dominantBuFor(svcKey) {
 const NON_SERVICE_NAMES = new Set(['others', 'packing', 'logistics'].map(norm));
 const SERVICE_ORDER = [
   'clean',
-  'iron',
   'press',
   'shoes-bags',
   'curtain-carpet',
@@ -356,7 +359,7 @@ const SERVICE_ORDER = [
 //   CC 7, CC-REPAIR 7, PACKING 3
 // DC = "Dry Clean" -> Clean; SB = Shoes-Bags; CC = Curtain-Carpet. PACKING has
 // no Service row (it's routed to additional_charge_master), so it's unused
-// here. Iron isn't in the client's table, so it keeps the 1-day fallback.
+// here.
 const SERVICE_TAT_DAYS = {
   clean: 2,
   press: 2,
@@ -375,10 +378,8 @@ price.forEach((r) => {
   const key = norm(raw);
   if (raw && !NON_SERVICE_NAMES.has(key)) serviceDisplay.set(key, raw);
 });
-// Iron never appears in the price list at all (no pricing rows in this
-// workbook) but is one of the well-known core services — seed it anyway so
-// it's browsable/orderable once pricing is added later.
-if (!serviceDisplay.has('iron')) serviceDisplay.set('iron', 'Iron');
+// Iron is dropped entirely — it's the same treatment as Press, just under a
+// different name in the old system; no separate service is seeded for it.
 
 const orderedServiceKeys = [...serviceDisplay.keys()].sort((a, b) => {
   const ia = SERVICE_ORDER.indexOf(a);
@@ -481,7 +482,7 @@ FORCE_TO_CHARGE.forEach((displayName) => {
 });
 report.additional_charge_master = out.additional_charge_master.length;
 
-// ── Service Item Mapping: base services (Clean/Iron/Press/...) ──────────────
+// ── Service Item Mapping: base services (Clean/Press/...) ──────────────────
 // One row per (item, service) at the LOWEST price seen. Shell services
 // (Presstoke/Repair/CC-Repair) are excluded here — their pricing is almost
 // entirely against a placeholder "X" item (flat per-treatment pricing, not
