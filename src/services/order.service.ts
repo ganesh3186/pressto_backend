@@ -265,12 +265,14 @@ export class OrderService {
     const base = Number(mapping.basePrice);
     const estimatedDurationInDays = mapping.estimatedDurationInDays ?? null;
 
-    // Additional (add-on) services run the SAME store→cluster→region waterfall but
-    // read a separate percentage column, so their uplift can differ from the base
-    // service. A null at one level falls through to the next level.
-    const pctField = options.additional ? 'additionalServicePercentage' : 'percentage';
-    const readPct = (row: {percentage?: number; additionalServicePercentage?: number} | null) => {
-      const value = row ? (row as Record<string, unknown>)[pctField] : undefined;
+    // Additional (add-on) services run the SAME store→cluster→region waterfall
+    // AND read the same `percentage` column as a primary service — there's no
+    // separate uplift for additional services. `additionalServicePercentage` is
+    // a different knob reserved for Additional Charges (AdditionalChargeMaster),
+    // resolved separately via resolveAdditionalChargePercentage() below. A null
+    // at one level falls through to the next level.
+    const readPct = (row: {percentage?: number} | null) => {
+      const value = row?.percentage;
       return value != null ? Number(value) : null;
     };
     const uplift = (pct: number, source: 'store' | 'cluster' | 'region') => ({
@@ -356,6 +358,29 @@ export class OrderService {
       : defaultAmount;
   }
 
+  /**
+   * A service with `hasOwnProcess: false` (e.g. Presstoke, Repair, CC-Repair) has no
+   * process steps of its own — the item does nothing unless at least one additional
+   * service is attached. Catches that mistake at creation/edit time instead of the
+   * confusing downstream `ProcessService.initProcess` failure at inspection.
+   */
+  private async assertItemsHaveRequiredAdditionalServices(
+    items: {serviceId: string; additionalServiceIds?: string[]}[],
+  ): Promise<void> {
+    const serviceIds = [...new Set(items.map(i => i.serviceId))];
+    const services = await this.serviceRepo.find({where: {id: {inq: serviceIds}} as any});
+    const serviceById = new Map(services.map(s => [s.id, s]));
+
+    for (const item of items) {
+      const service = serviceById.get(item.serviceId);
+      if (service?.hasOwnProcess === false && !item.additionalServiceIds?.length) {
+        throw new HttpErrors.BadRequest(
+          `"${service.name}" has no process of its own — select at least one additional service for this item.`,
+        );
+      }
+    }
+  }
+
   private applyCustomerDiscount(
     subtotal: number,
     discountType?: string,
@@ -394,6 +419,8 @@ export class OrderService {
     if (!input.items?.length) {
       throw new HttpErrors.BadRequest('Order must have at least one item.');
     }
+
+    await this.assertItemsHaveRequiredAdditionalServices(input.items);
 
     // ── Validate wallet deduction before starting transaction ──
     const walletAmount = Number(input.walletAmount ?? 0);
@@ -1130,6 +1157,8 @@ export class OrderService {
     if (desiredItems.some(i => !i.serviceId || !i.itemId || Number(i.quantity) < 1)) {
       throw new HttpErrors.BadRequest('Every item needs a service, an item and a quantity of at least 1.');
     }
+
+    await this.assertItemsHaveRequiredAdditionalServices(desiredItems);
 
     // A line is identified by service + item, matching how POS keys its cart.
     const lineKey = (serviceId: string, itemId: string) => `${serviceId}::${itemId}`;
