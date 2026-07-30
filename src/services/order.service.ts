@@ -754,8 +754,18 @@ export class OrderService {
     const taxAmount = gstRate > 0 ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2)) : 0;
     const totalAmount = roundRupee(taxableAmount + taxAmount);
 
+    // "On Account" is a deferred-billing mode — nothing is actually collected
+    // at order creation; the balance stays outstanding until this customer's
+    // delivered orders are later consolidated into one invoice (on-account
+    // billing). Counting it as real cash-in-hand here would silently mark
+    // the order fully paid despite the customer never having paid anything,
+    // so it's excluded before anything sums payments into totalCollected.
+    const collectablePayments = (input.payments ?? []).filter(
+      p => p.paymentMode !== PaymentMode.ON_ACCOUNT,
+    );
+
     // Validate that payment amounts don't exceed total
-    const paymentsTotal = (input.payments ?? []).reduce((s, p) => s + Number(p.amount), 0);
+    const paymentsTotal = collectablePayments.reduce((s, p) => s + Number(p.amount), 0);
     const totalCollected = paymentsTotal + walletAmount;
     if (totalCollected > totalAmount) {
       throw new HttpErrors.BadRequest(
@@ -926,9 +936,11 @@ export class OrderService {
         }
       }
 
-      // Payment transactions (cash / card / UPI etc.)
+      // Payment transactions (cash / card / UPI etc.) — on_account entries are
+      // deliberately excluded (see collectablePayments above): nothing was
+      // actually collected, so no transaction record is created for them.
       const createdPayments = [];
-      for (const payment of input.payments ?? []) {
+      for (const payment of collectablePayments) {
         const pt = await this.paymentTransactionRepo.create(
           {
             orderId: order.id,
@@ -1760,12 +1772,19 @@ export class OrderService {
       );
     }
 
+    const handoverCustomer = await this.customerRepo.findOne({
+      where: {id: order.customerId, isDeleted: false},
+    });
+
     // 2. Hard block on outstanding balance. Refund entries are money out — not
-    // counted toward what the customer has paid.
+    // counted toward what the customer has paid. Waived for on-account
+    // (business) customers — they're billed later via one consolidated
+    // invoice covering several delivered orders, not per-order before handover.
     const payments = await this.paymentTransactionRepo.find({where: {orderId: params.orderId}});
     const paid = payments.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)), 0);
     const balanceDue = rupeeBalance(order.totalAmount, paid);
-    if (balanceDue > 0) {
+    const isOnAccountCustomer = handoverCustomer?.customerEntityType === 'business';
+    if (balanceDue > 0 && !isOnAccountCustomer) {
       throw new HttpErrors.BadRequest(
         `Cannot hand over: ₹${balanceDue} is still due. Collect the balance first.`,
       );
@@ -1785,9 +1804,9 @@ export class OrderService {
     let familyGroupMemberId = params.familyGroupMemberId;
 
     if (params.collectorType === HandoverCollectorType.SELF) {
-      const customer = await this.customerRepo.findOne({where: {id: order.customerId, isDeleted: false}});
-      if (customer) {
-        collectorName = collectorName || `${customer.firstName ?? ''} ${customer.lastName ?? ''}`.trim();
+      if (handoverCustomer) {
+        collectorName =
+          collectorName || `${handoverCustomer.firstName ?? ''} ${handoverCustomer.lastName ?? ''}`.trim();
       }
       customerContactId = undefined;
       familyGroupMemberId = undefined;
@@ -2396,6 +2415,7 @@ export class OrderService {
               sensitivityScore: customer.sensitivityScore ?? null,
               phone: customerUser?.phone ?? null,
               countryCode: customerUser?.countryCode ?? null,
+              customerEntityType: customer.customerEntityType,
             }
           : null,
         // Mirrors splitChildren below: null on a regular order, populated when
@@ -2772,7 +2792,11 @@ export class OrderService {
     const alreadyPaid = existing.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
     const due = rupeeBalance(order.totalAmount, alreadyPaid);
 
-    const thisPayment = Number(payment?.amount ?? 0);
+    // On Account is deferred billing — nothing is actually collected here;
+    // see the matching guard in createOrder(). Force it to 0 so it can never
+    // be counted as money in hand nor recorded as a payment transaction.
+    const thisPayment =
+      payment?.paymentMode === PaymentMode.ON_ACCOUNT ? 0 : Number(payment?.amount ?? 0);
     const thisWallet = Number(walletAmount ?? 0);
     const thisTotal = thisPayment + thisWallet;
 
