@@ -259,14 +259,27 @@ function resolveItemCategoryId(rawGroup) {
   return catIdByNormName.get(ITEM_CATEGORY_ALIASES[key] || key) || null;
 }
 
-// Bucket a broad product-group label into the same 3 business-unit groups the
-// price list already uses, so item sampling for shell-service broadcast lines
-// up with how the addon catalogue is organised.
-function resolveItemBuGroup(broadGroup) {
-  const s = norm(broadGroup);
-  if (s.includes('shoe') || s.includes('bag')) return 'PSBO';
-  if (s.includes('curtain') || s.includes('carpet')) return 'CC';
-  return 'PDC';
+// Exact BU -> item-category partition, per the client's own mapping:
+//   PDC:  Clean/Iron/PresstoKe/Wash Dry Fold  -> Shirt..Upholstrey (15 cats)
+//   PSBO: Shoes-Bags/Repair/Colouring         -> Bag, Shoe, Others  (3 cats)
+//   CC:   Curtain-Carpet/CC-Repair            -> Carpet, Curtain    (2 cats)
+// Note "Others" is PSBO here, NOT PDC — the client's legend puts it under the
+// Shoes-Bags/Repair/Colouring group.
+const BU_CATEGORY_NAMES = {
+  PDC: ['Shirt', 'Bottom', 'Top', 'Jacket', 'Dress', 'Indian Top', 'Indian Bottom',
+    'Saree-Dupatta', 'Shawl', 'Small Items', 'Accessory', 'Bed', 'Pillow', 'Table', 'Upholstrey'],
+  PSBO: ['Bag', 'Shoe', 'Others'],
+  CC: ['Carpet', 'Curtain'],
+};
+const buGroupByCategoryId = new Map();
+Object.entries(BU_CATEGORY_NAMES).forEach(([bu, names]) => {
+  names.forEach((name) => {
+    const id = catIdByNormName.get(norm(name));
+    if (id) buGroupByCategoryId.set(id, bu);
+  });
+});
+function resolveItemBuGroup(itemCategoryId) {
+  return buGroupByCategoryId.get(itemCategoryId) || 'PDC';
 }
 
 // ── Item (itemCategoryId from ItemMaster's own "Product Group" column) ─────
@@ -297,7 +310,7 @@ sheet('ItemMaster').forEach((it) => {
     isDeleted: false,
   });
   if (name) itemByName[norm(name)] = id;
-  const buGroup = resolveItemBuGroup(broadGroup);
+  const buGroup = resolveItemBuGroup(itemCategoryId);
   itemsByBuGroup[buGroup].push({id, name});
 });
 report.item = out.item.length;
@@ -643,12 +656,14 @@ function addMapping(serviceId, itemId, basePrice, additionalServiceIds, estimate
 }
 
 const buGroupByShellKey = {
-  presstoke: 'PDC', // Presstoke rows are ~all against garment-type treatment
   repair: 'PSBO',
   'cc-repair': 'CC',
 };
 
-SHELL_SERVICES.forEach((shellName) => {
+// PresstoKe is handled separately below (see "PresstoKe: BU-aware broadcast")
+// — its addon prices genuinely differ by business unit, so it can't use the
+// single-representative-price sample this loop uses for Repair/CC-Repair.
+SHELL_SERVICES.filter((s) => norm(s) !== 'presstoke').forEach((shellName) => {
   const shellKey = norm(shellName);
   const shellServiceId = serviceIdByKey[shellKey];
   const depBySubtype = depServiceIdBySubtype[shellKey] || {};
@@ -659,8 +674,8 @@ SHELL_SERVICES.forEach((shellName) => {
 
   // Item sample this shell service will be made orderable against: every real
   // item named anywhere in its own price rows, plus a top-up sample from its
-  // dominant business-unit group so untested/placeholder-only addons (like
-  // most of Presstoke's) still have real items to attach to.
+  // dominant business-unit group so untested/placeholder-only addons still
+  // have real items to attach to.
   const namedItems = new Set();
   realItemsBySubtype.forEach((set) => set.forEach((id) => namedItems.add(id)));
 
@@ -690,6 +705,62 @@ SHELL_SERVICES.forEach((shellName) => {
     });
   });
 });
+
+// ── PresstoKe: BU-aware broadcast ────────────────────────────────────────
+// Every PresstoKe price row is against the "X" placeholder item, tagged with
+// a real BU Name (PSBO or PDC) — and the SAME subtype can carry a DIFFERENT
+// price per BU (e.g. Darning Medium: ₹641 under PSBO, ₹668 under PDC). So
+// unlike Repair/CC-Repair (single BU each, sampled), PresstoKe needs: for
+// every subtype, apply its BU-specific price to EVERY item whose category
+// falls under that BU — not a small sample, and not one blended price.
+{
+  const shellKey = 'presstoke';
+  const shellServiceId = serviceIdByKey[shellKey];
+  const depBySubtype = depServiceIdBySubtype[shellKey] || {};
+  const allDepIds = Object.values(depBySubtype);
+  if (shellServiceId && allDepIds.length) {
+    const shellTatDays = tatDaysForKey(shellKey);
+
+    // subtypeKey -> Map(BU -> min price seen for that BU)
+    const priceByBuBySubtype = new Map();
+    price.forEach((r) => {
+      if (norm(r['Service Name']) !== shellKey) return;
+      const subtypeKey = norm(r['Service SubType Name']);
+      if (!subtypeKey || FORCE_TO_CHARGE_KEYS.has(subtypeKey)) return;
+      const bu = String(r['BU Name'] || '').trim().toUpperCase();
+      if (!BU_CATEGORY_NAMES[bu]) return; // ignore rows with no recognised BU
+      const amount = Number(r['Base Price']) || 0;
+      if (!priceByBuBySubtype.has(subtypeKey)) priceByBuBySubtype.set(subtypeKey, new Map());
+      const buMap = priceByBuBySubtype.get(subtypeKey);
+      if (!buMap.has(bu) || amount < buMap.get(bu)) buMap.set(bu, amount);
+    });
+
+    // Shell mapping (₹0, additionalServiceIds = every dependent service):
+    // every item in every BU any subtype priced against.
+    const shellBuSet = new Set();
+    priceByBuBySubtype.forEach((buMap) => buMap.forEach((_amount, bu) => shellBuSet.add(bu)));
+    if (!shellBuSet.size) shellBuSet.add('PDC'); // no BU-tagged rows at all — shouldn't happen
+    const shellItemIds = new Set();
+    shellBuSet.forEach((bu) => (itemsByBuGroup[bu] || []).forEach(({id}) => shellItemIds.add(id)));
+    shellItemIds.forEach((itemId) => addMapping(shellServiceId, itemId, 0, allDepIds, shellTatDays));
+
+    // Each dependent service: its BU-specific price, applied to every item in
+    // that BU's category group.
+    Object.entries(depBySubtype).forEach(([subtypeKey, depServiceId]) => {
+      const buMap = priceByBuBySubtype.get(subtypeKey);
+      if (buMap && buMap.size) {
+        buMap.forEach((amount, bu) => {
+          (itemsByBuGroup[bu] || []).forEach(({id}) => addMapping(depServiceId, id, amount, [], shellTatDays));
+        });
+      } else {
+        // Subtype exists (e.g. from AddonServiceListMaster) but has no priced
+        // row under PresstoKe — fall back to ₹0 against the full PDC pool so
+        // it's still orderable.
+        (itemsByBuGroup.PDC || []).forEach(({id}) => addMapping(depServiceId, id, 0, [], shellTatDays));
+      }
+    });
+  }
+}
 
 report.service_item_mapping_total = out.service_item_mapping.length;
 
