@@ -10,13 +10,22 @@ import {
   StoreRepository,
 } from '../repositories';
 
+/** Scope levels a role can declare (Roles.scope). super_admin ignores these. */
+type RoleScope = 'store' | 'cluster' | 'region';
+
 /**
  * Resolved store access for a caller.
  * `global` means every store (no filtering); otherwise only `storeIds` are visible.
+ * `scopeLevel` names which binding was authoritative — callers that need a
+ * single "this employee's store" id (e.g. defaulting the New Order screen)
+ * must check this is 'store' first: a cluster/region-scoped employee can
+ * carry a stale storeId from before their role was re-scoped, and treating
+ * it as still authoritative would wrongly pin them to that one old store.
  */
 export type StoreScope = {
   global: boolean;
   storeIds: string[];
+  scopeLevel: RoleScope | 'global';
 };
 
 /** Sentinel stored in the JWT for callers that may see every store. */
@@ -25,12 +34,9 @@ export const STORE_SCOPE_GLOBAL = '*';
 /** Roles that are never store-bound (bypass all scope). */
 const GLOBAL_ROLES = new Set(['super_admin']);
 
-/** Scope levels a role can declare (Roles.scope). super_admin ignores these. */
-type RoleScope = 'store' | 'cluster' | 'region';
-
-const GLOBAL_SCOPE: StoreScope = {global: true, storeIds: []};
+const GLOBAL_SCOPE: StoreScope = {global: true, storeIds: [], scopeLevel: 'global'};
 /** Fail closed: a bound caller we cannot resolve sees nothing. */
-const EMPTY_SCOPE: StoreScope = {global: false, storeIds: []};
+const EMPTY_SCOPE = (scopeLevel: RoleScope): StoreScope => ({global: false, storeIds: [], scopeLevel});
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class StoreScopeService {
@@ -54,25 +60,25 @@ export class StoreScopeService {
   async resolveForUser(userId: string, roles: string[]): Promise<StoreScope> {
     if ((roles ?? []).some(role => GLOBAL_ROLES.has(role))) return GLOBAL_SCOPE;
 
+    const scope = await this.resolveRoleScope(roles);
+
     const employee = await this.employeeRepo.findOne({
       where: {userId, isDeleted: false},
       fields: {id: true, storeId: true, clusterId: true, regionId: true},
     });
-    if (!employee) return EMPTY_SCOPE;
-
-    const scope = await this.resolveRoleScope(roles);
+    if (!employee) return EMPTY_SCOPE(scope);
 
     if (scope === 'region') {
-      if (!employee.regionId) return EMPTY_SCOPE;
-      return {global: false, storeIds: await this.storeIdsForRegion(String(employee.regionId))};
+      if (!employee.regionId) return EMPTY_SCOPE(scope);
+      return {global: false, storeIds: await this.storeIdsForRegion(String(employee.regionId)), scopeLevel: scope};
     }
     if (scope === 'cluster') {
-      if (!employee.clusterId) return EMPTY_SCOPE;
-      return {global: false, storeIds: await this.storeIdsForCluster(String(employee.clusterId))};
+      if (!employee.clusterId) return EMPTY_SCOPE(scope);
+      return {global: false, storeIds: await this.storeIdsForCluster(String(employee.clusterId)), scopeLevel: scope};
     }
     // store scope (default)
-    if (!employee.storeId) return EMPTY_SCOPE;
-    return {global: false, storeIds: [String(employee.storeId)]};
+    if (!employee.storeId) return EMPTY_SCOPE(scope);
+    return {global: false, storeIds: [String(employee.storeId)], scopeLevel: scope};
   }
 
   /** The scope level of the caller's primary role; defaults to the narrowest. */
@@ -121,12 +127,16 @@ export class StoreScopeService {
     const claim = (currentUser as {storeScope?: unknown})?.storeScope;
     if (claim === STORE_SCOPE_GLOBAL) return GLOBAL_SCOPE;
     if (Array.isArray(claim)) {
-      return {global: false, storeIds: claim.map(String).filter(Boolean)};
+      // The JWT claim is just the resolved store id list — it doesn't carry
+      // which binding produced it. Nothing on this per-request hot path reads
+      // scopeLevel (only the login flow does, straight off resolveForUser),
+      // so this placeholder is never actually consulted.
+      return {global: false, storeIds: claim.map(String).filter(Boolean), scopeLevel: 'store'};
     }
 
     // Legacy token with no storeScope claim — resolve from the database.
     const userId = String(currentUser?.id ?? '');
-    if (!userId) return EMPTY_SCOPE;
+    if (!userId) return EMPTY_SCOPE('store');
     return this.resolveForUser(userId, roles);
   }
 

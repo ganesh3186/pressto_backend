@@ -225,6 +225,13 @@ export class AuthController {
       where: { userId: user.id, isDeleted: false },
       fields: { id: true, storeId: true },
     });
+    // Only a genuinely store-scoped employee has an authoritative "their one
+    // store" — a cluster/region-scoped employee can carry a stale storeId
+    // left over from before their role was re-scoped, and exposing it here
+    // would make the frontend (e.g. New Order's store auto-assign) wrongly
+    // pin them to that one old store instead of letting them work across
+    // their whole cluster/region.
+    const singleStoreId = storeScope.scopeLevel === 'store' ? employee?.storeId ?? null : null;
 
     // Generate JWT token (roles + permissions + store scope all travel in the token —
     // verifyToken reads them back for both frontend gating and backend authz).
@@ -233,7 +240,7 @@ export class AuthController {
       ...userProfile,
       roles: [roleValue],
       permissions,
-      storeId: employee?.storeId ?? null,
+      storeId: singleStoreId,
       storeScope: this.storeScopeService.toClaim(storeScope),
     });
 
@@ -247,7 +254,7 @@ export class AuthController {
         phone: user.phone,
         roles: [roleValue],
         permissions,
-        storeId: employee?.storeId ?? null,
+        storeId: singleStoreId,
       },
     };
   }
@@ -318,6 +325,12 @@ export class AuthController {
       where: { userId, isDeleted: false },
       fields: { id: true, storeId: true },
     });
+    // Same reasoning as login: only expose storeId when the role is actually
+    // store-scoped, or a cluster/region-scoped employee's stale leftover
+    // storeId gets treated as authoritative by the frontend.
+    const roles = (currentUser.roles as string[]) ?? [];
+    const storeScope = await this.storeScopeService.resolveForUser(String(userId), roles);
+    const singleStoreId = storeScope.scopeLevel === 'store' ? employee?.storeId ?? null : null;
 
     return {
       id: user.id,
@@ -327,7 +340,7 @@ export class AuthController {
       phone: user.phone,
       roles: currentUser.roles,
       employeeId: employee?.id ?? null,
-      storeId: employee?.storeId ?? null,
+      storeId: singleStoreId,
     };
   }
 
