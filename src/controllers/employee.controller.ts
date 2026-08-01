@@ -85,6 +85,10 @@ export class EmployeeController {
               mediaId: {type: 'string', format: 'uuid'},
               reportingManagerId: {type: 'string', format: 'uuid'},
               storeId: {type: 'string', format: 'uuid'},
+              // Scope bindings for cluster-/region-scoped roles — store-scoped
+              // roles use storeId above instead. See Employee.clusterId/regionId.
+              clusterId: {type: 'string', format: 'uuid'},
+              regionId: {type: 'string', format: 'uuid'},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               city: {type: 'string'},
@@ -115,6 +119,8 @@ export class EmployeeController {
       mediaId?: string;
       reportingManagerId?: string;
       storeId?: string;
+      clusterId?: string;
+      regionId?: string;
       addressLine1: string;
       addressLine2?: string;
       city: string;
@@ -224,6 +230,8 @@ export class EmployeeController {
           mediaId: body.mediaId,
           reportingManagerId: body.reportingManagerId,
           storeId: body.storeId,
+          clusterId: body.clusterId,
+          regionId: body.regionId,
           addressLine1: body.addressLine1,
           addressLine2: body.addressLine2,
           city: body.city,
@@ -374,7 +382,17 @@ export class EmployeeController {
               // department: {type: 'string'},
               mediaId: {type: 'string', format: 'uuid'},
               reportingManagerId: {type: 'string', format: 'uuid'},
-              storeId: {type: 'string', format: 'uuid'},
+              // Nullable: the frontend explicitly sends null to clear a binding
+              // that no longer matches the role's current scope (e.g. the role
+              // used to be store-scoped, storeId got set, then the role's
+              // scope changed to cluster — the stale storeId must be null-able,
+              // not just omitted, or it lingers forever since omission means
+              // "leave it alone").
+              storeId: {type: 'string', format: 'uuid', nullable: true},
+              // Scope bindings for cluster-/region-scoped roles — store-scoped
+              // roles use storeId above instead. See Employee.clusterId/regionId.
+              clusterId: {type: 'string', format: 'uuid', nullable: true},
+              regionId: {type: 'string', format: 'uuid', nullable: true},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               city: {type: 'string'},
@@ -403,7 +421,9 @@ export class EmployeeController {
       // department?: string;
       mediaId?: string;
       reportingManagerId?: string;
-      storeId?: string;
+      storeId?: string | null;
+      clusterId?: string | null;
+      regionId?: string | null;
       addressLine1?: string;
       addressLine2?: string;
       city?: string;
@@ -436,7 +456,7 @@ export class EmployeeController {
     const userKeys = ['fullName', 'email', 'countryCode', 'phone', 'isActive'];
     const employeeKeys = [
       'employeeCode', 'firstName', 'lastName',
-      'mediaId', 'reportingManagerId', 'storeId',
+      'mediaId', 'reportingManagerId', 'storeId', 'clusterId', 'regionId',
       'addressLine1', 'addressLine2', 'city', 'state', 'pincode',
     ];
 

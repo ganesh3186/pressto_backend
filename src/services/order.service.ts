@@ -2354,6 +2354,9 @@ export class OrderService {
       serviceName: serviceMap.get(oi.serviceId)?.name ?? null,
       itemId: oi.itemId,
       itemName: itemMap.get(oi.itemId)?.name ?? null,
+      // Drives the inspection popup's length/width fields (curtains etc,
+      // billed by area) — the frontend reads this straight off each item.
+      isMeasurement: itemMap.get(oi.itemId)?.isMeasurement ?? false,
       quantity: oi.quantity,
       // Declined at the counter — recorded, ₹0, no garments.
       rejectedAtIntake: oi.rejectedAtIntake ?? false,

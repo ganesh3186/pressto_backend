@@ -735,14 +735,25 @@ SHELL_SERVICES.filter((s) => norm(s) !== 'presstoke').forEach((shellName) => {
       if (!buMap.has(bu) || amount < buMap.get(bu)) buMap.set(bu, amount);
     });
 
-    // Shell mapping (₹0, additionalServiceIds = every dependent service):
-    // every item in every BU any subtype priced against.
-    const shellBuSet = new Set();
-    priceByBuBySubtype.forEach((buMap) => buMap.forEach((_amount, bu) => shellBuSet.add(bu)));
-    if (!shellBuSet.size) shellBuSet.add('PDC'); // no BU-tagged rows at all — shouldn't happen
-    const shellItemIds = new Set();
-    shellBuSet.forEach((bu) => (itemsByBuGroup[bu] || []).forEach(({id}) => shellItemIds.add(id)));
-    shellItemIds.forEach((itemId) => addMapping(shellServiceId, itemId, 0, allDepIds, shellTatDays));
+    // Which dependent services are actually priced for each BU — e.g.
+    // "Zipper Correction" is PSBO-only, so a PDC item (a Shirt) must NOT be
+    // offered it as an additional service: nothing would resolve its price,
+    // since no (Zipper Correction, Shirt) mapping row exists. Subtypes with
+    // no BU-tagged price row at all fall back to PDC only (matches the ₹0
+    // fallback pricing below).
+    const depIdsByBu = {PDC: [], PSBO: [], CC: []};
+    Object.entries(depBySubtype).forEach(([subtypeKey, depServiceId]) => {
+      const buMap = priceByBuBySubtype.get(subtypeKey);
+      const bus = buMap && buMap.size ? [...buMap.keys()] : ['PDC'];
+      bus.forEach((bu) => depIdsByBu[bu]?.push(depServiceId));
+    });
+
+    // Shell mapping (₹0 base) — every item gets ONLY the additional services
+    // actually priced for its own BU, never the full cross-BU list.
+    Object.entries(depIdsByBu).forEach(([bu, depIds]) => {
+      if (!depIds.length) return;
+      (itemsByBuGroup[bu] || []).forEach(({id}) => addMapping(shellServiceId, id, 0, depIds, shellTatDays));
+    });
 
     // Each dependent service: its BU-specific price, applied to every item in
     // that BU's category group.
