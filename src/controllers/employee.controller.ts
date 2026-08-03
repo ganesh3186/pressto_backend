@@ -84,11 +84,15 @@ export class EmployeeController {
               // department: {type: 'string'},
               mediaId: {type: 'string', format: 'uuid'},
               reportingManagerId: {type: 'string', format: 'uuid'},
-              storeId: {type: 'string', format: 'uuid'},
+              // Nullable: the frontend sends null for whichever of these
+              // don't match the chosen role's scope (e.g. clusterId/regionId
+              // null for a store-scoped role) — a plain 'string' type rejects
+              // that as a validation error before this ever reaches the body.
+              storeId: {type: 'string', format: 'uuid', nullable: true},
               // Scope bindings for cluster-/region-scoped roles — store-scoped
               // roles use storeId above instead. See Employee.clusterId/regionId.
-              clusterId: {type: 'string', format: 'uuid'},
-              regionId: {type: 'string', format: 'uuid'},
+              clusterId: {type: 'string', format: 'uuid', nullable: true},
+              regionId: {type: 'string', format: 'uuid', nullable: true},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               city: {type: 'string'},
@@ -118,9 +122,9 @@ export class EmployeeController {
       joiningDate?: string;
       mediaId?: string;
       reportingManagerId?: string;
-      storeId?: string;
-      clusterId?: string;
-      regionId?: string;
+      storeId?: string | null;
+      clusterId?: string | null;
+      regionId?: string | null;
       addressLine1: string;
       addressLine2?: string;
       city: string;
@@ -229,9 +233,12 @@ export class EmployeeController {
           joiningDate: body.joiningDate ? new Date(body.joiningDate) : undefined,
           mediaId: body.mediaId,
           reportingManagerId: body.reportingManagerId,
-          storeId: body.storeId,
-          clusterId: body.clusterId,
-          regionId: body.regionId,
+          // On create there's no existing value to null out — null and
+          // "not set" mean the same thing here, so just normalize to
+          // undefined for the create payload.
+          storeId: body.storeId ?? undefined,
+          clusterId: body.clusterId ?? undefined,
+          regionId: body.regionId ?? undefined,
           addressLine1: body.addressLine1,
           addressLine2: body.addressLine2,
           city: body.city,

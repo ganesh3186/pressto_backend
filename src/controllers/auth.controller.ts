@@ -4,14 +4,14 @@ import { repository } from '@loopback/repository';
 import { get, HttpErrors, post, requestBody } from '@loopback/rest';
 import { securityId, UserProfile } from '@loopback/security';
 import { authorize } from '../authorization';
-import { EmployeeRepository, RolesRepository, UserRolesRepository, UsersRepository } from '../repositories';
+import { CustomerRepository, EmployeeRepository, RolesRepository, UserRolesRepository, UsersRepository } from '../repositories';
 import { BcryptHasher } from '../services/hash.password.bcrypt';
 import { JWTService } from '../services/jwt-service';
 import { RbacService } from '../services/rbac.service';
 import { MyUserService } from '../services/user-service';
 import { OtpService } from '../services/otp.service';
 import { StoreScopeService } from '../services/store-scope.service';
-import { pickStaffRole } from '../utils/role-guard';
+import { NON_STAFF_ROLES, pickStaffRole } from '../utils/role-guard';
 
 export class AuthController {
   constructor(
@@ -23,6 +23,8 @@ export class AuthController {
     private userRolesRepository: UserRolesRepository,
     @repository(EmployeeRepository)
     private employeeRepository: EmployeeRepository,
+    @repository(CustomerRepository)
+    private customerRepository: CustomerRepository,
     @inject('service.hasher')
     private hasher: BcryptHasher,
     @inject('service.user.service')
@@ -323,7 +325,7 @@ export class AuthController {
 
     const employee = await this.employeeRepository.findOne({
       where: { userId, isDeleted: false },
-      fields: { id: true, storeId: true },
+      fields: { id: true, storeId: true, firstName: true, lastName: true },
     });
     // Same reasoning as login: only expose storeId when the role is actually
     // store-scoped, or a cluster/region-scoped employee's stale leftover
@@ -332,9 +334,29 @@ export class AuthController {
     const storeScope = await this.storeScopeService.resolveForUser(String(userId), roles);
     const singleStoreId = storeScope.scopeLevel === 'store' ? employee?.storeId ?? null : null;
 
+    // Users.fullName is the account's own name — but for a staff or customer
+    // session it should reflect that PROFILE's name (kept up to date via
+    // Employee Master / Customer Master edits), not whatever was typed in at
+    // account creation. super_admin has no such profile, so it's the one
+    // case that genuinely reads straight off Users.
+    let resolvedFullName = user.fullName;
+    if (roles.includes('super_admin')) {
+      resolvedFullName = user.fullName;
+    } else if (roles.some(role => NON_STAFF_ROLES.includes(role))) {
+      const customer = await this.customerRepository.findOne({
+        where: { userId, isDeleted: false } as object,
+        fields: { firstName: true, lastName: true } as object,
+      });
+      if (customer) {
+        resolvedFullName = `${customer.firstName} ${customer.lastName}`.trim();
+      }
+    } else if (employee) {
+      resolvedFullName = `${employee.firstName} ${employee.lastName}`.trim();
+    }
+
     return {
       id: user.id,
-      fullName: user.fullName,
+      fullName: resolvedFullName,
       email: user.email,
       countryCode: user.countryCode,
       phone: user.phone,
