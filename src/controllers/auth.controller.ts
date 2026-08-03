@@ -225,7 +225,7 @@ export class AuthController {
     const storeScope = await this.storeScopeService.resolveForUser(user.id!, [roleValue]);
     const employee = await this.employeeRepository.findOne({
       where: { userId: user.id, isDeleted: false },
-      fields: { id: true, storeId: true },
+      fields: { id: true, storeId: true, firstName: true, lastName: true },
     });
     // Only a genuinely store-scoped employee has an authoritative "their one
     // store" — a cluster/region-scoped employee can carry a stale storeId
@@ -235,11 +235,32 @@ export class AuthController {
     // their whole cluster/region.
     const singleStoreId = storeScope.scopeLevel === 'store' ? employee?.storeId ?? null : null;
 
+    // Same reasoning as /auth/me: Users.fullName is the account's own name,
+    // not necessarily the profile name kept current via Employee/Customer
+    // Master. This is the staff login, so it's practically always the
+    // employee branch — the customer check is just for the rare dual-linked
+    // account whose only assignable role turned out to be the customer one.
+    let resolvedFullName = user.fullName;
+    if (roleValue === 'super_admin') {
+      resolvedFullName = user.fullName;
+    } else if (NON_STAFF_ROLES.includes(roleValue)) {
+      const customer = await this.customerRepository.findOne({
+        where: { userId: user.id, isDeleted: false } as object,
+        fields: { firstName: true, lastName: true } as object,
+      });
+      if (customer) {
+        resolvedFullName = `${customer.firstName} ${customer.lastName}`.trim();
+      }
+    } else if (employee) {
+      resolvedFullName = `${employee.firstName} ${employee.lastName}`.trim();
+    }
+
     // Generate JWT token (roles + permissions + store scope all travel in the token —
     // verifyToken reads them back for both frontend gating and backend authz).
     const userProfile = this.userService.convertToUserProfile(user);
     const token = await this.jwtService.generateToken({
       ...userProfile,
+      fullName: resolvedFullName,
       roles: [roleValue],
       permissions,
       storeId: singleStoreId,
@@ -250,7 +271,7 @@ export class AuthController {
       token,
       user: {
         id: user.id,
-        fullName: user.fullName,
+        fullName: resolvedFullName,
         email: user.email,
         countryCode: user.countryCode,
         phone: user.phone,
