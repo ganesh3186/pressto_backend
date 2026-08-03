@@ -27,7 +27,13 @@ import {
 import { BcryptHasher } from '../services/hash.password.bcrypt';
 import { SecurityDepositService } from '../services/security-deposit.service';
 import { WalletService } from '../services/wallet.service';
-import { assertNoProtectedRoles, PROTECTED_ROLES } from '../utils/role-guard';
+import { PROTECTED_ROLES } from '../utils/role-guard';
+
+// The only role a customer account ever gets — never accepted from the
+// frontend (a customer:create/update caller has no business choosing an
+// arbitrary role, e.g. accidentally or maliciously granting admin-panel
+// permissions to what's supposed to be a plain customer login).
+const CUSTOMER_ROLE_VALUE = 'customer';
 
 export class CustomerController {
   constructor(
@@ -68,6 +74,26 @@ export class CustomerController {
     throw new HttpErrors.InternalServerError('Could not generate a unique username');
   }
 
+  /**
+   * The `customer` role, creating it on first use if the seed has not run yet.
+   * Self-healing so customer creation never depends on seed order — mirrors
+   * RiderController.resolveRiderRole.
+   */
+  private async resolveCustomerRole() {
+    const existing = await this.rolesRepository.findOne({ where: { value: CUSTOMER_ROLE_VALUE } });
+    if (existing) return existing;
+    return this.rolesRepository.create({
+      value: CUSTOMER_ROLE_VALUE,
+      label: 'Customer',
+      description: 'Customer web/app account — own profile, orders and wallet.',
+      isLocked: true,
+      loginAccess: true,
+      scope: 'store',
+      isActive: true,
+      isDeleted: false,
+    });
+  }
+
   private async generateCustomerCode(): Promise<string> {
     const lastCustomer = await this.customerRepository.findOne({
       order: ['createdAt DESC'],
@@ -91,13 +117,12 @@ export class CustomerController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['firstName', 'lastName', 'countryCode', 'phone', 'roleValues'],
+            required: ['firstName', 'lastName', 'countryCode', 'phone'],
             properties: {
               firstName: { type: 'string' },
               lastName: { type: 'string' },
               countryCode: { type: 'string', default: '+91' },
               phone: { type: 'string' },
-              roleValues: { type: 'array', items: { type: 'string' } },
               email: { type: 'string', format: 'email' },
               password: { type: 'string', minLength: 6 },
               customerEntityType: { type: 'string', enum: ['individual', 'business'] },
@@ -131,7 +156,6 @@ export class CustomerController {
       lastName: string;
       countryCode: string;
       phone: string;
-      roleValues: string[];
       email?: string;
       password?: string;
       customerEntityType?: 'individual' | 'business';
@@ -151,10 +175,6 @@ export class CustomerController {
       linkExistingAccount?: boolean;
     },
   ): Promise<object> {
-    // super_admin is created exactly once, through the dedicated registration
-    // endpoint — never reachable from generic customer role management.
-    assertNoProtectedRoles(body.roleValues);
-
     // Employees and customers share the users table. A phone/email match here
     // is a real scenario (staff who's also a paying customer) — but, mirroring
     // the same guard on the employee side, it must never land on the
@@ -201,13 +221,7 @@ export class CustomerController {
       }
     }
 
-    const roles = await Promise.all(
-      body.roleValues.map(async v => {
-        const role = await this.rolesRepository.findOne({ where: { value: v } });
-        if (!role) throw new HttpErrors.BadRequest(`Role not found: ${v}`);
-        return role;
-      }),
-    );
+    const customerRole = await this.resolveCustomerRole();
 
     const rawPassword = body.password ?? 'Pressto@1234';
     const hashedPassword = await this.hasher.hashPassword(rawPassword);
@@ -255,18 +269,16 @@ export class CustomerController {
         { transaction: tx },
       );
 
-      for (const role of roles) {
-        // An existing login may already hold some of these — adding the same
-        // role twice would leave duplicate rows behind.
-        const alreadyAssigned = existingUser
-          ? await this.userRolesRepository.findOne({
-              where: { usersId: user.id, rolesId: role.id },
-            })
-          : null;
-        if (alreadyAssigned) continue;
-
+      // An existing login (e.g. an employee who's also a customer) may already
+      // hold the customer role — adding it twice would leave a duplicate row.
+      const alreadyAssigned = existingUser
+        ? await this.userRolesRepository.findOne({
+            where: { usersId: user.id, rolesId: customerRole.id },
+          })
+        : null;
+      if (!alreadyAssigned) {
         await this.userRolesRepository.create(
-          { usersId: user.id, rolesId: role.id },
+          { usersId: user.id, rolesId: customerRole.id },
           { transaction: tx },
         );
       }
@@ -286,7 +298,7 @@ export class CustomerController {
       return {
         message: 'Customer created successfully',
         customer: { ...customer, user: { ...user, password: undefined } },
-        assignedRoles: body.roleValues,
+        assignedRoles: [CUSTOMER_ROLE_VALUE],
       };
     } catch (error) {
       await tx.rollback();
@@ -410,8 +422,6 @@ export class CustomerController {
               sensitivityScore: { type: 'number' },
               notes: { type: 'string' },
               statusChangeRemark: { type: 'string' },
-              // role management
-              roleValues: { type: 'array', items: { type: 'string' } },
             },
           },
         },
@@ -441,16 +451,14 @@ export class CustomerController {
       sensitivityScore?: number;
       notes?: string;
       statusChangeRemark?: string;
-      roleValues?: string[];
     },
   ): Promise<void> {
-    // super_admin must never be grantable — or revocable — through customer
-    // role management.
-    assertNoProtectedRoles(body.roleValues);
-
     const customer = await this.customerRepository.findById(id);
 
-    const { roleValues, customerLabelIds, ...rest } = body;
+    // Role management is deliberately not exposed here — a customer account
+    // always has exactly the customer role (set once at create), never
+    // reassignable through this endpoint.
+    const { customerLabelIds, ...rest } = body;
 
     const userFields: Record<string, unknown> = {};
     const customerFields: Record<string, unknown> = {};
@@ -494,26 +502,6 @@ export class CustomerController {
 
       if (Object.keys(customerFields).length > 0) {
         await this.customerRepository.updateById(id, customerFields, { transaction: tx });
-      }
-
-      if (roleValues?.length) {
-        const roles = await Promise.all(
-          roleValues.map(async v => {
-            const role = await this.rolesRepository.findOne({ where: { value: v } });
-            if (!role) throw new HttpErrors.BadRequest(`Role not found: ${v}`);
-            return role;
-          }),
-        );
-        await this.userRolesRepository.deleteAll(
-          { usersId: customer.userId },
-          { transaction: tx },
-        );
-        for (const role of roles) {
-          await this.userRolesRepository.create(
-            { usersId: customer.userId, rolesId: role.id },
-            { transaction: tx },
-          );
-        }
       }
 
       // Distinguish "field omitted" (leave labels alone) from "sent as []"
