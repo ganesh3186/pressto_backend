@@ -21,7 +21,12 @@ import {
 } from '@loopback/rest';
 import { authorize } from '../authorization';
 import { ServiceItemMapping } from '../models/service-item-mapping.model';
-import { ItemRepository, ServiceItemMappingRepository, ServiceRepository } from '../repositories';
+import {
+  ItemCategoryRepository,
+  ItemRepository,
+  ServiceItemMappingRepository,
+  ServiceRepository,
+} from '../repositories';
 
 export class ServiceItemMappingController {
   constructor(
@@ -31,6 +36,8 @@ export class ServiceItemMappingController {
     private serviceRepository: ServiceRepository,
     @repository(ItemRepository)
     private itemRepository: ItemRepository,
+    @repository(ItemCategoryRepository)
+    private itemCategoryRepository: ItemCategoryRepository,
   ) { }
 
   @authenticate('jwt')
@@ -200,19 +207,55 @@ export class ServiceItemMappingController {
   //   await this.serviceItemMappingRepository.deleteById(id);
   // }
 
+  // Resolves everything a list row needs to display without a separate
+  // client-side fetch of every Service/Item/ItemCategory: additionalServices
+  // (already existed), plus serviceName/itemName/itemCategoryName/
+  // itemCategoryId for the mapping's own service and item. Batched — one
+  // query per resource, not one per row.
   private async _withAdditionalServices(mappings: ServiceItemMapping[]): Promise<object[]> {
-    const allIds = [...new Set(mappings.flatMap(m => m.additionalServiceIds ?? []))];
+    const additionalServiceIds = [...new Set(mappings.flatMap(m => m.additionalServiceIds ?? []))];
+    const ownServiceIds = [...new Set(mappings.map(m => m.serviceId).filter(Boolean))];
+    const serviceIds = [...new Set([...additionalServiceIds, ...ownServiceIds])];
+    const itemIds = [...new Set(mappings.map(m => m.itemId).filter(Boolean))];
+
     const serviceMap: Record<string, {id: string; name: string; code: string}> = {};
-    if (allIds.length) {
+    if (serviceIds.length) {
       const services = await this.serviceRepository.find({
-        where: {id: {inq: allIds}},
+        where: {id: {inq: serviceIds}},
         fields: {id: true, name: true, code: true} as any,
       });
       for (const s of services) serviceMap[s.id] = {id: s.id, name: s.name, code: s.code};
     }
-    return mappings.map(m => ({
-      ...m,
-      additionalServices: (m.additionalServiceIds ?? []).map(sid => serviceMap[sid]).filter(Boolean),
-    }));
+
+    const itemMap: Record<string, {id: string; name: string; itemCategoryId?: string}> = {};
+    if (itemIds.length) {
+      const items = await this.itemRepository.find({
+        where: {id: {inq: itemIds}},
+        fields: {id: true, name: true, itemCategoryId: true} as any,
+      });
+      for (const it of items) itemMap[it.id] = {id: it.id, name: it.name, itemCategoryId: it.itemCategoryId};
+    }
+
+    const categoryIds = [...new Set(Object.values(itemMap).map(it => it.itemCategoryId).filter(Boolean))] as string[];
+    const categoryNameById: Record<string, string> = {};
+    if (categoryIds.length) {
+      const categories = await this.itemCategoryRepository.find({
+        where: {id: {inq: categoryIds}},
+        fields: {id: true, name: true} as any,
+      });
+      for (const c of categories) categoryNameById[c.id] = c.name;
+    }
+
+    return mappings.map(m => {
+      const item = itemMap[m.itemId];
+      return {
+        ...m,
+        additionalServices: (m.additionalServiceIds ?? []).map(sid => serviceMap[sid]).filter(Boolean),
+        serviceName: serviceMap[m.serviceId]?.name ?? null,
+        itemName: item?.name ?? null,
+        itemCategoryId: item?.itemCategoryId ?? null,
+        itemCategoryName: item?.itemCategoryId ? categoryNameById[item.itemCategoryId] ?? null : null,
+      };
+    });
   }
 }
