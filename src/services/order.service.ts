@@ -2567,9 +2567,20 @@ export class OrderService {
     // The parent's tax loss is the OLD proportional share (matches its original
     // tax basis exactly); when the tier is unchanged, old == new and it's a no-op.
     const oldSubOrderTax = parseFloat((Number(order.taxAmount ?? 0) * ratio).toFixed(2));
-    const oldSubOrderTotal = parseFloat(
-      (oldSubOrderSubtotal - subOrderDiscount + oldSubOrderTax).toFixed(2),
-    );
+    // When the tier is unchanged, oldSubOrderSubtotal/oldSubOrderTax are
+    // algebraically IDENTICAL to subOrderSubtotal/subOrderTax (both derive
+    // from the same per-garment unit prices) — but computing this value
+    // independently and rounding it separately from subOrderTotal let the two
+    // whole-rupee roundings land on different sides of .50, so
+    // child.totalAmount + parent.totalAmount could drift a few rupees away
+    // from the original order.totalAmount (a fully-paid order would then show
+    // a phantom balance due after splitting). Reusing subOrderTotal directly
+    // guarantees the two always sum back exactly. Only recompute independently
+    // when the tier DID change, where the two totals are genuinely different
+    // numbers by design.
+    const oldSubOrderTotal = deliveryChanged
+      ? roundRupee(oldSubOrderSubtotal - subOrderDiscount + oldSubOrderTax)
+      : subOrderTotal;
 
     // Sub-order gets a normal sequential order number (same format as any other order)
     const totalOrderCount = await this.orderRepo.count();
