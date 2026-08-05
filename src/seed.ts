@@ -75,11 +75,6 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'additional_charge_master:read',   description: 'View additional charges'},
   {permission: 'additional_charge_master:update', description: 'Update an additional charge'},
   {permission: 'additional_charge_master:delete', description: 'Delete an additional charge'},
-  // Customer Type Master
-  {permission: 'customer_type_master:create', description: 'Create a customer type'},
-  {permission: 'customer_type_master:read',   description: 'View customer types'},
-  {permission: 'customer_type_master:update', description: 'Update a customer type'},
-  {permission: 'customer_type_master:delete', description: 'Delete a customer type'},
   // Region
   {permission: 'region:create', description: 'Create a region'},
   {permission: 'region:read',   description: 'View regions'},
@@ -263,7 +258,7 @@ const MASTER_RESOURCES = [
   'service_category', 'item', 'region', 'cluster', 'store', 'price_list',
   'price_list_item', 'cluster_price_list', 'store_price_override',
   'store_service_mapping', 'service_item_mapping', 'service_process_mapping',
-  'additional_charge_master', 'customer_type_master', 'gst_tax_configuration',
+  'additional_charge_master', 'gst_tax_configuration',
   'delivery_type_configuration', 'wallet_configuration', 'bag',
 ];
 
