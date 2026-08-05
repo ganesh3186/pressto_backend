@@ -279,8 +279,8 @@ export class CustomerBillingController {
   ): Promise<object> {
     const customer = await this.customerRepo.findOne({where: {id: customerId, isDeleted: false}});
     if (!customer) throw new HttpErrors.NotFound('Customer not found.');
-    if (customer.customerEntityType !== 'business') {
-      throw new HttpErrors.BadRequest('Consolidated invoicing is only for on-account (business) customers.');
+    if (customer.customerEntityType !== 'business' && !customer.isOnAccountEligible) {
+      throw new HttpErrors.BadRequest('Consolidated invoicing is only for on-account eligible customers.');
     }
 
     const orderIds = [...new Set(body.orderIds ?? [])];

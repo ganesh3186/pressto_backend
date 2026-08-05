@@ -1783,7 +1783,8 @@ export class OrderService {
     const payments = await this.paymentTransactionRepo.find({where: {orderId: params.orderId}});
     const paid = payments.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)), 0);
     const balanceDue = rupeeBalance(order.totalAmount, paid);
-    const isOnAccountCustomer = handoverCustomer?.customerEntityType === 'business';
+    const isOnAccountCustomer =
+      handoverCustomer?.customerEntityType === 'business' || handoverCustomer?.isOnAccountEligible === true;
     if (balanceDue > 0 && !isOnAccountCustomer) {
       throw new HttpErrors.BadRequest(
         `Cannot hand over: ₹${balanceDue} is still due. Collect the balance first.`,
@@ -2208,7 +2209,8 @@ export class OrderService {
               sensitivityScore: customer.sensitivityScore ?? null,
               phone: user?.phone ?? null,
               countryCode: user?.countryCode ?? null,
-              customerEntityType: customer.customerEntityType
+              customerEntityType: customer.customerEntityType,
+              isOnAccountEligible: customer.isOnAccountEligible ?? false,
             }
           : null,
       };
@@ -2419,6 +2421,7 @@ export class OrderService {
               phone: customerUser?.phone ?? null,
               countryCode: customerUser?.countryCode ?? null,
               customerEntityType: customer.customerEntityType,
+              isOnAccountEligible: customer.isOnAccountEligible ?? false,
             }
           : null,
         // Mirrors splitChildren below: null on a regular order, populated when
