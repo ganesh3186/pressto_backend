@@ -8,17 +8,31 @@ import {SalesReturn, SalesReturnStatus} from '../models/sales-return.model';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {ORDER_STATUS_TRANSITIONS, OrderStatus} from '../models/order-status.enum';
+import {PaymentMode} from '../models/payment-mode.enum';
 import {
   InvoiceRepository,
   OrderItemRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
+  PaymentTransactionRepository,
   SalesReturnRepository,
   ChallanRepository,
   WalletRepository,
   WalletTransactionRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
+
+/** Coerce a Postgres numeric (returned as a string) to a usable 2dp number. */
+function money(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+/** Order/invoice/challan totals are always a whole rupee. */
+function roundRupee(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
 
 export class SalesReturnController {
   constructor(
@@ -30,6 +44,7 @@ export class SalesReturnController {
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
     @repository(OrderStatusHistoryRepository) private statusHistoryRepo: OrderStatusHistoryRepository,
+    @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -159,9 +174,75 @@ export class SalesReturnController {
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     const {v4} = await import('uuid');
+    // `creditAppliedAs` is recorded for history but no longer decides WHETHER
+    // a refund happens — it can't be a manual choice: whether this credit
+    // surfaces as a smaller balance due or an actual refund depends on
+    // whether the customer has already paid more than the order will owe
+    // after the return, computed below. (It also used to silently no-op for
+    // 'refund' — there was never a branch for it — and 'wallet' refunded the
+    // full creditAmount unconditionally, which could refund money the
+    // customer hadn't actually paid on a partially-paid order.)
     const creditAppliedAs = body.creditAppliedAs ?? 'adjustment';
+    const creditAmount = money(record.creditAmount);
 
-    if (creditAppliedAs === 'wallet') {
+    // The order's total drops by exactly the credited amount — a customer
+    // should never be left owing (or having paid) for a returned item.
+    const newOrderTotal = Math.max(0, roundRupee(money(order.totalAmount) - creditAmount));
+
+    // Split-aware collected amount, same reasoning as the garment-level return
+    // path (ApprovalService._applyReturnEffect): a split child's money lives in
+    // allocatedPayment, a split parent's transactions were superseded by its
+    // allocated share, and refund entries must never count as collected.
+    const payments = await this.paymentRepo.find({where: {orderId: record.orderId}} as any);
+    const txnCollected = payments.reduce(
+      (s: number, p: any) => s + (p.transactionType === 'refund' ? 0 : money(p.amount)),
+      0,
+    );
+    const alreadyRefunded = payments.reduce(
+      (s: number, p: any) => s + (p.transactionType === 'refund' ? money(p.amount) : 0),
+      0,
+    );
+    const allocPay = money((order as any).allocatedPayment);
+    const isChild = !!(order as any).parentOrderId;
+    const collected = isChild
+      ? money(allocPay + txnCollected)
+      : allocPay > 0
+        ? allocPay
+        : txnCollected;
+
+    const netPaid = money(collected - alreadyRefunded);
+    const refundAmount = money(Math.max(0, netPaid - newOrderTotal));
+    const newBalanceDue = money(Math.max(0, newOrderTotal - netPaid));
+
+    await this.orderRepo.updateById(record.orderId, {
+      subtotal: money(money(order.subtotal) - creditAmount),
+      totalAmount: newOrderTotal,
+      updatedAt: new Date(),
+    } as any);
+
+    if (record.invoiceId) {
+      const invoice = await this.invoiceRepo.findById(record.invoiceId);
+      if (invoice) {
+        await this.invoiceRepo.updateById(invoice.id, {
+          subtotal: money(money(invoice.subtotal) - creditAmount),
+          totalAmount: newOrderTotal,
+          balanceDue: newBalanceDue,
+          updatedAt: new Date(),
+        } as any);
+      }
+    }
+
+    // Always reflect the reduced order value on the challan if it exists
+    const challan = await this.challanRepo.findOne({where: {orderId: record.orderId}} as any);
+    if (challan) {
+      await this.challanRepo.updateById(challan.id, {
+        totalAmount: newOrderTotal,
+        subtotal: money(money(challan.subtotal) - creditAmount),
+        updatedAt: new Date(),
+      } as any);
+    }
+
+    if (refundAmount > 0) {
       let wallet = await this.walletRepo.findOne({where: {customerId: record.customerId}});
       if (!wallet) {
         wallet = await this.walletRepo.create({
@@ -170,10 +251,7 @@ export class SalesReturnController {
           currentBalance: 0,
         });
       }
-      const creditAmount = Number(record.creditAmount) || 0;
-      const newBalance = parseFloat(
-        ((Number(wallet.currentBalance) || 0) + creditAmount).toFixed(2),
-      );
+      const newBalance = money(money(wallet.currentBalance) + refundAmount);
       await this.walletRepo.updateById(wallet.id, {
         currentBalance: newBalance,
         updatedAt: new Date(),
@@ -183,33 +261,22 @@ export class SalesReturnController {
         id: v4(),
         walletId: wallet.id,
         transactionType: WalletTransactionType.CREDIT,
-        amount: creditAmount,
+        amount: refundAmount,
         referenceType: ReferenceType.REFUND,
         referenceId: record.orderId,
         remarks: `Sales Return Credit Note: ${record.creditNoteNumber}`,
         transactionDate: new Date(),
       });
-    } else if (creditAppliedAs === 'adjustment') {
-      if (record.invoiceId) {
-        const invoice = await this.invoiceRepo.findById(record.invoiceId);
-        if (invoice) {
-          const newBalance = Math.max(0, (invoice.balanceDue ?? 0) - Number(record.creditAmount));
-          await this.invoiceRepo.updateById(invoice.id, {
-            balanceDue: newBalance,
-          } as any);
-        }
-      }
-    }
 
-    // Always reflect the reduced order value on the challan if it exists
-    const challan = await this.challanRepo.findOne({where: {orderId: record.orderId}} as any);
-    if (challan) {
-      const newTotal = Math.max(0, (challan.totalAmount ?? 0) - Number(record.creditAmount));
-      const newSubtotal = Math.max(0, (challan.subtotal ?? 0) - Number(record.creditAmount));
-      await this.challanRepo.updateById(challan.id, {
-        totalAmount: parseFloat(newTotal.toFixed(2)),
-        subtotal: parseFloat(newSubtotal.toFixed(2)),
-        updatedAt: new Date(),
+      // Visible refund entry in the order's payment history — excluded from
+      // `collected` above, so a second return on this order still nets out.
+      await this.paymentRepo.create({
+        id: v4(),
+        orderId: record.orderId,
+        paymentMode: PaymentMode.WALLET,
+        transactionType: 'refund',
+        amount: refundAmount,
+        paymentDate: new Date(),
       } as any);
     }
 

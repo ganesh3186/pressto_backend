@@ -66,6 +66,14 @@ function money(value: unknown): number {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
+// The final order/invoice/challan total is always a whole rupee — mirrors
+// order.service.ts's roundRupee (not exported from there, so duplicated here
+// rather than coupling the two services over a one-line utility).
+function roundRupee(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
 // Everything a resolve() can mutate, captured before the effects run. Stored on
 // approvalRequest.metadata._revertSnapshot and replayed by revert().
 //
@@ -82,7 +90,7 @@ interface RevertSnapshot {
     unitPrice?: number;
     totalPrice?: number;
   };
-  order?: {id: string; subtotal?: number; totalAmount?: number};
+  order?: {id: string; subtotal?: number; totalAmount?: number; taxAmount?: number};
   invoice?: {id: string; subtotal?: number; totalAmount?: number; balanceDue?: number; items?: unknown[]};
   challan?: {id: string; subtotal?: number; totalAmount?: number; items?: unknown[]};
   refundedToWallet?: number;
@@ -297,19 +305,23 @@ export class ApprovalService {
     // fully discounted) still closes out the order correctly.
     await this._maybeMarkOrderReturned(order.id, garment.garmentTagNumber, request.id, performedBy);
 
-    // The order total is intentionally LEFT UNCHANGED — the order stays the
-    // record of what was ordered. A return is handled as money going back to the
-    // customer, not by shrinking the bill. We only change the garment status
-    // (done via GARMENT_STATUS_ON_APPROVE) and record a refund.
-
-    // Full value the customer paid for this one piece = unit price + its share of
-    // the order's tax.
+    // Full value the customer is billed for this one piece = unit price + its
+    // share of the order's tax.
     const unitPrice = money(orderItem.unitPrice);
     if (unitPrice <= 0) return;
     const orderSubtotal = money(order.subtotal);
     const share = orderSubtotal > 0 ? unitPrice / orderSubtotal : 0;
     const taxShare = money(money(order.taxAmount) * share);
     const pieceValue = money(unitPrice + taxShare);
+
+    // The order/invoice/challan total drops by exactly what this piece was
+    // billed for — a customer should never be left owing (or having paid) for
+    // a garment they no longer have. Whether that surfaces as a smaller
+    // balance due or an actual refund is derived below from what's already
+    // been collected — never a manual choice, and never left unadjusted:
+    //   prepaid (collected > new total)  → refund the difference
+    //   unpaid/partial (collected ≤ new total) → balance due just shrinks
+    const newOrderTotal = Math.max(0, roundRupee(money(order.totalAmount) - pieceValue));
 
     // How much THIS order actually collected — split-aware, so the refund is
     // scoped to this order alone. A split child keeps its money in
@@ -333,9 +345,43 @@ export class ApprovalService {
         ? allocPay
         : txnCollected;
 
-    // Never refund more than the customer still has un-refunded on this order.
-    const refundable = money(collected - alreadyRefunded);
-    const refundAmount = money(Math.min(pieceValue, Math.max(0, refundable)));
+    // Net of any earlier returns' refunds on this same order.
+    const netPaid = money(collected - alreadyRefunded);
+    // Only the excess over the NEW (already-reduced) total is refundable — not
+    // the piece's full value. A partially-paid order that still owes more than
+    // it's paid after the reduction owes nothing back; it just owes less.
+    const refundAmount = money(Math.max(0, netPaid - newOrderTotal));
+    const newBalanceDue = money(Math.max(0, newOrderTotal - netPaid));
+
+    // Reduce the order itself — subtotal/tax component-wise (for anything that
+    // reads them individually), totalAmount derived directly from the
+    // already-rounded order.totalAmount rather than reconstructed from the
+    // reduced components, so it can't drift from independent rounding.
+    await this.orderRepo.updateById(order.id, {
+      subtotal: money(orderSubtotal - unitPrice),
+      taxAmount: money(money(order.taxAmount) - taxShare),
+      totalAmount: newOrderTotal,
+      updatedAt: new Date(),
+    } as any);
+
+    const invoice = await this.invoiceRepo.findOne({where: {orderId: order.id}} as any);
+    if (invoice) {
+      await this.invoiceRepo.updateById(invoice.id, {
+        subtotal: money(money(invoice.subtotal) - unitPrice),
+        totalAmount: newOrderTotal,
+        balanceDue: newBalanceDue,
+        updatedAt: new Date(),
+      } as any);
+    }
+
+    const challan = await this.challanRepo.findOne({where: {orderId: order.id}} as any);
+    if (challan) {
+      await this.challanRepo.updateById(challan.id, {
+        subtotal: money(money(challan.subtotal) - unitPrice),
+        totalAmount: newOrderTotal,
+        updatedAt: new Date(),
+      } as any);
+    }
 
     if (refundAmount > 0) {
       // Money back to the customer's wallet.
@@ -346,8 +392,9 @@ export class ApprovalService {
         order.id,
       );
       // A visible refund entry in the order's payment history (money out). It is
-      // NOT counted toward amount-collected, so the order total/balance are
-      // unaffected — it just records that we returned the money.
+      // NOT counted toward amount-collected, so re-deriving `collected` later
+      // (e.g. a second return on this order) still nets out correctly via
+      // alreadyRefunded above.
       const {v4} = await import('uuid');
       await this.paymentRepo.create({
         id: v4(),
@@ -366,9 +413,17 @@ export class ApprovalService {
       entityId: orderItem.id,
       actionType: 'item_returned',
       performedBy,
-      before: {garmentStatus: 'active'},
-      after: {garmentStatus: 'returned_to_customer', refundedToWallet: refundAmount},
-      remarks: `Garment ${garment.garmentTagNumber} returned via approval ${request.id}${refundAmount > 0 ? ` — ₹${refundAmount} refunded to wallet` : ''}`,
+      before: {garmentStatus: 'active', orderTotal: money(order.totalAmount)},
+      after: {
+        garmentStatus: 'returned_to_customer',
+        orderTotal: newOrderTotal,
+        balanceDue: newBalanceDue,
+        refundedToWallet: refundAmount,
+      },
+      remarks:
+        `Garment ${garment.garmentTagNumber} returned via approval ${request.id} — ` +
+        `order total reduced by ₹${pieceValue}` +
+        (refundAmount > 0 ? ` — ₹${refundAmount} refunded to wallet` : ''),
     });
   }
 
@@ -756,7 +811,12 @@ export class ApprovalService {
 
     const order = await this.orderRepo.findOne({where: {id: orderItem.orderId, isDeleted: false}});
     if (!order) return snapshot;
-    snapshot.order = {id: order.id, subtotal: order.subtotal, totalAmount: order.totalAmount};
+    snapshot.order = {
+      id: order.id,
+      subtotal: order.subtotal,
+      totalAmount: order.totalAmount,
+      taxAmount: order.taxAmount,
+    };
 
     const [invoice, challan] = await Promise.all([
       this.invoiceRepo.findOne({where: {orderId: order.id}} as any),
