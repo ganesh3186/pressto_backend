@@ -127,6 +127,9 @@ export class CustomerController {
               password: { type: 'string', minLength: 6 },
               customerEntityType: { type: 'string', enum: ['individual', 'business'] },
               // customerTypeId: {type: 'string', format: 'uuid'},
+              // On-account eligibility for an `individual` customer — a
+              // `business` customer is always eligible regardless of this.
+              isOnAccountEligible: { type: 'boolean' },
               customerLabelIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
               customerGroupId: { type: 'string', format: 'uuid' },
               gstNumber: { type: 'string' },
@@ -160,6 +163,7 @@ export class CustomerController {
       password?: string;
       customerEntityType?: 'individual' | 'business';
       // customerTypeId: string;
+      isOnAccountEligible?: boolean;
       customerLabelIds?: string[];
       customerGroupId: string;
       gstNumber?: string;
@@ -255,6 +259,7 @@ export class CustomerController {
           ...(body.email && { email: body.email }),
           dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : undefined,
           customerEntityType: body.customerEntityType ?? 'individual',
+          isOnAccountEligible: body.isOnAccountEligible ?? false,
           customerGroupId: body.customerGroupId,
           gstNumber: body.gstNumber,
           panNumber: body.panNumber,
@@ -409,6 +414,7 @@ export class CustomerController {
               dateOfBirth: { type: 'string', format: 'date' },
               customerEntityType: { type: 'string', enum: ['individual', 'business'] },
               // customerTypeId: { type: 'string', format: 'uuid' },
+              isOnAccountEligible: { type: 'boolean' },
               customerLabelIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
               customerGroupId: { type: 'string', format: 'uuid' },
               gstNumber: { type: 'string' },
@@ -438,6 +444,7 @@ export class CustomerController {
       dateOfBirth?: string;
       customerEntityType?: 'individual' | 'business';
       // customerTypeId?: string;
+      isOnAccountEligible?: boolean;
       customerLabelIds?: string[];
       customerGroupId?: string;
       gstNumber?: string;
@@ -465,7 +472,7 @@ export class CustomerController {
 
     const userKeys = ['fullName', 'email', 'countryCode', 'phone', 'isActive'];
     const customerKeys = [
-      'firstName', 'lastName', 'customerEntityType', 'customerGroupId',
+      'firstName', 'lastName', 'customerEntityType', 'isOnAccountEligible', 'customerGroupId',
       'gstNumber', 'panNumber', 'companyName', 'preferredPaymentMode', 'loyaltyPoints', 'defaultDiscountType',
       'defaultDiscountValue', 'preferredStoreId', 'sensitivityScore', 'notes',
       'statusChangeRemark',

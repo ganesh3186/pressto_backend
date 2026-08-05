@@ -64,6 +64,14 @@ export class Customer extends Entity {
   })
   customerEntityType?: string;
 
+  // On-account billing eligibility. A `business` customer is ALWAYS eligible
+  // regardless of this flag (checked separately wherever eligibility is
+  // gated) — this exists so an `individual` customer can also be opted in,
+  // since there's nothing to derive that from automatically the way there is
+  // for business customers.
+  @property({type: 'boolean', default: false})
+  isOnAccountEligible?: boolean;
+
   @property({
     type: 'string',
     postgresql: {dataType: 'uuid'},
