@@ -510,13 +510,21 @@ export class ApprovalService {
     if (GARMENT_STATUS_ON_CREATE[request.type]) {
       const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
       if (garment?.status === GarmentStatus.ON_HOLD) {
-        // Find the last non-on_hold status from history and restore it
+        // Find the last non-on_hold status from history and restore it.
+        // Also skip RETURNED_TO_CUSTOMER: it can never legitimately be "the
+        // real prior stage" (a garment already sitting there couldn't have a
+        // fresh approval request raised against it) — the only way it shows
+        // up here is as a leftover from an approve THEN revert-to-pending
+        // THEN reject on the same request, and picking it back up would
+        // silently redo the exact decision that was just undone.
         const history = await this.garmentStatusHistoryRepo.find({
           where: {garmentId: request.entityId},
           order: ['changedAt DESC'],
           limit: 10,
         });
-        const prevEntry = history.find(h => h.status !== GarmentStatus.ON_HOLD);
+        const prevEntry = history.find(
+          h => h.status !== GarmentStatus.ON_HOLD && h.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+        );
         const restoreStatus = (prevEntry?.status as GarmentStatus) ?? GarmentStatus.IN_INSPECTION;
         const remarks =
           action === ApprovalActionType.REJECTED_AND_PROCESS
