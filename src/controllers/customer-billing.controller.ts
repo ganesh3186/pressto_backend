@@ -226,20 +226,25 @@ export class CustomerBillingController {
       paidByOrder.set(oid, money((paidByOrder.get(oid) ?? 0) + amt));
     }
 
-    const enriched = billable.map(o => {
-      const total = money((o as any).totalAmount);
-      const paid = paidByOrder.get(o.id) ?? 0;
-      const amountDue = Math.max(0, money(total - paid));
-      return {
-        orderId: o.id,
-        orderNumber: (o as any).orderNumber,
-        createdAt: o.createdAt,
-        deliveryDate: (o as any).deliveryDate ?? null,
-        totalAmount: total,
-        amountPaid: paid,
-        amountDue,
-      };
-    });
+    const enriched = billable
+      .map(o => {
+        const total = money((o as any).totalAmount);
+        const paid = paidByOrder.get(o.id) ?? 0;
+        const amountDue = Math.max(0, money(total - paid));
+        return {
+          orderId: o.id,
+          orderNumber: (o as any).orderNumber,
+          createdAt: o.createdAt,
+          deliveryDate: (o as any).deliveryDate ?? null,
+          totalAmount: total,
+          amountPaid: paid,
+          amountDue,
+        };
+      })
+      // A delivered, un-invoiced order that's already fully paid needs no
+      // billing at all — offering it here would let staff bundle it into a
+      // consolidated invoice for ₹0 and permanently mark it "invoiced".
+      .filter(o => o.amountDue > 0);
 
     return {billableOrders: enriched, totalDue: money(enriched.reduce((s, o) => s + o.amountDue, 0))};
   }
@@ -320,6 +325,19 @@ export class CustomerBillingController {
       orderId: o.id,
       due: Math.max(0, money((o as any).totalAmount) - (paidByOrder.get(o.id) ?? 0)),
     }));
+    // Reject individually, not just as a batch total — an already-fully-paid
+    // order slipped in alongside genuinely unpaid ones would otherwise still
+    // get an invoice_order_link row and be marked "invoiced" for ₹0.
+    const alreadyPaid = orderTotals.filter(o => o.due <= 0);
+    if (alreadyPaid.length) {
+      const paidOrderNumbers = orders
+        .filter(o => alreadyPaid.some(p => p.orderId === o.id))
+        .map(o => (o as any).orderNumber)
+        .join(', ');
+      throw new HttpErrors.BadRequest(
+        `Already fully paid, remove from selection: ${paidOrderNumbers}`,
+      );
+    }
     const combinedTotal = money(orderTotals.reduce((s, o) => s + o.due, 0));
     if (combinedTotal <= 0) {
       throw new HttpErrors.BadRequest('Selected orders have no outstanding balance to invoice.');
