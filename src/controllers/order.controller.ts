@@ -76,14 +76,6 @@ export class OrderController {
     private reprocessService: ReprocessService,
   ) {}
 
-  /**
-   * Store ids this caller may see, or null for callers that see every store.
-   * Shape matches what listOrders expects for its `storeIds` param.
-   */
-  private async resolveStoreIds(currentUser: UserProfile): Promise<string[] | null> {
-    const scope = await this.storeScopeService.resolve(currentUser);
-    return scope.global ? null : scope.storeIds;
-  }
 
   // ─── Create Order ─────────────────────────────────────────────────────────
 
@@ -162,9 +154,19 @@ export class OrderController {
     @param.query.string('customerId') customerId?: string,
     @param.query.number('limit') limit?: number,
     @param.query.number('skip') skip?: number,
+    // Narrows the caller's token scope down to one store/cluster — a
+    // cluster-scoped caller filtering to a store within their cluster, or a
+    // region-scoped caller filtering to a cluster/store within their region.
+    // Can only shrink what the token already allows, never widen it — see
+    // StoreScopeService.narrowStoreIds.
+    @param.query.string('storeId') storeIdFilter?: string,
+    @param.query.string('clusterId') clusterIdFilter?: string,
   ): Promise<object> {
-    // Store scope comes from the token, never from a query param.
-    const storeIds = await this.resolveStoreIds(currentUser);
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
+      storeId: storeIdFilter,
+      clusterId: clusterIdFilter,
+    });
     return this.orderService.listOrders({
       search,
       dateFrom,
