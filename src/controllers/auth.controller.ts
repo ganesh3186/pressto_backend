@@ -225,7 +225,7 @@ export class AuthController {
     const storeScope = await this.storeScopeService.resolveForUser(user.id!, [roleValue]);
     const employee = await this.employeeRepository.findOne({
       where: { userId: user.id, isDeleted: false },
-      fields: { id: true, storeId: true, firstName: true, lastName: true },
+      fields: { id: true, storeId: true, clusterId: true, regionId: true, firstName: true, lastName: true },
     });
     // Only a genuinely store-scoped employee has an authoritative "their one
     // store" — a cluster/region-scoped employee can carry a stale storeId
@@ -234,6 +234,14 @@ export class AuthController {
     // pin them to that one old store instead of letting them work across
     // their whole cluster/region.
     const singleStoreId = storeScope.scopeLevel === 'store' ? employee?.storeId ?? null : null;
+    // Same reasoning, one level up: a cluster-scoped employee's clusterId is
+    // authoritative for building a "filter by store within my cluster" UI; a
+    // region-scoped employee's regionId is authoritative for "filter by
+    // cluster/store within my region". Neither is meaningful outside its own
+    // scope level, so — like storeId — only expose the one that actually
+    // applies.
+    const scopedClusterId = storeScope.scopeLevel === 'cluster' ? employee?.clusterId ?? null : null;
+    const scopedRegionId = storeScope.scopeLevel === 'region' ? employee?.regionId ?? null : null;
 
     // Same reasoning as /auth/me: Users.fullName is the account's own name,
     // not necessarily the profile name kept current via Employee/Customer
@@ -278,6 +286,9 @@ export class AuthController {
         roles: [roleValue],
         permissions,
         storeId: singleStoreId,
+        scopeLevel: storeScope.scopeLevel,
+        clusterId: scopedClusterId,
+        regionId: scopedRegionId,
       },
     };
   }
@@ -346,7 +357,7 @@ export class AuthController {
 
     const employee = await this.employeeRepository.findOne({
       where: { userId, isDeleted: false },
-      fields: { id: true, storeId: true, firstName: true, lastName: true },
+      fields: { id: true, storeId: true, clusterId: true, regionId: true, firstName: true, lastName: true },
     });
     // Same reasoning as login: only expose storeId when the role is actually
     // store-scoped, or a cluster/region-scoped employee's stale leftover
@@ -354,6 +365,8 @@ export class AuthController {
     const roles = (currentUser.roles as string[]) ?? [];
     const storeScope = await this.storeScopeService.resolveForUser(String(userId), roles);
     const singleStoreId = storeScope.scopeLevel === 'store' ? employee?.storeId ?? null : null;
+    const scopedClusterId = storeScope.scopeLevel === 'cluster' ? employee?.clusterId ?? null : null;
+    const scopedRegionId = storeScope.scopeLevel === 'region' ? employee?.regionId ?? null : null;
 
     // Users.fullName is the account's own name — but for a staff or customer
     // session it should reflect that PROFILE's name (kept up to date via
@@ -384,6 +397,9 @@ export class AuthController {
       roles: currentUser.roles,
       employeeId: employee?.id ?? null,
       storeId: singleStoreId,
+      scopeLevel: storeScope.scopeLevel,
+      clusterId: scopedClusterId,
+      regionId: scopedRegionId,
     };
   }
 
