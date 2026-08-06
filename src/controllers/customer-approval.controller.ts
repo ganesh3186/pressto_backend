@@ -4,13 +4,10 @@ import {repository} from '@loopback/repository';
 import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {Customer} from '../models';
-import {
-  ApprovalActionType,
-  CUSTOMER_UPGRADE_ACTIONS,
-} from '../models/approval-action-type.enum';
+import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
-import {ApprovalRequest} from '../models/approval-request.model';
+import {ApprovalRequest, CUSTOMER_ACTIONS_BY_TYPE} from '../models/approval-request.model';
 import {
   ApprovalRequestRepository,
   CustomerRepository,
@@ -25,20 +22,33 @@ import {ReprocessService} from '../services/reprocess.service';
 // Request types a customer is allowed to see and act on. Everything else
 // (item_damaged, reprocess, cheque_payment, …) is routed to internal roles and
 // must never surface on the customer app.
-const CUSTOMER_FACING_TYPES: ApprovalRequestType[] = [ApprovalRequestType.UPGRADE_SERVICE];
+const CUSTOMER_FACING_TYPES: ApprovalRequestType[] = [
+  ApprovalRequestType.UPGRADE_SERVICE,
+  ApprovalRequestType.PROCESS_AT_RISK,
+];
+
+// Every action any customer-facing type might offer, for the OpenAPI schema
+// enum below — the real per-request enforcement is CUSTOMER_ACTIONS_BY_TYPE.
+const ALL_CUSTOMER_ACTIONS: ApprovalActionType[] = [
+  ...new Set(CUSTOMER_FACING_TYPES.flatMap(type => CUSTOMER_ACTIONS_BY_TYPE[type] ?? [])),
+];
 
 /**
- * Customer-facing approvals.
+ * Customer-facing approvals — currently two request types, each with its own
+ * view builder in ApprovalService (getApprovalView dispatches to the right
+ * one) and its own answer set (CUSTOMER_ACTIONS_BY_TYPE):
  *
- * When the store wants to upgrade the service on a garment it raises an
- * `upgrade_service` request and the garment goes on_hold. This controller is how
- * the customer sees that request — old service vs proposed service, the price
- * difference, and the photos the store uploaded — and answers it.
- *
- * Three answers are possible:
+ * `upgrade_service` — the store wants to switch the garment to a different
+ * service. Three answers:
  *   • approved             → service is swapped, order/invoice repriced, garment resumes
  *   • rejected_and_return  → garment is returned unprocessed, billing reduced, overpayment refunded
  *   • rejected_and_process → garment resumes on the ORIGINAL service, nothing repriced
+ *
+ * `process_at_risk` — staff found the garment unsafe to process as ordered
+ * AND no upgrade removes the risk either. Two answers (no "process on the
+ * original service" option — that's the very thing flagged as risky):
+ *   • approved             → garment resumes processing, customer accepted the risk
+ *   • rejected_and_return  → garment is returned unprocessed, billing reduced, overpayment refunded
  *
  * Scope is taken from the JWT (securityId → users.id → customer.userId), never
  * from a client-supplied id.
@@ -136,7 +146,7 @@ export class CustomerApprovalController {
     });
 
     const approvals = await Promise.all(
-      requests.map(r => this.approvalService.getUpgradeView(r)),
+      requests.map(r => this.approvalService.getApprovalView(r)),
     );
 
     return {
@@ -150,7 +160,7 @@ export class CustomerApprovalController {
 
   @authenticate('jwt')
   @get('/profile/customer/approvals/{id}')
-  @response(200, {description: 'One upgrade-service approval in full detail'})
+  @response(200, {description: 'One customer-facing approval in full detail'})
   async myApprovalDetail(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -164,7 +174,7 @@ export class CustomerApprovalController {
     }
     await this.assertOwnsApproval(request, customer.id);
 
-    return this.approvalService.getUpgradeView(request);
+    return this.approvalService.getApprovalView(request);
   }
 
   // ─── Report a problem with a delivered order ───────────────────────────────
@@ -291,11 +301,14 @@ export class CustomerApprovalController {
             properties: {
               action: {
                 type: 'string',
-                enum: CUSTOMER_UPGRADE_ACTIONS,
+                enum: ALL_CUSTOMER_ACTIONS,
                 description:
-                  'approved = do the upgrade; ' +
-                  'rejected_and_return = return the garment unprocessed; ' +
-                  'rejected_and_process = process it on the original service',
+                  'Which actions are valid depends on the request type — see ' +
+                  'GET .../approvals/{id}\'s availableActions. For upgrade_service: ' +
+                  'approved = do the upgrade; rejected_and_return = return the garment ' +
+                  'unprocessed; rejected_and_process = process it on the original service. ' +
+                  'For process_at_risk: approved = process it, accepting the risk; ' +
+                  'rejected_and_return = return the garment unprocessed.',
               },
               comments: {type: 'string'},
             },
@@ -317,9 +330,10 @@ export class CustomerApprovalController {
     if (request.status !== ApprovalRequestStatus.PENDING) {
       throw new HttpErrors.BadRequest(`This request has already been ${request.status}.`);
     }
-    if (!CUSTOMER_UPGRADE_ACTIONS.includes(body.action)) {
+    const allowedActions = CUSTOMER_ACTIONS_BY_TYPE[request.type] ?? [];
+    if (!allowedActions.includes(body.action)) {
       throw new HttpErrors.BadRequest(
-        `Invalid action. Choose one of: ${CUSTOMER_UPGRADE_ACTIONS.join(', ')}.`,
+        `Invalid action. Choose one of: ${allowedActions.join(', ')}.`,
       );
     }
 
@@ -333,18 +347,26 @@ export class CustomerApprovalController {
       approvalSource: 'direct',
     });
 
-    const MESSAGES: Record<string, string> = {
-      [ApprovalActionType.APPROVED]:
-        'Upgrade approved. Your garment will be processed with the new service.',
-      [ApprovalActionType.REJECTED_AND_RETURN]:
-        'Upgrade declined. Your garment will be returned to you and the charge removed from your bill.',
-      [ApprovalActionType.REJECTED_AND_PROCESS]:
-        'Upgrade declined. Your garment will be processed with the original service.',
+    const MESSAGES_BY_TYPE: Partial<Record<ApprovalRequestType, Partial<Record<ApprovalActionType, string>>>> = {
+      [ApprovalRequestType.UPGRADE_SERVICE]: {
+        [ApprovalActionType.APPROVED]:
+          'Upgrade approved. Your garment will be processed with the new service.',
+        [ApprovalActionType.REJECTED_AND_RETURN]:
+          'Upgrade declined. Your garment will be returned to you and the charge removed from your bill.',
+        [ApprovalActionType.REJECTED_AND_PROCESS]:
+          'Upgrade declined. Your garment will be processed with the original service.',
+      },
+      [ApprovalRequestType.PROCESS_AT_RISK]: {
+        [ApprovalActionType.APPROVED]:
+          'Thanks — we\'ll go ahead and process your garment now.',
+        [ApprovalActionType.REJECTED_AND_RETURN]:
+          'Understood. Your garment will be returned to you unprocessed and the charge removed from your bill.',
+      },
     };
 
     return {
-      message: MESSAGES[body.action],
-      approval: await this.approvalService.getUpgradeView(
+      message: MESSAGES_BY_TYPE[request.type]?.[body.action] ?? 'Your response was recorded.',
+      approval: await this.approvalService.getApprovalView(
         await this.approvalRequestRepo.findById(id),
       ),
     };

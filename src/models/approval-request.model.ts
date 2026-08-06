@@ -1,5 +1,9 @@
 import {Entity, model, property} from '@loopback/repository';
-import {ApprovalActionType} from './approval-action-type.enum';
+import {
+  ApprovalActionType,
+  CUSTOMER_RISK_ACTIONS,
+  CUSTOMER_UPGRADE_ACTIONS,
+} from './approval-action-type.enum';
 import {ApprovalRequestStatus} from './approval-request-status.enum';
 import {ApprovalRequestType} from './approval-request-type.enum';
 
@@ -12,6 +16,17 @@ export const APPROVAL_ROLE_ROUTING: Record<ApprovalRequestType, string> = {
   [ApprovalRequestType.POST_TAG_EDIT]: 'manager',
   [ApprovalRequestType.CHEQUE_PAYMENT]: 'finance',
   [ApprovalRequestType.PDC_PAYMENT]: 'finance',
+  // store_exec can act on the customer's behalf, same as upgrade_service.
+  [ApprovalRequestType.PROCESS_AT_RISK]: 'store_exec',
+};
+
+// Which of ApprovalActionType a customer may pick, per request type they're
+// allowed to see at all (see CUSTOMER_FACING_TYPES in
+// customer-approval.controller.ts). Single source of truth for both the
+// respond() validation and each view's `availableActions`.
+export const CUSTOMER_ACTIONS_BY_TYPE: Partial<Record<ApprovalRequestType, ApprovalActionType[]>> = {
+  [ApprovalRequestType.UPGRADE_SERVICE]: CUSTOMER_UPGRADE_ACTIONS,
+  [ApprovalRequestType.PROCESS_AT_RISK]: CUSTOMER_RISK_ACTIONS,
 };
 
 export {ApprovalActionType, ApprovalRequestStatus, ApprovalRequestType};

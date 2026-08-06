@@ -14,3 +14,11 @@ export const CUSTOMER_UPGRADE_ACTIONS: ApprovalActionType[] = [
   ApprovalActionType.REJECTED_AND_RETURN,
   ApprovalActionType.REJECTED_AND_PROCESS,
 ];
+
+// The two choices on a process_at_risk request — no REJECTED_AND_PROCESS,
+// since there's no safe fallback service to process it on; that's the whole
+// reason this approval type exists.
+export const CUSTOMER_RISK_ACTIONS: ApprovalActionType[] = [
+  ApprovalActionType.APPROVED,
+  ApprovalActionType.REJECTED_AND_RETURN,
+];
