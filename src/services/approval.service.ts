@@ -18,7 +18,7 @@ import {PaymentTransactionRepository} from '../repositories/payment-transaction.
 import {ServiceRepository} from '../repositories/service.repository';
 import {WalletRepository} from '../repositories/wallet.repository';
 import {WalletTransactionRepository} from '../repositories/wallet-transaction.repository';
-import {ApprovalActionType, CUSTOMER_UPGRADE_ACTIONS} from '../models/approval-action-type.enum';
+import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
@@ -27,7 +27,11 @@ import {ProcessLogStatus} from '../models/process-log-status.enum';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
-import {APPROVAL_ROLE_ROUTING, ApprovalRequest} from '../models/approval-request.model';
+import {
+  APPROVAL_ROLE_ROUTING,
+  ApprovalRequest,
+  CUSTOMER_ACTIONS_BY_TYPE,
+} from '../models/approval-request.model';
 import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
 
@@ -41,6 +45,7 @@ const GARMENT_STATUS_ON_CREATE: Partial<Record<ApprovalRequestType, GarmentStatu
   [ApprovalRequestType.RETURN_ITEM]: GarmentStatus.ON_HOLD,
   [ApprovalRequestType.ITEM_DAMAGED]: GarmentStatus.ON_HOLD,
   [ApprovalRequestType.REPROCESS]: GarmentStatus.ON_HOLD,
+  [ApprovalRequestType.PROCESS_AT_RISK]: GarmentStatus.ON_HOLD,
 };
 
 // What status to set on the garment when request is APPROVED
@@ -286,6 +291,12 @@ export class ApprovalService {
     // invoice + challan, and refund any already-paid amount to the wallet.
     if (request.type === ApprovalRequestType.RETURN_ITEM) {
       await this._applyReturnEffect(request, performedBy);
+    }
+
+    // Risk approved: customer accepted the risk — no service/price change,
+    // just resume processing from wherever it paused.
+    if (request.type === ApprovalRequestType.PROCESS_AT_RISK) {
+      await this._resumeGarmentFromHold(request.entityId, performedBy, 'Customer approved processing at risk');
     }
   }
 
@@ -582,31 +593,43 @@ export class ApprovalService {
     // other field needs undoing. Applies to every type this service holds at
     // creation (see GARMENT_STATUS_ON_CREATE), not just upgrades.
     if (GARMENT_STATUS_ON_CREATE[request.type]) {
-      const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
-      if (garment?.status === GarmentStatus.ON_HOLD) {
-        // Find the last non-on_hold status from history and restore it.
-        // Also skip RETURNED_TO_CUSTOMER: it can never legitimately be "the
-        // real prior stage" (a garment already sitting there couldn't have a
-        // fresh approval request raised against it) — the only way it shows
-        // up here is as a leftover from an approve THEN revert-to-pending
-        // THEN reject on the same request, and picking it back up would
-        // silently redo the exact decision that was just undone.
-        const history = await this.garmentStatusHistoryRepo.find({
-          where: {garmentId: request.entityId},
-          order: ['changedAt DESC'],
-          limit: 10,
-        });
-        const prevEntry = history.find(
-          h => h.status !== GarmentStatus.ON_HOLD && h.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
-        );
-        const restoreStatus = (prevEntry?.status as GarmentStatus) ?? GarmentStatus.IN_INSPECTION;
-        const remarks =
-          action === ApprovalActionType.REJECTED_AND_PROCESS
-            ? `${request.type} declined — resuming ${restoreStatus}`
-            : `${request.type} rejected — restored to ${restoreStatus}`;
-        await this._updateGarmentStatus(request.entityId, restoreStatus, performedBy, remarks);
-      }
+      const reason =
+        action === ApprovalActionType.REJECTED_AND_PROCESS
+          ? `${request.type} declined`
+          : `${request.type} rejected`;
+      await this._resumeGarmentFromHold(request.entityId, performedBy, reason);
     }
+  }
+
+  /**
+   * Move a garment off ON_HOLD back to wherever it was before — walks
+   * garment_status_history newest-first for the last real pipeline stage,
+   * skipping ON_HOLD and RETURNED_TO_CUSTOMER (a leftover
+   * RETURNED_TO_CUSTOMER entry from an earlier approve-then-revert can never
+   * legitimately be "the real prior stage" — see the reject-effect fix
+   * above). Shared by the generic reject path (nothing the request touched
+   * was ever applied, so it just resumes) and process_at_risk's approve path
+   * (customer accepted the risk, so processing just continues from where it
+   * paused — no service/price change, unlike an upgrade approval).
+   */
+  private async _resumeGarmentFromHold(
+    garmentId: string,
+    performedBy: string,
+    reason: string,
+  ): Promise<void> {
+    const garment = await this.garmentRepo.findOne({where: {id: garmentId, isDeleted: false}});
+    if (garment?.status !== GarmentStatus.ON_HOLD) return;
+
+    const history = await this.garmentStatusHistoryRepo.find({
+      where: {garmentId},
+      order: ['changedAt DESC'],
+      limit: 10,
+    });
+    const prevEntry = history.find(
+      h => h.status !== GarmentStatus.ON_HOLD && h.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+    );
+    const restoreStatus = (prevEntry?.status as GarmentStatus) ?? GarmentStatus.IN_INSPECTION;
+    await this._updateGarmentStatus(garmentId, restoreStatus, performedBy, `${reason} — resumed to ${restoreStatus}`);
   }
 
   // ─── Upgrade: update orderItem service + price ────────────────────────────
@@ -985,7 +1008,7 @@ export class ApprovalService {
       media,
 
       // What the customer may do right now. Empty once the request is resolved.
-      availableActions: isPending ? CUSTOMER_UPGRADE_ACTIONS : [],
+      availableActions: isPending ? CUSTOMER_ACTIONS_BY_TYPE[request.type] ?? [] : [],
       // Only meaningful while resolved. A reverted request is pending again, and
       // its superseded ApprovalAction row must not be shown as the live decision.
       decision:
@@ -993,6 +1016,62 @@ export class ApprovalService {
           ? {action: decision.action, comments: decision.comments ?? null, at: decision.actionDate ?? null}
           : null,
     };
+  }
+
+  // ─── Customer-facing view of a process-at-risk request ────────────────────
+  // No service/pricing to show — the whole point is staff found nothing safe
+  // to switch to either. Just the garment, the risk explanation
+  // (requestReason), and whatever photos the store attached when raising it.
+
+  async getRiskView(request: ApprovalRequest): Promise<Record<string, unknown>> {
+    const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
+    const orderItem = garment
+      ? await this.orderItemRepo.findOne({where: {id: garment.orderItemId}})
+      : null;
+    const item = orderItem?.itemId
+      ? await this.itemRepo.findOne({where: {id: orderItem.itemId}})
+      : null;
+
+    const [media, decision] = await Promise.all([
+      this.resolveMedia(request.mediaIds),
+      this.approvalActionRepo.findOne({
+        where: {approvalRequestId: request.id},
+        order: ['actionDate DESC'],
+      }),
+    ]);
+
+    const isPending = request.status === ApprovalRequestStatus.PENDING;
+
+    return {
+      id: request.id,
+      type: request.type,
+      status: request.status,
+      requestReason: request.requestReason ?? null,
+      createdAt: request.createdAt ?? null,
+      resolvedAt: request.resolvedAt ?? null,
+
+      garment: {
+        id: garment?.id ?? null,
+        tagNumber: garment?.garmentTagNumber ?? null,
+        status: garment?.status ?? null,
+        itemName: item?.name ?? null,
+      },
+
+      media,
+
+      availableActions: isPending ? CUSTOMER_ACTIONS_BY_TYPE[request.type] ?? [] : [],
+      decision:
+        !isPending && decision
+          ? {action: decision.action, comments: decision.comments ?? null, at: decision.actionDate ?? null}
+          : null,
+    };
+  }
+
+  /** Dispatch to the right customer-facing view builder for this request's type. */
+  async getApprovalView(request: ApprovalRequest): Promise<Record<string, unknown>> {
+    return request.type === ApprovalRequestType.PROCESS_AT_RISK
+      ? this.getRiskView(request)
+      : this.getUpgradeView(request);
   }
 
   /**

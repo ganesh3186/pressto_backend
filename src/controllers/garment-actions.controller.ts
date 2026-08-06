@@ -142,6 +142,60 @@ export class GarmentActionsController {
     };
   }
 
+  // ─── Process at Risk ──────────────────────────────────────────────────────
+  // Raised when a garment can't be safely processed as ordered AND no
+  // upgrade removes the risk either — a separate action from Request
+  // Upgrade, not a third option inside it. Garment put on hold immediately.
+  // On customer approve → garment resumes processing, no service/price
+  // change. On reject+return → returned unprocessed, same as any other type.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['approval:create']})
+  @post('/garments/{id}/action/risk-approval')
+  @response(200, {description: 'Process-at-risk approval request raised, garment put on hold'})
+  async requestRiskApproval(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['reason'],
+            properties: {
+              reason: {type: 'string'},
+              mediaIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+            },
+          },
+        },
+      },
+    })
+    body: {reason: string; mediaIds?: string[]},
+  ): Promise<object> {
+    const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+
+    if (!body.reason?.trim()) {
+      throw new HttpErrors.BadRequest('Explain the risk before raising this request.');
+    }
+
+    await this._guardNoPendingRequest(id, ApprovalRequestType.PROCESS_AT_RISK);
+
+    const request = await this.approvalService.createRequest({
+      type: ApprovalRequestType.PROCESS_AT_RISK,
+      entityType: 'garment',
+      entityId: id,
+      requestedBy: currentUser[securityId],
+      requestReason: body.reason,
+      mediaIds: body.mediaIds,
+    });
+
+    return {
+      message: 'Risk approval requested. Garment on hold pending customer approval.',
+      request,
+    };
+  }
+
   // ─── Mark Damaged ─────────────────────────────────────────────────────────
 
   @authenticate('jwt')
