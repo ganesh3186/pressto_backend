@@ -181,4 +181,34 @@ export class StoreScopeService {
     if (scope.global) return null;
     return {storeId: {inq: scope.storeIds}};
   }
+
+  /**
+   * Narrow an already-resolved scope down to a UI-selected store or cluster —
+   * for a cluster/region-scoped caller filtering their own store list down to
+   * one store, or a region-scoped caller filtering down to one cluster. This
+   * can only ever SHRINK what a caller sees, never grow it: the candidate ids
+   * (from the query param) are intersected against `scope.storeIds`, so a
+   * `storeId`/`clusterId` naming something outside the caller's own scope
+   * resolves to an empty list (sees nothing) rather than leaking into another
+   * store/cluster/region. A global (super_admin) caller has no scope to
+   * intersect against, so the candidate ids are returned as-is.
+   *
+   * Returns `null` (no filtering) only when the caller is global AND no
+   * store/cluster filter was requested.
+   */
+  async narrowStoreIds(
+    scope: StoreScope,
+    filters: {storeId?: string; clusterId?: string},
+  ): Promise<string[] | null> {
+    if (!filters.storeId && !filters.clusterId) {
+      return scope.global ? null : scope.storeIds;
+    }
+
+    const candidateIds = filters.storeId
+      ? [filters.storeId]
+      : await this.storeIdsForCluster(filters.clusterId!);
+
+    if (scope.global) return candidateIds;
+    return candidateIds.filter(id => scope.storeIds.includes(id));
+  }
 }
