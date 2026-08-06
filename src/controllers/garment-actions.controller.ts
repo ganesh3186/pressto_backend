@@ -6,7 +6,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
-import {GarmentStatus} from '../models/garment-status.enum';
+import {GARMENT_STATUS_RANK, GarmentStatus} from '../models/garment-status.enum';
 import {ApprovalService} from '../services/approval.service';
 import {
   ApprovalRequestRepository,
@@ -209,6 +209,20 @@ export class GarmentActionsController {
   ): Promise<object> {
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+
+    // A garment still somewhere in the pipeline (rank 0-4, i.e. anything before
+    // out_for_delivery) hasn't left the store yet — reprocessing it is a normal
+    // workflow correction, not a decision that needs a store exec's sign-off.
+    // Approval-gating is reserved for a garment already dispatched/delivered:
+    // on_hold and returned_to_customer (rank -1) fall through to it too, since
+    // those are already special-cased states, not plain pipeline stages.
+    const garmentRank = GARMENT_STATUS_RANK[garment.status as GarmentStatus] ?? -1;
+    const isPreDispatch = garmentRank >= 0 && garmentRank < GARMENT_STATUS_RANK[GarmentStatus.OUT_FOR_DELIVERY];
+
+    if (isPreDispatch) {
+      await this.approvalService.applyReprocessDirectly(id, currentUser[securityId], body.remarks);
+      return {message: 'Garment sent back for reprocessing.'};
+    }
 
     await this._guardNoPendingRequest(id, ApprovalRequestType.REPROCESS);
 

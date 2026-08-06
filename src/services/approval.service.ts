@@ -508,8 +508,29 @@ export class ApprovalService {
   }
 
   private async _applyReprocess(request: ApprovalRequest, performedBy: string): Promise<void> {
-    const garmentId = request.entityId;
+    await this._resetProcessLogsAndReprocess(request.entityId, performedBy, request.requestReason, request.id);
+  }
 
+  /**
+   * Send a garment back into processing without raising an approval request
+   * at all. For a garment that hasn't left the store yet, a reprocess is a
+   * normal workflow correction, not a decision that needs a store exec's
+   * sign-off — that gating is reserved for the genuinely consequential case,
+   * a garment already dispatched or delivered (see
+   * GarmentActionsController.requestReprocess for the status check, and
+   * _applyPostDeliveryReprocess for the separate, still approval-gated,
+   * order-level after-delivery flow).
+   */
+  async applyReprocessDirectly(garmentId: string, performedBy: string, reason?: string): Promise<void> {
+    await this._resetProcessLogsAndReprocess(garmentId, performedBy, reason, undefined);
+  }
+
+  private async _resetProcessLogsAndReprocess(
+    garmentId: string,
+    performedBy: string,
+    reason: string | undefined,
+    requestId: string | undefined,
+  ): Promise<void> {
     // Reset every process-step log back to pending so the full process runs again.
     const logs = await this.processLogRepo.find({where: {garmentId} as any});
     for (const log of logs) {
@@ -524,13 +545,11 @@ export class ApprovalService {
       } as any);
     }
 
-    const reasonSuffix = request.requestReason ? ` — reason: ${request.requestReason}` : '';
-    await this._updateGarmentStatus(
-      garmentId,
-      GarmentStatus.IN_PROCESS,
-      performedBy,
-      `Reprocess approved (request ${request.id}) — garment sent back for reprocessing${reasonSuffix}`,
-    );
+    const reasonSuffix = reason ? ` — reason: ${reason}` : '';
+    const remarks = requestId
+      ? `Reprocess approved (request ${requestId}) — garment sent back for reprocessing${reasonSuffix}`
+      : `Reprocess requested — garment sent back for reprocessing (still in-store, no approval needed)${reasonSuffix}`;
+    await this._updateGarmentStatus(garmentId, GarmentStatus.IN_PROCESS, performedBy, remarks);
   }
 
   // ─── Downstream effects on REJECT ────────────────────────────────────────
