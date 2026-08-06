@@ -114,7 +114,11 @@ export class InvoiceController {
     if (params.search?.trim()) {
       const q = params.search.trim();
       const digits = q.replace(/\D/g, '');
-      const orderIdsBySearch = await this._orderIdsMatchingCustomer(q, digits);
+      const [orderIdsByCustomer, orderIdsByNumber] = await Promise.all([
+        this._orderIdsMatchingCustomer(q, digits),
+        this._orderIdsMatchingNumber(q),
+      ]);
+      const orderIdsBySearch = [...new Set([...orderIdsByCustomer, ...orderIdsByNumber])];
       const orClauses: object[] = [{invoiceNumber: {ilike: `%${q}%`}}];
       if (orderIdsBySearch.length) {
         orClauses.push({orderId: {inq: orderIdsBySearch}});
@@ -164,6 +168,15 @@ export class InvoiceController {
     if (!customers.length) return [];
     const orders = await this.orderRepo.find({
       where: {customerId: {inq: customers.map(c => c.id)}},
+      fields: {id: true},
+    });
+    return orders.map(o => o.id);
+  }
+
+  /** Order ids whose own order number matches the search term (Transaction ID field). */
+  private async _orderIdsMatchingNumber(query: string): Promise<string[]> {
+    const orders = await this.orderRepo.find({
+      where: {orderNumber: {ilike: `%${query}%`}},
       fields: {id: true},
     });
     return orders.map(o => o.id);
