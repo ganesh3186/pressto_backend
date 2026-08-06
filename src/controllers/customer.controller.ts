@@ -1,6 +1,6 @@
 import { authenticate } from '@loopback/authentication';
 import { inject } from '@loopback/core';
-import { Filter, FilterExcludingWhere, IsolationLevel, repository } from '@loopback/repository';
+import { Count, Filter, FilterExcludingWhere, IsolationLevel, repository, Where } from '@loopback/repository';
 import {
   get,
   getModelSchemaRef,
@@ -325,10 +325,27 @@ export class CustomerController {
       },
     },
   })
-  async find(@param.filter(Customer) filter?: Filter<Customer>): Promise<Customer[]> {
+  async find(
+    @param.filter(Customer) filter?: Filter<Customer>,
+    // Explicit search/pagination/filter params — kept separate from `filter`
+    // above because `search`/`status`/`type`/`labelId` aren't plain
+    // Customer-table where clauses: search reaches across the userId
+    // relation to Users.phone, and labelId reaches across the
+    // CustomerLabelAssignment join table. Neither is expressible in a plain
+    // LoopBack Filter<Customer>.where.
+    @param.query.string('search') search?: string,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+    @param.query.string('status') status?: string,
+    @param.query.string('type') type?: string,
+    @param.query.string('labelId') labelId?: string,
+  ): Promise<Customer[]> {
+    const where = await this._buildCustomerWhere({search, status, type, labelId, extraWhere: filter?.where});
     return this.customerRepository.find({
       ...filter,
-      where: { and: [{ isDeleted: false }, filter?.where ?? {}] },
+      where,
+      ...(limit !== undefined ? {limit} : {}),
+      ...(skip !== undefined ? {skip} : {}),
       order: ['createdAt DESC'],
       include: [
         {
@@ -346,6 +363,78 @@ export class CustomerController {
         }
       ],
     });
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['customer:read']})
+  @get('/customers/count')
+  @response(200, {description: 'Count of Customer model instances matching the same filters as find()'})
+  async count(
+    @param.query.string('search') search?: string,
+    @param.query.string('status') status?: string,
+    @param.query.string('type') type?: string,
+    @param.query.string('labelId') labelId?: string,
+  ): Promise<Count> {
+    const where = await this._buildCustomerWhere({search, status, type, labelId});
+    return this.customerRepository.count(where);
+  }
+
+  /**
+   * Shared where-builder for find()/count() — the list and its count must
+   * always agree on which rows match, or the pagination UI's total would
+   * disagree with what's actually shown.
+   */
+  private async _buildCustomerWhere(params: {
+    search?: string;
+    status?: string;
+    type?: string;
+    labelId?: string;
+    extraWhere?: Where<Customer>;
+  }): Promise<Where<Customer>> {
+    const clauses: object[] = [{isDeleted: false}];
+    if (params.extraWhere) clauses.push(params.extraWhere);
+
+    if (params.status && params.status !== 'all') {
+      clauses.push({isActive: params.status === 'active'});
+    }
+    if (params.type) {
+      clauses.push({customerEntityType: params.type});
+    }
+    if (params.labelId) {
+      const assignments = await this.customerLabelAssignmentRepository.find({
+        where: {customerLabelId: params.labelId},
+        fields: {customerId: true},
+      });
+      // Empty on no match — correctly yields zero rows rather than
+      // accidentally matching everything by omitting the clause.
+      clauses.push({id: {inq: assignments.map(a => a.customerId)}});
+    }
+    if (params.search?.trim()) {
+      const q = params.search.trim();
+      const digits = q.replace(/\D/g, '');
+      const orClauses: object[] = [
+        {firstName: {ilike: `%${q}%`}},
+        {lastName: {ilike: `%${q}%`}},
+        {customerCode: {ilike: `%${q}%`}},
+        {email: {ilike: `%${q}%`}},
+      ];
+      // Phone lives on Users, not Customer — resolve matching Users rows
+      // first, then fold their ids into the same OR as an additional
+      // matchable condition. Require a few digits so a 1-2 digit search
+      // doesn't turn into an accidental "match every phone number" scan.
+      if (digits.length >= 3) {
+        const matchedUsers = await this.usersRepository.find({
+          where: {phone: {like: `%${digits}%`}},
+          fields: {id: true},
+        });
+        if (matchedUsers.length) {
+          orClauses.push({userId: {inq: matchedUsers.map(u => u.id)}});
+        }
+      }
+      clauses.push({or: orClauses});
+    }
+
+    return {and: clauses} as Where<Customer>;
   }
 
   @authenticate('jwt')

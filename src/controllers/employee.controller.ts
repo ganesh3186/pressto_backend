@@ -1,6 +1,6 @@
 import {authenticate} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {Filter, FilterExcludingWhere, IsolationLevel, repository} from '@loopback/repository';
+import {Count, Filter, FilterExcludingWhere, IsolationLevel, repository, Where} from '@loopback/repository';
 import {
   get,
   getModelSchemaRef,
@@ -308,10 +308,26 @@ export class EmployeeController {
       },
     },
   })
-  async find(@param.filter(Employee) filter?: Filter<Employee>): Promise<Employee[]> {
+  async find(
+    @param.filter(Employee) filter?: Filter<Employee>,
+    // Explicit search/pagination/filter params — kept separate from `filter`
+    // above because `search`/`role` aren't plain Employee-table where
+    // clauses: search reaches across the userId relation to Users.phone,
+    // and role reaches across UserRoles/Roles. Neither is expressible in a
+    // plain LoopBack Filter<Employee>.where.
+    @param.query.string('search') search?: string,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+    @param.query.string('status') status?: string,
+    @param.query.string('role') role?: string,
+    @param.query.string('storeId') storeId?: string,
+  ): Promise<Employee[]> {
+    const where = await this._buildEmployeeWhere({search, status, role, storeId, extraWhere: filter?.where});
     const results = await this.employeeRepository.find({
       ...filter,
-      where: {and: [{isDeleted: false}, filter?.where ?? {}]},
+      where,
+      ...(limit !== undefined ? {limit} : {}),
+      ...(skip !== undefined ? {skip} : {}),
       order: ['createdAt DESC'],
       include: [
         {
@@ -326,6 +342,80 @@ export class EmployeeController {
       ],
     });
     return results.map(e => this.stripNonStaffRoles(e));
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['employee:read']})
+  @get('/employees/count')
+  @response(200, {description: 'Count of Employee model instances matching the same filters as find()'})
+  async count(
+    @param.query.string('search') search?: string,
+    @param.query.string('status') status?: string,
+    @param.query.string('role') role?: string,
+    @param.query.string('storeId') storeId?: string,
+  ): Promise<Count> {
+    const where = await this._buildEmployeeWhere({search, status, role, storeId});
+    return this.employeeRepository.count(where);
+  }
+
+  /**
+   * Shared where-builder for find()/count() — the list and its count must
+   * always agree on which rows match, or the pagination UI's total would
+   * disagree with what's actually shown.
+   */
+  private async _buildEmployeeWhere(params: {
+    search?: string;
+    status?: string;
+    role?: string;
+    storeId?: string;
+    extraWhere?: Where<Employee>;
+  }): Promise<Where<Employee>> {
+    const clauses: object[] = [{isDeleted: false}];
+    if (params.extraWhere) clauses.push(params.extraWhere);
+
+    if (params.status && params.status !== 'all') {
+      clauses.push({isActive: params.status === 'active'});
+    }
+    if (params.storeId) {
+      clauses.push({storeId: params.storeId});
+    }
+    if (params.role) {
+      const roleRow = await this.rolesRepository.findOne({where: {value: params.role}});
+      const userRoles = roleRow
+        ? await this.userRolesRepository.find({
+            where: {rolesId: roleRow.id, isDeleted: false},
+            fields: {usersId: true},
+          })
+        : [];
+      // Empty on no match — correctly yields zero rows rather than
+      // accidentally matching everyone by omitting the clause.
+      clauses.push({userId: {inq: userRoles.map(ur => ur.usersId)}});
+    }
+    if (params.search?.trim()) {
+      const q = params.search.trim();
+      const digits = q.replace(/\D/g, '');
+      const orClauses: object[] = [
+        {firstName: {ilike: `%${q}%`}},
+        {lastName: {ilike: `%${q}%`}},
+        {employeeCode: {ilike: `%${q}%`}},
+      ];
+      // Phone lives on Users, not Employee — resolve matching Users rows
+      // first, then fold their ids into the same OR as an additional
+      // matchable condition. Require a few digits so a 1-2 digit search
+      // doesn't turn into an accidental "match every phone number" scan.
+      if (digits.length >= 3) {
+        const matchedUsers = await this.usersRepository.find({
+          where: {phone: {like: `%${digits}%`}},
+          fields: {id: true},
+        });
+        if (matchedUsers.length) {
+          orClauses.push({userId: {inq: matchedUsers.map(u => u.id)}});
+        }
+      }
+      clauses.push({or: orClauses});
+    }
+
+    return {and: clauses} as Where<Employee>;
   }
 
   @authenticate('jwt')
