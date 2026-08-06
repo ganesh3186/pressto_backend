@@ -15,9 +15,11 @@ import {MediaService} from '../services/media.service';
 /**
  * Rider attendance — punch in / punch out from the rider app.
  *
- * Each punch is proven by a selfie the rider takes in the app: it is uploaded
+ * Punch-in is proven by a selfie the rider takes in the app: it is uploaded
  * first via POST /files (which returns a media id), then that id is sent here.
  * The server stamps the time, so the rider cannot fake when they clocked in.
+ * Punch-out does NOT require a selfie — only punch-in needs one to prove
+ * identity; `selfieMediaId` on punch-out is accepted but optional.
  *
  * The rider is always resolved from the JWT — a rider can only punch and read
  * their own attendance. An admin view (by rider id) is gated by rider:read.
@@ -151,9 +153,10 @@ export class RiderAttendanceController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['selfieMediaId'],
+            // No selfie requirement on the way out — only punch-in proves
+            // identity with a photo. latitude/longitude stay optional too.
             properties: {
-              selfieMediaId: {type: 'string', format: 'uuid', description: 'Uploaded via POST /files'},
+              selfieMediaId: {type: 'string', format: 'uuid', description: 'Uploaded via POST /files (optional)'},
               latitude: {type: 'number'},
               longitude: {type: 'number'},
             },
@@ -161,10 +164,12 @@ export class RiderAttendanceController {
         },
       },
     })
-    body: {selfieMediaId: string; latitude?: number; longitude?: number},
+    body: {selfieMediaId?: string; latitude?: number; longitude?: number},
   ): Promise<object> {
     const rider = await this.resolveRider(currentUser);
-    await this.assertMediaExists(body.selfieMediaId);
+    if (body.selfieMediaId) {
+      await this.assertMediaExists(body.selfieMediaId);
+    }
 
     const open = await this.openSession(rider.id);
     if (!open) {
@@ -173,11 +178,13 @@ export class RiderAttendanceController {
 
     await this.attendanceRepository.updateById(open.id, {
       punchOutAt: new Date(),
-      punchOutMediaId: body.selfieMediaId,
+      ...(body.selfieMediaId ? {punchOutMediaId: body.selfieMediaId} : {}),
       punchOutLatitude: body.latitude,
       punchOutLongitude: body.longitude,
     });
-    await this.mediaService.updateMediaUsedStatus([body.selfieMediaId], true);
+    if (body.selfieMediaId) {
+      await this.mediaService.updateMediaUsedStatus([body.selfieMediaId], true);
+    }
 
     const record = await this.attendanceRepository.findById(open.id);
     const urls = await this.mediaUrlMap([record]);
