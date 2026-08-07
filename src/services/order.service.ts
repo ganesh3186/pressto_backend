@@ -27,6 +27,7 @@ import {
   CustomerFamilyGroupMemberRepository,
   CustomerFamilyGroupRepository,
   CustomerRepository,
+  CustomerSecurityDepositRepository,
   DeliveryTypeConfigurationRepository,
   ItemRepository,
   ServiceRepository,
@@ -166,6 +167,7 @@ export class OrderService {
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
+    @repository(CustomerSecurityDepositRepository) private securityDepositRepo: CustomerSecurityDepositRepository,
     @repository(StoreRepository) private storeRepo: StoreRepository,
     @repository(ClusterRepository) private clusterRepo: ClusterRepository,
     @repository(ClusterPriceListRepository) private clusterPriceListRepo: ClusterPriceListRepository,
@@ -477,6 +479,52 @@ export class OrderService {
     return {discountAmount: 0, discountType: 'none'};
   }
 
+  // ─── On-Account Credit Status ───────────────────────────────────────────
+  // The customer's security deposit doubles as their on-account credit limit
+  // (no separate creditLimit field) — "used" is computed live as the sum of
+  // totalAmount across every order that isn't yet fully paid off, rather than
+  // stored, so it can never drift out of sync with real payment/order state.
+
+  async computeOnAccountCreditStatus(
+    customerId: string,
+  ): Promise<{limit: number; used: number; remaining: number}> {
+    const deposit = await this.securityDepositRepo.findOne({
+      where: {customerId, isDeleted: false} as any,
+    });
+    const limit = roundRupee(deposit?.availableBalance ?? 0);
+
+    const orders = await this.orderRepo.find({
+      where: {
+        customerId,
+        isDeleted: false,
+        status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED, OrderStatus.RETURNED]},
+      } as any,
+    });
+    if (!orders.length) return {limit, used: 0, remaining: limit};
+
+    const payments = await this.paymentTransactionRepo.find({
+      where: {orderId: {inq: orders.map(o => o.id)}} as any,
+    });
+    const paidByOrder = new Map<string, number>();
+    for (const p of payments) {
+      const amt = (p as any).transactionType === 'refund' ? 0 : Number((p as any).amount ?? 0);
+      const oid = (p as any).orderId;
+      paidByOrder.set(oid, (paidByOrder.get(oid) ?? 0) + amt);
+    }
+
+    // Full order total counts while any balance remains — released only once
+    // the order is fully paid off, not proportionally as payments come in.
+    let used = 0;
+    for (const order of orders) {
+      const paid = paidByOrder.get(order.id) ?? 0;
+      const amountDue = rupeeBalance(order.totalAmount, paid);
+      if (amountDue > 0) used += roundRupee(order.totalAmount);
+    }
+
+    const remaining = Math.max(0, limit - used);
+    return {limit, used, remaining};
+  }
+
   // ─── Create Order ─────────────────────────────────────────────────────────
 
   async createOrder(input: CreateOrderInput, createdBy: string): Promise<object> {
@@ -771,6 +819,21 @@ export class OrderService {
       throw new HttpErrors.BadRequest(
         `Total collected (₹${totalCollected}) exceeds order total (₹${totalAmount}).`,
       );
+    }
+
+    // ── On-account credit-limit gate ──
+    // The security deposit doubles as the credit limit for on-account
+    // customers — checked before the transaction opens, same posture as the
+    // wallet-balance check above.
+    const isOnAccountCustomer =
+      customer.customerEntityType === 'business' || customer.isOnAccountEligible === true;
+    if (isOnAccountCustomer) {
+      const creditStatus = await this.computeOnAccountCreditStatus(input.customerId);
+      if (totalAmount > creditStatus.remaining) {
+        throw new HttpErrors.BadRequest(
+          `On-account credit limit exceeded. Available: ₹${creditStatus.remaining}, Order total: ₹${totalAmount}`,
+        );
+      }
     }
 
     // ── Transaction ──
