@@ -397,6 +397,7 @@ export class GarmentController {
   ): Promise<object> {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    this.assertInspectionEditable(garment);
     await this.garmentRepository.updateById(garmentId, body);
     return {message: 'Garment updated.'};
   }
@@ -491,6 +492,7 @@ export class GarmentController {
   ): Promise<object> {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    this.assertInspectionEditable(garment);
 
     const {v4} = await import('uuid');
     const stain = await this.stainRepository.create({
@@ -535,6 +537,9 @@ export class GarmentController {
   ): Promise<object> {
     const stain = await this.stainRepository.findOne({where: {id: stainId, garmentId, isDeleted: false}});
     if (!stain) throw new HttpErrors.NotFound('Stain not found.');
+    const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    this.assertInspectionEditable(garment);
 
     const {v4} = await import('uuid');
     const image = await this.stainImageRepository.create({id: v4(), garmentStainId: stainId, mediaId: body.mediaId});
@@ -551,6 +556,9 @@ export class GarmentController {
   ): Promise<object> {
     const stain = await this.stainRepository.findById(stainId);
     if (stain.garmentId !== garmentId) throw new HttpErrors.Forbidden('Stain does not belong to this garment.');
+    const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    this.assertInspectionEditable(garment);
     await this.stainRepository.updateById(stainId, {isDeleted: true});
     return {message: 'Stain removed.'};
   }
@@ -586,6 +594,7 @@ export class GarmentController {
   ): Promise<object> {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    this.assertInspectionEditable(garment);
 
     const {v4} = await import('uuid');
     const damage = await this.damageRepository.create({
@@ -630,6 +639,9 @@ export class GarmentController {
   ): Promise<object> {
     const damage = await this.damageRepository.findOne({where: {id: damageId, garmentId, isDeleted: false}});
     if (!damage) throw new HttpErrors.NotFound('Damage not found.');
+    const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    this.assertInspectionEditable(garment);
 
     const {v4} = await import('uuid');
     const image = await this.damageImageRepository.create({id: v4(), garmentDamageId: damageId, mediaId: body.mediaId});
@@ -646,6 +658,9 @@ export class GarmentController {
   ): Promise<object> {
     const damage = await this.damageRepository.findById(damageId);
     if (damage.garmentId !== garmentId) throw new HttpErrors.Forbidden('Damage does not belong to this garment.');
+    const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    this.assertInspectionEditable(garment);
     await this.damageRepository.updateById(damageId, {isDeleted: true});
     return {message: 'Damage removed.'};
   }
@@ -677,6 +692,7 @@ export class GarmentController {
   ): Promise<object> {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    this.assertInspectionEditable(garment);
     const image = await this.imageRepository.create({garmentId, ...body});
     return {message: 'Image attached.', image};
   }
@@ -691,11 +707,32 @@ export class GarmentController {
   ): Promise<object> {
     const image = await this.imageRepository.findById(imageId);
     if (image.garmentId !== garmentId) throw new HttpErrors.Forbidden('Image does not belong to this garment.');
+    const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    this.assertInspectionEditable(garment);
     await this.imageRepository.deleteById(imageId);
     return {message: 'Image removed.'};
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Inspection data (brand/color/stains/damages/photos) stays editable
+   * through quality_check — the last checkpoint before a garment is ready
+   * for dispatch. Locked once it moves past that, and once returned to the
+   * customer regardless of rank (on_hold, rank -1, stays editable — it's a
+   * pause mid-pipeline, not a completed stage).
+   */
+  private assertInspectionEditable(garment: {status?: string}): void {
+    const status = garment.status as GarmentStatus;
+    const pastQualityCheck =
+      GARMENT_STATUS_RANK[status] > GARMENT_STATUS_RANK[GarmentStatus.QUALITY_CHECK];
+    if (status === GarmentStatus.RETURNED_TO_CUSTOMER || pastQualityCheck) {
+      throw new HttpErrors.BadRequest(
+        `Inspection data cannot be edited once a garment is '${status}'.`,
+      );
+    }
+  }
 
   // ─── Order status auto-sync ───────────────────────────────────────────────
 
