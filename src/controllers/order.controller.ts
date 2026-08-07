@@ -183,6 +183,19 @@ export class OrderController {
     });
   }
 
+  // The customer's security deposit doubles as their on-account credit limit
+  // — read-only preview of the same computation createOrder() gates on, so
+  // the frontend can warn before submitting without duplicating the logic.
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
+  @get('/orders/on-account-credit/{customerId}')
+  @response(200, {description: 'On-account credit limit/used/remaining for a customer'})
+  async onAccountCreditStatus(
+    @param.path.string('customerId') customerId: string,
+  ): Promise<object> {
+    return this.orderService.computeOnAccountCreditStatus(customerId);
+  }
+
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}')
