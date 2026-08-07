@@ -65,6 +65,20 @@ export class OrderItem extends Entity {
   })
   additionalServiceIds?: string[];
 
+  // Bridges pricing time (createOrder, before garments necessarily exist)
+  // to garment-creation time (which may happen later, e.g. autoCreateGarments
+  // for non-store-dropoff orders). One entry per unit — index = unit
+  // position within this line — each an array of {serviceId, amount} for
+  // that specific unit's selected additional services. Written once at
+  // creation, read once per unit when that unit's garment is actually
+  // created (persisted onto GarmentAdditionalService), never updated after.
+  @property({
+    type: 'array',
+    itemType: 'object',
+    postgresql: {dataType: 'jsonb'},
+  })
+  pendingUnitAdditionalServices?: Array<Array<{serviceId: string; amount: number}>>;
+
   // Reject-at-intake: the customer brought this piece but it was declined at the
   // counter — recorded so the order shows it came in, priced at ₹0, and never
   // given a garment or put through processing. No approval flow.

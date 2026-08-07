@@ -32,6 +32,7 @@ import {
   ItemRepository,
   ServiceRepository,
   UsersRepository,
+  GarmentAdditionalServiceRepository,
   GarmentDamageImageRepository,
   GarmentDamageRepository,
   GarmentImageRepository,
@@ -86,6 +87,7 @@ export interface UnitInspectionInput {
   length?: number;
   width?: number;
   additionalChargeIds?: string[];   // add-ons + requirements for this specific unit
+  additionalServiceIds?: string[];  // Service-catalog add-ons for this specific unit (e.g. hand-wash) — overrides the item's line-level additionalServiceIds when present
   stainMarks?: UnitStainMarkInput[];
   damageMarks?: UnitDamageMarkInput[];
   itemPhotoMediaIds?: string[];     // already-uploaded Media record IDs
@@ -176,6 +178,7 @@ export class OrderService {
     @repository(ServiceItemMappingRepository) private serviceItemMappingRepo: ServiceItemMappingRepository,
     @repository(AdditionalChargeMasterRepository) private additionalChargeRepo: AdditionalChargeMasterRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(GarmentAdditionalServiceRepository) private garmentAdditionalServiceRepo: GarmentAdditionalServiceRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
     @repository(GarmentStainRepository) private garmentStainRepo: GarmentStainRepository,
     @repository(GarmentStainImageRepository) private garmentStainImageRepo: GarmentStainImageRepository,
@@ -242,6 +245,32 @@ export class OrderService {
           {transaction: tx},
         );
       }
+    }
+  }
+
+  /**
+   * Persists the additional services resolved for one specific unit onto its
+   * now-created garment. Reads OrderItem.pendingUnitAdditionalServices — the
+   * bridge written at pricing time (createOrder) — indexed by the unit's
+   * true position within the line (not just its index within this creation
+   * batch, since garments for a line can be created across multiple calls).
+   * Called from both garment-creation sites: the store-dropoff immediate
+   * path (inside createOrder()'s transaction) and autoCreateGarments (no
+   * transaction — called later, outside order creation).
+   */
+  private async createUnitAdditionalServices(
+    garmentId: string,
+    orderItem: {pendingUnitAdditionalServices?: Array<Array<{serviceId: string; amount: number}>>},
+    unitIndex: number,
+    v4: () => string,
+    tx?: any,
+  ): Promise<void> {
+    const services = orderItem.pendingUnitAdditionalServices?.[unitIndex] ?? [];
+    for (const {serviceId, amount} of services) {
+      await this.garmentAdditionalServiceRepo.create(
+        {id: v4(), garmentId, serviceId, amount},
+        tx ? {transaction: tx} : undefined,
+      );
     }
   }
 
@@ -617,6 +646,7 @@ export class OrderService {
       rejectionReason?: string;
       rejectionRemarks?: string;
       units?: UnitInspectionInput[];
+      pendingUnitAdditionalServices?: Array<Array<{serviceId: string; amount: number}>>;
     }> = [];
 
     // Reject-at-intake splits a line: units the counter declined become a
@@ -668,44 +698,62 @@ export class OrderService {
     for (const item of workingItems) {
       const pricing = await this.resolvePricing(input.storeId, item.serviceId, item.itemId);
 
-      // Resolve price + TAT for each additional service (sequential — prices and days both sum up)
-      let additionalServicesUnitPrice = 0;
-      let additionalServicesDays = 0;
-      for (const addlServiceId of item.additionalServiceIds ?? []) {
-        const addlPricing = await this.resolvePricing(input.storeId, addlServiceId, item.itemId, {
-          additional: true,
-        });
-        additionalServicesUnitPrice += addlPricing.resolvedPrice;
-        additionalServicesDays += addlPricing.estimatedDurationInDays ?? 0;
-      }
-
       // A rejected line is recorded but never billed — everything payable is 0,
       // so it falls out of every subtotal while still appearing on documents.
       const rejected = Boolean(item.rejectedAtIntake);
 
+      const units = item.units ?? [];
+
+      // Per-unit additional-service selection: a unit's own selection wins;
+      // falls back to the line-level list so single-quantity lines (and any
+      // caller not yet sending per-unit data) price exactly as before —
+      // only a genuinely non-uniform selection changes the total.
+      const unitServiceIdLists: string[][] = rejected
+        ? []
+        : Array.from({length: item.quantity}, (_, i) => units[i]?.additionalServiceIds ?? item.additionalServiceIds ?? []);
+
+      // Resolve each distinct additional-service id used anywhere on this
+      // line once — same resolvePricing() cost as before when selection is
+      // uniform, avoids redundant lookups when it isn't.
+      const distinctServiceIds = [...new Set(unitServiceIdLists.flat())];
+      const resolvedServicePrices = new Map<string, {resolvedPrice: number; estimatedDurationInDays: number}>();
+      for (const addlServiceId of distinctServiceIds) {
+        const addlPricing = await this.resolvePricing(input.storeId, addlServiceId, item.itemId, {
+          additional: true,
+        });
+        resolvedServicePrices.set(addlServiceId, {
+          resolvedPrice: addlPricing.resolvedPrice,
+          estimatedDurationInDays: addlPricing.estimatedDurationInDays ?? 0,
+        });
+      }
+      // TAT stays line-level and conservative (sum of every distinct extra
+      // service used anywhere on the line) — unchanged from before, not
+      // something that needs to become per-unit.
+      const additionalServicesDays = distinctServiceIds.reduce(
+        (sum, id) => sum + (resolvedServicePrices.get(id)?.estimatedDurationInDays ?? 0),
+        0,
+      );
+
+      // Base per-piece price (garment + service, delivery-multiplied, no
+      // additional services) — kept as a display reference. totalPrice below
+      // is the authoritative amount once per-unit selection isn't uniform.
       const unitPrice = rejected
         ? 0
-        : parseFloat(
-            ((pricing.resolvedPrice + additionalServicesUnitPrice) * deliveryMultiplier).toFixed(2),
-          );
+        : parseFloat((pricing.resolvedPrice * deliveryMultiplier).toFixed(2));
 
       // Measurement items (e.g. curtains) are billed per square metre: each
-      // unit's contribution is unitPrice × its own area (length × width), not
-      // a flat per-piece price — so the line total sums per-unit amounts
-      // instead of multiplying by quantity. Every accepted unit must carry
-      // both a length and a width.
+      // unit's contribution is its own price × its own area (length ×
+      // width). Every accepted unit must carry both a length and a width.
       const catalogItem = rejected ? null : await this.itemRepo.findById(item.itemId);
       const isMeasurement = Boolean(catalogItem?.isMeasurement);
 
-      let totalPrice: number;
+      const unitAreas: number[] = [];
       if (!rejected && isMeasurement) {
-        const units = item.units ?? [];
         if (units.length < item.quantity) {
           throw new HttpErrors.BadRequest(
             `Length and width are required for every unit of a measurement item (itemId: ${item.itemId}).`,
           );
         }
-        let areaTotal = 0;
         for (const unit of units) {
           const length = Number(unit?.length);
           const width = Number(unit?.width);
@@ -714,12 +762,22 @@ export class OrderService {
               `Each unit of a measurement item (itemId: ${item.itemId}) needs a length and width greater than 0.`,
             );
           }
-          areaTotal += length * width;
+          unitAreas.push(length * width);
         }
-        totalPrice = parseFloat((unitPrice * areaTotal).toFixed(2));
-      } else {
-        totalPrice = parseFloat((unitPrice * item.quantity).toFixed(2));
       }
+
+      // Sum each unit's own (base + its own additional services) — equals
+      // unitPrice × quantity (or × areaTotal) exactly when selection is
+      // uniform across the line, same as the previous single-multiply formula.
+      const perUnitTotalPrices = unitServiceIdLists.map((ids, i) => {
+        const addlAmount = ids.reduce((sum, id) => sum + (resolvedServicePrices.get(id)?.resolvedPrice ?? 0), 0);
+        const perUnitPrice = parseFloat(((pricing.resolvedPrice + addlAmount) * deliveryMultiplier).toFixed(2));
+        return isMeasurement ? perUnitPrice * (unitAreas[i] ?? 0) : perUnitPrice;
+      });
+      const totalPrice = rejected
+        ? 0
+        : parseFloat(perUnitTotalPrices.reduce((sum, p) => sum + p, 0).toFixed(2));
+
       // A declined piece needs no turnaround — it is not being processed.
       const estimatedDurationInDays = rejected
         ? null
@@ -736,6 +794,12 @@ export class OrderService {
         }
       }
 
+      // Bridges to garment-creation time (see OrderItem.pendingUnitAdditionalServices) —
+      // one entry per unit, each the resolved {serviceId, amount} pairs for that unit.
+      const pendingUnitAdditionalServices = unitServiceIdLists.map(ids =>
+        ids.map(id => ({serviceId: id, amount: resolvedServicePrices.get(id)?.resolvedPrice ?? 0})),
+      );
+
       itemPricings.push({
         ...item,
         basePrice: rejected ? 0 : pricing.basePrice,
@@ -746,6 +810,7 @@ export class OrderService {
         totalPrice,
         estimatedDurationInDays,
         additionalChargesTotal,
+        pendingUnitAdditionalServices,
       });
     }
 
@@ -895,6 +960,7 @@ export class OrderService {
             specialInstructionMediaIds: item.specialInstructionMediaIds,
             remarks: item.remarks,
             additionalServiceIds: item.additionalServiceIds,
+            pendingUnitAdditionalServices: item.pendingUnitAdditionalServices,
             rejectedAtIntake: item.rejectedAtIntake ?? false,
             rejectionReason: item.rejectionReason,
             rejectionRemarks: item.rejectionRemarks,
@@ -993,6 +1059,7 @@ export class OrderService {
             if (unitInspection) {
               await this.saveGarmentInspection(garment.id, unitInspection, tx, v4);
             }
+            await this.createUnitAdditionalServices(garment.id, orderItem, unitIdx, v4, tx);
 
             createdGarments.push(garment);
           }
@@ -2067,6 +2134,12 @@ export class OrderService {
           changedBy,
           remarks: 'Auto-created on order receive',
         });
+
+        // existing.count + i is this garment's true position among the
+        // line's units — garments for one line can be created across
+        // multiple calls (e.g. quantity increased later), so it isn't
+        // always the same as the loop-local index i.
+        await this.createUnitAdditionalServices(garment.id, item, existing.count + i, v4);
 
         created.push(garment);
       }

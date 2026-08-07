@@ -76,6 +76,7 @@ export * from './garment-damage.model';
 export * from './garment-damage-image.model';
 export * from './garment-stain.model';
 export * from './garment-stain-image.model';
+export * from './garment-additional-service.model';
 export * from './garment-image.model';
 export * from './garment-status-history.model';
 export * from './payment-transaction.model';
