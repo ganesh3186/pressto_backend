@@ -134,6 +134,11 @@ export interface CreateOrderInput {
   payments?: OrderPaymentInput[];
   walletAmount?: number;
   orderLabelIds?: string[];
+  // Whether THIS order is being paid on account — drives the credit-limit
+  // gate below. Distinct from the customer's general on-account eligibility:
+  // an eligible customer paying cash/UPI/card/wallet for this particular
+  // order should never be blocked by it.
+  paymentIsOnAccount?: boolean;
 }
 
 // The final order/invoice/challan total is always a whole rupee (≥ .5 rounds up).
@@ -889,10 +894,12 @@ export class OrderService {
     // ── On-account credit-limit gate ──
     // The security deposit doubles as the credit limit for on-account
     // customers — checked before the transaction opens, same posture as the
-    // wallet-balance check above.
+    // wallet-balance check above. Only applies when THIS order is actually
+    // being paid on account — an eligible customer paying cash/UPI/card/
+    // wallet for this particular order must never be blocked by it.
     const isOnAccountCustomer =
       customer.customerEntityType === 'business' || customer.isOnAccountEligible === true;
-    if (isOnAccountCustomer) {
+    if (isOnAccountCustomer && input.paymentIsOnAccount) {
       const creditStatus = await this.computeOnAccountCreditStatus(input.customerId);
       if (totalAmount > creditStatus.remaining) {
         throw new HttpErrors.BadRequest(
