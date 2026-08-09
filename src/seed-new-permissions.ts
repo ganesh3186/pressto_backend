@@ -37,6 +37,9 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'customer_phone:read',   description: 'View customer phone numbers'},
   {permission: 'customer_phone:update', description: 'Update a customer phone number'},
   {permission: 'customer_phone:delete', description: 'Delete a customer phone number'},
+  // Finance Approvals screen UI-gate (approval:create/read/update already
+  // exist — this is just the new nav/route visibility key for that screen)
+  {permission: 'finance_approval:read', description: 'View the Finance Approvals screen'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -67,7 +70,16 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
     ],
   },
   {roleValue: 'asm', permissions: ['customer_address:read', 'customer_phone:read']},
-  {roleValue: 'finance', permissions: ['customer_address:read', 'customer_phone:read']},
+  {
+    roleValue: 'finance',
+    permissions: [
+      'customer_address:read', 'customer_phone:read',
+      // Finance Approvals screen: cheque/PDC payment approvals (via the
+      // generic ApprovalRequest system) and credit-note approvals (which
+      // finance already reaches via order:update, granted in seed.ts).
+      'approval:create', 'approval:read', 'approval:update', 'finance_approval:read',
+    ],
+  },
 ];
 
 export async function seedNewPermissions() {
