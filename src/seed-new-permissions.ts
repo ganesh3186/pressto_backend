@@ -40,6 +40,18 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   // Finance Approvals screen UI-gate (approval:create/read/update already
   // exist — this is just the new nav/route visibility key for that screen)
   {permission: 'finance_approval:read', description: 'View the Finance Approvals screen'},
+  // Pickup Request (see PickupRequestController) — Manual Assign's pickup
+  // side. order:update (already granted) covers the separate delivery-
+  // assignment endpoints on Order, so no new order-scoped permission here.
+  {permission: 'pickup_request:create', description: 'Create a pickup request'},
+  {permission: 'pickup_request:read',   description: 'View pickup requests'},
+  {permission: 'pickup_request:update', description: 'Update / assign / transition a pickup request'},
+  {permission: 'pickup_request:delete', description: 'Delete a pickup request'},
+  // Rider Pincode Mapping (see RiderPincodeMappingController)
+  {permission: 'rider_pincode_mapping:create', description: 'Map a pincode to a rider'},
+  {permission: 'rider_pincode_mapping:read',   description: 'View rider pincode mappings'},
+  {permission: 'rider_pincode_mapping:update', description: 'Update a rider pincode mapping'},
+  {permission: 'rider_pincode_mapping:delete', description: 'Delete a rider pincode mapping'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -53,6 +65,13 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
     permissions: [
       'customer_address:create', 'customer_address:read', 'customer_address:update', 'customer_address:delete',
       'customer_phone:create', 'customer_phone:read', 'customer_phone:update', 'customer_phone:delete',
+      // Pickup Request: managers run the day-to-day front-desk/call-center
+      // intake + rider assignment, and can also remove a mistaken entry.
+      'pickup_request:create', 'pickup_request:read', 'pickup_request:update', 'pickup_request:delete',
+      // Rider Pincode Mapping: dispatch-config, not a daily front-desk task —
+      // managers get full control.
+      'rider_pincode_mapping:create', 'rider_pincode_mapping:read',
+      'rider_pincode_mapping:update', 'rider_pincode_mapping:delete',
     ],
   },
   {
@@ -60,6 +79,11 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
     permissions: [
       'customer_address:create', 'customer_address:read', 'customer_address:update',
       'customer_phone:create', 'customer_phone:read', 'customer_phone:update',
+      // Pickup Request: front-desk logs intake and assigns riders, but
+      // deletion is reserved for a manager.
+      'pickup_request:create', 'pickup_request:read', 'pickup_request:update',
+      // Read-only visibility into which rider covers which pincode.
+      'rider_pincode_mapping:read',
     ],
   },
   {

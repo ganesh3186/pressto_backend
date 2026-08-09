@@ -1,5 +1,6 @@
 import {Entity, hasMany, model, property} from '@loopback/repository';
 import {DeliveryType} from './delivery-type.enum';
+import {OrderDeliveryMethod} from './order-delivery-method.enum';
 import {OrderLabel} from './order-label.model';
 import {OrderLabelAssignment} from './order-label-assignment.model';
 import {OrderStatus} from './order-status.enum';
@@ -107,6 +108,34 @@ export class Order extends Entity {
 
   @property({type: 'string', postgresql: {dataType: 'text'}})
   remarks?: string;
+
+  // ── Delivery assignment (home_delivery leg only — see OrderDeliveryMethod's
+  // doc comment for why this is never confused with a PickupRequest) ──
+  // Not a @belongsTo, matching customerId/storeId's existing plain-uuid style
+  // on this model.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  assignedRiderId?: string;
+
+  // Denormalized display snapshot — avoids a join for list views.
+  @property({type: 'string'})
+  assignedRiderName?: string;
+
+  @property({type: 'string', jsonSchema: {enum: Object.values(OrderDeliveryMethod)}})
+  deliveryMethod?: OrderDeliveryMethod;
+
+  // Free string — no slot master exists anywhere in this codebase yet.
+  @property({type: 'string'})
+  deliverySlot?: string;
+
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  deliveryAddressId?: string;
+
+  // Frozen text snapshot of the address at assignment time, resolved from
+  // CustomerAddress — so a later address edit/delete never rewrites order
+  // history, same principle as OrderItemAdditionalCharge.amount being
+  // frozen at creation.
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  deliveryAddress?: string;
 
   @property({type: 'boolean', default: false})
   isDeleted?: boolean;

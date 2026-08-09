@@ -20,11 +20,14 @@ import {OrderType} from '../models/order-type.enum';
 import {ContactRelationship} from '../models/contact-relationship.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
 import {
+  CustomerAddressRepository,
   OrderLabelAssignmentRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
+  RiderRepository,
 } from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
+import {OrderDeliveryMethod} from '../models/order-delivery-method.enum';
 import {
   REPROCESS_REASON_LABELS,
   ReprocessReason,
@@ -78,6 +81,10 @@ export class OrderController {
     private reprocessService: ReprocessService,
     @inject('services.approval')
     private approvalService: ApprovalService,
+    @repository(RiderRepository)
+    private riderRepository: RiderRepository,
+    @repository(CustomerAddressRepository)
+    private customerAddressRepository: CustomerAddressRepository,
   ) {}
 
   // Cheque/PDC legs never got a PaymentTransaction (see order.service.ts's
@@ -268,6 +275,18 @@ export class OrderController {
                   'Replaces the order\'s labels wholesale. Omit to leave labels ' +
                   'untouched; send [] to clear all of them.',
               },
+              assignedRiderId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'Rider assigned for home delivery of this order.',
+              },
+              deliveryMethod: {type: 'string', enum: Object.values(OrderDeliveryMethod)},
+              deliverySlot: {type: 'string'},
+              deliveryAddressId: {
+                type: 'string',
+                format: 'uuid',
+                description: "Resolved into a frozen deliveryAddress text snapshot on save.",
+              },
             },
           },
         },
@@ -279,6 +298,10 @@ export class OrderController {
       specialInstructionMediaIds?: string[];
       remarks?: string;
       orderLabelIds?: string[];
+      assignedRiderId?: string;
+      deliveryMethod?: OrderDeliveryMethod;
+      deliverySlot?: string;
+      deliveryAddressId?: string;
     },
   ): Promise<object> {
     const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
@@ -291,7 +314,39 @@ export class OrderController {
       throw new HttpErrors.BadRequest('Cannot update a delivered, cancelled, or returned order.');
     }
 
-    const {orderLabelIds, ...orderFields} = body;
+    const {orderLabelIds, assignedRiderId, deliveryAddressId, ...orderFields} = body;
+
+    if (assignedRiderId !== undefined) {
+      const rider = await this.riderRepository.findOne({where: {id: assignedRiderId, isDeleted: false}});
+      if (!rider) throw new HttpErrors.BadRequest('Assigned rider not found.');
+      if (!rider.isActive) throw new HttpErrors.BadRequest('Assigned rider is inactive.');
+      Object.assign(orderFields, {
+        assignedRiderId,
+        assignedRiderName: `${rider.firstName} ${rider.lastName}`,
+      });
+    }
+
+    if (deliveryAddressId !== undefined) {
+      const address = await this.customerAddressRepository.findOne({
+        where: {id: deliveryAddressId, isDeleted: false} as object,
+      });
+      if (!address) throw new HttpErrors.BadRequest('Delivery address not found.');
+      const snapshot = [
+        address.addressLine1,
+        address.addressLine2,
+        address.doorFloorFlat,
+        address.societyName,
+        address.landmark,
+        address.city,
+        address.state,
+        address.country,
+        address.pincode,
+      ]
+        .filter(Boolean)
+        .join(', ');
+      Object.assign(orderFields, {deliveryAddressId, deliveryAddress: snapshot});
+    }
+
     if (Object.keys(orderFields).length > 0) {
       await this.orderRepository.updateById(id, orderFields);
     }
@@ -306,6 +361,81 @@ export class OrderController {
     }
 
     return {message: 'Order updated.'};
+  }
+
+  // ─── Bulk delivery assignment (Manual Assign — delivery leg) ──────────────
+  // Assigns one rider + slot/date to several orders at once. Does not touch
+  // order.status — dispatch stays a separate, explicit POST /orders/{id}/status
+  // call, so this never invents a parallel status machine alongside the real
+  // READY → OUT_FOR_DELIVERY → DELIVERED transitions.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @post('/orders/delivery-assignment')
+  @response(200, {description: 'Orders assigned to a rider for delivery'})
+  async assignDelivery(
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['orderIds', 'riderId', 'deliverySlot', 'deliveryDate'],
+            properties: {
+              orderIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
+              riderId: {type: 'string', format: 'uuid'},
+              deliverySlot: {type: 'string'},
+              deliveryDate: {type: 'string', format: 'date-time'},
+              remarks: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {
+      orderIds: string[];
+      riderId: string;
+      deliverySlot: string;
+      deliveryDate: string;
+      remarks?: string;
+    },
+  ): Promise<object> {
+    const rider = await this.riderRepository.findOne({where: {id: body.riderId, isDeleted: false}});
+    if (!rider) throw new HttpErrors.NotFound('Rider not found.');
+    if (!rider.isActive) throw new HttpErrors.BadRequest('This rider is inactive.');
+
+    const orders = await this.orderRepository.find({
+      where: {id: {inq: body.orderIds}, isDeleted: false} as object,
+    });
+    if (orders.length !== body.orderIds.length) {
+      throw new HttpErrors.NotFound('One or more orders were not found.');
+    }
+    const notDeliverable = orders.filter(
+      o => o.status !== OrderStatus.READY && o.status !== OrderStatus.PARTIALLY_DISPATCHED,
+    );
+    if (notDeliverable.length) {
+      throw new HttpErrors.BadRequest(
+        `Order(s) with status ${notDeliverable.map(o => o.status).join(', ')} are not ready for delivery assignment.`,
+      );
+    }
+    // Prevents accidentally batching cross-store orders into one rider run —
+    // Rider has no storeId relation today, so this is the closest available check.
+    const storeIds = new Set(orders.map(o => o.storeId));
+    if (storeIds.size > 1) {
+      throw new HttpErrors.BadRequest('All orders in one assignment must belong to the same store.');
+    }
+
+    const assignedRiderName = `${rider.firstName} ${rider.lastName}`;
+    for (const order of orders) {
+      await this.orderRepository.updateById(order.id, {
+        assignedRiderId: body.riderId,
+        assignedRiderName,
+        deliverySlot: body.deliverySlot,
+        deliveryDate: new Date(body.deliveryDate),
+        ...(body.remarks ? {remarks: body.remarks} : {}),
+      });
+    }
+
+    return {message: 'Orders assigned for delivery.', assignedCount: orders.length};
   }
 
   // ─── Change Status ────────────────────────────────────────────────────────

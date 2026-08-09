@@ -2,28 +2,35 @@ import {authenticate} from '@loopback/authentication';
 import {repository} from '@loopback/repository';
 import {get, response} from '@loopback/rest';
 import {authorize} from '../authorization';
+import {OrderStatus} from '../models/order-status.enum';
+import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {RiderRosterType} from '../models/rider-roster-type.enum';
 import {
+  OrderRepository,
+  PickupRequestRepository,
   RiderAttendanceRepository,
   RiderRepository,
   RiderRosterRepository,
   UsersRepository,
 } from '../repositories';
 
-// Derived availability states. `on-delivery` is intentionally absent: it depends
-// on order↔rider assignment (Manual Assign), which is not built yet. Until then
-// a busy rider simply reads `available`; the state slots in later with no change
-// to this shape.
-type AvailabilityStatus = 'available' | 'on-break' | 'off-duty';
+// Derived availability states. `on-delivery` covers BOTH an active pickup run
+// (rider_assigned/out_for_pickup on a PickupRequest) and an active delivery
+// leg (an Order assigned to this rider, queued or already out for delivery) —
+// one shared value, not split, since the caller already knows which screen
+// it's looking from; the practical question this endpoint answers is just
+// "is this rider free to hand a new job to right now."
+type AvailabilityStatus = 'available' | 'on-break' | 'off-duty' | 'on-delivery';
 
 /**
  * Rider availability — a live, read-only dashboard of each rider's current
  * status, computed (not stored) from attendance + today's roster:
  *
- *   on leave / week-off now   → off-duty   (scheduled off, wins over everything)
- *   punched in + on break now → on-break
- *   punched in, otherwise     → available
- *   not punched in            → off-duty
+ *   on leave / week-off now      → off-duty   (scheduled off, wins over everything)
+ *   punched in + on break now   → on-break
+ *   punched in + active pickup/delivery run → on-delivery
+ *   punched in, otherwise       → available
+ *   not punched in              → off-duty
  *
  * Everything reflects real system state — nothing is self-reported.
  */
@@ -37,6 +44,10 @@ export class RiderAvailabilityController {
     private attendanceRepository: RiderAttendanceRepository,
     @repository(RiderRosterRepository)
     private rosterRepository: RiderRosterRepository,
+    @repository(PickupRequestRepository)
+    private pickupRequestRepository: PickupRequestRepository,
+    @repository(OrderRepository)
+    private orderRepository: OrderRepository,
   ) {}
 
   private edgeAt(date: string, time: string | undefined, fallback: string): number {
@@ -62,7 +73,7 @@ export class RiderAvailabilityController {
     const userIds = [...new Set(riders.map(r => r.userId).filter(Boolean))];
 
     // Batched — no per-rider queries.
-    const [users, openSessions, todaysRosters] = await Promise.all([
+    const [users, openSessions, todaysRosters, activePickups, activeDeliveryOrders] = await Promise.all([
       userIds.length
         ? this.usersRepository.find({
             where: {id: {inq: userIds}} as object,
@@ -82,10 +93,33 @@ export class RiderAvailabilityController {
           endDate: {gte: today},
         } as object,
       }),
+      // Active pickup runs — rider has been handed the job but not yet back at the store.
+      this.pickupRequestRepository.find({
+        where: {
+          assignedRiderId: {inq: riderIds},
+          isDeleted: false,
+          status: {inq: [PickupRequestStatus.RIDER_ASSIGNED, PickupRequestStatus.OUT_FOR_PICKUP]},
+        } as object,
+        fields: {id: true, assignedRiderId: true} as object,
+      }),
+      // Active delivery legs — queued (READY/PARTIALLY_DISPATCHED with a rider
+      // already on it) or already out the door.
+      this.orderRepository.find({
+        where: {
+          assignedRiderId: {inq: riderIds},
+          isDeleted: false,
+          status: {inq: [OrderStatus.READY, OrderStatus.PARTIALLY_DISPATCHED, OrderStatus.OUT_FOR_DELIVERY]},
+        } as object,
+        fields: {id: true, assignedRiderId: true} as object,
+      }),
     ]);
 
     const userById = new Map(users.map(u => [u.id, u]));
     const openByRider = new Map(openSessions.map(s => [s.riderId, s]));
+    const busyRiderIds = new Set<string>([
+      ...activePickups.map(p => p.assignedRiderId).filter((id): id is string => Boolean(id)),
+      ...activeDeliveryOrders.map(o => o.assignedRiderId).filter((id): id is string => Boolean(id)),
+    ]);
 
     // Governing roster entry per rider, if one is active right this moment.
     const rosterByRider = new Map<string, (typeof todaysRosters)[number]>();
@@ -122,6 +156,9 @@ export class RiderAvailabilityController {
       } else if (openSession && onBreak) {
         status = 'on-break';
         lastUpdatedAt = roster?.updatedAt ?? openSession.punchInAt ?? null;
+      } else if (openSession && busyRiderIds.has(rider.id)) {
+        status = 'on-delivery';
+        lastUpdatedAt = openSession.punchInAt ?? null;
       } else if (openSession) {
         status = 'available';
         lastUpdatedAt = openSession.punchInAt ?? null;
