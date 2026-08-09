@@ -99,6 +99,7 @@ interface RevertSnapshot {
   invoice?: {id: string; subtotal?: number; totalAmount?: number; balanceDue?: number; items?: unknown[]};
   challan?: {id: string; subtotal?: number; totalAmount?: number; items?: unknown[]};
   refundedToWallet?: number;
+  chequePaymentTransactionId?: string;
 }
 
 @injectable({scope: BindingScope.TRANSIENT})
@@ -260,6 +261,17 @@ export class ApprovalService {
       return;
     }
 
+    // Cheque/PDC payments are raised against the ORDER (no garment involved,
+    // and no PaymentTransaction exists yet — see order.service.ts's
+    // pendingApprovalPayments). Handled before the garment guard below.
+    if (
+      request.entityType === 'order' &&
+      (request.type === ApprovalRequestType.CHEQUE_PAYMENT || request.type === ApprovalRequestType.PDC_PAYMENT)
+    ) {
+      await this._applyChequePdcApproveEffect(request, performedBy);
+      return;
+    }
+
     if (request.entityType !== 'garment') return;
 
     const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
@@ -298,6 +310,45 @@ export class ApprovalService {
     if (request.type === ApprovalRequestType.PROCESS_AT_RISK) {
       await this._resumeGarmentFromHold(request.entityId, performedBy, 'Customer approved processing at risk');
     }
+  }
+
+  // ─── Cheque/PDC: turn the pending leg into a real payment ─────────────────
+  // The amount was never collected at submission time (see
+  // order.service.ts's pendingApprovalPayments) — approving is the moment it
+  // actually becomes money in hand. Reused via the real addPayment() rather
+  // than a duplicate PaymentTransaction construction, since addPayment()
+  // already has the balance-due guard, the transaction wrapper, and wallet-
+  // combination logic. A stale amount (e.g. balance shrank while pending,
+  // such as a credit note landing first) throws a clean 400 from addPayment()
+  // rather than silently short/over-paying — let it propagate.
+  private async _applyChequePdcApproveEffect(request: ApprovalRequest, performedBy: string): Promise<void> {
+    const meta = (request.metadata ?? {}) as {
+      amount?: number;
+      paymentMode?: PaymentMode;
+      transactionReference?: string;
+    };
+    const result = (await this.orderService.addPayment(
+      request.entityId,
+      {
+        paymentMode: meta.paymentMode as PaymentMode,
+        amount: Number(meta.amount) || 0,
+        transactionReference: meta.transactionReference,
+      },
+      0,
+      performedBy,
+    )) as {payment?: {id: string}};
+
+    await this._mergeIntoSnapshot(request.id, {chequePaymentTransactionId: result.payment?.id});
+
+    await this.auditService.log({
+      entityType: 'order',
+      entityId: request.entityId,
+      actionType: `${request.type}_approved`,
+      performedBy,
+      before: {},
+      after: {amount: meta.amount, paymentMode: meta.paymentMode, transactionReference: meta.transactionReference},
+      remarks: `${meta.paymentMode} payment of ₹${meta.amount} approved via approval ${request.id}`,
+    });
   }
 
   // ─── Return: reduce billing for the returned garment + refund to wallet ─────
@@ -570,6 +621,17 @@ export class ApprovalService {
     performedBy: string,
     action: ApprovalActionType,
   ): Promise<void> {
+    // Cheque/PDC rejected: nothing was ever collected (no PaymentTransaction
+    // exists — see order.service.ts's pendingApprovalPayments), so the
+    // order's balance due already reflects the rejection with no further
+    // action needed.
+    if (
+      request.entityType === 'order' &&
+      (request.type === ApprovalRequestType.CHEQUE_PAYMENT || request.type === ApprovalRequestType.PDC_PAYMENT)
+    ) {
+      return;
+    }
+
     if (request.entityType !== 'garment') return;
 
     // Declined + return: the customer wants the piece back unprocessed. Same
@@ -759,6 +821,28 @@ export class ApprovalService {
       notes.push(
         'No pre-resolve snapshot was recorded for this request, so pricing and billing were left untouched. Check the order totals manually.',
       );
+    }
+
+    // Reverting an approved cheque/PDC decision — the PaymentTransaction it
+    // created is the only record of that leg (no wallet touch, no other row
+    // depends on it), so deleting it outright is simpler than manufacturing a
+    // compensating entry for a cheque that never actually cleared.
+    if (
+      previousStatus === ApprovalRequestStatus.APPROVED &&
+      request.entityType === 'order' &&
+      (request.type === ApprovalRequestType.CHEQUE_PAYMENT || request.type === ApprovalRequestType.PDC_PAYMENT)
+    ) {
+      const txnId = snapshot?.chequePaymentTransactionId;
+      if (txnId) {
+        await this.paymentRepo.deleteById(txnId);
+        notes.push(
+          `${request.type === ApprovalRequestType.CHEQUE_PAYMENT ? 'Cheque' : 'PDC'} payment transaction reversed — order balance due restored.`,
+        );
+      } else {
+        notes.push(
+          'Could not locate the payment transaction created by this approval to reverse — check the order\'s payment history manually.',
+        );
+      }
     }
 
     if (snapshot?.refundedToWallet) {

@@ -33,6 +33,8 @@ import {
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
 import {ReprocessService} from '../services/reprocess.service';
 import {StoreScopeService} from '../services/store-scope.service';
+import {ApprovalService} from '../services/approval.service';
+import {ApprovalRequestType} from '../models/approval-request-type.enum';
 
 const PAYMENT_ITEM_SCHEMA = {
   type: 'object' as const,
@@ -74,7 +76,31 @@ export class OrderController {
     private storeScopeService: StoreScopeService,
     @inject('services.reprocess')
     private reprocessService: ReprocessService,
+    @inject('services.approval')
+    private approvalService: ApprovalService,
   ) {}
+
+  // Cheque/PDC legs never got a PaymentTransaction (see order.service.ts's
+  // pendingApprovalPayments/pendingApproval) — this is what turns each one
+  // into a finance ApprovalRequest, routed to the `finance` role via the
+  // existing APPROVAL_ROLE_ROUTING table.
+  private async _createPendingPaymentApprovalRequest(
+    orderId: string,
+    leg: {amount: number; paymentMode: PaymentMode; transactionReference?: string},
+    requestedBy: string,
+  ) {
+    return this.approvalService.createRequest({
+      type: leg.paymentMode === PaymentMode.CHEQUE ? ApprovalRequestType.CHEQUE_PAYMENT : ApprovalRequestType.PDC_PAYMENT,
+      entityType: 'order',
+      entityId: orderId,
+      requestedBy,
+      metadata: {
+        amount: leg.amount,
+        paymentMode: leg.paymentMode,
+        transactionReference: leg.transactionReference,
+      },
+    });
+  }
 
 
   // ─── Create Order ─────────────────────────────────────────────────────────
@@ -134,8 +160,17 @@ export class OrderController {
     body: CreateOrderInput,
   ): Promise<object> {
     const createdBy = currentUser[securityId];
-    const result = await this.orderService.createOrder(body, createdBy);
-    return {message: 'Order created successfully.', ...result};
+    const result = (await this.orderService.createOrder(body, createdBy)) as {
+      order: {id: string};
+      pendingApprovalPayments: Array<{amount: number; paymentMode: PaymentMode; transactionReference?: string}>;
+    };
+    const approvalRequests = [];
+    for (const leg of result.pendingApprovalPayments ?? []) {
+      approvalRequests.push(
+        await this._createPendingPaymentApprovalRequest(result.order.id, leg, createdBy),
+      );
+    }
+    return {message: 'Order created successfully.', ...result, approvalRequests};
   }
 
   // ─── List Orders ─────────────────────────────────────────────────────────
@@ -553,12 +588,18 @@ export class OrderController {
     if (!body.payment && !body.walletAmount) {
       throw new HttpErrors.BadRequest('Provide at least one of payment or walletAmount.');
     }
-    return this.orderService.addPayment(
+    const result = (await this.orderService.addPayment(
       id,
       body.payment!,
       Number(body.walletAmount ?? 0),
       currentUser[securityId],
-    );
+    )) as {
+      pendingApproval: {amount: number; paymentMode: PaymentMode; transactionReference?: string} | null;
+    };
+    const approvalRequest = result.pendingApproval
+      ? await this._createPendingPaymentApprovalRequest(id, result.pendingApproval, currentUser[securityId])
+      : null;
+    return {...result, approvalRequest};
   }
 
   // ─── In-store Handover (counter pickup) ────────────────────────────────────

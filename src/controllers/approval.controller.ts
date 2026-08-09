@@ -11,6 +11,7 @@ import {ApprovalRequest} from '../models/approval-request.model';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
 import {
+  CustomerRepository,
   GarmentRepository,
   ItemRepository,
   OrderItemRepository,
@@ -30,6 +31,7 @@ export class ApprovalController {
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
+    @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -97,6 +99,37 @@ export class ApprovalController {
     // mediaIds alone are useless to a client — always expand them to real
     // URLs, even for non-garment requests (payments carry cheque photos).
     const media = await this.approvalService.resolveMedia(req.mediaIds);
+
+    // Cheque/PDC payments are also order-scoped, but carry no garments — a
+    // flat row (amount, mode, reference) is all the Finance Approvals screen
+    // needs, so this short-circuits before the REPROCESS-shaped branch below,
+    // which expects metadata.garmentIds.
+    if (
+      req.entityType === 'order' &&
+      (req.type === ApprovalRequestType.CHEQUE_PAYMENT || req.type === ApprovalRequestType.PDC_PAYMENT)
+    ) {
+      const order = await this.orderRepo.findOne({where: {id: req.entityId}});
+      const customer = order?.customerId
+        ? await this.customerRepo.findOne({where: {id: order.customerId}})
+        : null;
+      const meta = (req.metadata ?? {}) as {
+        amount?: number;
+        paymentMode?: string;
+        transactionReference?: string;
+      };
+      return {
+        ...req,
+        orderId: req.entityId,
+        orderNumber: order?.orderNumber ?? null,
+        orderStatus: order?.status ?? null,
+        customerId: order?.customerId ?? null,
+        customerName: customer ? `${customer.firstName} ${customer.lastName}`.trim() : null,
+        amount: meta.amount ?? null,
+        paymentMode: meta.paymentMode ?? null,
+        transactionReference: meta.transactionReference ?? null,
+        media,
+      };
+    }
 
     // Order-scoped requests (post-delivery reprocess) name the order directly
     // and carry their garments in metadata — without this they would show as a
@@ -322,14 +355,19 @@ export class ApprovalController {
   async list(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('status') status?: ApprovalRequestStatus,
-    @param.query.string('type') type?: ApprovalRequestType,
+    @param.query.string('type') type?: string,
     @param.query.string('entityType') entityType?: string,
     @param.query.string('entityId') entityId?: string,
     @param.query.string('assignedToRole') assignedToRole?: string,
   ): Promise<object> {
     const where: Where<ApprovalRequest> = {};
     if (status) (where as Record<string, unknown>).status = status;
-    if (type) (where as Record<string, unknown>).type = type;
+    if (type) {
+      // Comma-separated so the Finance Approvals screen can fetch both
+      // cheque_payment and pdc_payment in one call instead of two.
+      const types = type.split(',').map(t => t.trim()).filter(Boolean);
+      (where as Record<string, unknown>).type = types.length > 1 ? {inq: types} : types[0];
+    }
     if (entityType) (where as Record<string, unknown>).entityType = entityType;
     if (entityId) (where as Record<string, unknown>).entityId = entityId;
     if (assignedToRole) (where as Record<string, unknown>).assignedToRole = assignedToRole;

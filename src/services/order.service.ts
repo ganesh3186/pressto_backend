@@ -878,8 +878,20 @@ export class OrderService {
     // billing). Counting it as real cash-in-hand here would silently mark
     // the order fully paid despite the customer never having paid anything,
     // so it's excluded before anything sums payments into totalCollected.
+    //
+    // Cheque/PDC are excluded for a related but distinct reason: the paper
+    // isn't confirmed money yet — it needs finance approval before it counts
+    // as collected. Those legs are held as `pendingApprovalPayments` instead
+    // of getting an immediate PaymentTransaction; the caller raises a
+    // finance ApprovalRequest for each one after this method returns.
     const collectablePayments = (input.payments ?? []).filter(
-      p => p.paymentMode !== PaymentMode.ON_ACCOUNT,
+      p =>
+        p.paymentMode !== PaymentMode.ON_ACCOUNT &&
+        p.paymentMode !== PaymentMode.CHEQUE &&
+        p.paymentMode !== PaymentMode.PDC,
+    );
+    const pendingApprovalPayments = (input.payments ?? []).filter(
+      p => p.paymentMode === PaymentMode.CHEQUE || p.paymentMode === PaymentMode.PDC,
     );
 
     // Validate that payment amounts don't exceed total
@@ -1156,6 +1168,7 @@ export class OrderService {
         walletAmountDeducted: walletAmount,
         totalCollected,
         balanceDue: rupeeBalance(totalAmount, totalCollected),
+        pendingApprovalPayments,
       };
     } catch (err) {
       await tx.rollback();
@@ -2960,6 +2973,16 @@ export class OrderService {
     const thisWallet = Number(walletAmount ?? 0);
     const thisTotal = thisPayment + thisWallet;
 
+    // Cheque/PDC are unconfirmed paper, not money in hand — same reasoning
+    // as createOrder()'s pendingApprovalPayments. The raw amount still has
+    // to fit within what's actually owed (the exceeds-due check just below
+    // uses `thisTotal`, which includes it), but no PaymentTransaction is
+    // created and it never counts toward collected/balanceDue until finance
+    // approves it via the ApprovalRequest the caller raises after this call.
+    const isPendingApproval =
+      payment?.paymentMode === PaymentMode.CHEQUE || payment?.paymentMode === PaymentMode.PDC;
+    const collectedTotal = (isPendingApproval ? 0 : thisPayment) + thisWallet;
+
     // Compared at rupee resolution, so ₹2685.11 against a ₹2685 balance passes
     // instead of tripping on a fraction of a paisa.
     if (roundRupee(thisTotal) > due) {
@@ -2987,7 +3010,7 @@ export class OrderService {
     });
     try {
       let createdPayment = null;
-      if (thisPayment > 0 && payment) {
+      if (thisPayment > 0 && payment && !isPendingApproval) {
         createdPayment = await this.paymentTransactionRepo.create(
           {
             orderId,
@@ -3031,7 +3054,7 @@ export class OrderService {
 
       await tx.commit();
 
-      const newPaid = alreadyPaid + thisTotal;
+      const newPaid = alreadyPaid + collectedTotal;
       return {
         message: 'Payment recorded.',
         payment: createdPayment,
@@ -3039,6 +3062,13 @@ export class OrderService {
         walletAmountDeducted: thisWallet,
         totalCollected: newPaid,
         balanceDue: rupeeBalance(order.totalAmount, newPaid),
+        pendingApproval: isPendingApproval
+          ? {
+              paymentMode: payment.paymentMode,
+              amount: thisPayment,
+              transactionReference: payment.transactionReference,
+            }
+          : null,
       };
     } catch (err) {
       await tx.rollback();

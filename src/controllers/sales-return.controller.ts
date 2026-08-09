@@ -9,7 +9,9 @@ import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {ORDER_STATUS_TRANSITIONS, OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
+import {Order} from '../models/order.model';
 import {
+  CustomerRepository,
   InvoiceRepository,
   ItemRepository,
   OrderItemRepository,
@@ -47,8 +49,50 @@ export class SalesReturnController {
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
     @repository(OrderStatusHistoryRepository) private statusHistoryRepo: OrderStatusHistoryRepository,
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
+    @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
+
+  /**
+   * Preview exactly what approve() would do to the order's totals, and how
+   * much (if any) money needs to leave the order beyond a balance-due
+   * reduction. Shared by the global pending-list endpoint (read-only
+   * preview) and approve() itself — same numbers, computed once.
+   */
+  private async _previewCreditNote(
+    record: SalesReturn,
+    order: Order,
+  ): Promise<{newOrderTotal: number; refundAmount: number; newBalanceDue: number}> {
+    const creditAmount = money(record.creditAmount);
+    const newOrderTotal = Math.max(0, roundRupee(money(order.totalAmount) - creditAmount));
+
+    // Split-aware collected amount, same reasoning as the garment-level return
+    // path (ApprovalService._applyReturnEffect): a split child's money lives in
+    // allocatedPayment, a split parent's transactions were superseded by its
+    // allocated share, and refund entries must never count as collected.
+    const payments = await this.paymentRepo.find({where: {orderId: record.orderId}} as any);
+    const txnCollected = payments.reduce(
+      (s: number, p: any) => s + (p.transactionType === 'refund' ? 0 : money(p.amount)),
+      0,
+    );
+    const alreadyRefunded = payments.reduce(
+      (s: number, p: any) => s + (p.transactionType === 'refund' ? money(p.amount) : 0),
+      0,
+    );
+    const allocPay = money((order as any).allocatedPayment);
+    const isChild = !!(order as any).parentOrderId;
+    const collected = isChild
+      ? money(allocPay + txnCollected)
+      : allocPay > 0
+        ? allocPay
+        : txnCollected;
+
+    const netPaid = money(collected - alreadyRefunded);
+    const refundAmount = money(Math.max(0, netPaid - newOrderTotal));
+    const newBalanceDue = money(Math.max(0, newOrderTotal - netPaid));
+
+    return {newOrderTotal, refundAmount, newBalanceDue};
+  }
 
   // ─── Create Sales Return ──────────────────────────────────────────────────
 
@@ -199,6 +243,71 @@ export class SalesReturnController {
     return {salesReturns};
   }
 
+  // ─── List Pending Credit Notes (global) ───────────────────────────────────
+  // Cross-order view for the Finance Approvals screen — listSalesReturns()
+  // above only helps once you already know which order to look at.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
+  @get('/sales-returns')
+  @response(200, {description: 'Sales returns across all orders, filtered by status'})
+  async listAll(
+    @param.query.string('status') status?: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
+    const salesReturns = await this.salesReturnRepo.find({
+      where: {status: (status as SalesReturnStatus) ?? SalesReturnStatus.PENDING},
+      order: ['createdAt DESC'],
+    });
+    if (!salesReturns.length) return {salesReturns: []};
+
+    const orderIds = [...new Set(salesReturns.map(sr => sr.orderId))];
+    const orders = await this.orderRepo.find({where: {id: {inq: orderIds}}});
+    const orderById = new Map(orders.map(o => [o.id, o]));
+
+    const scope = await this.storeScopeService.resolve(currentUser!);
+    const inScope = scope.global
+      ? salesReturns
+      : salesReturns.filter(sr => {
+          const order = orderById.get(sr.orderId);
+          return order ? this.storeScopeService.allows(scope, order.storeId) : false;
+        });
+
+    const customerIds = [...new Set(inScope.map(sr => sr.customerId).filter(Boolean))];
+    const customers = customerIds.length
+      ? await this.customerRepo.find({where: {id: {inq: customerIds}}})
+      : [];
+    const customerById = new Map(customers.map(c => [c.id, c]));
+
+    const rows = await Promise.all(
+      inScope.map(async sr => {
+        const order = orderById.get(sr.orderId);
+        const customer = customerById.get(sr.customerId);
+        const preview = order
+          ? await this._previewCreditNote(sr, order)
+          : {refundAmount: 0, newBalanceDue: 0};
+        return {
+          id: sr.id,
+          creditNoteNumber: sr.creditNoteNumber,
+          orderId: sr.orderId,
+          orderNumber: order?.orderNumber ?? null,
+          customerId: sr.customerId,
+          customerName: customer ? `${customer.firstName} ${customer.lastName}`.trim() : null,
+          reason: sr.reason,
+          remarks: sr.remarks,
+          creditAmount: sr.creditAmount,
+          status: sr.status,
+          requestedBy: sr.requestedBy,
+          createdAt: sr.createdAt,
+          refundAmount: preview.refundAmount,
+          newBalanceDue: preview.newBalanceDue,
+        };
+      }),
+    );
+
+    return {salesReturns: rows};
+  }
+
   // ─── Approve Sales Return ─────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -215,12 +324,14 @@ export class SalesReturnController {
             type: 'object',
             properties: {
               creditAppliedAs: {type: 'string', enum: ['wallet', 'adjustment', 'refund']},
+              payoutReference: {type: 'string', description: 'Bank UTR / cheque number used for an external refund'},
+              payoutNote: {type: 'string', description: 'Free-text note for an external refund'},
             },
           },
         },
       },
     })
-    body: {creditAppliedAs?: string},
+    body: {creditAppliedAs?: string; payoutReference?: string; payoutNote?: string},
   ): Promise<object> {
     const record = await this.salesReturnRepo.findById(id);
     if (!record) throw new HttpErrors.NotFound('Sales return not found.');
@@ -232,45 +343,17 @@ export class SalesReturnController {
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     const {v4} = await import('uuid');
-    // `creditAppliedAs` is recorded for history but no longer decides WHETHER
-    // a refund happens — it can't be a manual choice: whether this credit
-    // surfaces as a smaller balance due or an actual refund depends on
-    // whether the customer has already paid more than the order will owe
-    // after the return, computed below. (It also used to silently no-op for
-    // 'refund' — there was never a branch for it — and 'wallet' refunded the
-    // full creditAmount unconditionally, which could refund money the
-    // customer hadn't actually paid on a partially-paid order.)
+    // `creditAppliedAs` never decides WHETHER a refund happens — that's fully
+    // automatic, derived below from whether the customer has already paid
+    // more than the order will owe after the return. It DOES decide WHERE
+    // that money goes, once the math says a refund is due: 'refund' books it
+    // as an external payout (bank transfer/cash — finance executes it
+    // outside this app); anything else (including the default, and
+    // 'adjustment' when a refund happens to be due anyway) credits the
+    // wallet, exactly as before.
     const creditAppliedAs = body.creditAppliedAs ?? 'adjustment';
     const creditAmount = money(record.creditAmount);
-
-    // The order's total drops by exactly the credited amount — a customer
-    // should never be left owing (or having paid) for a returned item.
-    const newOrderTotal = Math.max(0, roundRupee(money(order.totalAmount) - creditAmount));
-
-    // Split-aware collected amount, same reasoning as the garment-level return
-    // path (ApprovalService._applyReturnEffect): a split child's money lives in
-    // allocatedPayment, a split parent's transactions were superseded by its
-    // allocated share, and refund entries must never count as collected.
-    const payments = await this.paymentRepo.find({where: {orderId: record.orderId}} as any);
-    const txnCollected = payments.reduce(
-      (s: number, p: any) => s + (p.transactionType === 'refund' ? 0 : money(p.amount)),
-      0,
-    );
-    const alreadyRefunded = payments.reduce(
-      (s: number, p: any) => s + (p.transactionType === 'refund' ? money(p.amount) : 0),
-      0,
-    );
-    const allocPay = money((order as any).allocatedPayment);
-    const isChild = !!(order as any).parentOrderId;
-    const collected = isChild
-      ? money(allocPay + txnCollected)
-      : allocPay > 0
-        ? allocPay
-        : txnCollected;
-
-    const netPaid = money(collected - alreadyRefunded);
-    const refundAmount = money(Math.max(0, netPaid - newOrderTotal));
-    const newBalanceDue = money(Math.max(0, newOrderTotal - netPaid));
+    const {newOrderTotal, refundAmount, newBalanceDue} = await this._previewCreditNote(record, order);
 
     await this.orderRepo.updateById(record.orderId, {
       subtotal: money(money(order.subtotal) - creditAmount),
@@ -300,7 +383,24 @@ export class SalesReturnController {
       } as any);
     }
 
-    if (refundAmount > 0) {
+    if (refundAmount > 0 && creditAppliedAs === 'refund') {
+      // External payout — finance moves the money outside the wallet (bank
+      // transfer, cash, etc). This app does not integrate a payment gateway
+      // payout; this books the fact that money is owed externally so it's
+      // visible/reconcilable in the order's payment history, same as the
+      // wallet path below, just without touching the wallet.
+      await this.paymentRepo.create({
+        id: v4(),
+        orderId: record.orderId,
+        paymentMode: PaymentMode.BANK_TRANSFER,
+        transactionType: 'refund',
+        amount: refundAmount,
+        transactionReference: body.payoutReference,
+        gatewayResponse:
+          body.payoutNote ?? 'External refund — paid out via bank transfer, not credited to wallet.',
+        paymentDate: new Date(),
+      });
+    } else if (refundAmount > 0) {
       let wallet = await this.walletRepo.findOne({where: {customerId: record.customerId}});
       if (!wallet) {
         wallet = await this.walletRepo.create({
@@ -381,5 +481,47 @@ export class SalesReturnController {
     }
 
     return {message: 'Sales return approved. Credit note issued.', creditNoteNumber: record.creditNoteNumber};
+  }
+
+  // ─── Reject Sales Return ───────────────────────────────────────────────────
+  // The only other place a PENDING credit note can go — status was already
+  // in the enum, it was just never reachable via any endpoint.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @post('/sales-returns/{id}/reject')
+  @response(200, {description: 'Sales return rejected'})
+  async reject(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      required: false,
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              remarks: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body?: {remarks?: string},
+  ): Promise<object> {
+    const record = await this.salesReturnRepo.findById(id);
+    if (!record) throw new HttpErrors.NotFound('Sales return not found.');
+    if (record.status !== SalesReturnStatus.PENDING) {
+      throw new HttpErrors.BadRequest(`Sales return is already ${record.status}.`);
+    }
+
+    await this.salesReturnRepo.updateById(id, {
+      status: SalesReturnStatus.REJECTED,
+      resolvedBy: currentUser[securityId],
+      resolvedAt: new Date(),
+      remarks: body?.remarks ?? record.remarks,
+    } as Partial<SalesReturn>);
+
+    return {message: 'Sales return rejected.', creditNoteNumber: record.creditNoteNumber};
   }
 }
