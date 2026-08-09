@@ -11,6 +11,7 @@ import {ORDER_STATUS_TRANSITIONS, OrderStatus} from '../models/order-status.enum
 import {PaymentMode} from '../models/payment-mode.enum';
 import {
   InvoiceRepository,
+  ItemRepository,
   OrderItemRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
@@ -39,6 +40,7 @@ export class SalesReturnController {
     @repository(SalesReturnRepository) private salesReturnRepo: SalesReturnRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
+    @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
@@ -90,6 +92,39 @@ export class SalesReturnController {
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
+    // One credit note per order item — a rejected return never actually
+    // credited anything, so it doesn't block a fresh attempt; pending or
+    // approved ones do.
+    const requestedOrderItemIds = [
+      ...new Set((body.returnedItems ?? []).map(i => i.orderItemId).filter(Boolean)),
+    ];
+    if (requestedOrderItemIds.length) {
+      const existingReturns = await this.salesReturnRepo.find({
+        where: {orderId, status: {neq: SalesReturnStatus.REJECTED}},
+      });
+      const alreadyCreditedItemIds = new Set<string>();
+      for (const existing of existingReturns) {
+        for (const line of (existing.returnedItems ?? []) as Array<{orderItemId?: string}>) {
+          if (line.orderItemId) alreadyCreditedItemIds.add(line.orderItemId);
+        }
+      }
+      const conflictingIds = requestedOrderItemIds.filter(id => alreadyCreditedItemIds.has(id));
+      if (conflictingIds.length) {
+        const conflictingOrderItems = await this.orderItemRepo.find({
+          where: {id: {inq: conflictingIds}},
+        });
+        const itemIds = [...new Set(conflictingOrderItems.map(oi => oi.itemId))];
+        const items = itemIds.length
+          ? await this.itemRepo.find({where: {id: {inq: itemIds}}})
+          : [];
+        const itemNameById = new Map(items.map(it => [it.id, it.name]));
+        const names = conflictingOrderItems.map(oi => itemNameById.get(oi.itemId) ?? 'this item');
+        throw new HttpErrors.Conflict(
+          `Credit note for ${[...new Set(names)].join(', ')} already exists.`,
+        );
+      }
+    }
+
     const invoice = await this.invoiceRepo.findOne({where: {orderId}} as any);
 
     const creditAmount = (body.returnedItems ?? []).reduce((s, i) => s + (Number(i.amount) || 0), 0);
@@ -139,6 +174,29 @@ export class SalesReturnController {
 
     if (!salesReturn) throw new HttpErrors.NotFound('No sales return / credit note found for this order.');
     return {creditNote: salesReturn};
+  }
+
+  // ─── List Sales Returns ───────────────────────────────────────────────────
+  // All returns for an order, any status — lets the New Sales Return dialog
+  // know which order items already have one (see the create() guard above),
+  // since getCreditNote only ever surfaces the single most recent record.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
+  @get('/orders/{orderId}/sales-returns')
+  @response(200, {description: 'All sales returns for an order'})
+  async listSalesReturns(
+    @param.path.string('orderId') orderId: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser!);
+
+    const salesReturns = await this.salesReturnRepo.find({
+      where: {orderId},
+      order: ['createdAt DESC'],
+    });
+
+    return {salesReturns};
   }
 
   // ─── Approve Sales Return ─────────────────────────────────────────────────
