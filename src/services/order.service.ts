@@ -1930,9 +1930,16 @@ export class OrderService {
     // counted toward what the customer has paid. Waived for on-account
     // (business) customers — they're billed later via one consolidated
     // invoice covering several delivered orders, not per-order before handover.
+    //
+    // Split-aware: a split order's payment lives in allocatedPayment, not a
+    // PaymentTransaction row of its own (see the same pattern at ~line 1636
+    // and the "Child orders carry no transaction records" comment further
+    // down this file) — falling back to the raw transaction sum here alone
+    // meant a fully-paid split fragment still read as owing its whole total.
     const payments = await this.paymentTransactionRepo.find({where: {orderId: params.orderId}});
     const paid = payments.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)), 0);
-    const balanceDue = rupeeBalance(order.totalAmount, paid);
+    const collected = Number(order.allocatedPayment ?? 0) > 0 ? Number(order.allocatedPayment) : paid;
+    const balanceDue = rupeeBalance(order.totalAmount, collected);
     const isOnAccountCustomer =
       handoverCustomer?.customerEntityType === 'business' || handoverCustomer?.isOnAccountEligible === true;
     if (balanceDue > 0 && !isOnAccountCustomer) {
