@@ -117,6 +117,111 @@ export class TransferController {
     }));
   }
 
+  /**
+   * Shared transaction body for both a fresh outbound transfer (create())
+   * and a return-batch (returnBatch()) — same mechanics either way: mint a
+   * transitId/transferOrderNumber, create the Transfer header + one
+   * TransferItem per garment + the 3 opening custody events, lock the bag.
+   * Callers own their own pre-checks (store validity, bag availability,
+   * which garments are eligible) since those differ between the two flows.
+   */
+  private async _createAndSendTransfer(params: {
+    currentUser: UserProfile;
+    fromStoreId: string;
+    toStoreId: string;
+    fromStoreCode: string;
+    toStoreCode: string;
+    bagId: string;
+    bagMaxCapacity: number;
+    garments: {id: string; garmentTagNumber: string; orderItemId: string}[];
+    reason?: string;
+    remarks?: string;
+    returnOfTransferId?: string;
+  }): Promise<{transfer: Transfer; items: object[]}> {
+    const {currentUser, fromStoreId, toStoreId, bagId, garments} = params;
+
+    // Batch-resolve each garment's orderId via its orderItem — one inq, not N+1.
+    const orderItemIds = [...new Set(garments.map(g => g.orderItemId))];
+    const orderItems = await this.orderItemRepo.find({where: {id: {inq: orderItemIds}} as object});
+    const orderIdByOrderItemId = new Map(orderItems.map(oi => [oi.id, oi.orderId]));
+
+    const {v4} = await import('uuid');
+    const now = new Date();
+    const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const count = await this.transferRepo.count();
+    const seq = count.count + 1;
+    const transferOrderNumber = `TO-${ym}-${String(seq).padStart(5, '0')}`;
+    const transitId = `TR-${params.fromStoreCode}-${params.toStoreCode}-${ddMM}-${seq}`;
+
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      const transfer = await this.transferRepo.create(
+        {
+          id: v4(),
+          transitId,
+          transferOrderNumber,
+          status: TransferStatus.SENT,
+          fromStoreId,
+          toStoreId,
+          bagId,
+          reason: params.reason,
+          remarks: params.remarks,
+          sentAt: now,
+          sentBy: currentUser[securityId],
+          itemCount: garments.length,
+          returnOfTransferId: params.returnOfTransferId,
+        },
+        {transaction: tx},
+      );
+
+      const items = [];
+      for (const garment of garments) {
+        items.push(
+          await this.transferItemRepo.create(
+            {
+              id: v4(),
+              transferId: transfer.id,
+              garmentId: garment.id,
+              garmentTagNumber: garment.garmentTagNumber,
+              orderId: orderIdByOrderItemId.get(garment.orderItemId) ?? '',
+              scanStatus: TransferItemScanStatus.SCANNED,
+            },
+            {transaction: tx},
+          ),
+        );
+      }
+
+      for (const eventType of [
+        TransferCustodyEventType.BAG_SCANNED,
+        TransferCustodyEventType.ITEMS_MAPPED,
+        TransferCustodyEventType.SENT_OUT,
+      ]) {
+        await this.custodyEventRepo.create(
+          {id: v4(), transferId: transfer.id, eventType, performedBy: currentUser[securityId]},
+          {transaction: tx},
+        );
+      }
+
+      await this.bagRepo.updateById(
+        bagId,
+        {
+          status: garments.length >= params.bagMaxCapacity ? BagStatus.FULL : BagStatus.IN_USE,
+          itemCount: garments.length,
+          currentTransferId: transfer.id,
+          currentStoreId: fromStoreId,
+        },
+        {transaction: tx},
+      );
+
+      await tx.commit();
+      return {transfer, items};
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
   // ─── Create + Send (atomic) ─────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -169,85 +274,136 @@ export class TransferController {
     }
     const garments = await this.assertGarmentsTransferable(garmentIds);
 
-    // Batch-resolve each garment's orderId via its orderItem — one inq, not N+1.
-    const orderItemIds = [...new Set(garments.map(g => g.orderItemId))];
-    const orderItems = await this.orderItemRepo.find({where: {id: {inq: orderItemIds}} as object});
-    const orderIdByOrderItemId = new Map(orderItems.map(oi => [oi.id, oi.orderId]));
+    const {transfer, items} = await this._createAndSendTransfer({
+      currentUser,
+      fromStoreId: body.fromStoreId,
+      toStoreId: body.toStoreId,
+      fromStoreCode: fromStore.code,
+      toStoreCode: toStore.code,
+      bagId: body.bagId,
+      bagMaxCapacity: bag.maxCapacity ?? 25,
+      garments,
+      reason: body.reason,
+      remarks: body.remarks,
+    });
+    return {message: 'Transfer created and sent.', transfer, items};
+  }
 
-    const {v4} = await import('uuid');
-    const now = new Date();
-    const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const count = await this.transferRepo.count();
-    const seq = count.count + 1;
-    const transferOrderNumber = `TO-${ym}-${String(seq).padStart(5, '0')}`;
-    const transitId = `TR-${fromStore.code}-${toStore.code}-${ddMM}-${seq}`;
+  // ─── Return Batch ───────────────────────────────────────────────────────────
+  // Sends some (or all) of an already-RECEIVED/RESOLVED transfer's items back
+  // to the store that originally sent them — a new, ordinary Transfer in the
+  // reverse direction, just tagged with returnOfTransferId so the UI can
+  // chain it back to its origin. Reuses the exact same send mechanics as a
+  // fresh outbound transfer via _createAndSendTransfer.
 
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
-    try {
-      const transfer = await this.transferRepo.create(
-        {
-          id: v4(),
-          transitId,
-          transferOrderNumber,
-          status: TransferStatus.SENT,
-          fromStoreId: body.fromStoreId,
-          toStoreId: body.toStoreId,
-          bagId: body.bagId,
-          reason: body.reason,
-          remarks: body.remarks,
-          sentAt: now,
-          sentBy: currentUser[securityId],
-          itemCount: garments.length,
-        },
-        {transaction: tx},
-      );
-
-      const items = [];
-      for (const garment of garments) {
-        items.push(
-          await this.transferItemRepo.create(
-            {
-              id: v4(),
-              transferId: transfer.id,
-              garmentId: garment.id,
-              garmentTagNumber: garment.garmentTagNumber,
-              orderId: orderIdByOrderItemId.get(garment.orderItemId) ?? '',
-              scanStatus: TransferItemScanStatus.SCANNED,
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:create']})
+  @post('/transfers/{id}/return-batch')
+  @response(200, {description: 'Return-batch transfer created and sent'})
+  async returnBatch(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['bagId', 'garmentIds'],
+            properties: {
+              bagId: {type: 'string', format: 'uuid'},
+              reason: {type: 'string'},
+              remarks: {type: 'string'},
+              garmentIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
             },
-            {transaction: tx},
-          ),
-        );
-      }
-
-      for (const eventType of [
-        TransferCustodyEventType.BAG_SCANNED,
-        TransferCustodyEventType.ITEMS_MAPPED,
-        TransferCustodyEventType.SENT_OUT,
-      ]) {
-        await this.custodyEventRepo.create(
-          {id: v4(), transferId: transfer.id, eventType, performedBy: currentUser[securityId]},
-          {transaction: tx},
-        );
-      }
-
-      await this.bagRepo.updateById(
-        body.bagId,
-        {
-          status: garments.length >= (bag.maxCapacity ?? 25) ? BagStatus.FULL : BagStatus.IN_USE,
-          itemCount: garments.length,
-          currentTransferId: transfer.id,
-          currentStoreId: body.fromStoreId,
+          },
         },
-        {transaction: tx},
+      },
+    })
+    body: {bagId: string; reason?: string; remarks?: string; garmentIds: string[]},
+  ): Promise<object> {
+    const original = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    if (!original) throw new HttpErrors.NotFound('Transfer not found.');
+    if (
+      original.status !== TransferStatus.RECEIVED &&
+      original.status !== TransferStatus.RESOLVED
+    ) {
+      throw new HttpErrors.BadRequest(
+        `Cannot return items from a transfer that is still ${original.status}.`,
       );
-
-      await tx.commit();
-      return {message: 'Transfer created and sent.', transfer, items};
-    } catch (error) {
-      await tx.rollback();
-      throw error;
     }
+
+    // The store now holding the goods (original's destination) is the one
+    // sending the return batch back to where they came from.
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (!this.storeScopeService.allows(scope, original.toStoreId)) {
+      throw new HttpErrors.NotFound('Transfer not found.');
+    }
+
+    const garmentIds = [...new Set(body.garmentIds)];
+    const originalItems = await this.transferItemRepo.find({
+      where: {transferId: id, garmentId: {inq: garmentIds}} as object,
+    });
+    const originalItemByGarmentId = new Map(originalItems.map(i => [i.garmentId, i]));
+    const notOnManifest = garmentIds.filter(gid => !originalItemByGarmentId.has(gid));
+    if (notOnManifest.length) {
+      throw new HttpErrors.BadRequest(
+        `Not part of this transfer's manifest: ${notOnManifest.join(', ')}.`,
+      );
+    }
+    const notReceived = originalItems
+      .filter(i => i.scanStatus !== TransferItemScanStatus.RECEIVED)
+      .map(i => i.garmentTagNumber);
+    if (notReceived.length) {
+      throw new HttpErrors.BadRequest(
+        `Not marked received on this transfer, cannot return: ${notReceived.join(', ')}.`,
+      );
+    }
+
+    // Block garments already covered by an earlier return batch of this
+    // same origin transfer, whatever that batch's own outcome was.
+    const priorBatches = await this.transferRepo.find({
+      where: {returnOfTransferId: id} as object,
+      fields: {id: true} as object,
+    });
+    if (priorBatches.length) {
+      const priorItems = await this.transferItemRepo.find({
+        where: {transferId: {inq: priorBatches.map(t => t.id)}, garmentId: {inq: garmentIds}} as object,
+      });
+      if (priorItems.length) {
+        throw new HttpErrors.Conflict(
+          `Already covered by an earlier return batch: ${priorItems.map(i => i.garmentTagNumber).join(', ')}.`,
+        );
+      }
+    }
+
+    const [fromStore, toStore] = await Promise.all([
+      this.storeRepo.findOne({where: {id: original.toStoreId, isDeleted: false}}),
+      this.storeRepo.findOne({where: {id: original.fromStoreId, isDeleted: false}}),
+    ]);
+    if (!fromStore || !toStore) throw new HttpErrors.NotFound('Store not found.');
+
+    const bag = await this.assertBagAvailable(body.bagId);
+    if (garmentIds.length > (bag.maxCapacity ?? 25)) {
+      throw new HttpErrors.BadRequest(`This bag holds at most ${bag.maxCapacity} items.`);
+    }
+    const garments = await this.garmentRepo.find({
+      where: {id: {inq: garmentIds}, isDeleted: false} as object,
+    });
+
+    const {transfer, items} = await this._createAndSendTransfer({
+      currentUser,
+      fromStoreId: original.toStoreId,
+      toStoreId: original.fromStoreId,
+      fromStoreCode: fromStore.code,
+      toStoreCode: toStore.code,
+      bagId: body.bagId,
+      bagMaxCapacity: bag.maxCapacity ?? 25,
+      garments,
+      reason: body.reason,
+      remarks: body.remarks,
+      returnOfTransferId: id,
+    });
+    return {message: 'Return batch created and sent.', transfer, items};
   }
 
   // ─── List ─────────────────────────────────────────────────────────────────
@@ -291,6 +447,48 @@ export class TransferController {
     return {transfers: await this.enrichTransfers(transfers)};
   }
 
+  // ─── Summary Stats ──────────────────────────────────────────────────────────
+  // Real counts only — no "overdue"/"nearing deadline" metric, since no
+  // SLA/TAT rule exists anywhere in the system yet to define one (that's a
+  // broader business decision, not specific to Transfer). Scoped the same
+  // way as find(): store-scoped callers see only transfers touching their
+  // stores.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
+  @get('/transfers/stats')
+  @response(200, {description: 'Summary counts for the All Transfers screen'})
+  async stats(@inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile): Promise<object> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(scope, {});
+
+    const and: object[] = [{isDeleted: false}];
+    if (narrowedStoreIds) {
+      and.push({or: [{fromStoreId: {inq: narrowedStoreIds}}, {toStoreId: {inq: narrowedStoreIds}}]});
+    }
+
+    const transfers = await this.transferRepo.find({
+      where: {and} as object,
+      fields: {status: true, sentAt: true, receivedAt: true} as object,
+    });
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    return {
+      stats: {
+        total: transfers.length,
+        sent: transfers.filter(t => t.status === TransferStatus.SENT).length,
+        received: transfers.filter(t => t.status === TransferStatus.RECEIVED).length,
+        discrepancy: transfers.filter(t => t.status === TransferStatus.DISCREPANCY).length,
+        resolved: transfers.filter(t => t.status === TransferStatus.RESOLVED).length,
+        sentToday: transfers.filter(t => t.sentAt && new Date(t.sentAt) >= startOfToday).length,
+        receivedToday: transfers.filter(t => t.receivedAt && new Date(t.receivedAt) >= startOfToday)
+          .length,
+      },
+    };
+  }
+
   // ─── Detail ───────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -326,10 +524,19 @@ export class TransferController {
 
     const [enriched] = await this.enrichTransfers([transfer]);
 
+    // Return batches sent back against this transfer (see returnBatch()) —
+    // only ever non-empty for a RECEIVED/RESOLVED transfer, but cheap to
+    // query unconditionally rather than special-casing by status here.
+    const returnBatches = await this.transferRepo.find({
+      where: {returnOfTransferId: id, isDeleted: false} as object,
+      order: ['createdAt DESC'],
+    });
+
     return {
       transfer: enriched,
       items: items.map(item => ({...item, orderNumber: orderById.get(item.orderId)?.orderNumber ?? null})),
       custodyEvents,
+      returnBatches: await this.enrichTransfers(returnBatches),
     };
   }
 

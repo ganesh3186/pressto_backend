@@ -87,6 +87,13 @@ export class Transfer extends Entity {
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   resolvedBy?: string;
 
+  // Set only on a return-batch transfer (created via
+  // POST /transfers/{id}/return-batch) — points back at the original
+  // outbound Transfer it's returning items for. Plain uuid, same
+  // batch-resolve-at-read-time convention as the store/bag references.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  returnOfTransferId?: string;
+
   @property({type: 'boolean', default: false})
   isDeleted?: boolean;
 
