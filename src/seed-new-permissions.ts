@@ -52,6 +52,12 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'rider_pincode_mapping:read',   description: 'View rider pincode mappings'},
   {permission: 'rider_pincode_mapping:update', description: 'Update a rider pincode mapping'},
   {permission: 'rider_pincode_mapping:delete', description: 'Delete a rider pincode mapping'},
+  // Interstore Transfer (see TransferController) — send and receive share
+  // one permission (transfer:create), since both are the same day-to-day
+  // counter workflow. No update/delete: transfers are permanent once
+  // created, no resolution/edit endpoint exists yet.
+  {permission: 'transfer:create', description: 'Send or receive an interstore transfer'},
+  {permission: 'transfer:read',   description: 'View interstore transfers and their custody trail'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -72,6 +78,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // managers get full control.
       'rider_pincode_mapping:create', 'rider_pincode_mapping:read',
       'rider_pincode_mapping:update', 'rider_pincode_mapping:delete',
+      // Interstore Transfer: the scan-and-send/scan-and-receive counter workflow.
+      'transfer:create', 'transfer:read',
     ],
   },
   {
@@ -84,6 +92,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'pickup_request:create', 'pickup_request:read', 'pickup_request:update',
       // Read-only visibility into which rider covers which pincode.
       'rider_pincode_mapping:read',
+      // Interstore Transfer: same counter workflow as manager.
+      'transfer:create', 'transfer:read',
     ],
   },
   {
