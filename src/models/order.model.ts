@@ -123,9 +123,16 @@ export class Order extends Entity {
   @property({type: 'string', jsonSchema: {enum: Object.values(OrderDeliveryMethod)}})
   deliveryMethod?: OrderDeliveryMethod;
 
-  // Free string — no slot master exists anywhere in this codebase yet.
+  // Denormalized display snapshot of deliverySlotId's PickupDeliverySlot.label,
+  // resolved server-side when deliverySlotId is supplied. Stays a free
+  // string for backward compat with rows/callers that still pass it directly.
   @property({type: 'string'})
   deliverySlot?: string;
+
+  // Authoritative slot reference going forward — plain uuid, matching
+  // assignedRiderId/deliveryAddressId's existing style on this model.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  deliverySlotId?: string;
 
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   deliveryAddressId?: string;

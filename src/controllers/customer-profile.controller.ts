@@ -20,10 +20,18 @@ import {
   CustomerAddress,
   CustomerContact,
   CustomerPhone,
+  PickupDeliverySlot,
+  PickupDeliverySlotType,
+  PickupHandoverBy,
+  PickupRequest,
 } from '../models';
+import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
+import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {
   CustomerRepository,
   CustomerSecurityDepositRepository,
+  PickupDeliverySlotRepository,
+  PickupRequestRepository,
   UsersRepository,
   WalletRepository,
   WalletTransactionRepository,
@@ -52,6 +60,10 @@ export class CustomerProfileController {
     private contactService: CustomerContactService,
     @inject('services.customer-phone')
     private phoneService: CustomerPhoneService,
+    @repository(PickupRequestRepository)
+    private pickupRequestRepository: PickupRequestRepository,
+    @repository(PickupDeliverySlotRepository)
+    private pickupSlotRepository: PickupDeliverySlotRepository,
   ) {}
 
   private async resolveCustomer(userId: string): Promise<Customer> {
@@ -481,5 +493,147 @@ export class CustomerProfileController {
     const phone = await this.phoneService.findById(id);
     this.verifyOwnership(phone.customerId, customer.id);
     await this.phoneService.delete(id);
+  }
+
+  // ─── Pickup Requests ────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/profile/customer/pickup-slots')
+  @response(200, {
+    description: 'Active pickup slots',
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(PickupDeliverySlot)}}},
+  })
+  async getPickupSlots(): Promise<PickupDeliverySlot[]> {
+    return this.pickupSlotRepository.find({
+      where: {
+        isActive: true,
+        isDeleted: false,
+        type: {inq: [PickupDeliverySlotType.PICKUP, PickupDeliverySlotType.BOTH]},
+      } as object,
+      order: ['sortOrder ASC', 'startTime ASC'],
+    });
+  }
+
+  @authenticate('jwt')
+  @get('/profile/customer/pickup-requests')
+  @response(200, {
+    description: "Caller's own pickup requests",
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(PickupRequest)}}},
+  })
+  async getPickupRequests(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<PickupRequest[]> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    return this.pickupRequestRepository.find({
+      where: {customerId: customer.id, isDeleted: false} as object,
+      order: ['createdAt DESC'],
+    });
+  }
+
+  @authenticate('jwt')
+  @get('/profile/customer/pickup-requests/{id}')
+  @response(200, {description: 'Pickup request detail'})
+  async getPickupRequestById(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<PickupRequest> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    const pickupRequest = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false} as object});
+    if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
+    this.verifyOwnership(pickupRequest.customerId ?? '', customer.id);
+    return pickupRequest;
+  }
+
+  @authenticate('jwt')
+  @post('/profile/customer/pickup-requests')
+  @response(200, {description: 'Pickup request created'})
+  async createPickupRequest(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['addressId', 'slotId', 'requestedDate', 'handoverBy'],
+            properties: {
+              addressId: {type: 'string', format: 'uuid'},
+              slotId: {type: 'string', format: 'uuid'},
+              requestedDate: {type: 'string', format: 'date'},
+              handoverBy: {type: 'string', enum: Object.values(PickupHandoverBy)},
+              handoverPersonName: {
+                type: 'string',
+                description: 'Required unless handoverBy is "self".',
+              },
+              itemCountEstimate: {type: 'number'},
+            },
+          },
+        },
+      },
+    })
+    body: {
+      addressId: string;
+      slotId: string;
+      requestedDate: string;
+      handoverBy: PickupHandoverBy;
+      handoverPersonName?: string;
+      itemCountEstimate?: number;
+    },
+  ): Promise<object> {
+    const userId = currentUser[securityId];
+    const customer = await this.resolveCustomer(userId);
+
+    const address = await this.addressService.findById(body.addressId);
+    this.verifyOwnership(address.customerId, customer.id);
+
+    const slot = await this.pickupSlotRepository.findOne({
+      where: {id: body.slotId, isActive: true, isDeleted: false} as object,
+    });
+    if (!slot) throw new HttpErrors.BadRequest('Pickup slot not found or inactive.');
+
+    if (body.handoverBy !== PickupHandoverBy.SELF && !body.handoverPersonName?.trim()) {
+      throw new HttpErrors.BadRequest('handoverPersonName is required unless handoverBy is "self".');
+    }
+
+    const user = await this.usersRepository.findById(userId);
+
+    const {v4} = await import('uuid');
+    const pickupRequest = await this.pickupRequestRepository.create({
+      id: v4(),
+      customerId: customer.id,
+      customerName: `${customer.firstName} ${customer.lastName}`,
+      customerCountryCode: user.countryCode ?? '+91',
+      customerMobile: user.phone,
+      address: this.addressService.toDisplaySnapshot(address),
+      pincode: address.pincode,
+      requestedDate: body.requestedDate,
+      slot: slot.label,
+      pickupSlotId: slot.id,
+      source: PickupRequestSource.WEB,
+      handoverBy: body.handoverBy,
+      handoverPersonName: body.handoverBy === PickupHandoverBy.SELF ? undefined : body.handoverPersonName,
+      itemCountEstimate: body.itemCountEstimate,
+    });
+    return {message: 'Pickup request created.', pickupRequest};
+  }
+
+  @authenticate('jwt')
+  @patch('/profile/customer/pickup-requests/{id}/cancel')
+  @response(200, {description: 'Pickup request cancelled'})
+  async cancelPickupRequest(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    const pickupRequest = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false} as object});
+    if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
+    this.verifyOwnership(pickupRequest.customerId ?? '', customer.id);
+
+    const current = pickupRequest.status ?? PickupRequestStatus.REQUESTED;
+    if (!PICKUP_REQUEST_STATUS_TRANSITIONS[current]?.includes(PickupRequestStatus.CANCELLED)) {
+      throw new HttpErrors.BadRequest(`Cannot cancel a pickup request that is already ${current}.`);
+    }
+
+    await this.pickupRequestRepository.updateById(id, {status: PickupRequestStatus.CANCELLED});
+    return {message: 'Pickup request cancelled.'};
   }
 }

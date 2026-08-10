@@ -6,9 +6,17 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {PickupRequest} from '../models';
+import {RiderPincodeMappingWithRelations} from '../models/rider-pincode-mapping.model';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
-import {CustomerRepository, PickupRequestRepository, RiderRepository, StoreRepository} from '../repositories';
+import {
+  CustomerRepository,
+  PickupDeliverySlotRepository,
+  PickupRequestRepository,
+  RiderPincodeMappingRepository,
+  RiderRepository,
+  StoreRepository,
+} from '../repositories';
 
 interface CreateBody {
   customerId?: string;
@@ -19,6 +27,7 @@ interface CreateBody {
   pincode?: string;
   requestedDate: string;
   slot: string;
+  slotId?: string;
   storeId?: string;
   source: PickupRequestSource;
   itemCountEstimate?: number;
@@ -49,6 +58,10 @@ export class PickupRequestController {
     private customerRepository: CustomerRepository,
     @repository(StoreRepository)
     private storeRepository: StoreRepository,
+    @repository(PickupDeliverySlotRepository)
+    private pickupSlotRepository: PickupDeliverySlotRepository,
+    @repository(RiderPincodeMappingRepository)
+    private riderPincodeMappingRepository: RiderPincodeMappingRepository,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
   ) {}
@@ -67,6 +80,43 @@ export class PickupRequestController {
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
     if (!rider.isActive) throw new HttpErrors.BadRequest('This rider is inactive.');
     return rider;
+  }
+
+  /** Resolves a slotId into its label — 400 if missing/inactive. */
+  private async resolveSlotLabel(slotId: string): Promise<string> {
+    const slot = await this.pickupSlotRepository.findOne({
+      where: {id: slotId, isActive: true, isDeleted: false} as object,
+    });
+    if (!slot) throw new HttpErrors.BadRequest('Pickup slot not found or inactive.');
+    return slot.label;
+  }
+
+  /**
+   * Advisory only — batch-resolves each request's suggestedRiderId/Name from
+   * the active RiderPincodeMapping for its pincode. The admin can still
+   * assign a different rider via assign(); this is purely a UI hint for
+   * grouping same-pincode requests onto the rider who already covers them.
+   */
+  private async enrichWithSuggestedRider(requests: PickupRequest[]): Promise<object[]> {
+    const pincodes = [...new Set(requests.map(r => r.pincode).filter((p): p is string => Boolean(p)))];
+    if (!pincodes.length) return requests;
+
+    const mappings: RiderPincodeMappingWithRelations[] = await this.riderPincodeMappingRepository.find({
+      where: {pincode: {inq: pincodes}, isActive: true, isDeleted: false} as object,
+      include: [{relation: 'rider'}],
+    });
+    const mappingByPincode = new Map(mappings.map(m => [m.pincode, m]));
+
+    return requests.map(r => {
+      const mapping = r.pincode ? mappingByPincode.get(r.pincode) : undefined;
+      return {
+        ...r,
+        suggestedRiderId: mapping?.riderId ?? null,
+        suggestedRiderName: mapping?.rider
+          ? `${mapping.rider.firstName} ${mapping.rider.lastName}`
+          : null,
+      };
+    });
   }
 
   // ─── Create ─────────────────────────────────────────────────────────────────
@@ -91,6 +141,11 @@ export class PickupRequestController {
               pincode: {type: 'string'},
               requestedDate: {type: 'string', format: 'date'},
               slot: {type: 'string'},
+              slotId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'If given, overrides slot with this slot\'s label.',
+              },
               storeId: {type: 'string', format: 'uuid'},
               source: {type: 'string', enum: Object.values(PickupRequestSource)},
               itemCountEstimate: {type: 'number'},
@@ -113,10 +168,15 @@ export class PickupRequestController {
       if (!store) throw new HttpErrors.NotFound('Store not found.');
     }
 
+    const {slotId, ...rest} = body;
+    const slot = slotId !== undefined ? await this.resolveSlotLabel(slotId) : body.slot;
+
     const {v4} = await import('uuid');
     const pickupRequest = await this.pickupRequestRepository.create({
       id: v4(),
-      ...body,
+      ...rest,
+      slot,
+      ...(slotId !== undefined ? {pickupSlotId: slotId} : {}),
       customerCountryCode: body.customerCountryCode?.trim() ? body.customerCountryCode.trim() : '+91',
       status: PickupRequestStatus.REQUESTED,
     });
@@ -129,12 +189,13 @@ export class PickupRequestController {
   @authorize({roles: ['super_admin'], permissions: ['pickup_request:read']})
   @get('/pickup-requests')
   @response(200, {description: 'Pickup requests'})
-  async find(@param.filter(PickupRequest) filter?: Filter<PickupRequest>): Promise<PickupRequest[]> {
-    return this.pickupRequestRepository.find({
+  async find(@param.filter(PickupRequest) filter?: Filter<PickupRequest>): Promise<object[]> {
+    const requests = await this.pickupRequestRepository.find({
       ...filter,
       where: {...filter?.where, isDeleted: false},
       order: filter?.order ?? ['createdAt DESC'],
     });
+    return this.enrichWithSuggestedRider(requests);
   }
 
   @authenticate('jwt')
@@ -255,6 +316,11 @@ export class PickupRequestController {
               storeId: {type: 'string', format: 'uuid'},
               scheduledDate: {type: 'string', format: 'date'},
               slot: {type: 'string'},
+              slotId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'If given, overrides slot with this slot\'s label.',
+              },
               remarks: {type: 'string'},
             },
           },
@@ -267,12 +333,15 @@ export class PickupRequestController {
       storeId: string;
       scheduledDate: string;
       slot: string;
+      slotId?: string;
       remarks?: string;
     },
   ): Promise<object> {
     await this.assertRiderAssignable(body.riderId);
     const store = await this.storeRepository.findOne({where: {id: body.storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
+
+    const slot = body.slotId !== undefined ? await this.resolveSlotLabel(body.slotId) : body.slot;
 
     const requests = await this.pickupRequestRepository.find({
       where: {id: {inq: body.pickupRequestIds}, isDeleted: false} as object,
@@ -304,7 +373,8 @@ export class PickupRequestController {
             assignedBy: currentUser[securityId],
             storeId: body.storeId,
             requestedDate: body.scheduledDate,
-            slot: body.slot,
+            slot,
+            ...(body.slotId !== undefined ? {pickupSlotId: body.slotId} : {}),
             status: PickupRequestStatus.RIDER_ASSIGNED,
             runId,
             ...(body.remarks ? {remarks: body.remarks} : {}),

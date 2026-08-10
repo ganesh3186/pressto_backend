@@ -1,6 +1,8 @@
 import {Entity, belongsTo, model, property} from '@loopback/repository';
 import {Customer} from './customer.model';
 import {Order} from './order.model';
+import {PickupDeliverySlot} from './pickup-delivery-slot.model';
+import {PickupHandoverBy} from './pickup-handover-by.enum';
 import {PickupRequestSource} from './pickup-request-source.enum';
 import {PickupRequestStatus} from './pickup-request-status.enum';
 import {Rider} from './rider.model';
@@ -51,10 +53,20 @@ export class PickupRequest extends Entity {
   @property({type: 'date', required: true})
   requestedDate: string;
 
-  // Free string — no slot master exists anywhere in this codebase yet;
-  // matches the same "6 fixed label" convention used elsewhere.
+  // Denormalized display snapshot of slotId's PickupDeliverySlot.label,
+  // resolved server-side when slotId is supplied. Stays a required free
+  // string for backward compat with rows created before the Slot master
+  // existed and with admin/rider flows that still pass it directly.
   @property({type: 'string', required: true})
   slot: string;
+
+  // Authoritative slot reference going forward — @belongsTo, matching this
+  // model's existing convention for its other FK fields (customerId,
+  // storeId, assignedRiderId). Named pickupSlotId, not slotId — LB4 derives
+  // the belongsTo relation name by stripping the trailing "Id", which would
+  // otherwise collide with the existing `slot` string property above.
+  @belongsTo(() => PickupDeliverySlot)
+  pickupSlotId?: string;
 
   // Destination store — optional at creation (a call-center intake often
   // doesn't know which store will process it yet), required by the
@@ -79,6 +91,20 @@ export class PickupRequest extends Entity {
 
   @property({type: 'number'})
   itemCountEstimate?: number;
+
+  // Who hands the garments to the rider — required by the customer-facing
+  // create flow only (§3 of the Logistics plan); admin/rider-originated
+  // requests leave this unset since neither intake path collects it.
+  @property({
+    type: 'string',
+    jsonSchema: {enum: Object.values(PickupHandoverBy)},
+  })
+  handoverBy?: PickupHandoverBy;
+
+  // Required (validated in the controller) when handoverBy is anything
+  // other than 'self'.
+  @property({type: 'string'})
+  handoverPersonName?: string;
 
   @property({type: 'string', postgresql: {dataType: 'text'}})
   remarks?: string;
@@ -126,6 +152,7 @@ export interface PickupRequestRelations {
   store?: Store;
   assignedRider?: Rider;
   convertedOrder?: Order;
+  pickupSlot?: PickupDeliverySlot;
 }
 
 export type PickupRequestWithRelations = PickupRequest & PickupRequestRelations;

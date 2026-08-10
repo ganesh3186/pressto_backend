@@ -60,6 +60,14 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'transfer:create', description: 'Send or receive an interstore transfer'},
   {permission: 'transfer:read',   description: 'View interstore transfers and their custody trail'},
   {permission: 'transfer:update', description: 'Resolve a discrepant transfer and release its bag'},
+  // Pickup/Delivery Slot master (see PickupDeliverySlotController) — dispatch
+  // config, not daily front-desk work. Customer/rider self-service reads
+  // (GET /profile/customer/pickup-slots, rider pickup creation) are
+  // role-gated directly, not by this permission.
+  {permission: 'pickup_delivery_slot:create', description: 'Create a pickup/delivery slot'},
+  {permission: 'pickup_delivery_slot:read',   description: 'View pickup/delivery slots'},
+  {permission: 'pickup_delivery_slot:update', description: 'Update a pickup/delivery slot'},
+  {permission: 'pickup_delivery_slot:delete', description: 'Delete a pickup/delivery slot'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -84,6 +92,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // workflow, plus resolving a discrepancy — an exception/write-off
       // call reserved for a manager, not front-desk staff.
       'transfer:create', 'transfer:read', 'transfer:update',
+      // Pickup/Delivery Slot master: dispatch config, full control.
+      'pickup_delivery_slot:create', 'pickup_delivery_slot:read',
+      'pickup_delivery_slot:update', 'pickup_delivery_slot:delete',
     ],
   },
   {
@@ -98,6 +109,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'rider_pincode_mapping:read',
       // Interstore Transfer: same counter workflow as manager.
       'transfer:create', 'transfer:read',
+      // Pickup/Delivery Slot master: needs to see slots when logging a
+      // call-in pickup request, but not edit the master list.
+      'pickup_delivery_slot:read',
     ],
   },
   {

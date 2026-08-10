@@ -38,6 +38,8 @@ import {ReprocessService} from '../services/reprocess.service';
 import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {CustomerAddressService} from '../services/customer-address.service';
+import {PickupDeliverySlotRepository} from '../repositories/pickup-delivery-slot.repository';
 
 const PAYMENT_ITEM_SCHEMA = {
   type: 'object' as const,
@@ -85,6 +87,10 @@ export class OrderController {
     private riderRepository: RiderRepository,
     @repository(CustomerAddressRepository)
     private customerAddressRepository: CustomerAddressRepository,
+    @inject('services.customer-address')
+    private customerAddressService: CustomerAddressService,
+    @repository(PickupDeliverySlotRepository)
+    private pickupDeliverySlotRepository: PickupDeliverySlotRepository,
   ) {}
 
   // Cheque/PDC legs never got a PaymentTransaction (see order.service.ts's
@@ -282,6 +288,11 @@ export class OrderController {
               },
               deliveryMethod: {type: 'string', enum: Object.values(OrderDeliveryMethod)},
               deliverySlot: {type: 'string'},
+              deliverySlotId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'Resolved into a frozen deliverySlot text snapshot on save.',
+              },
               deliveryAddressId: {
                 type: 'string',
                 format: 'uuid',
@@ -301,6 +312,7 @@ export class OrderController {
       assignedRiderId?: string;
       deliveryMethod?: OrderDeliveryMethod;
       deliverySlot?: string;
+      deliverySlotId?: string;
       deliveryAddressId?: string;
     },
   ): Promise<object> {
@@ -314,7 +326,7 @@ export class OrderController {
       throw new HttpErrors.BadRequest('Cannot update a delivered, cancelled, or returned order.');
     }
 
-    const {orderLabelIds, assignedRiderId, deliveryAddressId, ...orderFields} = body;
+    const {orderLabelIds, assignedRiderId, deliveryAddressId, deliverySlotId, ...orderFields} = body;
 
     if (assignedRiderId !== undefined) {
       const rider = await this.riderRepository.findOne({where: {id: assignedRiderId, isDeleted: false}});
@@ -331,20 +343,18 @@ export class OrderController {
         where: {id: deliveryAddressId, isDeleted: false} as object,
       });
       if (!address) throw new HttpErrors.BadRequest('Delivery address not found.');
-      const snapshot = [
-        address.addressLine1,
-        address.addressLine2,
-        address.doorFloorFlat,
-        address.societyName,
-        address.landmark,
-        address.city,
-        address.state,
-        address.country,
-        address.pincode,
-      ]
-        .filter(Boolean)
-        .join(', ');
-      Object.assign(orderFields, {deliveryAddressId, deliveryAddress: snapshot});
+      Object.assign(orderFields, {
+        deliveryAddressId,
+        deliveryAddress: this.customerAddressService.toDisplaySnapshot(address),
+      });
+    }
+
+    if (deliverySlotId !== undefined) {
+      const slot = await this.pickupDeliverySlotRepository.findOne({
+        where: {id: deliverySlotId, isDeleted: false} as object,
+      });
+      if (!slot) throw new HttpErrors.BadRequest('Delivery slot not found.');
+      Object.assign(orderFields, {deliverySlotId, deliverySlot: slot.label});
     }
 
     if (Object.keys(orderFields).length > 0) {
@@ -384,6 +394,11 @@ export class OrderController {
               orderIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
               riderId: {type: 'string', format: 'uuid'},
               deliverySlot: {type: 'string'},
+              deliverySlotId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'If given, overrides deliverySlot with this slot\'s label.',
+              },
               deliveryDate: {type: 'string', format: 'date-time'},
               remarks: {type: 'string'},
             },
@@ -395,6 +410,7 @@ export class OrderController {
       orderIds: string[];
       riderId: string;
       deliverySlot: string;
+      deliverySlotId?: string;
       deliveryDate: string;
       remarks?: string;
     },
@@ -424,12 +440,22 @@ export class OrderController {
       throw new HttpErrors.BadRequest('All orders in one assignment must belong to the same store.');
     }
 
+    let deliverySlot = body.deliverySlot;
+    if (body.deliverySlotId !== undefined) {
+      const slot = await this.pickupDeliverySlotRepository.findOne({
+        where: {id: body.deliverySlotId, isDeleted: false} as object,
+      });
+      if (!slot) throw new HttpErrors.BadRequest('Delivery slot not found.');
+      deliverySlot = slot.label;
+    }
+
     const assignedRiderName = `${rider.firstName} ${rider.lastName}`;
     for (const order of orders) {
       await this.orderRepository.updateById(order.id, {
         assignedRiderId: body.riderId,
         assignedRiderName,
-        deliverySlot: body.deliverySlot,
+        deliverySlot,
+        ...(body.deliverySlotId !== undefined ? {deliverySlotId: body.deliverySlotId} : {}),
         deliveryDate: new Date(body.deliveryDate),
         ...(body.remarks ? {remarks: body.remarks} : {}),
       });
