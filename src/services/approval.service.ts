@@ -336,6 +336,7 @@ export class ApprovalService {
       },
       0,
       performedBy,
+      true, // this IS the moment the cheque/PDC leg becomes real, collected money
     )) as {payment?: {id: string}};
 
     await this._mergeIntoSnapshot(request.id, {chequePaymentTransactionId: result.payment?.id});

@@ -2959,6 +2959,12 @@ export class OrderService {
     payment: OrderPaymentInput,
     walletAmount: number,
     _performedBy: string,
+    // Set only by ApprovalService's cheque/PDC approve effect — that call is
+    // the moment paper becomes real money, but paymentMode is still
+    // cheque/pdc on that same leg, so the pending-approval gate below would
+    // otherwise skip it forever (a cheque payment could never actually be
+    // collected once approved).
+    confirmPendingApproval = false,
   ): Promise<object> {
     const {v4} = await import('uuid');
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
@@ -2985,9 +2991,11 @@ export class OrderService {
     // to fit within what's actually owed (the exceeds-due check just below
     // uses `thisTotal`, which includes it), but no PaymentTransaction is
     // created and it never counts toward collected/balanceDue until finance
-    // approves it via the ApprovalRequest the caller raises after this call.
+    // approves it via the ApprovalRequest the caller raises after this call
+    // — at which point confirmPendingApproval is set and this no longer applies.
     const isPendingApproval =
-      payment?.paymentMode === PaymentMode.CHEQUE || payment?.paymentMode === PaymentMode.PDC;
+      !confirmPendingApproval &&
+      (payment?.paymentMode === PaymentMode.CHEQUE || payment?.paymentMode === PaymentMode.PDC);
     const collectedTotal = (isPendingApproval ? 0 : thisPayment) + thisWallet;
 
     // Compared at rupee resolution, so ₹2685.11 against a ₹2685 balance passes
