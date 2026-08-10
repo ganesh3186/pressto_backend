@@ -10,4 +10,5 @@ export enum TransferCustodyEventType {
   RECEIVED = 'received',
   DISCREPANCY = 'discrepancy',
   BAG_RELEASED = 'bag_released',
+  DISCREPANCY_RESOLVED = 'discrepancy_resolved',
 }

@@ -54,10 +54,12 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'rider_pincode_mapping:delete', description: 'Delete a rider pincode mapping'},
   // Interstore Transfer (see TransferController) — send and receive share
   // one permission (transfer:create), since both are the same day-to-day
-  // counter workflow. No update/delete: transfers are permanent once
-  // created, no resolution/edit endpoint exists yet.
+  // counter workflow. transfer:update is separate and narrower: it only
+  // gates resolve-discrepancy, an exception/write-off action, not routine
+  // send/receive. No delete — transfers are permanent once created.
   {permission: 'transfer:create', description: 'Send or receive an interstore transfer'},
   {permission: 'transfer:read',   description: 'View interstore transfers and their custody trail'},
+  {permission: 'transfer:update', description: 'Resolve a discrepant transfer and release its bag'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -78,8 +80,10 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // managers get full control.
       'rider_pincode_mapping:create', 'rider_pincode_mapping:read',
       'rider_pincode_mapping:update', 'rider_pincode_mapping:delete',
-      // Interstore Transfer: the scan-and-send/scan-and-receive counter workflow.
-      'transfer:create', 'transfer:read',
+      // Interstore Transfer: the scan-and-send/scan-and-receive counter
+      // workflow, plus resolving a discrepancy — an exception/write-off
+      // call reserved for a manager, not front-desk staff.
+      'transfer:create', 'transfer:read', 'transfer:update',
     ],
   },
   {

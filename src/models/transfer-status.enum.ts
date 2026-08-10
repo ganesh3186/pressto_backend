@@ -2,6 +2,11 @@ export enum TransferStatus {
   SENT = 'sent',
   RECEIVED = 'received',
   DISCREPANCY = 'discrepancy',
+  // Reached only from DISCREPANCY, via POST /transfers/{id}/resolve-discrepancy.
+  // Deliberately a distinct terminal state, not a flip back to RECEIVED — it
+  // preserves the fact that this transfer WAS discrepant and was later
+  // reviewed/closed, rather than papering over the history.
+  RESOLVED = 'resolved',
 }
 
 // Valid next-status transitions — enforced at the controller layer, same
@@ -12,5 +17,6 @@ export enum TransferStatus {
 export const TRANSFER_STATUS_TRANSITIONS: Record<TransferStatus, TransferStatus[]> = {
   [TransferStatus.SENT]: [TransferStatus.RECEIVED, TransferStatus.DISCREPANCY],
   [TransferStatus.RECEIVED]: [],
-  [TransferStatus.DISCREPANCY]: [],
+  [TransferStatus.DISCREPANCY]: [TransferStatus.RESOLVED],
+  [TransferStatus.RESOLVED]: [],
 };

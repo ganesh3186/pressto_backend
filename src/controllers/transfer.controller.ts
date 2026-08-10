@@ -479,6 +479,144 @@ export class TransferController {
     }
   }
 
+  // ─── Resolve a Discrepancy ──────────────────────────────────────────────────
+  // Closes out a DISCREPANCY transfer and frees its bag. Any still-missing
+  // items that weren't explicitly located stay `missing` on the record —
+  // the transfer moves to RESOLVED (not back to RECEIVED) so the fact it
+  // was once discrepant is never silently erased. Gated by transfer:update
+  // (manager only) rather than transfer:create — writing off missing
+  // inventory is an exception/oversight action, not routine counter work.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:update']})
+  @post('/transfers/{id}/resolve-discrepancy')
+  @response(200, {description: 'Discrepancy resolved, bag released'})
+  async resolveDiscrepancy(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['remarks'],
+            properties: {
+              // Garments previously marked `missing` that have since turned
+              // up — flipped to `received` before the transfer is closed.
+              // Omit/empty if nothing was found (the missing items are
+              // being written off as-is).
+              foundGarmentIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              remarks: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {foundGarmentIds?: string[]; remarks: string},
+  ): Promise<object> {
+    const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
+    if (transfer.status !== TransferStatus.DISCREPANCY) {
+      throw new HttpErrors.BadRequest(`Transfer is ${transfer.status}, not discrepancy.`);
+    }
+    if (!body.remarks?.trim()) {
+      throw new HttpErrors.BadRequest('Remarks are required to resolve a discrepancy.');
+    }
+
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (!this.storeScopeService.allows(scope, transfer.toStoreId)) {
+      throw new HttpErrors.NotFound('Transfer not found.');
+    }
+
+    const items = await this.transferItemRepo.find({where: {transferId: id} as object});
+    const foundIds = new Set(body.foundGarmentIds ?? []);
+    const notMissing = [...foundIds].filter(
+      gid => !items.some(i => i.garmentId === gid && i.scanStatus === TransferItemScanStatus.MISSING),
+    );
+    if (notMissing.length) {
+      throw new HttpErrors.BadRequest(
+        `Not currently missing on this transfer, cannot mark found: ${notMissing.join(', ')}.`,
+      );
+    }
+
+    const {v4} = await import('uuid');
+    const now = new Date();
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      let foundCount = 0;
+      for (const item of items) {
+        if (item.scanStatus === TransferItemScanStatus.MISSING && foundIds.has(item.garmentId)) {
+          await this.transferItemRepo.updateById(
+            item.id,
+            {scanStatus: TransferItemScanStatus.RECEIVED},
+            {transaction: tx},
+          );
+          foundCount++;
+        }
+      }
+
+      const remainingDiscrepant = items.filter(
+        i =>
+          (i.scanStatus === TransferItemScanStatus.MISSING && !foundIds.has(i.garmentId)) ||
+          i.scanStatus === TransferItemScanStatus.EXTRA,
+      ).length;
+
+      await this.transferRepo.updateById(
+        id,
+        {
+          status: TransferStatus.RESOLVED,
+          resolvedAt: now,
+          resolvedBy: currentUser[securityId],
+          remarks: body.remarks,
+          discrepancyCount: remainingDiscrepant,
+        },
+        {transaction: tx},
+      );
+
+      await this.custodyEventRepo.create(
+        {
+          id: v4(),
+          transferId: id,
+          eventType: TransferCustodyEventType.DISCREPANCY_RESOLVED,
+          performedBy: currentUser[securityId],
+          remarks: body.remarks,
+        },
+        {transaction: tx},
+      );
+
+      await this.bagRepo.updateById(
+        transfer.bagId,
+        {
+          status: BagStatus.AVAILABLE,
+          itemCount: 0,
+          currentTransferId: null as unknown as string,
+          currentStoreId: transfer.toStoreId,
+        },
+        {transaction: tx},
+      );
+      await this.custodyEventRepo.create(
+        {
+          id: v4(),
+          transferId: id,
+          eventType: TransferCustodyEventType.BAG_RELEASED,
+          performedBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
+
+      await tx.commit();
+      return {
+        message: 'Discrepancy resolved. Bag released.',
+        transfer: await this.transferRepo.findById(id),
+        itemsFound: foundCount,
+        remainingDiscrepancies: remainingDiscrepant,
+      };
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
   // ─── Item Tracking ────────────────────────────────────────────────────────
 
   @authenticate('jwt')

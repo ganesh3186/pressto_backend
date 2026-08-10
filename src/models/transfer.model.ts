@@ -74,9 +74,18 @@ export class Transfer extends Entity {
   @property({type: 'number', default: 0})
   itemCount?: number;
 
-  // Denormalized — missing+extra count, set at receive time.
+  // Denormalized — missing+extra count, set at receive time and
+  // recomputed if resolve-discrepancy finds any previously-missing items.
   @property({type: 'number', default: 0})
   discrepancyCount?: number;
+
+  // Set only when a DISCREPANCY transfer is closed out via
+  // POST /transfers/{id}/resolve-discrepancy.
+  @property({type: 'date'})
+  resolvedAt?: Date;
+
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  resolvedBy?: string;
 
   @property({type: 'boolean', default: false})
   isDeleted?: boolean;
