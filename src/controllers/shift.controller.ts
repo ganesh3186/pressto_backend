@@ -1,0 +1,341 @@
+import {authenticate, AuthenticationBindings} from '@loopback/authentication';
+import {inject} from '@loopback/core';
+import {repository} from '@loopback/repository';
+import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
+import {securityId, UserProfile} from '@loopback/security';
+import {authorize} from '../authorization';
+import {Shift} from '../models/shift.model';
+import {ShiftStatus} from '../models/shift-status.enum';
+import {EmployeeRepository, ShiftRepository, StoreRepository} from '../repositories';
+import {StoreScopeService} from '../services/store-scope.service';
+
+interface ReconciliationRowInput {
+  actual: number;
+}
+
+interface OpeningBalancesInput {
+  cashInTill: ReconciliationRowInput;
+  banking: ReconciliationRowInput;
+  pettyCash: ReconciliationRowInput;
+  prepaidVouchers: ReconciliationRowInput;
+}
+
+const OPENING_CATEGORY_KEYS = ['cashInTill', 'banking', 'pettyCash', 'prepaidVouchers'] as const;
+
+// Every field the closing form accepts — operator-typed, per confirmed
+// scope (no auto "expected cash" computation this pass; see
+// SHIFT_MANAGEMENT_API.md for why: no brand-tagging or payment-bucket
+// mapping exists yet to compute these from real orders/payments).
+interface ClosingFormInput {
+  collections: {cash: number; card: number; cheque: number; pgLink: number; ppVoucher: number; wallet: number};
+  walletCollections: {cash: number; card: number; upi: number};
+  banking: {supposed: number; deposited: number; inSafe: number};
+  prepaidV: {supposed: number; sentToAc: number; inSafe: number};
+  pettyCash: {
+    prevSupposed: number;
+    recvFromFinance: number;
+    used: number;
+    disapprovedAmt: number;
+    actualBalance: number;
+    cumulativeDiff?: number;
+  };
+  cardPgSettlement: {actualSettlement: number; difference?: number};
+  ppVoucher: {currSupVoucher: number; actualVoucher: number; cumulativeDiff?: number};
+  register: {prevSupCashInTill: number; prevActCashInTill: number; cashReceived: number; reimbursement: number};
+  actualCashInTill: {actual: number; cumulativeDiff?: number; currClosureBanking?: number};
+  revenue: object;
+  salesReturn: object;
+  remarks: string;
+}
+
+export class ShiftController {
+  constructor(
+    @repository(ShiftRepository) private shiftRepository: ShiftRepository,
+    @repository(EmployeeRepository) private employeeRepository: EmployeeRepository,
+    @repository(StoreRepository) private storeRepository: StoreRepository,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
+  ) {}
+
+  // ─── Helpers ────────────────────────────────────────────────────────────────
+
+  /** The caller's own (userId, storeId, storeName/Code) — never client-supplied. */
+  private async resolveCallerStore(currentUser: UserProfile) {
+    const userId = currentUser[securityId];
+    const employee = await this.employeeRepository.findOne({
+      where: {userId, isDeleted: false} as object,
+    });
+    if (!employee?.storeId) {
+      throw new HttpErrors.BadRequest('Your account is not linked to a store.');
+    }
+    const store = await this.storeRepository.findOne({where: {id: employee.storeId}});
+    if (!store) throw new HttpErrors.NotFound('Assigned store not found.');
+    return {
+      userId,
+      userName: `${employee.firstName} ${employee.lastName}`,
+      storeId: employee.storeId,
+      storeCode: store.code,
+      storeName: store.name,
+    };
+  }
+
+  /**
+   * Chains the next shift's "supposed" opening values from the store's
+   * last CLOSED shift (any user) — mirrors buildOpeningSupposedValues() in
+   * the frontend's shift-module.js exactly. No prior closed shift at this
+   * store → the same seed defaults the mock used.
+   */
+  private async resolveSupposedOpeningValues(storeId: string) {
+    const lastClosed = await this.shiftRepository.findOne({
+      where: {storeId, status: ShiftStatus.CLOSED} as object,
+      order: ['closedAt DESC'],
+    });
+    if (!lastClosed) {
+      return {cashInTill: 2000, banking: 0, pettyCash: 0, prepaidVouchers: 0};
+    }
+    const closing = (lastClosed.closing ?? {}) as Record<string, {actual?: number; inSafe?: number; actualBalance?: number; actualVoucher?: number; currSupCashInTill?: number}>;
+    const opening = (lastClosed.opening ?? {}) as Record<string, {actual?: number}>;
+    return {
+      cashInTill:
+        closing.actualCashInTill?.actual ??
+        closing.register?.currSupCashInTill ??
+        opening.cashInTill?.actual ??
+        0,
+      banking: closing.banking?.inSafe ?? opening.banking?.actual ?? 0,
+      pettyCash: closing.pettyCash?.actualBalance ?? opening.pettyCash?.actual ?? 0,
+      prepaidVouchers:
+        closing.ppVoucher?.actualVoucher ??
+        (closing.prepaidV as {inSafe?: number} | undefined)?.inSafe ??
+        opening.prepaidVouchers?.actual ??
+        0,
+    };
+  }
+
+  /**
+   * Recomputes every derived/difference field server-side rather than
+   * trusting client math — mirrors recalcClosingDerived() in
+   * shift-module.js field-for-field. pettyCash.cumulativeDiff and
+   * actualCashInTill.currClosureBanking are passed through as typed —
+   * the frontend itself never defines a formula for those two (confirmed
+   * dead in its own derivation logic), so this doesn't invent one.
+   */
+  private recalcClosingDerived(input: ClosingFormInput): object {
+    const collectionsTotal =
+      Number(input.collections.cash || 0) +
+      Number(input.collections.card || 0) +
+      Number(input.collections.cheque || 0) +
+      Number(input.collections.pgLink || 0) +
+      Number(input.collections.ppVoucher || 0) +
+      Number(input.collections.wallet || 0);
+
+    const walletTotal =
+      Number(input.walletCollections.cash || 0) +
+      Number(input.walletCollections.card || 0) +
+      Number(input.walletCollections.upi || 0);
+
+    const bankingCumulativeDiff =
+      Number(input.banking.deposited || 0) + Number(input.banking.inSafe || 0) - Number(input.banking.supposed || 0);
+
+    const pettyBalance =
+      Number(input.pettyCash.prevSupposed || 0) +
+      Number(input.pettyCash.recvFromFinance || 0) -
+      Number(input.pettyCash.used || 0) -
+      Number(input.pettyCash.disapprovedAmt || 0);
+    const pettyDifference = Number(input.pettyCash.actualBalance || 0) - pettyBalance;
+
+    const ppVoucherDifference = Number(input.ppVoucher.actualVoucher || 0) - Number(input.ppVoucher.currSupVoucher || 0);
+
+    const currSupCashInTill =
+      Number(input.register.prevSupCashInTill || 0) +
+      Number(input.register.cashReceived || 0) -
+      Number(input.register.reimbursement || 0);
+
+    const actualCashInTillDifference = Number(input.actualCashInTill.actual || 0) - currSupCashInTill;
+
+    return {
+      collections: {...input.collections, total: collectionsTotal},
+      walletCollections: {...input.walletCollections, total: walletTotal},
+      banking: {...input.banking, cumulativeDiff: bankingCumulativeDiff},
+      prepaidV: input.prepaidV,
+      pettyCash: {...input.pettyCash, balance: pettyBalance, difference: pettyDifference},
+      cardPgSettlement: input.cardPgSettlement,
+      ppVoucher: {...input.ppVoucher, difference: ppVoucherDifference},
+      register: {...input.register, currSupCashInTill},
+      actualCashInTill: {...input.actualCashInTill, difference: actualCashInTillDifference},
+      revenue: input.revenue,
+      salesReturn: input.salesReturn,
+      remarks: input.remarks,
+    };
+  }
+
+  // ─── Open ─────────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['shift:create']})
+  @post('/shifts')
+  @response(200, {description: 'Shift opened'})
+  async open(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['openingBalances', 'remarks'],
+            properties: {
+              openingBalances: {
+                type: 'object',
+                required: OPENING_CATEGORY_KEYS as unknown as string[],
+                properties: Object.fromEntries(
+                  OPENING_CATEGORY_KEYS.map(key => [
+                    key,
+                    {type: 'object', required: ['actual'], properties: {actual: {type: 'number'}}},
+                  ]),
+                ),
+              },
+              remarks: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {openingBalances: OpeningBalancesInput; remarks: string},
+  ): Promise<object> {
+    if (!body.remarks?.trim()) {
+      throw new HttpErrors.BadRequest('Remarks are required to open a shift.');
+    }
+
+    const caller = await this.resolveCallerStore(currentUser);
+
+    const existingOpen = await this.shiftRepository.findOne({
+      where: {userId: caller.userId, storeId: caller.storeId, status: ShiftStatus.OPEN} as object,
+    });
+    if (existingOpen) {
+      throw new HttpErrors.Conflict('A shift is already open for this user at this store.');
+    }
+
+    const supposed = await this.resolveSupposedOpeningValues(caller.storeId);
+    const opening: Record<string, {supposed: number; actual: number; difference: number}> = {};
+    for (const key of OPENING_CATEGORY_KEYS) {
+      const supposedValue = supposed[key];
+      const actual = Number(body.openingBalances?.[key]?.actual ?? supposedValue) || 0;
+      opening[key] = {supposed: supposedValue, actual, difference: actual - supposedValue};
+    }
+
+    const count = await this.shiftRepository.count({storeId: caller.storeId} as object);
+    const openingNo = count.count + 1;
+
+    const {v4} = await import('uuid');
+    const now = new Date();
+    const shift = await this.shiftRepository.create({
+      id: v4(),
+      openingNo,
+      storeId: caller.storeId,
+      storeCode: caller.storeCode,
+      storeName: caller.storeName,
+      userId: caller.userId,
+      userName: caller.userName,
+      status: ShiftStatus.OPEN,
+      openedAt: now,
+      openingUserId: caller.userId,
+      openingUserName: caller.userName,
+      opening: {...opening, remarks: body.remarks.trim()},
+    });
+
+    return {message: `Shift ${openingNo} opened.`, shift};
+  }
+
+  // ─── Active (the caller's own open shift) ──────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['shift:read']})
+  @get('/shifts/active')
+  @response(200, {description: "The caller's own open shift, if any"})
+  async active(@inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile): Promise<object> {
+    const caller = await this.resolveCallerStore(currentUser);
+    const shift = await this.shiftRepository.findOne({
+      where: {userId: caller.userId, storeId: caller.storeId, status: ShiftStatus.OPEN} as object,
+    });
+    return {shift: shift ?? null};
+  }
+
+  // ─── List ─────────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['shift:read']})
+  @get('/shifts')
+  @response(200, {description: 'Shifts, filtered by store/status'})
+  async find(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('status') status?: ShiftStatus,
+  ): Promise<object> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
+
+    const and: object[] = [];
+    if (status) and.push({status});
+    if (narrowedStoreIds) and.push({storeId: {inq: narrowedStoreIds}});
+
+    const shifts = await this.shiftRepository.find({
+      where: (and.length ? {and} : {}) as object,
+      order: ['openedAt DESC'],
+    });
+    return {shifts};
+  }
+
+  // ─── Detail ───────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['shift:read']})
+  @get('/shifts/{id}')
+  @response(200, {description: 'Shift detail'})
+  async findById(@param.path.string('id') id: string): Promise<Shift> {
+    const shift = await this.shiftRepository.findById(id);
+    if (!shift) throw new HttpErrors.NotFound('Shift not found.');
+    return shift;
+  }
+
+  // ─── Close ────────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['shift:update']})
+  @post('/shifts/{id}/close')
+  @response(200, {description: 'Shift closed'})
+  async close(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({content: {'application/json': {schema: {type: 'object'}}}})
+    body: ClosingFormInput,
+  ): Promise<object> {
+    const userId = currentUser[securityId];
+    const shift = await this.shiftRepository.findById(id);
+    if (!shift) throw new HttpErrors.NotFound('Shift not found.');
+    if (shift.status !== ShiftStatus.OPEN) {
+      throw new HttpErrors.BadRequest('This shift is already closed.');
+    }
+    if (shift.userId !== userId) {
+      throw new HttpErrors.Forbidden('Only the user who opened this shift can close it.');
+    }
+    if (!body.remarks?.trim()) {
+      throw new HttpErrors.BadRequest('Remarks are required to close a shift.');
+    }
+
+    const employee = await this.employeeRepository.findOne({where: {userId, isDeleted: false} as object});
+    const closingUserName = employee ? `${employee.firstName} ${employee.lastName}` : shift.userName;
+
+    const closing = this.recalcClosingDerived({...body, remarks: body.remarks.trim()});
+    const now = new Date();
+
+    await this.shiftRepository.updateById(id, {
+      status: ShiftStatus.CLOSED,
+      closedAt: now,
+      closureNo: shift.openingNo,
+      closingUserId: userId,
+      closingUserName,
+      closing,
+    });
+
+    const updated = await this.shiftRepository.findById(id);
+    return {message: `Shift ${shift.openingNo} closed.`, shift: updated};
+  }
+}

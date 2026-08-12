@@ -52,6 +52,7 @@ import {
   PaymentTransactionRepository,
   PriceListRepository,
   ServiceItemMappingRepository,
+  ShiftRepository,
   StoreRepository,
   StorePriceOverrideRepository,
   WalletRepository,
@@ -176,6 +177,7 @@ export class OrderService {
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(CustomerSecurityDepositRepository) private securityDepositRepo: CustomerSecurityDepositRepository,
     @repository(StoreRepository) private storeRepo: StoreRepository,
+    @repository(ShiftRepository) private shiftRepo: ShiftRepository,
     @repository(ClusterRepository) private clusterRepo: ClusterRepository,
     @repository(ClusterPriceListRepository) private clusterPriceListRepo: ClusterPriceListRepository,
     @repository(PriceListRepository) private priceListRepo: PriceListRepository,
@@ -920,6 +922,13 @@ export class OrderService {
       }
     }
 
+    // Attribution only — not enforced. An order can still be created with
+    // no open shift; this just attaches one when the creating cashier
+    // happens to have one open at this store.
+    const activeShift = await this.shiftRepo.findOne({
+      where: {userId: createdBy, storeId: input.storeId, status: 'open'} as object,
+    });
+
     // ── Transaction ──
     const tx = await this.dataSource.beginTransaction({
       isolationLevel: 'READ COMMITTED' as any,
@@ -956,6 +965,7 @@ export class OrderService {
           specialInstructions: input.specialInstructions,
           specialInstructionMediaIds: input.specialInstructionMediaIds,
           remarks: input.remarks,
+          shiftId: activeShift?.id,
         },
         {transaction: tx},
       );

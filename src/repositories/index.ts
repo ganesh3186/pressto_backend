@@ -14,6 +14,7 @@ export * from './transfer.repository';
 export * from './transfer-item.repository';
 export * from './transfer-custody-event.repository';
 export * from './pickup-delivery-slot.repository';
+export * from './shift.repository';
 export * from './brand.repository';
 export * from './cluster.repository';
 export * from './customer-discount-group.repository';

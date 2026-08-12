@@ -28,6 +28,8 @@ export * from './transfer-custody-event-type.enum';
 export * from './pickup-delivery-slot.model';
 export * from './pickup-delivery-slot-type.enum';
 export * from './pickup-handover-by.enum';
+export * from './shift.model';
+export * from './shift-status.enum';
 export * from './brand.model';
 export * from './cluster.model';
 export * from './customer-discount-group.model';

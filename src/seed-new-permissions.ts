@@ -68,6 +68,12 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'pickup_delivery_slot:read',   description: 'View pickup/delivery slots'},
   {permission: 'pickup_delivery_slot:update', description: 'Update a pickup/delivery slot'},
   {permission: 'pickup_delivery_slot:delete', description: 'Delete a pickup/delivery slot'},
+  // POS Shift (see ShiftController) — open/close is the same day-to-day
+  // counter workflow, granted together. No shift:delete — no delete
+  // endpoint this pass, shifts are permanent once opened.
+  {permission: 'shift:create', description: 'Open a POS shift'},
+  {permission: 'shift:read',   description: 'View POS shifts'},
+  {permission: 'shift:update', description: 'Close a POS shift'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -95,6 +101,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // Pickup/Delivery Slot master: dispatch config, full control.
       'pickup_delivery_slot:create', 'pickup_delivery_slot:read',
       'pickup_delivery_slot:update', 'pickup_delivery_slot:delete',
+      // POS Shift: managers run the counter too, and can open/close/view
+      // same as store_exec.
+      'shift:create', 'shift:read', 'shift:update',
     ],
   },
   {
@@ -112,6 +121,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // Pickup/Delivery Slot master: needs to see slots when logging a
       // call-in pickup request, but not edit the master list.
       'pickup_delivery_slot:read',
+      // POS Shift: this is literally who opens/closes a shift day to day.
+      'shift:create', 'shift:read', 'shift:update',
     ],
   },
   {

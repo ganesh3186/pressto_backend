@@ -109,6 +109,13 @@ export class Order extends Entity {
   @property({type: 'string', postgresql: {dataType: 'text'}})
   remarks?: string;
 
+  // The creating cashier's open POS shift at order-creation time, if one
+  // existed — set automatically by OrderService.createOrder(), never
+  // client-supplied. Not enforced (an order can still be created with no
+  // open shift) — just attribution/audit for when a shift is open.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  shiftId?: string;
+
   // ── Delivery assignment (home_delivery leg only — see OrderDeliveryMethod's
   // doc comment for why this is never confused with a PickupRequest) ──
   // Not a @belongsTo, matching customerId/storeId's existing plain-uuid style
