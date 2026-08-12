@@ -298,6 +298,13 @@ export class OrderController {
                 format: 'uuid',
                 description: "Resolved into a frozen deliveryAddress text snapshot on save.",
               },
+              deliveryAddress: {
+                type: 'string',
+                description:
+                  'Raw display text, for callers with no addressId to resolve. Prefer ' +
+                  'deliveryAddressId when one is available — sending this alone clears ' +
+                  'deliveryAddressId rather than leaving it pointing at a stale address.',
+              },
             },
           },
         },
@@ -314,6 +321,7 @@ export class OrderController {
       deliverySlot?: string;
       deliverySlotId?: string;
       deliveryAddressId?: string;
+      deliveryAddress?: string;
     },
   ): Promise<object> {
     const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
@@ -347,6 +355,10 @@ export class OrderController {
         deliveryAddressId,
         deliveryAddress: this.customerAddressService.toDisplaySnapshot(address),
       });
+    } else if (body.deliveryAddress !== undefined) {
+      // Raw text with no addressId to resolve — clear the FK rather than
+      // silently leaving it pointing at whatever address it last referenced.
+      Object.assign(orderFields, {deliveryAddressId: null});
     }
 
     if (deliverySlotId !== undefined) {
@@ -497,6 +509,78 @@ export class OrderController {
       response.note = `${(result as any).garments.length} garments auto-created. Add brand, color and inspection details to each.`;
     }
     return response;
+  }
+
+  // ─── Delivery Return (failed/undeliverable attempt) ────────────────────────
+  // Distinct from OrderStatus.RETURNED — that's the sales-return/refund
+  // flow, a permanent terminal state excluded from active-order queries.
+  // This is the opposite: a rider couldn't complete the customer delivery
+  // and brought the order back to the store, so it just reverts to READY
+  // with the delivery assignment cleared, ready to be redispatched like
+  // any other ready order. Always reverts to READY, never back to
+  // PARTIALLY_DISPATCHED — Order.status is single-valued, so once it moved
+  // to OUT_FOR_DELIVERY there's no cheap way to recover which state it came
+  // from. A rare edge case (a split order whose remainder fails delivery),
+  // not handled specially this pass.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
+  @post('/orders/{id}/delivery-return')
+  @response(200, {description: 'Delivery attempt reverted — order back to ready for redispatch'})
+  async deliveryReturn(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['remarks'],
+            properties: {
+              remarks: {
+                type: 'string',
+                description: 'Why the delivery attempt failed / the order came back to the store.',
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {remarks: string},
+  ): Promise<object> {
+    const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (order.status !== OrderStatus.OUT_FOR_DELIVERY) {
+      throw new HttpErrors.BadRequest(
+        `Cannot return a delivery for an order that is ${order.status}, not out_for_delivery.`,
+      );
+    }
+    if (!body.remarks?.trim()) {
+      throw new HttpErrors.BadRequest('Remarks are required to record why the delivery was returned.');
+    }
+
+    await this.orderRepository.updateById(id, {
+      status: OrderStatus.READY,
+      assignedRiderId: null as unknown as string,
+      assignedRiderName: null as unknown as string,
+      deliveryMethod: null as unknown as OrderDeliveryMethod,
+      deliveryDate: null as unknown as Date,
+      deliverySlot: null as unknown as string,
+      deliverySlotId: null as unknown as string,
+    });
+
+    const {v4} = await import('uuid');
+    await this.statusHistoryRepository.create({
+      id: v4(),
+      orderId: id,
+      status: OrderStatus.READY,
+      changedAt: new Date(),
+      changedBy: currentUser[securityId],
+      remarks: `Delivery attempt failed — returned to store: ${body.remarks.trim()}`,
+    });
+
+    const updated = await this.orderRepository.findById(id);
+    return {message: 'Delivery returned to store. Order is ready for redispatch.', order: updated};
   }
 
   // ─── Edit Order Items ─────────────────────────────────────────────────────

@@ -197,6 +197,90 @@ later joins onto.
 
 ---
 
+## 3. Dispatch / Delivery Management
+
+### 3.1 `PATCH /orders/{id}`'s delivery fields already persist — the
+localStorage fallback can be removed
+
+Confirmed directly against production data: `deliveryMethod`,
+`deliveryDate`, `deliverySlot`, `deliverySlotId`, `assignedRiderId`,
+`deliveryAddressId`, `remarks` all save correctly today via the existing
+`PATCH /orders/{id}` endpoint (documented in the Rider Management doc).
+`updateOrderDelivery()`'s try/catch fallback to a `deliveryAssignmentPersisted:
+false` localStorage-only path is no longer needed — the "not yet backed by
+this API deployment" message it shows is stale and can be deleted.
+
+One correction: if you send `deliveryAddress` (raw text) **without**
+`deliveryAddressId`, the server now explicitly clears `deliveryAddressId`
+rather than leaving it pointing at a stale address that no longer matches
+the displayed text. **Prefer sending `deliveryAddressId`** when you have
+one (resolved from `useGetCustomerAddresses`, same as the order-create
+flow already does) — the server resolves and freezes the display text for
+you, same as before.
+
+### 3.2 New: `POST /orders/{id}/delivery-return` — failed delivery attempt
+
+**Do not use `POST /orders/{id}/status {status: 'returned'}` for a failed
+delivery attempt.** `OrderStatus.RETURNED` is a separate, permanent status
+reserved for the sales-return/refund flow elsewhere in the system — no
+further transitions are possible once an order reaches it, and it's
+excluded from active-order logic. Using it for "delivery attempt failed,
+rider brought it back to the store" would silently and irreversibly
+dead-end an otherwise-fine order.
+
+Use this instead:
+```
+POST /orders/{id}/delivery-return
+```
+```json
+{ "remarks": "Customer not available at address" }
+```
+Requires the order to currently be `out_for_delivery` (`400` naming the
+actual status otherwise — e.g. calling it twice in a row on the same order
+fails the second time). `remarks` is required — it's recorded in the
+order's status history as the reason.
+
+**What it does, atomically:**
+- `status` → `ready` (order re-enters the normal dispatch queue).
+- Clears `assignedRiderId`, `assignedRiderName`, `deliveryMethod`,
+  `deliveryDate`, `deliverySlot`, `deliverySlotId` — a clean slate for
+  redispatch (a new rider/slot/method needs to be picked again).
+- **Keeps** `deliveryAddress`/`deliveryAddressId` — no need to re-collect
+  the address for a retry.
+- Writes one `OrderStatusHistory` entry, remarks prefixed `"Delivery
+  attempt failed — returned to store: <your remarks>"` so it reads
+  distinctly from a normal ready transition.
+
+**Response `200`**: `{ "message": "Delivery returned to store. Order is ready for redispatch.", "order": {...} }`
+
+**Known limitation, stated explicitly**: always reverts to `ready`, never
+back to `partially_dispatched` — `Order.status` only holds one value, so
+once it moved to `out_for_delivery` there's no way to recover whether it
+came from `ready` or `partially_dispatched` beforehand. Edge case (a split
+order whose remaining portion fails delivery), not handled specially.
+
+Wire this up to Delivery Management's existing "Return to origin store"
+button in place of the current `postOrderStatus(..., {status: 'returned'})`
+call.
+
+### 3.3 Frontend follow-ups — not blocking, no backend work needed
+
+- **Dispatch's "Garment Readiness" column** is still a hardcoded 100%
+  fraction (`readyGarments`/`totalGarments` both set to the same
+  `itemCount`). Per product decision, readiness stays **order-level only**
+  — derive the badge from the real `order.status` (`ready` = fully ready,
+  `partially_dispatched` = partially ready) instead of a fake fraction.
+  No new backend signal exists or is planned for true per-garment tracking.
+- **Dispatch's rider-assignment dialog still uses a hardcoded
+  `DELIVERY_SLOTS` array**, not the real Slot master. Switch it to
+  `useGetSlotMasters().deliverySlots` (§1) the same way Pickup Management
+  and the new Slot Master screen already do.
+- **Still out of scope, deferred**: `attempted`/`failed`/`rescheduled`
+  delivery states have no UI trigger at all today (not even local/mock) —
+  not built. OTP/signature/photo proof-of-delivery — not built, no ETA yet.
+
+---
+
 ## Notes for the frontend
 
 - A pickup request created via the **customer web app** (source `web`,

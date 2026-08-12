@@ -30,7 +30,10 @@ export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.READY]: [OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED, OrderStatus.RETURNED],
   // Set only by the split operation — remaining items continue normal flow
   [OrderStatus.PARTIALLY_DISPATCHED]: [OrderStatus.PARTIALLY_DISPATCHED, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED, OrderStatus.ON_HOLD, OrderStatus.CANCELLED, OrderStatus.RETURNED],
-  [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED, OrderStatus.RETURNED],
+  // READY is reachable from here via POST /orders/{id}/delivery-return —
+  // a failed/undeliverable customer delivery, distinct from RETURNED
+  // (which means the sales-return/refund flow, a permanent terminal state).
+  [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED, OrderStatus.RETURNED, OrderStatus.READY],
   // Set only by the sales-return / garment-return-approval flow, once every
   // item on the order has been returned
   [OrderStatus.DELIVERED]: [OrderStatus.RETURNED],
