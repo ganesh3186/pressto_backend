@@ -2973,9 +2973,21 @@ export class OrderService {
       throw new HttpErrors.BadRequest('Cannot add payment to a cancelled order.');
     }
 
-    // Check how much is still due
+    // Check how much is still due — split-aware, matching getOrderDetails()'s
+    // exact posture (§ Payment summary): a split PARENT's original
+    // PaymentTransaction rows were redistributed at split time, so only its
+    // allocatedPayment share counts, not the now-stale raw transaction sum
+    // (which still holds the full pre-split amount and would make the parent
+    // look permanently overpaid — this is the actual bug: a real balance due
+    // on the parent after an express uplift was invisible to this naive sum,
+    // rejecting a legitimate payment as "exceeds balance due ₹0"). A CHILD's
+    // payment is its allocatedPayment (transferred from the parent) PLUS any
+    // direct transactions of its own.
     const existing = await this.paymentTransactionRepo.find({where: {orderId}});
-    const alreadyPaid = existing.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
+    const txnCollected = existing.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
+    const isChildOrder = !!order.parentOrderId;
+    const allocPay = Number(order.allocatedPayment ?? 0);
+    const alreadyPaid = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
     const due = rupeeBalance(order.totalAmount, alreadyPaid);
 
     // On Account is deferred billing — nothing is actually collected here;
@@ -3063,6 +3075,23 @@ export class OrderService {
             amount: thisWallet,
             paymentDate: new Date(),
           },
+          {transaction: tx},
+        );
+      }
+
+      // A split PARENT's "collected" is read from allocatedPayment alone
+      // (see the due calculation above) — its raw PaymentTransaction rows
+      // are treated as superseded, so a newly collected amount has to be
+      // folded into allocatedPayment itself or it would vanish from every
+      // future balance-due check and display, silently allowing this same
+      // amount to be collected again. Not needed for a child (its own
+      // transaction rows are already summed directly, on top of
+      // allocatedPayment) or a regular never-split order (no allocatedPayment
+      // in play).
+      if (!isChildOrder && allocPay > 0 && collectedTotal > 0) {
+        await this.orderRepo.updateById(
+          orderId,
+          {allocatedPayment: parseFloat((allocPay + collectedTotal).toFixed(2))},
           {transaction: tx},
         );
       }
