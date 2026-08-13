@@ -3,6 +3,7 @@ import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {PresstoDataSource} from '../datasources';
 import {GarmentStatus} from '../models/garment-status.enum';
+import {OrderItem} from '../models/order-item.model';
 import {ProcessLogStatus} from '../models/process-log-status.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {
@@ -40,6 +41,47 @@ export class ProcessService {
   // Creates pending log rows for all services × steps on this garment.
   // Call this when garment transitions to IN_PROCESS.
 
+  /**
+   * The (serviceId, processStepId, serviceSequence, stepSequence) rows a
+   * fresh process-log set for this garment's order item should contain —
+   * the step-generation core of initProcess(), factored out so
+   * completeAllProcesses() can reuse it to auto-initialise a garment whose
+   * process was never started, instead of failing (see that method).
+   */
+  private async buildInitialLogRows(
+    orderItem: OrderItem,
+  ): Promise<Array<{serviceId: string; processStepId: string; serviceSequence: number; stepSequence: number}>> {
+    // Build ordered service list: primary first, then additional in array order
+    const serviceIds: string[] = [
+      orderItem.serviceId,
+      ...(orderItem.additionalServiceIds ?? []),
+    ];
+
+    const rows: Array<{serviceId: string; processStepId: string; serviceSequence: number; stepSequence: number}> = [];
+
+    for (let svcIdx = 0; svcIdx < serviceIds.length; svcIdx++) {
+      const serviceId = serviceIds[svcIdx];
+      const serviceSequence = svcIdx + 1;
+
+      // Fetch steps for this service, ordered by sequence
+      const mappings = await this.spmRepo.find({
+        where: {serviceId, isActive: true, isDeleted: false} as any,
+        order: ['sequence ASC'],
+      });
+
+      for (const mapping of mappings) {
+        rows.push({
+          serviceId,
+          processStepId: mapping.processStepId,
+          serviceSequence,
+          stepSequence: mapping.sequence,
+        });
+      }
+    }
+
+    return rows;
+  }
+
   async initProcess(garmentId: string, _initiatedBy: string): Promise<object> {
     const {v4} = await import('uuid');
 
@@ -60,43 +102,23 @@ export class ProcessService {
     const orderItem = await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
     if (!orderItem) throw new HttpErrors.NotFound('Order item not found.');
 
-    // Build ordered service list: primary first, then additional in array order
-    const serviceIds: string[] = [
-      orderItem.serviceId,
-      ...(orderItem.additionalServiceIds ?? []),
-    ];
-
-    const created: object[] = [];
-
-    for (let svcIdx = 0; svcIdx < serviceIds.length; svcIdx++) {
-      const serviceId = serviceIds[svcIdx];
-      const serviceSequence = svcIdx + 1;
-
-      // Fetch steps for this service, ordered by sequence
-      const mappings = await this.spmRepo.find({
-        where: {serviceId, isActive: true, isDeleted: false} as any,
-        order: ['sequence ASC'],
-      });
-
-      for (const mapping of mappings) {
-        const log = await this.processLogRepo.create({
-          id: v4(),
-          garmentId,
-          orderItemId: garment.orderItemId,
-          serviceId,
-          processStepId: mapping.processStepId,
-          serviceSequence,
-          stepSequence: mapping.sequence,
-          status: ProcessLogStatus.PENDING,
-        });
-        created.push(log);
-      }
-    }
-
-    if (!created.length) {
+    const rows = await this.buildInitialLogRows(orderItem);
+    if (!rows.length) {
       throw new HttpErrors.UnprocessableEntity(
         'No process steps found for the services on this garment.',
       );
+    }
+
+    const created: object[] = [];
+    for (const row of rows) {
+      const log = await this.processLogRepo.create({
+        id: v4(),
+        garmentId,
+        orderItemId: garment.orderItemId,
+        ...row,
+        status: ProcessLogStatus.PENDING,
+      });
+      created.push(log);
     }
 
     return {
@@ -266,15 +288,40 @@ export class ProcessService {
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED' as any});
 
     try {
-      const allLogs = await this.processLogRepo.find({
+      let allLogs = await this.processLogRepo.find({
         where: {garmentId} as any,
         order: ['serviceSequence ASC', 'stepSequence ASC'],
       });
 
+      // Never initialised (no advance/init call ever made for this garment) —
+      // "mark all processed" should still work here rather than forcing a
+      // separate init call first; initialise it now, in the same
+      // transaction, then fall through to complete everything just created.
       if (!allLogs.length) {
-        throw new HttpErrors.BadRequest(
-          'Process not initialised for this garment. Call POST /garments/:id/process/init first.',
-        );
+        const orderItem = await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
+        if (!orderItem) throw new HttpErrors.NotFound('Order item not found.');
+
+        const rows = await this.buildInitialLogRows(orderItem);
+        if (!rows.length) {
+          throw new HttpErrors.UnprocessableEntity(
+            'No process steps found for the services on this garment.',
+          );
+        }
+
+        allLogs = [];
+        for (const row of rows) {
+          const log = await this.processLogRepo.create(
+            {
+              id: v4(),
+              garmentId,
+              orderItemId: garment.orderItemId,
+              ...row,
+              status: ProcessLogStatus.PENDING,
+            },
+            {transaction: tx},
+          );
+          allLogs.push(log);
+        }
       }
 
       const remaining = allLogs.filter(
