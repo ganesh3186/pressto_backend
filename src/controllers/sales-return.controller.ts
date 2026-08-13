@@ -8,10 +8,12 @@ import {SalesReturn, SalesReturnStatus} from '../models/sales-return.model';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {ORDER_STATUS_TRANSITIONS, OrderStatus} from '../models/order-status.enum';
+import {GarmentStatus} from '../models/garment-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {Order} from '../models/order.model';
 import {
   CustomerRepository,
+  GarmentRepository,
   InvoiceRepository,
   ItemRepository,
   OrderItemRepository,
@@ -50,6 +52,7 @@ export class SalesReturnController {
     @repository(OrderStatusHistoryRepository) private statusHistoryRepo: OrderStatusHistoryRepository,
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
+    @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -165,6 +168,34 @@ export class SalesReturnController {
         const names = conflictingOrderItems.map(oi => itemNameById.get(oi.itemId) ?? 'this item');
         throw new HttpErrors.Conflict(
           `Credit note for ${[...new Set(names)].join(', ')} already exists.`,
+        );
+      }
+
+      // A garment already returned to the customer via the separate
+      // return-item/approval flow (GarmentStatus.RETURNED_TO_CUSTOMER)
+      // already had its share of the order's total refunded/adjusted there
+      // (see ApprovalService._applyReturnEffect) — a sales-return credit
+      // note for the same order item would settle the same amount twice.
+      const returnedGarments = await this.garmentRepo.find({
+        where: {
+          orderItemId: {inq: requestedOrderItemIds},
+          status: GarmentStatus.RETURNED_TO_CUSTOMER,
+          isDeleted: false,
+        } as object,
+      });
+      if (returnedGarments.length) {
+        const returnedOrderItemIds = [...new Set(returnedGarments.map(g => g.orderItemId))];
+        const returnedOrderItems = await this.orderItemRepo.find({
+          where: {id: {inq: returnedOrderItemIds}},
+        });
+        const itemIds = [...new Set(returnedOrderItems.map(oi => oi.itemId))];
+        const items = itemIds.length
+          ? await this.itemRepo.find({where: {id: {inq: itemIds}}})
+          : [];
+        const itemNameById = new Map(items.map(it => [it.id, it.name]));
+        const names = returnedOrderItems.map(oi => itemNameById.get(oi.itemId) ?? 'this item');
+        throw new HttpErrors.Conflict(
+          `${[...new Set(names)].join(', ')} already returned to the customer — cannot create a sales return for it.`,
         );
       }
     }
