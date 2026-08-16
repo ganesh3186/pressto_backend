@@ -125,8 +125,9 @@ export class PickupRequest extends Entity {
   @property({type: 'string'})
   runId?: string;
 
-  // Human-readable label for runId ('RUN-ddMM-HHmm') — runId itself stays a
-  // uuid grouping key, this is display-only, set alongside it in assign().
+  // Human-readable label for runId ('RUN{seq6}', same shape as PU/ORD
+  // numbers) — runId itself stays a uuid grouping key, this is display-only,
+  // set alongside it in assign().
   @property({type: 'string'})
   runNumber?: string;
 

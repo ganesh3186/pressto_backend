@@ -364,9 +364,14 @@ export class PickupRequestController {
     const {v4} = await import('uuid');
     const runId = v4();
     const now = new Date();
-    const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const hhmm = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-    const runNumber = `RUN-${ddMM}-${hhmm}`;
+    // No separate PickupRun table to count against, so count distinct runIds
+    // already on record instead — same "RUN{seq6}" shape as PU/ORD numbers,
+    // just sourced from a raw query instead of repository.count().
+    const distinctRuns = await this.dataSource.execute(
+      'SELECT COUNT(DISTINCT runid) AS count FROM pickup_request WHERE runid IS NOT NULL',
+    );
+    const runSeq = Number(distinctRuns?.[0]?.count ?? 0) + 1;
+    const runNumber = `RUN${String(runSeq).padStart(6, '0')}`;
     const assignedRiderName = `${rider.firstName} ${rider.lastName}`;
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
