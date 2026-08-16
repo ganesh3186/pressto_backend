@@ -89,3 +89,6 @@ export * from './invoice.repository';
 export * from './invoice-order-link.repository';
 export * from './sales-return.repository';
 export * from './order-handover.repository';
+export * from './coupon.repository';
+export * from './coupon-customer.repository';
+export * from './coupon-redemption.repository';

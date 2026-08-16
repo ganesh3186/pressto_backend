@@ -23,6 +23,8 @@ import {
   ChallanRepository,
   ClusterPriceListRepository,
   ClusterRepository,
+  CouponRedemptionRepository,
+  CouponRepository,
   CustomerContactRepository,
   CustomerFamilyGroupMemberRepository,
   CustomerFamilyGroupRepository,
@@ -60,6 +62,7 @@ import {
 } from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
 import {GarmentImageType} from '../models/garment-image-type.enum';
+import {CouponEvaluationSuccess, CouponService} from './coupon.service';
 
 export interface OrderPaymentInput {
   paymentMode: PaymentMode;
@@ -140,6 +143,11 @@ export interface CreateOrderInput {
   // an eligible customer paying cash/UPI/card/wallet for this particular
   // order should never be blocked by it.
   paymentIsOnAccount?: boolean;
+  // When supplied, replaces the customer's default discount for this order
+  // (CouponService.evaluate() — see the discount computation below). An
+  // invalid/ineligible code hard-fails order creation rather than silently
+  // skipping the discount.
+  couponCode?: string;
 }
 
 // The final order/invoice/challan total is always a whole rupee (≥ .5 rounds up).
@@ -205,6 +213,9 @@ export class OrderService {
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
+    @repository(CouponRepository) private couponRepo: CouponRepository,
+    @repository(CouponRedemptionRepository) private couponRedemptionRepo: CouponRedemptionRepository,
+    @inject('services.coupon') private couponService: CouponService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -862,11 +873,34 @@ export class OrderService {
     );
     const subtotal = parseFloat((itemsSubtotal + orderChargesTotal).toFixed(2));
 
-    const {discountAmount, discountType} = this.applyCustomerDiscount(
-      subtotal,
-      customer.defaultDiscountType,
-      customer.defaultDiscountValue ? Number(customer.defaultDiscountValue) : 0,
-    );
+    // A coupon replaces the customer's standing default discount for this
+    // order entirely (does not stack) — an invalid/ineligible code hard-
+    // fails order creation rather than silently skipping the discount, so
+    // a customer told a coupon applies is never silently charged in full.
+    let couponResult: CouponEvaluationSuccess | undefined;
+    if (input.couponCode) {
+      const evaluation = await this.couponService.evaluate({
+        couponCode: input.couponCode,
+        customerId: input.customerId,
+        storeId: input.storeId,
+        items: itemPricings.map(p => ({
+          serviceId: p.serviceId,
+          itemId: p.itemId,
+          quantity: p.quantity,
+          totalPrice: p.totalPrice,
+        })),
+      });
+      if (!evaluation.valid) throw new HttpErrors.BadRequest(evaluation.reason);
+      couponResult = evaluation;
+    }
+
+    const {discountAmount, discountType} = couponResult
+      ? {discountAmount: couponResult.discountAmount, discountType: couponResult.discountType}
+      : this.applyCustomerDiscount(
+          subtotal,
+          customer.defaultDiscountType,
+          customer.defaultDiscountValue ? Number(customer.defaultDiscountValue) : 0,
+        );
 
     const gstConfig = await this.gstConfigRepo.findOne({where: {isActive: true, isDeleted: false}});
     const taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
@@ -972,9 +1006,31 @@ export class OrderService {
           // delivery flow to skip payment collection for genuinely
           // on-account orders (see RiderDeliveryController.deliver()).
           isOnAccount: isOnAccountCustomer && !!input.paymentIsOnAccount,
+          ...(couponResult ? {appliedCouponId: couponResult.couponId, couponCode: couponResult.code} : {}),
         },
         {transaction: tx},
       );
+
+      if (couponResult) {
+        await this.couponRedemptionRepo.create(
+          {
+            id: v4(),
+            couponId: couponResult.couponId,
+            couponCodeSnapshot: couponResult.code,
+            customerId: input.customerId,
+            orderId: order.id,
+            discountType: couponResult.discountType,
+            discountAmount: couponResult.discountAmount,
+          },
+          {transaction: tx},
+        );
+        const coupon = await this.couponRepo.findById(couponResult.couponId);
+        await this.couponRepo.updateById(
+          couponResult.couponId,
+          {totalUsesCount: (coupon.totalUsesCount ?? 0) + 1},
+          {transaction: tx},
+        );
+      }
 
       // Order items + item-level charges
       const createdItems = [];

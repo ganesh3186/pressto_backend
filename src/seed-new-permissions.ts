@@ -85,6 +85,14 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   // creation is rider-role-gated (POST /rider/cash-handovers), not admin.
   {permission: 'rider_cash_handover:read',   description: 'View rider cash-pending summary and handover history'},
   {permission: 'rider_cash_handover:update', description: 'Confirm receipt of a rider cash handover batch'},
+  // Coupon (see CouponController) — coupon:read also gates the validate-
+  // only preview endpoint (POST /coupons/validate), a pure read/query
+  // with no side effects, same posture as pickup_request:read gating
+  // GET /pickup-requests/count.
+  {permission: 'coupon:create', description: 'Create a coupon'},
+  {permission: 'coupon:read',   description: 'View coupons, redemption history, and validate a coupon code'},
+  {permission: 'coupon:update', description: 'Update a coupon, and manage its individually-targeted customers'},
+  {permission: 'coupon:delete', description: 'Delete a coupon'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -121,6 +129,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'delivery:read', 'delivery:update',
       // Rider Cash Handover: managers can view and confirm receipt too.
       'rider_cash_handover:read', 'rider_cash_handover:update',
+      // Coupon: full control — a marketing/ops lever managers own outright,
+      // same posture as Pickup/Delivery Slot master.
+      'coupon:create', 'coupon:read', 'coupon:update', 'coupon:delete',
     ],
   },
   {
@@ -147,6 +158,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // same front-desk counter action store_exec already owns for
       // Transfer receive.
       'rider_cash_handover:read', 'rider_cash_handover:update',
+      // Coupon: read-only — needs to see/validate a coupon a customer
+      // presents at the counter, not author one.
+      'coupon:read',
     ],
   },
   {
@@ -154,9 +168,12 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
     permissions: [
       'customer_address:create', 'customer_address:read', 'customer_address:update',
       'customer_phone:create', 'customer_phone:read', 'customer_phone:update',
+      // Coupon: same reason as store_exec — validates a coupon code
+      // during order creation, doesn't author coupons.
+      'coupon:read',
     ],
   },
-  {roleValue: 'asm', permissions: ['customer_address:read', 'customer_phone:read']},
+  {roleValue: 'asm', permissions: ['customer_address:read', 'customer_phone:read', 'coupon:read']},
   {
     roleValue: 'finance',
     permissions: [

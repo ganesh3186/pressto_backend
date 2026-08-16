@@ -88,6 +88,16 @@ export class Order extends Entity {
   @property({type: 'string'})
   discountType?: string;
 
+  // Denormalized "this discount came from a coupon" markers — display/
+  // filter convenience only, same style as assignedRiderName next to
+  // assignedRiderId. CouponRedemption (keyed by orderId) remains the
+  // authoritative audit trail.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  appliedCouponId?: string;
+
+  @property({type: 'string'})
+  couponCode?: string;
+
   @property({type: 'number', default: 0, postgresql: {dataType: 'numeric'}})
   taxAmount?: number;
 
