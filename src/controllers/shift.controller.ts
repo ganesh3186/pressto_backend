@@ -6,7 +6,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {Shift} from '../models/shift.model';
 import {ShiftStatus} from '../models/shift-status.enum';
-import {EmployeeRepository, ShiftRepository, StoreRepository} from '../repositories';
+import {EmployeeRepository, ShiftRepository, StoreRepository, UsersRepository} from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 
 interface ReconciliationRowInput {
@@ -53,29 +53,41 @@ export class ShiftController {
     @repository(ShiftRepository) private shiftRepository: ShiftRepository,
     @repository(EmployeeRepository) private employeeRepository: EmployeeRepository,
     @repository(StoreRepository) private storeRepository: StoreRepository,
+    @repository(UsersRepository) private usersRepository: UsersRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
-  /** The caller's own (userId, storeId, storeName/Code) — never client-supplied. */
-  private async resolveCallerStore(currentUser: UserProfile) {
+  /**
+   * The caller's own (userId, storeId, storeName/Code). A role with a fixed
+   * Employee.storeId is always locked to it — requestedStoreId is ignored
+   * for them, so a store_exec can never claim a shift at a store they don't
+   * work at. Only a store-unbound role (manager, super_admin — no Employee
+   * row, or one with no storeId) falls through to requestedStoreId, which
+   * is the one and only place a client-supplied store is trusted.
+   */
+  private async resolveCallerStore(currentUser: UserProfile, requestedStoreId?: string) {
     const userId = currentUser[securityId];
     const employee = await this.employeeRepository.findOne({
       where: {userId, isDeleted: false} as object,
     });
-    if (!employee?.storeId) {
-      throw new HttpErrors.BadRequest('Your account is not linked to a store.');
+
+    const storeId = employee?.storeId ?? requestedStoreId;
+    if (!storeId) {
+      throw new HttpErrors.BadRequest('Select a store — your account is not linked to one.');
     }
-    const store = await this.storeRepository.findOne({where: {id: employee.storeId}});
-    if (!store) throw new HttpErrors.NotFound('Assigned store not found.');
-    return {
-      userId,
-      userName: `${employee.firstName} ${employee.lastName}`,
-      storeId: employee.storeId,
-      storeCode: store.code,
-      storeName: store.name,
-    };
+
+    const store = await this.storeRepository.findOne({where: {id: storeId}});
+    if (!store) throw new HttpErrors.NotFound('Store not found.');
+
+    let userName = employee ? `${employee.firstName} ${employee.lastName}` : '';
+    if (!userName) {
+      const account = await this.usersRepository.findOne({where: {id: userId} as object});
+      userName = account?.fullName ?? 'User';
+    }
+
+    return {userId, userName, storeId, storeCode: store.code, storeName: store.name};
   }
 
   /**
@@ -193,18 +205,23 @@ export class ShiftController {
                 ),
               },
               remarks: {type: 'string'},
+              storeId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'Required only for a caller with no fixed Employee.storeId (manager, super_admin).',
+              },
             },
           },
         },
       },
     })
-    body: {openingBalances: OpeningBalancesInput; remarks: string},
+    body: {openingBalances: OpeningBalancesInput; remarks: string; storeId?: string},
   ): Promise<object> {
     if (!body.remarks?.trim()) {
       throw new HttpErrors.BadRequest('Remarks are required to open a shift.');
     }
 
-    const caller = await this.resolveCallerStore(currentUser);
+    const caller = await this.resolveCallerStore(currentUser, body.storeId);
 
     const existingOpen = await this.shiftRepository.findOne({
       where: {userId: caller.userId, storeId: caller.storeId, status: ShiftStatus.OPEN} as object,
@@ -250,8 +267,20 @@ export class ShiftController {
   @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts/active')
   @response(200, {description: "The caller's own open shift, if any"})
-  async active(@inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile): Promise<object> {
-    const caller = await this.resolveCallerStore(currentUser);
+  async active(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+  ): Promise<object> {
+    // A store-unbound caller (manager, super_admin) with no store picked
+    // yet has, by definition, no active shift to report — not an error
+    // state, just "nothing to show yet".
+    let caller;
+    try {
+      caller = await this.resolveCallerStore(currentUser, storeId);
+    } catch (error) {
+      if (error instanceof HttpErrors.HttpError) return {shift: null};
+      throw error;
+    }
     const shift = await this.shiftRepository.findOne({
       where: {userId: caller.userId, storeId: caller.storeId, status: ShiftStatus.OPEN} as object,
     });
