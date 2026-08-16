@@ -6,7 +6,15 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {Shift} from '../models/shift.model';
 import {ShiftStatus} from '../models/shift-status.enum';
-import {EmployeeRepository, ShiftRepository, StoreRepository, UsersRepository} from '../repositories';
+import {PaymentMode} from '../models/payment-mode.enum';
+import {
+  EmployeeRepository,
+  OrderRepository,
+  PaymentTransactionRepository,
+  ShiftRepository,
+  StoreRepository,
+  UsersRepository,
+} from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 
 interface ReconciliationRowInput {
@@ -54,6 +62,8 @@ export class ShiftController {
     @repository(EmployeeRepository) private employeeRepository: EmployeeRepository,
     @repository(StoreRepository) private storeRepository: StoreRepository,
     @repository(UsersRepository) private usersRepository: UsersRepository,
+    @repository(OrderRepository) private orderRepository: OrderRepository,
+    @repository(PaymentTransactionRepository) private paymentTransactionRepository: PaymentTransactionRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -322,6 +332,66 @@ export class ShiftController {
     const shift = await this.shiftRepository.findById(id);
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
     return shift;
+  }
+
+  // ─── Collected-so-far (prefill for the closing form) ───────────────────────
+  // Real counter collections during this shift's window, bucketed to match
+  // the closing form's `collections` fields — a starting point the cashier
+  // can still adjust, not a silent override of what they submit. Scoped to
+  // this shift's store + [openedAt, now], counter-collected only (a rider's
+  // cash isn't in the till until they hand it over — that's tracked
+  // separately by Rider Cash Handover), payments only (never refunds).
+  //
+  // ppVoucher/walletCollections have no PaymentMode to source from and stay
+  // operator-typed — same documented gap as the revenue-by-brand matrix.
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['shift:read']})
+  @get('/shifts/{id}/collected')
+  @response(200, {description: 'Real collections during this shift, bucketed for the closing form'})
+  async collected(@param.path.string('id') id: string): Promise<object> {
+    const shift = await this.shiftRepository.findById(id);
+    if (!shift) throw new HttpErrors.NotFound('Shift not found.');
+
+    const orders = await this.orderRepository.find({
+      where: {storeId: shift.storeId} as object,
+      fields: {id: true} as object,
+    });
+    const orderIds = orders.map(o => o.id);
+    if (!orderIds.length) {
+      return {collections: {cash: 0, card: 0, cheque: 0, pgLink: 0, wallet: 0}};
+    }
+
+    const windowEnd = shift.closedAt ?? new Date();
+    const transactions = await this.paymentTransactionRepository.find({
+      where: {
+        orderId: {inq: orderIds},
+        riderId: null,
+        transactionType: {neq: 'refund'},
+        paymentDate: {between: [shift.openedAt, windowEnd]},
+      } as object,
+    });
+
+    const bucketOf: Record<string, 'cash' | 'card' | 'cheque' | 'pgLink' | 'wallet' | null> = {
+      [PaymentMode.CASH]: 'cash',
+      [PaymentMode.CARD]: 'card',
+      [PaymentMode.CHEQUE]: 'cheque',
+      [PaymentMode.PDC]: 'cheque',
+      [PaymentMode.UPI]: 'pgLink',
+      [PaymentMode.NET_BANKING]: 'pgLink',
+      [PaymentMode.BANK_TRANSFER]: 'pgLink',
+      [PaymentMode.GATEWAY]: 'pgLink',
+      [PaymentMode.WALLET]: 'wallet',
+      [PaymentMode.PAY_LATER]: null,
+      [PaymentMode.ON_ACCOUNT]: null,
+    };
+
+    const collections = {cash: 0, card: 0, cheque: 0, pgLink: 0, wallet: 0};
+    for (const t of transactions) {
+      const bucket = bucketOf[t.paymentMode];
+      if (bucket) collections[bucket] += Number(t.amount) || 0;
+    }
+
+    return {collections};
   }
 
   // ─── Close ────────────────────────────────────────────────────────────────
