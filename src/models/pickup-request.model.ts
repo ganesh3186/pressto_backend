@@ -125,8 +125,20 @@ export class PickupRequest extends Entity {
   @property({type: 'string'})
   runId?: string;
 
+  // Human-readable label for runId ('RUN-ddMM-HHmm') — runId itself stays a
+  // uuid grouping key, this is display-only, set alongside it in assign().
+  @property({type: 'string'})
+  runNumber?: string;
+
   @belongsTo(() => Rider)
   assignedRiderId?: string;
+
+  // Denormalized snapshot of assignedRiderId's Rider name, set in assign() —
+  // GET /pickup-requests doesn't `include` the assignedRider relation, so
+  // without this the admin table would show "Not assigned" even once a
+  // rider is actually assigned.
+  @property({type: 'string'})
+  assignedRiderName?: string;
 
   @property({type: 'date'})
   assignedAt?: Date;

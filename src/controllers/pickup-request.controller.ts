@@ -340,7 +340,7 @@ export class PickupRequestController {
       remarks?: string;
     },
   ): Promise<object> {
-    await this.assertRiderAssignable(body.riderId);
+    const rider = await this.assertRiderAssignable(body.riderId);
     const store = await this.storeRepository.findOne({where: {id: body.storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
 
@@ -364,6 +364,10 @@ export class PickupRequestController {
     const {v4} = await import('uuid');
     const runId = v4();
     const now = new Date();
+    const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const hhmm = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+    const runNumber = `RUN-${ddMM}-${hhmm}`;
+    const assignedRiderName = `${rider.firstName} ${rider.lastName}`;
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
@@ -372,6 +376,7 @@ export class PickupRequestController {
           req.id,
           {
             assignedRiderId: body.riderId,
+            assignedRiderName,
             assignedAt: now,
             assignedBy: currentUser[securityId],
             storeId: body.storeId,
@@ -380,6 +385,7 @@ export class PickupRequestController {
             ...(body.slotId !== undefined ? {pickupSlotId: body.slotId} : {}),
             status: PickupRequestStatus.RIDER_ASSIGNED,
             runId,
+            runNumber,
             ...(body.remarks ? {remarks: body.remarks} : {}),
           },
           {transaction: tx},
@@ -391,6 +397,6 @@ export class PickupRequestController {
       throw error;
     }
 
-    return {message: 'Pickup requests assigned.', runId, assignedCount: requests.length};
+    return {message: 'Pickup requests assigned.', runId, runNumber, assignedCount: requests.length};
   }
 }
