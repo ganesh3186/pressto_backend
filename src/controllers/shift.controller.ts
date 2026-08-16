@@ -7,6 +7,7 @@ import {authorize} from '../authorization';
 import {Shift} from '../models/shift.model';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
+import {PaymentRequestStatus} from '../models/payment-request-status.enum';
 import {
   EmployeeRepository,
   OrderRepository,
@@ -14,6 +15,7 @@ import {
   ShiftRepository,
   StoreRepository,
   UsersRepository,
+  WalletRechargeRequestRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 
@@ -64,6 +66,7 @@ export class ShiftController {
     @repository(UsersRepository) private usersRepository: UsersRepository,
     @repository(OrderRepository) private orderRepository: OrderRepository,
     @repository(PaymentTransactionRepository) private paymentTransactionRepository: PaymentTransactionRepository,
+    @repository(WalletRechargeRequestRepository) private walletRechargeRequestRepository: WalletRechargeRequestRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -336,14 +339,20 @@ export class ShiftController {
 
   // ─── Collected-so-far (prefill for the closing form) ───────────────────────
   // Real counter collections during this shift's window, bucketed to match
-  // the closing form's `collections` fields — a starting point the cashier
-  // can still adjust, not a silent override of what they submit. Scoped to
-  // this shift's store + [openedAt, now], counter-collected only (a rider's
-  // cash isn't in the till until they hand it over — that's tracked
+  // the closing form's fields — a starting point the cashier can still
+  // adjust, not a silent override of what they submit. Order payments are
+  // scoped to this shift's store + [openedAt, now], counter-collected only
+  // (a rider's cash isn't in the till until they hand it over — tracked
   // separately by Rider Cash Handover), payments only (never refunds).
   //
-  // ppVoucher/walletCollections have no PaymentMode to source from and stay
-  // operator-typed — same documented gap as the revenue-by-brand matrix.
+  // Wallet recharges (top-ups) have no store/shift field at all — only who
+  // processed it and when — so they're scoped by performedBy = this
+  // shift's own opener within the same window, matching the one-cashier-
+  // per-shift confirmed setup.
+  //
+  // ppVoucher and Wallet Collections' own upi/card have no further
+  // PaymentMode source beyond what's summed here and stay operator-typed —
+  // same documented gap as the revenue-by-brand matrix.
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts/{id}/collected')
@@ -352,46 +361,70 @@ export class ShiftController {
     const shift = await this.shiftRepository.findById(id);
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
 
+    const windowEnd = shift.closedAt ?? new Date();
+    const collections = {cash: 0, card: 0, cheque: 0, pgLink: 0, wallet: 0};
+
     const orders = await this.orderRepository.find({
       where: {storeId: shift.storeId} as object,
       fields: {id: true} as object,
     });
     const orderIds = orders.map(o => o.id);
-    if (!orderIds.length) {
-      return {collections: {cash: 0, card: 0, cheque: 0, pgLink: 0, wallet: 0}};
+    if (orderIds.length) {
+      const transactions = await this.paymentTransactionRepository.find({
+        where: {
+          orderId: {inq: orderIds},
+          riderId: null,
+          transactionType: {neq: 'refund'},
+          paymentDate: {between: [shift.openedAt, windowEnd]},
+        } as object,
+      });
+
+      const bucketOf: Record<string, 'cash' | 'card' | 'cheque' | 'pgLink' | 'wallet' | null> = {
+        [PaymentMode.CASH]: 'cash',
+        [PaymentMode.CARD]: 'card',
+        [PaymentMode.CHEQUE]: 'cheque',
+        [PaymentMode.PDC]: 'cheque',
+        [PaymentMode.UPI]: 'pgLink',
+        [PaymentMode.NET_BANKING]: 'pgLink',
+        [PaymentMode.BANK_TRANSFER]: 'pgLink',
+        [PaymentMode.GATEWAY]: 'pgLink',
+        [PaymentMode.WALLET]: 'wallet',
+        [PaymentMode.PAY_LATER]: null,
+        [PaymentMode.ON_ACCOUNT]: null,
+      };
+      for (const t of transactions) {
+        const bucket = bucketOf[t.paymentMode];
+        if (bucket) collections[bucket] += Number(t.amount) || 0;
+      }
     }
 
-    const windowEnd = shift.closedAt ?? new Date();
-    const transactions = await this.paymentTransactionRepository.find({
+    const recharges = await this.walletRechargeRequestRepository.find({
       where: {
-        orderId: {inq: orderIds},
-        riderId: null,
-        transactionType: {neq: 'refund'},
-        paymentDate: {between: [shift.openedAt, windowEnd]},
+        performedBy: shift.userId,
+        status: PaymentRequestStatus.SUCCESS,
+        createdAt: {between: [shift.openedAt, windowEnd]},
       } as object,
     });
-
-    const bucketOf: Record<string, 'cash' | 'card' | 'cheque' | 'pgLink' | 'wallet' | null> = {
+    const walletCollections = {cash: 0, card: 0, upi: 0};
+    const rechargeBucketOf: Record<string, 'cash' | 'card' | 'upi' | null> = {
       [PaymentMode.CASH]: 'cash',
       [PaymentMode.CARD]: 'card',
-      [PaymentMode.CHEQUE]: 'cheque',
-      [PaymentMode.PDC]: 'cheque',
-      [PaymentMode.UPI]: 'pgLink',
-      [PaymentMode.NET_BANKING]: 'pgLink',
-      [PaymentMode.BANK_TRANSFER]: 'pgLink',
-      [PaymentMode.GATEWAY]: 'pgLink',
-      [PaymentMode.WALLET]: 'wallet',
-      [PaymentMode.PAY_LATER]: null,
-      [PaymentMode.ON_ACCOUNT]: null,
+      [PaymentMode.UPI]: 'upi',
     };
-
-    const collections = {cash: 0, card: 0, cheque: 0, pgLink: 0, wallet: 0};
-    for (const t of transactions) {
-      const bucket = bucketOf[t.paymentMode];
-      if (bucket) collections[bucket] += Number(t.amount) || 0;
+    for (const r of recharges) {
+      const bucket = rechargeBucketOf[r.paymentMode];
+      if (bucket) walletCollections[bucket] += Number(r.amount) || 0;
     }
 
-    return {collections};
+    // All physical cash handled this shift, from either source — the same
+    // total both feeds Register's "cash received" and raises what's
+    // supposed to be bankable.
+    const cashReceived = collections.cash + walletCollections.cash;
+    const openingBankingActual =
+      Number((shift.opening as {banking?: {actual?: number}} | undefined)?.banking?.actual) || 0;
+    const bankingSupposed = openingBankingActual + cashReceived;
+
+    return {collections, walletCollections, cashReceived, bankingSupposed};
   }
 
   // ─── Close ────────────────────────────────────────────────────────────────
