@@ -145,7 +145,7 @@ export interface CreateOrderInput {
 // The final order/invoice/challan total is always a whole rupee (≥ .5 rounds up).
 // Component amounts (subtotal, tax, unit prices) keep their decimals — only the
 // finalized total the customer sees/pays is rounded.
-function roundRupee(value: unknown): number {
+export function roundRupee(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
@@ -966,6 +966,12 @@ export class OrderService {
           specialInstructionMediaIds: input.specialInstructionMediaIds,
           remarks: input.remarks,
           shiftId: activeShift?.id,
+          // Persisted once, here — the only place that knows whether THIS
+          // order was actually billed on account (vs. an eligible customer
+          // who simply paid another way). Read back later by the rider
+          // delivery flow to skip payment collection for genuinely
+          // on-account orders (see RiderDeliveryController.deliver()).
+          isOnAccount: isOnAccountCustomer && !!input.paymentIsOnAccount,
         },
         {transaction: tx},
       );
@@ -2973,6 +2979,30 @@ export class OrderService {
 
   // ─── Add Payment to Existing Order ───────────────────────────────────────
 
+  // Split-aware balance-due calc, matching getOrderDetails()'s exact posture
+  // (§ Payment summary): a split PARENT's original PaymentTransaction rows
+  // were redistributed at split time, so only its allocatedPayment share
+  // counts, not the now-stale raw transaction sum (which still holds the
+  // full pre-split amount and would make the parent look permanently
+  // overpaid). A CHILD's payment is its allocatedPayment (transferred from
+  // the parent) PLUS any direct transactions of its own.
+  //
+  // Extracted so both addPayment() and RiderDeliveryController's
+  // full-payment-required check use exactly one definition of "how much is
+  // still due" — this exact formula was the source of a real bug once
+  // already (see the split/express-uplift fix on this method).
+  async computeBalanceDue(
+    order: Order,
+  ): Promise<{due: number; alreadyPaid: number; isChildOrder: boolean; allocPay: number}> {
+    const existing = await this.paymentTransactionRepo.find({where: {orderId: order.id}});
+    const txnCollected = existing.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
+    const isChildOrder = !!order.parentOrderId;
+    const allocPay = Number(order.allocatedPayment ?? 0);
+    const alreadyPaid = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
+    const due = rupeeBalance(order.totalAmount, alreadyPaid);
+    return {due, alreadyPaid, isChildOrder, allocPay};
+  }
+
   async addPayment(
     orderId: string,
     payment: OrderPaymentInput,
@@ -2984,6 +3014,11 @@ export class OrderService {
     // otherwise skip it forever (a cheque payment could never actually be
     // collected once approved).
     confirmPendingApproval = false,
+    // Set only by RiderDeliveryController's deliver() — tags the created
+    // CASH transaction as collected-by-rider, pending handover to the
+    // store. Never set by any other caller (POS counter payments, approval
+    // effects, etc. have no rider involved).
+    riderId?: string,
   ): Promise<object> {
     const {v4} = await import('uuid');
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
@@ -2992,22 +3027,7 @@ export class OrderService {
       throw new HttpErrors.BadRequest('Cannot add payment to a cancelled order.');
     }
 
-    // Check how much is still due — split-aware, matching getOrderDetails()'s
-    // exact posture (§ Payment summary): a split PARENT's original
-    // PaymentTransaction rows were redistributed at split time, so only its
-    // allocatedPayment share counts, not the now-stale raw transaction sum
-    // (which still holds the full pre-split amount and would make the parent
-    // look permanently overpaid — this is the actual bug: a real balance due
-    // on the parent after an express uplift was invisible to this naive sum,
-    // rejecting a legitimate payment as "exceeds balance due ₹0"). A CHILD's
-    // payment is its allocatedPayment (transferred from the parent) PLUS any
-    // direct transactions of its own.
-    const existing = await this.paymentTransactionRepo.find({where: {orderId}});
-    const txnCollected = existing.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
-    const isChildOrder = !!order.parentOrderId;
-    const allocPay = Number(order.allocatedPayment ?? 0);
-    const alreadyPaid = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
-    const due = rupeeBalance(order.totalAmount, alreadyPaid);
+    const {due, alreadyPaid, isChildOrder, allocPay} = await this.computeBalanceDue(order);
 
     // On Account is deferred billing — nothing is actually collected here;
     // see the matching guard in createOrder(). Force it to 0 so it can never
@@ -3065,6 +3085,9 @@ export class OrderService {
             transactionReference: payment.transactionReference,
             gatewayResponse: payment.gatewayResponse,
             paymentDate: new Date(),
+            ...(riderId && payment.paymentMode === PaymentMode.CASH
+              ? {riderId, riderHandoverStatus: 'with_rider'}
+              : {}),
           },
           {transaction: tx},
         );

@@ -74,6 +74,17 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'shift:create', description: 'Open a POS shift'},
   {permission: 'shift:read',   description: 'View POS shifts'},
   {permission: 'shift:update', description: 'Close a POS shift'},
+  // Delivery (see DeliveryController, order.controller.ts's assignDelivery)
+  // — created only when Dispatch supplies a bagId. No delivery:create —
+  // creation happens inside order:update-gated assignDelivery, not a
+  // standalone admin action.
+  {permission: 'delivery:read',   description: 'View deliveries and their order/custody detail'},
+  {permission: 'delivery:update', description: 'Cancel an unstarted delivery and release its bag'},
+  // Rider Cash Handover (see RiderCashHandoverController) — the store-side
+  // half of a rider handing back cash collected at delivery. No :create —
+  // creation is rider-role-gated (POST /rider/cash-handovers), not admin.
+  {permission: 'rider_cash_handover:read',   description: 'View rider cash-pending summary and handover history'},
+  {permission: 'rider_cash_handover:update', description: 'Confirm receipt of a rider cash handover batch'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -104,6 +115,12 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // POS Shift: managers run the counter too, and can open/close/view
       // same as store_exec.
       'shift:create', 'shift:read', 'shift:update',
+      // Delivery: full control, including cancelling an unstarted run —
+      // an exception action reserved for a manager, matching
+      // transfer:update's posture.
+      'delivery:read', 'delivery:update',
+      // Rider Cash Handover: managers can view and confirm receipt too.
+      'rider_cash_handover:read', 'rider_cash_handover:update',
     ],
   },
   {
@@ -123,6 +140,13 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'pickup_delivery_slot:read',
       // POS Shift: this is literally who opens/closes a shift day to day.
       'shift:create', 'shift:read', 'shift:update',
+      // Delivery: read-only — assigning one happens via order:update on
+      // assignDelivery, not this permission; cancelling stays manager-only.
+      'delivery:read',
+      // Rider Cash Handover: confirming a rider's cash handover is the
+      // same front-desk counter action store_exec already owns for
+      // Transfer receive.
+      'rider_cash_handover:read', 'rider_cash_handover:update',
     ],
   },
   {

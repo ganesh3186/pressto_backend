@@ -64,6 +64,14 @@ export class Bag extends Entity {
   @property({ type: 'string', postgresql: { dataType: 'uuid' } })
   currentTransferId?: string;
 
+  // The open Delivery this bag is locked to. Null when AVAILABLE. A bag is
+  // only ever in one custody chain at a time either way, so this stays a
+  // second plain field rather than a generalized currentUsageType/Id pair
+  // — that would mean touching every already-shipped Transfer read/write
+  // site for no behavioral gain.
+  @property({ type: 'string', postgresql: { dataType: 'uuid' } })
+  currentDeliveryId?: string;
+
   @property({
     type: 'boolean',
     default: false,

@@ -1,6 +1,6 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {
   del,
   get,
@@ -14,17 +14,27 @@ import {
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
+import {PresstoDataSource} from '../datasources';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {ContactRelationship} from '../models/contact-relationship.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
+import {BagStatus} from '../models/bag-status.enum';
+import {DeliveryStatus} from '../models/delivery-status.enum';
+import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.enum';
 import {
+  BagRepository,
   CustomerAddressRepository,
+  CustomerRepository,
+  DeliveryCustodyEventRepository,
+  DeliveryOrderRepository,
+  DeliveryRepository,
   OrderLabelAssignmentRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
   RiderRepository,
+  StoreRepository,
 } from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
 import {OrderDeliveryMethod} from '../models/order-delivery-method.enum';
@@ -91,6 +101,20 @@ export class OrderController {
     private customerAddressService: CustomerAddressService,
     @repository(PickupDeliverySlotRepository)
     private pickupDeliverySlotRepository: PickupDeliverySlotRepository,
+    @repository(BagRepository)
+    private bagRepository: BagRepository,
+    @repository(StoreRepository)
+    private storeRepository: StoreRepository,
+    @repository(CustomerRepository)
+    private customerRepository: CustomerRepository,
+    @repository(DeliveryRepository)
+    private deliveryRepository: DeliveryRepository,
+    @repository(DeliveryOrderRepository)
+    private deliveryOrderRepository: DeliveryOrderRepository,
+    @repository(DeliveryCustodyEventRepository)
+    private deliveryCustodyEventRepository: DeliveryCustodyEventRepository,
+    @inject('datasources.pressto')
+    private dataSource: PresstoDataSource,
   ) {}
 
   // Cheque/PDC legs never got a PaymentTransaction (see order.service.ts's
@@ -396,6 +420,7 @@ export class OrderController {
   @post('/orders/delivery-assignment')
   @response(200, {description: 'Orders assigned to a rider for delivery'})
   async assignDelivery(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @requestBody({
       content: {
         'application/json': {
@@ -413,6 +438,12 @@ export class OrderController {
               },
               deliveryDate: {type: 'string', format: 'date-time'},
               remarks: {type: 'string'},
+              bagId: {
+                type: 'string',
+                format: 'uuid',
+                description:
+                  'Optional. When given, also creates a Delivery (bag-custody run the rider app can see) — see DeliveryController/RiderDeliveryController. Omit to keep the plain per-order assignment behavior (e.g. Manual Assign).',
+              },
             },
           },
         },
@@ -425,6 +456,7 @@ export class OrderController {
       deliverySlotId?: string;
       deliveryDate: string;
       remarks?: string;
+      bagId?: string;
     },
   ): Promise<object> {
     const rider = await this.riderRepository.findOne({where: {id: body.riderId, isDeleted: false}});
@@ -461,19 +493,123 @@ export class OrderController {
       deliverySlot = slot.label;
     }
 
-    const assignedRiderName = `${rider.firstName} ${rider.lastName}`;
-    for (const order of orders) {
-      await this.orderRepository.updateById(order.id, {
-        assignedRiderId: body.riderId,
-        assignedRiderName,
-        deliverySlot,
-        ...(body.deliverySlotId !== undefined ? {deliverySlotId: body.deliverySlotId} : {}),
-        deliveryDate: new Date(body.deliveryDate),
-        ...(body.remarks ? {remarks: body.remarks} : {}),
-      });
+    // bagId is optional — Manual Assign calls this endpoint without one and
+    // must keep working exactly as before (plain per-order assignment, no
+    // Delivery created). Only Dispatch's newer bag-aware flow supplies it.
+    let bag = null;
+    if (body.bagId !== undefined) {
+      bag = await this.bagRepository.findOne({where: {id: body.bagId, isDeleted: false}});
+      if (!bag) throw new HttpErrors.NotFound('Bag not found.');
+      if (!bag.isActive) throw new HttpErrors.BadRequest('This bag is inactive.');
+      if (bag.status !== BagStatus.AVAILABLE) {
+        throw new HttpErrors.Conflict(
+          `Bag ${bag.bagNumber} is already ${bag.status === BagStatus.FULL ? 'full' : 'in use'}.`,
+        );
+      }
     }
 
-    return {message: 'Orders assigned for delivery.', assignedCount: orders.length};
+    const {v4} = await import('uuid');
+    const assignedRiderName = `${rider.firstName} ${rider.lastName}`;
+    const deliveryDate = new Date(body.deliveryDate);
+
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      for (const order of orders) {
+        await this.orderRepository.updateById(
+          order.id,
+          {
+            assignedRiderId: body.riderId,
+            assignedRiderName,
+            deliverySlot,
+            ...(body.deliverySlotId !== undefined ? {deliverySlotId: body.deliverySlotId} : {}),
+            deliveryDate,
+            ...(body.remarks ? {remarks: body.remarks} : {}),
+          },
+          {transaction: tx},
+        );
+      }
+
+      let delivery = null;
+      if (bag) {
+        const store = await this.storeRepository.findOne({where: {id: orders[0].storeId}});
+        const customers = await this.customerRepository.find({
+          where: {id: {inq: [...new Set(orders.map(o => o.customerId))]}} as object,
+        });
+        const customerById = new Map(customers.map(c => [c.id, c]));
+
+        const now = new Date();
+        const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const seq = (await this.deliveryRepository.count()).count + 1;
+        const deliveryNumber = `DL-${store?.code ?? 'ST'}-${ddMM}-${seq}`;
+
+        delivery = await this.deliveryRepository.create(
+          {
+            id: v4(),
+            deliveryNumber,
+            status: DeliveryStatus.ASSIGNED,
+            storeId: orders[0].storeId,
+            riderId: body.riderId,
+            riderName: assignedRiderName,
+            bagId: bag.id,
+            deliverySlot,
+            deliverySlotId: body.deliverySlotId,
+            deliveryDate,
+            orderCount: orders.length,
+            assignedAt: now,
+            assignedBy: currentUser[securityId],
+            remarks: body.remarks,
+          },
+          {transaction: tx},
+        );
+
+        for (const order of orders) {
+          const customer = customerById.get(order.customerId);
+          const {due} = await this.orderService.computeBalanceDue(order);
+          await this.deliveryOrderRepository.create(
+            {
+              id: v4(),
+              deliveryId: delivery.id,
+              orderId: order.id,
+              orderNumber: order.orderNumber,
+              customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
+              balanceDueAtAssignment: due,
+            },
+            {transaction: tx},
+          );
+        }
+
+        await this.deliveryCustodyEventRepository.create(
+          {
+            id: v4(),
+            deliveryId: delivery.id,
+            eventType: DeliveryCustodyEventType.ASSIGNED,
+            performedBy: currentUser[securityId],
+          },
+          {transaction: tx},
+        );
+
+        // Bag capacity here is "one bag, one rider run" — unlike Transfer,
+        // where maxCapacity gates individual garments, a delivery bag just
+        // needs to be locked to this run; no per-garment count exists at
+        // this layer to check against. FULL is never set here — only a
+        // future per-garment accounting pass would have grounds to.
+        await this.bagRepository.updateById(
+          bag.id,
+          {status: BagStatus.IN_USE, currentDeliveryId: delivery.id, currentStoreId: orders[0].storeId},
+          {transaction: tx},
+        );
+      }
+
+      await tx.commit();
+      return {
+        message: 'Orders assigned for delivery.',
+        assignedCount: orders.length,
+        ...(delivery ? {delivery} : {}),
+      };
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
   }
 
   // ─── Change Status ────────────────────────────────────────────────────────
