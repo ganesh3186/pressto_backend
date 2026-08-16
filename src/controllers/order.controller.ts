@@ -518,6 +518,7 @@ export class OrderController {
         await this.orderRepository.updateById(
           order.id,
           {
+            deliveryMethod: OrderDeliveryMethod.HOME_DELIVERY,
             assignedRiderId: body.riderId,
             assignedRiderName,
             deliverySlot,
