@@ -172,8 +172,11 @@ export class PickupRequestController {
     const slot = slotId !== undefined ? await this.resolveSlotLabel(slotId) : body.slot;
 
     const {v4} = await import('uuid');
+    const count = await this.pickupRequestRepository.count();
+    const pickupNumber = `PU${String(count.count + 1).padStart(6, '0')}`;
     const pickupRequest = await this.pickupRequestRepository.create({
       id: v4(),
+      pickupNumber,
       ...rest,
       slot,
       ...(slotId !== undefined ? {pickupSlotId: slotId} : {}),

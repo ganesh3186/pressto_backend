@@ -23,11 +23,21 @@ import {Store} from './store.model';
 @model({
   settings: {
     postgresql: {table: 'pickup_request', schema: 'public'},
+    indexes: {
+      uniquePickupNumber: {keys: ['pickupNumber'], options: {unique: true}},
+    },
   },
 })
 export class PickupRequest extends Entity {
   @property({type: 'string', id: true, generated: false, postgresql: {dataType: 'uuid'}})
   id: string;
+
+  // 'PU{seq6}' — server-generated, human-readable, shown in the admin UI
+  // instead of the raw id. Optional at the type level only so adding this
+  // column doesn't require a NOT NULL backfill migration; the create()
+  // controller always sets it, so in practice every row has one.
+  @property({type: 'string'})
+  pickupNumber?: string;
 
   // May be absent — a call/WhatsApp intake often has no Customer row yet.
   @belongsTo(() => Customer)
