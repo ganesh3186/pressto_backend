@@ -57,6 +57,57 @@ confirm-and-link step:**
 
 ---
 
+## 2a. Customer addresses
+
+`POST /rider/pickup-requests` (§5) already accepts either a saved
+`addressId` or free inline `address` text. These three let the rider app
+actually resolve a saved address into a picklist, look one up directly,
+and — for a brand-new customer — save a **real, reusable** address
+instead of only ever sending inline text good for this one pickup.
+
+```
+GET /rider/customers/{customerId}/addresses
+```
+That customer's saved addresses (same shape as the admin/customer-app
+`CustomerAddress` records). Empty array for a brand-new customer with
+nothing saved yet.
+
+```
+GET /rider/customer-addresses/{id}
+```
+One address by id. `404` if it doesn't exist.
+
+```
+POST /rider/customers/{customerId}/addresses
+```
+```json
+{
+  "addressLine1": "required",
+  "city": "required",
+  "state": "required",
+  "pincode": "required",
+  "addressLine2": "optional",
+  "doorFloorFlat": "optional",
+  "societyName": "optional",
+  "landmark": "optional",
+  "addressName": "optional — e.g. \"Father's home\"",
+  "latitude": "optional",
+  "longitude": "optional",
+  "isDefault": "optional"
+}
+```
+This is the "for a new customer, the rider can add their address" call —
+use it right after §2 creates the customer, instead of (or in addition
+to) sending inline `address` text on the pickup request. The saved
+address then shows up in §2a's list and is reusable on this customer's
+next pickup, and is the same record the customer would see if they ever
+log into the customer web app.
+
+**Response `200`**: the created `CustomerAddress` object, same shape as
+§2a's list entries.
+
+---
+
 ## 3. Search existing customers
 
 ```
@@ -81,6 +132,25 @@ Without `status`, returns only the active ones (`rider_assigned` or
 `out_for_pickup`) — the working list. Pass `status` explicitly to see
 `picked_up`/`received_at_store`/etc. history instead. Ordered
 `assignedAt DESC`.
+
+---
+
+## 4a. Pickup / delivery slots
+
+```
+GET /rider/pickup-slots?type=<optional>
+```
+The `slotId` §5 needs. No `type` → every active slot, of any type. Pass
+`type=pickup` or `type=delivery` to filter to that type plus slots marked
+`both` (same shape as the customer app's slot picker) — useful if the
+screen shows separate pickup-time and expected-delivery-time pickers.
+
+**Response `200`**
+```json
+[
+  {"id": "uuid", "label": "9:00 AM - 12:00 PM", "type": "pickup", "startTime": "09:00", "endTime": "12:00", "sortOrder": 1, "isActive": true}
+]
+```
 
 ---
 
@@ -154,7 +224,9 @@ without passing through `out_for_pickup`).
 3. On arrival, a neighbour also wants a pickup:
    a. `GET /rider/customers?search=...` → not found.
    b. `POST /rider/customers` → new customer created.
-   c. `POST /rider/pickup-requests {customerId, address: "...", slotId, requestedDate, pickupNow: true}` → joins the same run, already `out_for_pickup`.
+   c. `POST /rider/customers/{customerId}/addresses` → save their address for real (§2a) — or skip this and use inline `address` text on the next call.
+   d. `GET /rider/pickup-slots` → pick a `slotId` (§4a).
+   e. `POST /rider/pickup-requests {customerId, addressId, slotId, requestedDate, pickupNow: true}` → joins the same run, already `out_for_pickup`.
 4. Back at the store: `PATCH .../{id}/status {status: "picked_up"}` for each, then `{status: "received_at_store"}` once handed off.
 
 Everything created here is immediately visible to the admin Pickup

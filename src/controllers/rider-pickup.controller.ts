@@ -1,11 +1,12 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
-import {get, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
+import {get, getModelSchemaRef, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
-import {CustomerWithRelations, PickupHandoverBy, PickupRequest} from '../models';
+import {CustomerAddress, CustomerWithRelations, PickupDeliverySlot, PickupHandoverBy, PickupRequest} from '../models';
+import {PickupDeliverySlotType} from '../models/pickup-delivery-slot-type.enum';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {
@@ -236,6 +237,115 @@ export class RiderPickupController {
       } as object,
       include: [{relation: 'user', scope: {fields: {id: true, phone: true, countryCode: true}}}],
       limit: 20,
+    });
+  }
+
+  // ─── Customer addresses ─────────────────────────────────────────────────────
+  //
+  // Riders can already pass a saved addressId or free inline text when
+  // creating a pickup request (see createPickupRequest below). These three
+  // let the rider app actually resolve a saved address to offer as a
+  // picklist, look one up on its own, and — for a brand-new customer —
+  // save a real, reusable CustomerAddress instead of only ever sending
+  // inline text for this one pickup. Same CustomerAddressService the admin
+  // panel and customer app use; just exposed under the rider role instead
+  // of the admin permission system.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/customers/{customerId}/addresses')
+  @response(200, {
+    description: "A customer's saved addresses",
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(CustomerAddress)}}},
+  })
+  async getCustomerAddresses(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('customerId') customerId: string,
+  ): Promise<CustomerAddress[]> {
+    await this.resolveActiveRider(currentUser);
+    const customer = await this.customerRepository.findOne({where: {id: customerId, isDeleted: false}});
+    if (!customer) throw new HttpErrors.NotFound('Customer not found.');
+    return this.addressService.findAll(customerId);
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/customer-addresses/{id}')
+  @response(200, {
+    description: 'A single saved address',
+    content: {'application/json': {schema: getModelSchemaRef(CustomerAddress)}},
+  })
+  async getCustomerAddressById(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<CustomerAddress> {
+    await this.resolveActiveRider(currentUser);
+    return this.addressService.findById(id);
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/customers/{customerId}/addresses')
+  @response(200, {
+    description: 'Address saved for this customer',
+    content: {'application/json': {schema: getModelSchemaRef(CustomerAddress)}},
+  })
+  async createCustomerAddress(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('customerId') customerId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['addressLine1', 'city', 'state', 'pincode'],
+            properties: {
+              addressType: {type: 'string'},
+              addressName: {type: 'string', description: "e.g. Father's home, 2nd office"},
+              addressLine1: {type: 'string'},
+              addressLine2: {type: 'string'},
+              doorFloorFlat: {type: 'string'},
+              societyName: {type: 'string'},
+              landmark: {type: 'string'},
+              city: {type: 'string'},
+              state: {type: 'string'},
+              country: {type: 'string'},
+              pincode: {type: 'string'},
+              latitude: {type: 'number'},
+              longitude: {type: 'number'},
+              isDefault: {type: 'boolean'},
+            },
+          },
+        },
+      },
+    })
+    body: Partial<CustomerAddress>,
+  ): Promise<CustomerAddress> {
+    await this.resolveActiveRider(currentUser);
+    const customer = await this.customerRepository.findOne({where: {id: customerId, isDeleted: false}});
+    if (!customer) throw new HttpErrors.NotFound('Customer not found.');
+    return this.addressService.create(customerId, body);
+  }
+
+  // ─── Pickup / delivery slots ─────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/pickup-slots')
+  @response(200, {
+    description: 'Active pickup/delivery slots',
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(PickupDeliverySlot)}}},
+  })
+  async getPickupSlots(
+    @param.query.string('type') type?: PickupDeliverySlotType,
+  ): Promise<PickupDeliverySlot[]> {
+    return this.pickupSlotRepository.find({
+      where: {
+        isActive: true,
+        isDeleted: false,
+        ...(type ? {type: {inq: [type, PickupDeliverySlotType.BOTH]}} : {}),
+      } as object,
+      order: ['sortOrder ASC', 'startTime ASC'],
     });
   }
 
