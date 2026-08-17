@@ -1,5 +1,6 @@
 import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
+import {Coupon} from '../models/coupon.model';
 import {CouponDiscountType} from '../models/coupon-discount-type.enum';
 import {
   ClusterRepository,
@@ -45,6 +46,20 @@ export interface CouponEvaluationFailure {
 
 export type CouponEvaluationResult = CouponEvaluationSuccess | CouponEvaluationFailure;
 
+// Light DTO for the home-screen "active offers" list — no cart exists yet,
+// so none of evaluate()'s item-scope/discount-amount fields apply.
+export interface EligibleCouponDisplay {
+  id: string;
+  code: string;
+  name: string;
+  description?: string;
+  colorTag?: string;
+  discountType: string;
+  discountValue: number;
+  maxDiscountAmount?: number;
+  endDate: string;
+}
+
 // Duplicated rather than imported from order.service.ts's roundRupee —
 // OrderService.createOrder() calls into this service, so importing from
 // there would create a circular module dependency.
@@ -63,6 +78,10 @@ function fail(reason: string): CouponEvaluationFailure {
  * both CouponController.validate() (HTTP, UI live-preview) and
  * OrderService.createOrder() (internal, at actual redemption time) so the
  * two paths can never evaluate a coupon differently.
+ *
+ * The date/usage-cap/geo/audience checks are also reused (via the private
+ * helpers below) by listEligibleForDisplay(), which runs the same
+ * customer/coupon-level rules with no cart — see that method.
  */
 @injectable({scope: BindingScope.TRANSIENT})
 export class CouponService {
@@ -85,80 +104,16 @@ export class CouponService {
     });
     if (!coupon) return fail('Coupon not found.');
 
-    const now = new Date();
-    const start = new Date(coupon.startDate);
-    const end = new Date(coupon.endDate);
-    end.setHours(23, 59, 59, 999); // endDate is inclusive through end of day
-    if (now < start || now > end) return fail('This coupon is not currently valid.');
+    if (!this.isWithinValidityWindow(coupon)) return fail('This coupon is not currently valid.');
 
-    if (coupon.maxUsesTotal != null && (coupon.totalUsesCount ?? 0) >= coupon.maxUsesTotal) {
-      return fail('This coupon has reached its usage limit.');
-    }
+    const usageReason = await this.usageCapacityReason(coupon, input.customerId);
+    if (usageReason) return fail(usageReason);
 
-    if (coupon.maxUsesPerCustomer != null) {
-      const usedByCustomer = await this.couponRedemptionRepo.count({
-        couponId: coupon.id,
-        customerId: input.customerId,
-        isReversed: false,
-      } as object);
-      if (usedByCustomer.count >= coupon.maxUsesPerCustomer) {
-        return fail("You've already used this coupon the maximum number of times.");
-      }
-    }
+    const geoReason = await this.geoScopeReason(coupon, input.storeId);
+    if (geoReason) return fail(geoReason);
 
-    // Geo: store -> cluster -> region.
-    if (
-      (coupon.storeIds?.length ?? 0) > 0 ||
-      (coupon.clusterIds?.length ?? 0) > 0 ||
-      (coupon.regionIds?.length ?? 0) > 0
-    ) {
-      const store = await this.storeRepo.findOne({where: {id: input.storeId} as object});
-      if (!store) return fail('Store not found.');
-      if ((coupon.storeIds?.length ?? 0) > 0 && !coupon.storeIds!.includes(store.id)) {
-        return fail('This coupon is not valid at this store.');
-      }
-      if (
-        (coupon.clusterIds?.length ?? 0) > 0 &&
-        !(store.clusterId && coupon.clusterIds!.includes(store.clusterId))
-      ) {
-        return fail('This coupon is not valid at this store.');
-      }
-      if ((coupon.regionIds?.length ?? 0) > 0) {
-        const cluster = store.clusterId
-          ? await this.clusterRepo.findOne({where: {id: store.clusterId} as object})
-          : null;
-        if (!cluster || !coupon.regionIds!.includes(cluster.regionId)) {
-          return fail('This coupon is not valid at this store.');
-        }
-      }
-    }
-
-    // Audience: label OR individual grant (either qualifies).
-    const hasLabelScope = (coupon.customerLabelIds?.length ?? 0) > 0;
-    const individualCount = await this.couponCustomerRepo.count({
-      couponId: coupon.id,
-      isDeleted: false,
-    } as object);
-    if (hasLabelScope || individualCount.count > 0) {
-      let eligible = false;
-      if (hasLabelScope) {
-        const labelMatch = await this.customerLabelAssignmentRepo.findOne({
-          where: {
-            customerId: input.customerId,
-            customerLabelId: {inq: coupon.customerLabelIds},
-            isDeleted: false,
-          } as object,
-        });
-        eligible = Boolean(labelMatch);
-      }
-      if (!eligible && individualCount.count > 0) {
-        const individualMatch = await this.couponCustomerRepo.findOne({
-          where: {couponId: coupon.id, customerId: input.customerId, isDeleted: false} as object,
-        });
-        eligible = Boolean(individualMatch);
-      }
-      if (!eligible) return fail("You're not eligible for this coupon.");
-    }
+    const audienceReason = await this.audienceScopeReason(coupon, input.customerId);
+    if (audienceReason) return fail(audienceReason);
 
     // Service/item scope — filter order lines to the ones this coupon
     // actually applies to; discount is computed only against those.
@@ -225,5 +180,133 @@ export class CouponService {
       discountAmount,
       qualifyingItemIndexes,
     };
+  }
+
+  /**
+   * Home-screen "active offers" list — every currently active, date-valid,
+   * usage-available, audience-eligible coupon for this customer. No cart
+   * exists yet, so item/service scope and discount amount are irrelevant
+   * here; a coupon with any geo scope is excluded entirely when storeId
+   * can't be resolved (can't verify it, so don't show it) — geo-unscoped
+   * coupons always show regardless of storeId.
+   */
+  async listEligibleForDisplay(customerId: string, storeId?: string): Promise<EligibleCouponDisplay[]> {
+    const candidates = await this.couponRepo.find({where: {isActive: true, isDeleted: false} as object});
+
+    const eligible: EligibleCouponDisplay[] = [];
+    for (const coupon of candidates) {
+      if (!this.isWithinValidityWindow(coupon)) continue;
+      if (await this.usageCapacityReason(coupon, customerId)) continue;
+
+      const hasGeoScope =
+        (coupon.storeIds?.length ?? 0) > 0 ||
+        (coupon.clusterIds?.length ?? 0) > 0 ||
+        (coupon.regionIds?.length ?? 0) > 0;
+      if (hasGeoScope) {
+        if (!storeId) continue;
+        if (await this.geoScopeReason(coupon, storeId)) continue;
+      }
+
+      if (await this.audienceScopeReason(coupon, customerId)) continue;
+
+      eligible.push({
+        id: coupon.id,
+        code: coupon.code,
+        name: coupon.name,
+        description: coupon.description,
+        colorTag: coupon.colorTag,
+        discountType: coupon.discountType,
+        discountValue: coupon.discountValue,
+        maxDiscountAmount: coupon.maxDiscountAmount,
+        endDate: coupon.endDate,
+      });
+    }
+    return eligible;
+  }
+
+  private isWithinValidityWindow(coupon: Coupon): boolean {
+    const now = new Date();
+    const start = new Date(coupon.startDate);
+    const end = new Date(coupon.endDate);
+    end.setHours(23, 59, 59, 999); // endDate is inclusive through end of day
+    return now >= start && now <= end;
+  }
+
+  private async usageCapacityReason(coupon: Coupon, customerId: string): Promise<string | null> {
+    if (coupon.maxUsesTotal != null && (coupon.totalUsesCount ?? 0) >= coupon.maxUsesTotal) {
+      return 'This coupon has reached its usage limit.';
+    }
+    if (coupon.maxUsesPerCustomer != null) {
+      const usedByCustomer = await this.couponRedemptionRepo.count({
+        couponId: coupon.id,
+        customerId,
+        isReversed: false,
+      } as object);
+      if (usedByCustomer.count >= coupon.maxUsesPerCustomer) {
+        return "You've already used this coupon the maximum number of times.";
+      }
+    }
+    return null;
+  }
+
+  // Geo: store -> cluster -> region.
+  private async geoScopeReason(coupon: Coupon, storeId: string): Promise<string | null> {
+    if (
+      (coupon.storeIds?.length ?? 0) === 0 &&
+      (coupon.clusterIds?.length ?? 0) === 0 &&
+      (coupon.regionIds?.length ?? 0) === 0
+    ) {
+      return null;
+    }
+
+    const store = await this.storeRepo.findOne({where: {id: storeId} as object});
+    if (!store) return 'Store not found.';
+    if ((coupon.storeIds?.length ?? 0) > 0 && !coupon.storeIds!.includes(store.id)) {
+      return 'This coupon is not valid at this store.';
+    }
+    if (
+      (coupon.clusterIds?.length ?? 0) > 0 &&
+      !(store.clusterId && coupon.clusterIds!.includes(store.clusterId))
+    ) {
+      return 'This coupon is not valid at this store.';
+    }
+    if ((coupon.regionIds?.length ?? 0) > 0) {
+      const cluster = store.clusterId
+        ? await this.clusterRepo.findOne({where: {id: store.clusterId} as object})
+        : null;
+      if (!cluster || !coupon.regionIds!.includes(cluster.regionId)) {
+        return 'This coupon is not valid at this store.';
+      }
+    }
+    return null;
+  }
+
+  // Audience: label OR individual grant (either qualifies).
+  private async audienceScopeReason(coupon: Coupon, customerId: string): Promise<string | null> {
+    const hasLabelScope = (coupon.customerLabelIds?.length ?? 0) > 0;
+    const individualCount = await this.couponCustomerRepo.count({
+      couponId: coupon.id,
+      isDeleted: false,
+    } as object);
+    if (!hasLabelScope && individualCount.count === 0) return null;
+
+    let eligible = false;
+    if (hasLabelScope) {
+      const labelMatch = await this.customerLabelAssignmentRepo.findOne({
+        where: {
+          customerId,
+          customerLabelId: {inq: coupon.customerLabelIds},
+          isDeleted: false,
+        } as object,
+      });
+      eligible = Boolean(labelMatch);
+    }
+    if (!eligible && individualCount.count > 0) {
+      const individualMatch = await this.couponCustomerRepo.findOne({
+        where: {couponId: coupon.id, customerId, isDeleted: false} as object,
+      });
+      eligible = Boolean(individualMatch);
+    }
+    return eligible ? null : "You're not eligible for this coupon.";
   }
 }

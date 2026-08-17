@@ -2266,6 +2266,13 @@ export class OrderService {
      * intended fail-closed result for a store-bound user with no store.
      */
     storeIds?: string[] | null;
+    /**
+     * Statuses to hide regardless of `status` above — additive, only ever
+     * set by the customer-facing controller (e.g. to hide 'draft'
+     * orders). Admin/staff callers never pass this, so their listing is
+     * unaffected.
+     */
+    excludeStatuses?: string[];
   }): Promise<{rows: object[]; total: number}> {
     const limit = Math.min(Number(params.limit ?? 20), 100);
     const skip = Number(params.skip ?? 0);
@@ -2279,6 +2286,7 @@ export class OrderService {
     // Scopes the list to a single customer (used by the customer-facing APIs).
     if (params.customerId) baseConditions.push({customerId: params.customerId});
     if (params.status) baseConditions.push({status: params.status});
+    if (params.excludeStatuses?.length) baseConditions.push({status: {nin: params.excludeStatuses}});
     if (params.orderType) baseConditions.push({orderType: params.orderType});
     if (params.dateFrom || params.dateTo) {
       const range: Record<string, string> = {};

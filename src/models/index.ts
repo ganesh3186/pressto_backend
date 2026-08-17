@@ -124,3 +124,7 @@ export * from './coupon-discount-type.enum';
 export * from './coupon.model';
 export * from './coupon-customer.model';
 export * from './coupon-redemption.model';
+export * from './colour-bleeding-choice.enum';
+export * from './upgrade-service-choice.enum';
+export * from './customer-preference.model';
+export * from './customer-preference-history.model';

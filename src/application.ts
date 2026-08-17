@@ -32,6 +32,7 @@ import { ReprocessService } from './services/reprocess.service';
 import { AuditService } from './services/audit.service';
 import { StoreScopeService } from './services/store-scope.service';
 import { CouponService } from './services/coupon.service';
+import { CustomerPreferenceService } from './services/customer-preference.service';
 
 export { ApplicationConfig };
 
@@ -92,6 +93,7 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.audit').toClass(AuditService);
     this.bind('services.store-scope').toClass(StoreScopeService);
     this.bind('services.coupon').toClass(CouponService);
+    this.bind('services.customer-preference').toClass(CustomerPreferenceService);
   }
 
   protected configureFileUpload(destination?: string) {

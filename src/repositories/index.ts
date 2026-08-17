@@ -92,3 +92,5 @@ export * from './order-handover.repository';
 export * from './coupon.repository';
 export * from './coupon-customer.repository';
 export * from './coupon-redemption.repository';
+export * from './customer-preference.repository';
+export * from './customer-preference-history.repository';

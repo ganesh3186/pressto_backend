@@ -102,6 +102,12 @@ export class PickupRequest extends Entity {
   @property({type: 'number'})
   itemCountEstimate?: number;
 
+  // Per-category breakdown (e.g. how many clothes vs curtains) — used to
+  // size a pickup (bike vs van). itemCountEstimate stays as the plain
+  // aggregate for backward compat; this is the richer optional detail.
+  @property({type: 'array', itemType: 'object', postgresql: {dataType: 'jsonb'}})
+  itemCategoryEstimate?: Array<{itemCategoryId: string; quantity: number}>;
+
   // Who hands the garments to the rider — required by the customer-facing
   // create flow only (§3 of the Logistics plan); admin/rider-originated
   // requests leave this unset since neither intake path collects it.

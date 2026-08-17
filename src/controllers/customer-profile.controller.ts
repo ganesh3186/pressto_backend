@@ -15,30 +15,37 @@ import {
 import {securityId, UserProfile} from '@loopback/security';
 import {PresstoDataSource} from '../datasources';
 import {
+  ColourBleedingChoice,
   ContactRelationship,
   Customer,
   CustomerAddress,
   CustomerContact,
   CustomerPhone,
+  CustomerPreference,
+  ItemCategory,
   PickupDeliverySlot,
   PickupDeliverySlotType,
   PickupHandoverBy,
   PickupRequest,
+  UpgradeServiceChoice,
 } from '../models';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {
   CustomerRepository,
   CustomerSecurityDepositRepository,
+  ItemCategoryRepository,
   PickupDeliverySlotRepository,
   PickupRequestRepository,
   UsersRepository,
   WalletRepository,
   WalletTransactionRepository,
 } from '../repositories';
+import {CouponService, EligibleCouponDisplay} from '../services/coupon.service';
 import {CustomerAddressService} from '../services/customer-address.service';
 import {CustomerContactService} from '../services/customer-contact.service';
 import {CustomerPhoneService} from '../services/customer-phone.service';
+import {CustomerPreferenceChanges, CustomerPreferenceService} from '../services/customer-preference.service';
 
 export class CustomerProfileController {
   constructor(
@@ -64,6 +71,12 @@ export class CustomerProfileController {
     private pickupRequestRepository: PickupRequestRepository,
     @repository(PickupDeliverySlotRepository)
     private pickupSlotRepository: PickupDeliverySlotRepository,
+    @repository(ItemCategoryRepository)
+    private itemCategoryRepository: ItemCategoryRepository,
+    @inject('services.customer-preference')
+    private preferenceService: CustomerPreferenceService,
+    @inject('services.coupon')
+    private couponService: CouponService,
   ) {}
 
   private async resolveCustomer(userId: string): Promise<Customer> {
@@ -515,6 +528,19 @@ export class CustomerProfileController {
   }
 
   @authenticate('jwt')
+  @get('/profile/customer/item-categories')
+  @response(200, {
+    description: 'Active item categories, for a per-category pickup estimate (e.g. clothes vs curtains)',
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(ItemCategory)}}},
+  })
+  async getItemCategories(): Promise<ItemCategory[]> {
+    return this.itemCategoryRepository.find({
+      where: {isActive: true, isDeleted: false} as object,
+      order: ['sequence ASC', 'name ASC'],
+    });
+  }
+
+  @authenticate('jwt')
   @get('/profile/customer/pickup-requests')
   @response(200, {
     description: "Caller's own pickup requests",
@@ -565,6 +591,18 @@ export class CustomerProfileController {
                 description: 'Required unless handoverBy is "self".',
               },
               itemCountEstimate: {type: 'number'},
+              itemCategoryEstimate: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['itemCategoryId', 'quantity'],
+                  properties: {
+                    itemCategoryId: {type: 'string', format: 'uuid'},
+                    quantity: {type: 'number'},
+                  },
+                },
+                description: 'Per-category counts (from GET /profile/customer/item-categories), e.g. how many clothes vs curtains — used to size the pickup (bike vs van).',
+              },
               remarks: {
                 type: 'string',
                 description: 'Free-text special instructions for this pickup.',
@@ -586,6 +624,7 @@ export class CustomerProfileController {
       handoverBy: PickupHandoverBy;
       handoverPersonName?: string;
       itemCountEstimate?: number;
+      itemCategoryEstimate?: Array<{itemCategoryId: string; quantity: number}>;
       remarks?: string;
       mediaIds?: string[];
     },
@@ -607,6 +646,19 @@ export class CustomerProfileController {
 
     const user = await this.usersRepository.findById(userId);
 
+    // "Apply to all orders" fallback — per field independently. An
+    // explicit value in the request body always wins; the stored default
+    // only fills in a field the caller left out entirely.
+    let remarks = body.remarks;
+    let mediaIds = body.mediaIds;
+    if (remarks === undefined || mediaIds === undefined) {
+      const prefs = await this.preferenceService.getOrCreate(customer.id);
+      if (prefs.applyInstructionsToAllOrders) {
+        if (remarks === undefined) remarks = prefs.specialInstructions;
+        if (mediaIds === undefined) mediaIds = prefs.specialInstructionMediaIds;
+      }
+    }
+
     const {v4} = await import('uuid');
     const pickupRequest = await this.pickupRequestRepository.create({
       id: v4(),
@@ -623,8 +675,9 @@ export class CustomerProfileController {
       handoverBy: body.handoverBy,
       handoverPersonName: body.handoverBy === PickupHandoverBy.SELF ? undefined : body.handoverPersonName,
       itemCountEstimate: body.itemCountEstimate,
-      remarks: body.remarks,
-      mediaIds: body.mediaIds,
+      itemCategoryEstimate: body.itemCategoryEstimate,
+      remarks,
+      mediaIds,
     });
     return {message: 'Pickup request created.', pickupRequest};
   }
@@ -648,5 +701,66 @@ export class CustomerProfileController {
 
     await this.pickupRequestRepository.updateById(id, {status: PickupRequestStatus.CANCELLED});
     return {message: 'Pickup request cancelled.'};
+  }
+
+  // ─── Coupons ────────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/profile/customer/coupons/active')
+  @response(200, {description: 'Active coupons this customer is currently eligible for (home-screen offers)'})
+  async getActiveCoupons(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+  ): Promise<EligibleCouponDisplay[]> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    const resolvedStoreId = storeId ?? customer.preferredStoreId;
+    return this.couponService.listEligibleForDisplay(customer.id, resolvedStoreId);
+  }
+
+  // ─── Preferences ────────────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @get('/profile/customer/preferences')
+  @response(200, {
+    description: "Caller's stored preferences (created with defaults on first read)",
+    content: {'application/json': {schema: getModelSchemaRef(CustomerPreference)}},
+  })
+  async getPreferences(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<CustomerPreference> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    return this.preferenceService.getOrCreate(customer.id);
+  }
+
+  @authenticate('jwt')
+  @patch('/profile/customer/preferences')
+  @response(200, {
+    description: 'Updated preferences',
+    content: {'application/json': {schema: getModelSchemaRef(CustomerPreference)}},
+  })
+  async updatePreferences(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              applyInstructionsToAllOrders: {type: 'boolean'},
+              specialInstructions: {type: 'string'},
+              specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
+              stainAutoApprove: {type: 'boolean'},
+              damageAutoApprove: {type: 'boolean'},
+              colourBleedingChoice: {type: 'string', enum: Object.values(ColourBleedingChoice)},
+              upgradeServiceChoice: {type: 'string', enum: Object.values(UpgradeServiceChoice)},
+            },
+          },
+        },
+      },
+    })
+    body: CustomerPreferenceChanges,
+  ): Promise<CustomerPreference> {
+    const customer = await this.resolveCustomer(currentUser[securityId]);
+    return this.preferenceService.update(customer.id, body, customer.id);
   }
 }

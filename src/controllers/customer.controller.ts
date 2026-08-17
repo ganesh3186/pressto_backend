@@ -24,7 +24,10 @@ import {
   UsersRepository,
   WalletRepository,
 } from '../repositories';
+import { CustomerPreference } from '../models/customer-preference.model';
+import { CustomerPreferenceHistory } from '../models/customer-preference-history.model';
 import { BcryptHasher } from '../services/hash.password.bcrypt';
+import { CustomerPreferenceService } from '../services/customer-preference.service';
 import { SecurityDepositService } from '../services/security-deposit.service';
 import { WalletService } from '../services/wallet.service';
 import { PROTECTED_ROLES } from '../utils/role-guard';
@@ -59,6 +62,8 @@ export class CustomerController {
     private walletService: WalletService,
     @inject('services.security-deposit')
     private securityDepositService: SecurityDepositService,
+    @inject('services.customer-preference')
+    private preferenceService: CustomerPreferenceService,
   ) { }
 
   private async generateUniqueUsername(email: string | undefined, fullName: string): Promise<string> {
@@ -477,6 +482,30 @@ export class CustomerController {
     ]);
 
     return { ...customer, wallet, securityDeposit };
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['customer:read']})
+  @get('/customers/{id}/preferences')
+  @response(200, {
+    description: "A customer's stored preferences — read-only here, customers manage their own via /profile/customer/preferences",
+    content: {'application/json': {schema: getModelSchemaRef(CustomerPreference)}},
+  })
+  async getPreferences(@param.path.string('id') id: string): Promise<CustomerPreference> {
+    await this.customerRepository.findById(id);
+    return this.preferenceService.getOrCreate(id);
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['customer:read']})
+  @get('/customers/{id}/preferences/history')
+  @response(200, {
+    description: "Audit trail of every change to a customer's preferences, newest first",
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(CustomerPreferenceHistory)}}},
+  })
+  async getPreferencesHistory(@param.path.string('id') id: string): Promise<CustomerPreferenceHistory[]> {
+    await this.customerRepository.findById(id);
+    return this.preferenceService.getHistory(id);
   }
 
   @authenticate('jwt')
