@@ -119,6 +119,15 @@ export class PickupRequest extends Entity {
   @property({type: 'string', postgresql: {dataType: 'text'}})
   remarks?: string;
 
+  // Media IDs (uploaded photos/voice notes) attached to the pickup request's
+  // special instructions — same shape as Order.specialInstructionMediaIds.
+  @property({
+    type: 'array',
+    itemType: 'string',
+    postgresql: {dataType: 'jsonb'},
+  })
+  mediaIds?: string[];
+
   // Shared by every request assigned to one rider in the same
   // POST /pickup-requests/assign call — lets the UI display/query them as
   // one trip without a separate PickupRun table.

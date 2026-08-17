@@ -57,18 +57,31 @@ POST /profile/customer/pickup-requests
   "requestedDate": "2026-08-15",
   "handoverBy": "self | family_member | household_help, required",
   "handoverPersonName": "required unless handoverBy is 'self'",
-  "itemCountEstimate": 4
+  "itemCountEstimate": 4,
+  "remarks": "Please handle the silk saree gently, stain on the sleeve.",
+  "mediaIds": ["uuid-from-file-upload-1", "uuid-from-file-upload-2"]
 }
 ```
 That's the whole form — address, slot, who's handing the garments over,
-and an optional item count. Nothing else is collected on this screen.
+an optional item count, and an optional free-text note with optional
+attached photos/voice notes. Nothing else is collected on this screen.
 
 - `handoverBy` is always required — pick one of the three values.
 - `handoverPersonName` is required **only** when `handoverBy` is
   `family_member` or `household_help` (`400` — "handoverPersonName is
   required unless handoverBy is \"self\"." — if omitted/blank in that
   case). Omit it entirely when `handoverBy` is `self`.
-- `itemCountEstimate` is the one genuinely optional field.
+- `itemCountEstimate`, `remarks`, and `mediaIds` are all optional.
+- `remarks` is a plain string — this is the "special instructions" free-text
+  field. It's already surfaced on the admin side (ops/store staff can see
+  it against the pickup request today) — this endpoint just didn't accept
+  it before.
+- `mediaIds` is an array of media IDs for any photos or voice notes the
+  customer attaches to their instructions. Upload each file **first** via
+  the generic file service (see §2a below), collect the returned `id` for
+  each, then pass the array here. There's no per-item granularity in this
+  system's data model — one flat note + one flat set of attachments per
+  pickup request, not per garment.
 
 The server resolves the address into a frozen text snapshot (so a later
 address edit never rewrites this request's history) and the slot into its
@@ -90,11 +103,38 @@ pincode-based rider grouping (see `LOGISTICS_ADMIN_API.md`).
     "handoverBy": "family_member",
     "handoverPersonName": "Rohan Sharma",
     "itemCountEstimate": 4,
+    "remarks": "Please handle the silk saree gently, stain on the sleeve.",
+    "mediaIds": ["uuid-from-file-upload-1", "uuid-from-file-upload-2"],
     "source": "web",
     "...": "..."
   }
 }
 ```
+
+---
+
+## 2a. Uploading photos/voice notes (for `mediaIds` above)
+
+```
+POST /files
+```
+Multipart form upload (any field name, one or more files). No auth header
+needed — this is a shared, pre-existing file service already used by the
+admin panel and rider app for the same purpose (e.g. order-level special
+instruction photos).
+
+**Response `200`**
+```json
+{
+  "files": [
+    {"id": "uuid", "fileUrl": "https://.../files/file/...", "fileName": "stain.jpg"}
+  ],
+  "fields": {}
+}
+```
+Take each returned `id` and put it in the `mediaIds` array in §2. Upload
+files before creating the pickup request — `mediaIds` only accepts IDs
+that already exist.
 
 **Error cases:**
 | Status | Cause |
@@ -130,6 +170,21 @@ customer needs to contact the store instead.
 **Response `200`**: `{ "message": "Pickup request cancelled." }`
 
 ---
+
+## Out of scope — no backend counterpart
+
+A couple of things some pickup-request UIs collect have **no equivalent
+here**, by design:
+
+- **Per-item/per-garment entries** (a list of individual cloth items with
+  their own notes). `PickupRequest` only has one aggregate
+  `itemCountEstimate` — there's no per-item concept at request time
+  anywhere in this system. Real itemization happens later, in-store,
+  when staff build the actual Order. If your UI collects a list of
+  items, roll it into the single `remarks` string instead (or drop it).
+- **"Apply to all my [future] orders" toggle** — there's no
+  customer-level default-instructions setting; `remarks`/`mediaIds` are
+  per-pickup-request only.
 
 ## Status values the customer app may see
 

@@ -565,6 +565,15 @@ export class CustomerProfileController {
                 description: 'Required unless handoverBy is "self".',
               },
               itemCountEstimate: {type: 'number'},
+              remarks: {
+                type: 'string',
+                description: 'Free-text special instructions for this pickup.',
+              },
+              mediaIds: {
+                type: 'array',
+                items: {type: 'string'},
+                description: 'IDs returned by POST /files for any photos/voice notes attached to this pickup.',
+              },
             },
           },
         },
@@ -577,6 +586,8 @@ export class CustomerProfileController {
       handoverBy: PickupHandoverBy;
       handoverPersonName?: string;
       itemCountEstimate?: number;
+      remarks?: string;
+      mediaIds?: string[];
     },
   ): Promise<object> {
     const userId = currentUser[securityId];
@@ -612,6 +623,8 @@ export class CustomerProfileController {
       handoverBy: body.handoverBy,
       handoverPersonName: body.handoverBy === PickupHandoverBy.SELF ? undefined : body.handoverPersonName,
       itemCountEstimate: body.itemCountEstimate,
+      remarks: body.remarks,
+      mediaIds: body.mediaIds,
     });
     return {message: 'Pickup request created.', pickupRequest};
   }
