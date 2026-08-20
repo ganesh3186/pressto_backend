@@ -46,6 +46,7 @@ import {CustomerAddressService} from '../services/customer-address.service';
 import {CustomerContactService} from '../services/customer-contact.service';
 import {CustomerPhoneService} from '../services/customer-phone.service';
 import {CustomerPreferenceChanges, CustomerPreferenceService} from '../services/customer-preference.service';
+import {filterSlotsForDate} from '../utils/pickup-slot-availability';
 
 export class CustomerProfileController {
   constructor(
@@ -513,11 +514,13 @@ export class CustomerProfileController {
   @authenticate('jwt')
   @get('/profile/customer/pickup-slots')
   @response(200, {
-    description: 'Active pickup slots',
+    description: 'Active pickup slots — pass date to hide slots less than 90 minutes out when date is today',
     content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(PickupDeliverySlot)}}},
   })
-  async getPickupSlots(): Promise<PickupDeliverySlot[]> {
-    return this.pickupSlotRepository.find({
+  async getPickupSlots(
+    @param.query.string('date') date?: string,
+  ): Promise<PickupDeliverySlot[]> {
+    const slots = await this.pickupSlotRepository.find({
       where: {
         isActive: true,
         isDeleted: false,
@@ -525,6 +528,7 @@ export class CustomerProfileController {
       } as object,
       order: ['sortOrder ASC', 'startTime ASC'],
     });
+    return filterSlotsForDate(slots, date);
   }
 
   @authenticate('jwt')

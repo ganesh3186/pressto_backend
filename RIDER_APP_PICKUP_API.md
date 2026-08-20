@@ -108,15 +108,75 @@ log into the customer web app.
 
 ---
 
+## 2b. Customer preferences
+
+A customer's stored defaults — special instructions to reuse on future
+pickups, plus auto-approve-style choices. Same data the customer app
+itself reads/writes at `/profile/customer/preferences` — this just gives
+the rider app a door to it on the customer's behalf (e.g. the "Do this
+for all my orders" + auto-approval toggles sheet in the Place Order flow).
+
+```
+GET /rider/customers/{customerId}/preferences
+```
+**Response `200`**
+```json
+{
+  "id": "uuid",
+  "customerId": "uuid",
+  "applyInstructionsToAllOrders": false,
+  "specialInstructions": null,
+  "specialInstructionMediaIds": [],
+  "stainAutoApprove": false,
+  "damageAutoApprove": false,
+  "colourBleedingChoice": "ask_every_time",
+  "upgradeServiceChoice": "notify"
+}
+```
+Created with these defaults on first read if the customer has never set any.
+
+```
+PATCH /rider/customers/{customerId}/preferences
+```
+Send only the fields you want to change — a partial body.
+```json
+{
+  "applyInstructionsToAllOrders": true,
+  "specialInstructions": "Please handle curtains gently.",
+  "specialInstructionMediaIds": ["uuid-from-file-upload"],
+  "stainAutoApprove": true,
+  "damageAutoApprove": true,
+  "colourBleedingChoice": "ask_every_time",
+  "upgradeServiceChoice": "notify"
+}
+```
+- `colourBleedingChoice` — one of `ask_every_time` | `accept_risk_and_process` | `return_unprocessed`.
+- `upgradeServiceChoice` — one of `auto` | `notify`.
+- Every change is written to an audit trail (who/when/old→new) — here,
+  "who" is the **rider**, not the customer, since the rider is the one
+  actually making the change on the customer's behalf.
+- **What actually does something today**: `applyInstructionsToAllOrders`
+  is the one preference with a real effect — see §5, it fills in
+  `remarks`/`mediaIds` on a new pickup request that omits them. The
+  auto-approve flags (`stainAutoApprove`, `damageAutoApprove`,
+  `colourBleedingChoice`, `upgradeServiceChoice`) are stored and returned
+  but **not yet wired into the in-store approval workflow** — don't build
+  UI copy that promises it skips staff review during inspection. Keep the
+  option in the UI; the behavior behind it is a planned follow-up.
+
+---
+
 ## 3. Search existing customers
 
 ```
 GET /rider/customers?search=<term>
 ```
-Matches `firstName`/`lastName`/`email` (case-insensitive, partial). Empty
-or missing `search` returns `[]` — no "browse all customers" mode. Each
-result includes its linked `user` (id, phone, countryCode) so the rider
-app can display a phone number without a second call. Capped at 20 results.
+Matches `firstName`/`lastName`/`email`/**`phone`** (case-insensitive,
+partial — a partial phone match works too, e.g. the last few digits).
+Empty or missing `search` returns `[]` — no "browse all customers" mode.
+Each result includes its linked `user` (id, phone, countryCode) so the
+rider app can display a phone number without a second call. Capped at 20
+results.
 
 Use this **before** §2 — only create a new customer if search comes back
 empty.
@@ -138,12 +198,20 @@ Without `status`, returns only the active ones (`rider_assigned` or
 ## 4a. Pickup / delivery slots
 
 ```
-GET /rider/pickup-slots?type=<optional>
+GET /rider/pickup-slots?type=<optional>&date=<optional>
 ```
 The `slotId` §5 needs. No `type` → every active slot, of any type. Pass
 `type=pickup` or `type=delivery` to filter to that type plus slots marked
 `both` (same shape as the customer app's slot picker) — useful if the
 screen shows separate pickup-time and expected-delivery-time pickers.
+
+Slots themselves are still the same fixed recurring time-of-day windows —
+there's no per-date data. `date` only changes which of those same slots
+come back: if `date` is **today**, any slot starting less than 90 minutes
+from now is left out (so a rider can't pick a window that's effectively
+already gone); if `date` is any other day, every active slot shows,
+unfiltered. Pass the date the customer actually picked in the schedule
+step — omit it (or pass a future date) to see the full list.
 
 **Response `200`**
 ```json
@@ -169,6 +237,12 @@ POST /rider/pickup-requests
   "handoverBy": "self | family_member | household_help (optional)",
   "handoverPersonName": "required if handoverBy is set and not 'self'",
   "itemCountEstimate": 3,
+  "itemCategoryEstimate": [
+    {"itemCategoryId": "uuid", "quantity": 2, "serviceId": "uuid", "deliverySpeed": "express"}
+  ],
+  "deliveryGroupingPreference": "together | as_ready",
+  "remarks": "Please handle the curtains gently.",
+  "mediaIds": ["uuid-from-file-upload"],
   "pickupNow": true,
   "storeId": "uuid — required only when pickupNow is false"
 }
@@ -176,6 +250,24 @@ POST /rider/pickup-requests
 Provide **either** `addressId` (resolved + frozen as a text snapshot,
 same as the customer app) **or** `address` (free text) — `400` if neither
 is given, or if `addressId` doesn't belong to `customerId`.
+
+- `itemCategoryEstimate` — per-category counts, from `GET /profile/customer/item-categories`
+  or the equivalent admin item-category master data. `serviceId` and
+  `deliverySpeed` (`standard`/`express`/`lightning`, same three tiers as
+  everywhere else in the system) are **estimate metadata for the store
+  exec** — nothing here creates a real order or locks in pricing; the
+  real order gets built after the items are physically inspected in
+  store. Send whatever the "What Are You Sending?" screen collects as-is.
+- `deliveryGroupingPreference` — same posture, pure estimate: whether the
+  customer said they want everything delivered together or as-and-when-ready.
+- `remarks`/`mediaIds` — this pickup request's own special instructions
+  and attached photos/voice notes (upload via `POST /files` first, same
+  as the customer app). If **both** are omitted and the customer has
+  `applyInstructionsToAllOrders: true` saved (§2b), the server fills them
+  in from the stored preference automatically — checked per field
+  independently, so sending one but not the other only defaults the
+  missing one. Send an explicit value (even an empty string) to override
+  the stored default for this one request.
 
 ### `pickupNow` — the two branches
 
@@ -225,8 +317,9 @@ without passing through `out_for_pickup`).
    a. `GET /rider/customers?search=...` → not found.
    b. `POST /rider/customers` → new customer created.
    c. `POST /rider/customers/{customerId}/addresses` → save their address for real (§2a) — or skip this and use inline `address` text on the next call.
-   d. `GET /rider/pickup-slots` → pick a `slotId` (§4a).
-   e. `POST /rider/pickup-requests {customerId, addressId, slotId, requestedDate, pickupNow: true}` → joins the same run, already `out_for_pickup`.
+   d. `PATCH /rider/customers/{customerId}/preferences` → save any auto-approval/"apply to all orders" choices from the special-instructions sheet (§2b).
+   e. `GET /rider/pickup-slots?date=<the date they picked>` → pick a `slotId` (§4a), already filtered if they picked today.
+   f. `POST /rider/pickup-requests {customerId, addressId, slotId, requestedDate, itemCategoryEstimate, deliveryGroupingPreference, pickupNow: true}` → joins the same run, already `out_for_pickup`.
 4. Back at the store: `PATCH .../{id}/status {status: "picked_up"}` for each, then `{status: "received_at_store"}` once handed off.
 
 Everything created here is immediately visible to the admin Pickup

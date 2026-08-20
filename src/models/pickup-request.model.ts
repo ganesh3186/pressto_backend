@@ -1,5 +1,7 @@
 import {Entity, belongsTo, model, property} from '@loopback/repository';
 import {Customer} from './customer.model';
+import {DeliveryGroupingPreference} from './delivery-grouping-preference.enum';
+import {DeliveryType} from './delivery-type.enum';
 import {Order} from './order.model';
 import {PickupDeliverySlot} from './pickup-delivery-slot.model';
 import {PickupHandoverBy} from './pickup-handover-by.enum';
@@ -105,8 +107,26 @@ export class PickupRequest extends Entity {
   // Per-category breakdown (e.g. how many clothes vs curtains) — used to
   // size a pickup (bike vs van). itemCountEstimate stays as the plain
   // aggregate for backward compat; this is the richer optional detail.
+  // serviceId/deliverySpeed are pure estimate metadata for the store exec
+  // who builds the real Order later — nothing downstream reads them yet,
+  // same posture as the rest of this field. Both optional so the existing
+  // customer-facing flow (itemCategoryId + quantity only) is unaffected.
   @property({type: 'array', itemType: 'object', postgresql: {dataType: 'jsonb'}})
-  itemCategoryEstimate?: Array<{itemCategoryId: string; quantity: number}>;
+  itemCategoryEstimate?: Array<{
+    itemCategoryId: string;
+    quantity: number;
+    serviceId?: string;
+    deliverySpeed?: DeliveryType;
+  }>;
+
+  // Customer's pre-declared preference for whether a multi-item pickup
+  // should be delivered together or as-and-when-ready — same "estimate
+  // for the store exec" posture as itemCategoryEstimate above.
+  @property({
+    type: 'string',
+    jsonSchema: {enum: Object.values(DeliveryGroupingPreference)},
+  })
+  deliveryGroupingPreference?: DeliveryGroupingPreference;
 
   // Who hands the garments to the rider — required by the customer-facing
   // create flow only (§3 of the Logistics plan); admin/rider-originated

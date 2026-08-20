@@ -32,11 +32,19 @@ etc. — already documented/implemented; not part of this doc.)
 ## 1. List available pickup slots
 
 ```
-GET /profile/customer/pickup-slots
+GET /profile/customer/pickup-slots?date=<optional>
 ```
-No params. Returns active slots where `type` is `pickup` or `both`,
-ordered `sortOrder ASC, startTime ASC` — render this list as the slot
-picker.
+Returns active slots where `type` is `pickup` or `both`, ordered
+`sortOrder ASC, startTime ASC` — render this list as the slot picker.
+
+Slots are still the same fixed recurring time-of-day windows — there's no
+per-date data. `date` only changes which of those same slots come back:
+if `date` is **today**, any slot starting less than 90 minutes from now
+is left out (so a customer can't pick a window that's effectively
+already gone); any other date (up to however far ahead your date picker
+allows) shows every active slot, unfiltered. Pass whatever date the
+customer has selected in the date picker so far; omit it to see the
+unfiltered list.
 
 **Response `200`**
 ```json

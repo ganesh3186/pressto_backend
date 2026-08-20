@@ -5,7 +5,16 @@ import {get, getModelSchemaRef, HttpErrors, param, patch, post, requestBody, res
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
-import {CustomerAddress, CustomerWithRelations, PickupDeliverySlot, PickupHandoverBy, PickupRequest} from '../models';
+import {
+  ColourBleedingChoice,
+  CustomerAddress,
+  CustomerPreference,
+  CustomerWithRelations,
+  PickupDeliverySlot,
+  PickupHandoverBy,
+  PickupRequest,
+  UpgradeServiceChoice,
+} from '../models';
 import {PickupDeliverySlotType} from '../models/pickup-delivery-slot-type.enum';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
@@ -20,9 +29,13 @@ import {
   UsersRepository,
 } from '../repositories';
 import {CustomerAddressService} from '../services/customer-address.service';
+import {CustomerPreferenceChanges, CustomerPreferenceService} from '../services/customer-preference.service';
 import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {SecurityDepositService} from '../services/security-deposit.service';
 import {WalletService} from '../services/wallet.service';
+import {DeliveryGroupingPreference} from '../models/delivery-grouping-preference.enum';
+import {DeliveryType} from '../models/delivery-type.enum';
+import {filterSlotsForDate} from '../utils/pickup-slot-availability';
 import {PROTECTED_ROLES} from '../utils/role-guard';
 
 const RIDER_STATUS_TRANSITIONS: PickupRequestStatus[] = [
@@ -68,6 +81,8 @@ export class RiderPickupController {
     private walletService: WalletService,
     @inject('services.security-deposit')
     private securityDepositService: SecurityDepositService,
+    @inject('services.customer-preference')
+    private preferenceService: CustomerPreferenceService,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
   ) {}
@@ -230,10 +245,25 @@ export class RiderPickupController {
   async searchCustomers(@param.query.string('search') search?: string): Promise<object[]> {
     if (!search?.trim()) return [];
     const term = search.trim();
+
+    // Phone lives on Users, not Customer — resolve matching users first,
+    // same two-step pattern OrderService.listOrders() already uses for
+    // name-or-phone search, then OR their customerIds into the main query.
+    const phoneMatchedUsers = await this.usersRepository.find({
+      where: {phone: {ilike: `%${term}%`}, isDeleted: false} as object,
+      fields: {id: true} as object,
+    });
+    const phoneMatchedUserIds = phoneMatchedUsers.map(u => u.id);
+
     return this.customerRepository.find({
       where: {
         isDeleted: false,
-        or: [{firstName: {ilike: `%${term}%`}}, {lastName: {ilike: `%${term}%`}}, {email: {ilike: `%${term}%`}}],
+        or: [
+          {firstName: {ilike: `%${term}%`}},
+          {lastName: {ilike: `%${term}%`}},
+          {email: {ilike: `%${term}%`}},
+          ...(phoneMatchedUserIds.length ? [{userId: {inq: phoneMatchedUserIds}}] : []),
+        ],
       } as object,
       include: [{relation: 'user', scope: {fields: {id: true, phone: true, countryCode: true}}}],
       limit: 20,
@@ -327,6 +357,67 @@ export class RiderPickupController {
     return this.addressService.create(customerId, body);
   }
 
+  // ─── Customer preferences ────────────────────────────────────────────────────
+  // Mirrors customer-profile.controller.ts's own GET/PATCH /profile/customer/
+  // preferences exactly, reusing the same CustomerPreferenceService — this is
+  // how the "Do this for all my orders" + auto-approval toggles sheet in the
+  // rider app's Place Order flow gets saved on a customer's behalf. changedBy
+  // is the RIDER's own user id (not the customer's), so the audit trail
+  // honestly records who actually made the change.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/customers/{customerId}/preferences')
+  @response(200, {
+    description: "A customer's stored preferences (created with defaults on first read)",
+    content: {'application/json': {schema: getModelSchemaRef(CustomerPreference)}},
+  })
+  async getCustomerPreferences(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('customerId') customerId: string,
+  ): Promise<CustomerPreference> {
+    await this.resolveActiveRider(currentUser);
+    const customer = await this.customerRepository.findOne({where: {id: customerId, isDeleted: false}});
+    if (!customer) throw new HttpErrors.NotFound('Customer not found.');
+    return this.preferenceService.getOrCreate(customerId);
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @patch('/rider/customers/{customerId}/preferences')
+  @response(200, {
+    description: 'Updated preferences',
+    content: {'application/json': {schema: getModelSchemaRef(CustomerPreference)}},
+  })
+  async updateCustomerPreferences(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('customerId') customerId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              applyInstructionsToAllOrders: {type: 'boolean'},
+              specialInstructions: {type: 'string'},
+              specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
+              stainAutoApprove: {type: 'boolean'},
+              damageAutoApprove: {type: 'boolean'},
+              colourBleedingChoice: {type: 'string', enum: Object.values(ColourBleedingChoice)},
+              upgradeServiceChoice: {type: 'string', enum: Object.values(UpgradeServiceChoice)},
+            },
+          },
+        },
+      },
+    })
+    body: CustomerPreferenceChanges,
+  ): Promise<CustomerPreference> {
+    await this.resolveActiveRider(currentUser);
+    const customer = await this.customerRepository.findOne({where: {id: customerId, isDeleted: false}});
+    if (!customer) throw new HttpErrors.NotFound('Customer not found.');
+    return this.preferenceService.update(customerId, body, currentUser[securityId]);
+  }
+
   // ─── Pickup / delivery slots ─────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -338,8 +429,9 @@ export class RiderPickupController {
   })
   async getPickupSlots(
     @param.query.string('type') type?: PickupDeliverySlotType,
+    @param.query.string('date') date?: string,
   ): Promise<PickupDeliverySlot[]> {
-    return this.pickupSlotRepository.find({
+    const slots = await this.pickupSlotRepository.find({
       where: {
         isActive: true,
         isDeleted: false,
@@ -347,6 +439,7 @@ export class RiderPickupController {
       } as object,
       order: ['sortOrder ASC', 'startTime ASC'],
     });
+    return filterSlotsForDate(slots, date);
   }
 
   // ─── The rider's own assigned pickups ───────────────────────────────────────
@@ -402,6 +495,34 @@ export class RiderPickupController {
               handoverBy: {type: 'string', enum: Object.values(PickupHandoverBy)},
               handoverPersonName: {type: 'string'},
               itemCountEstimate: {type: 'number'},
+              itemCategoryEstimate: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['itemCategoryId', 'quantity'],
+                  properties: {
+                    itemCategoryId: {type: 'string', format: 'uuid'},
+                    quantity: {type: 'number'},
+                    serviceId: {type: 'string', format: 'uuid'},
+                    deliverySpeed: {type: 'string', enum: Object.values(DeliveryType)},
+                  },
+                },
+                description: 'Per-category counts, plus estimate metadata for the store exec — service and delivery-speed preference are not binding, the real order is built after in-store inspection.',
+              },
+              deliveryGroupingPreference: {
+                type: 'string',
+                enum: Object.values(DeliveryGroupingPreference),
+                description: 'Estimate metadata for the store exec — deliver everything together vs as-and-when-ready.',
+              },
+              remarks: {
+                type: 'string',
+                description: 'Free-text special instructions for this pickup.',
+              },
+              mediaIds: {
+                type: 'array',
+                items: {type: 'string'},
+                description: 'IDs returned by POST /files for any photos/voice notes attached to this pickup.',
+              },
               pickupNow: {
                 type: 'boolean',
                 description:
@@ -427,6 +548,15 @@ export class RiderPickupController {
       handoverBy?: PickupHandoverBy;
       handoverPersonName?: string;
       itemCountEstimate?: number;
+      itemCategoryEstimate?: Array<{
+        itemCategoryId: string;
+        quantity: number;
+        serviceId?: string;
+        deliverySpeed?: DeliveryType;
+      }>;
+      deliveryGroupingPreference?: DeliveryGroupingPreference;
+      remarks?: string;
+      mediaIds?: string[];
       pickupNow: boolean;
       storeId?: string;
     },
@@ -463,6 +593,19 @@ export class RiderPickupController {
       throw new HttpErrors.BadRequest('handoverPersonName is required unless handoverBy is "self".');
     }
 
+    // "Apply to all orders" fallback — per field independently, same as
+    // the customer-facing endpoint. An explicit value in the request body
+    // always wins; the stored default only fills in a field left out.
+    let remarks = body.remarks;
+    let mediaIds = body.mediaIds;
+    if (remarks === undefined || mediaIds === undefined) {
+      const prefs = await this.preferenceService.getOrCreate(customer.id);
+      if (prefs.applyInstructionsToAllOrders) {
+        if (remarks === undefined) remarks = prefs.specialInstructions;
+        if (mediaIds === undefined) mediaIds = prefs.specialInstructionMediaIds;
+      }
+    }
+
     const {v4} = await import('uuid');
     const now = new Date();
 
@@ -481,6 +624,10 @@ export class RiderPickupController {
       handoverBy: body.handoverBy,
       handoverPersonName: body.handoverBy === PickupHandoverBy.SELF ? undefined : body.handoverPersonName,
       itemCountEstimate: body.itemCountEstimate,
+      itemCategoryEstimate: body.itemCategoryEstimate,
+      deliveryGroupingPreference: body.deliveryGroupingPreference,
+      remarks,
+      mediaIds,
       assignedRiderId: rider.id,
       assignedAt: now,
       assignedBy: currentUser[securityId],
