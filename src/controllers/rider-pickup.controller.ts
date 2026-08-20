@@ -15,15 +15,18 @@ import {
   PickupRequest,
   UpgradeServiceChoice,
 } from '../models';
+import {BagStatus} from '../models/bag-status.enum';
 import {PickupDeliverySlotType} from '../models/pickup-delivery-slot-type.enum';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {
+  BagRepository,
   CustomerRepository,
   PickupDeliverySlotRepository,
   PickupRequestRepository,
   RiderRepository,
   RolesRepository,
+  ServiceRepository,
   StoreRepository,
   UserRolesRepository,
   UsersRepository,
@@ -73,6 +76,10 @@ export class RiderPickupController {
     private pickupRequestRepository: PickupRequestRepository,
     @repository(PickupDeliverySlotRepository)
     private pickupSlotRepository: PickupDeliverySlotRepository,
+    @repository(BagRepository)
+    private bagRepository: BagRepository,
+    @repository(ServiceRepository)
+    private serviceRepository: ServiceRepository,
     @inject('services.customer-address')
     private addressService: CustomerAddressService,
     @inject('service.hasher')
@@ -96,6 +103,20 @@ export class RiderPickupController {
     if (!rider) throw new HttpErrors.Forbidden('This account is not registered as a rider.');
     if (!rider.isActive) throw new HttpErrors.Forbidden('This rider account is inactive.');
     return rider;
+  }
+
+  // Same checks as TransferController.assertBagAvailable (transfer.controller.ts)
+  // — exists, active, not already locked to another custody chain.
+  private async assertBagAvailable(bagId: string) {
+    const bag = await this.bagRepository.findOne({where: {id: bagId, isDeleted: false}});
+    if (!bag) throw new HttpErrors.NotFound('Bag not found.');
+    if (!bag.isActive) throw new HttpErrors.BadRequest('This bag is inactive.');
+    if (bag.status !== BagStatus.AVAILABLE) {
+      throw new HttpErrors.Conflict(
+        `Bag ${bag.bagNumber} is already ${bag.status === BagStatus.FULL ? 'full' : 'in use'}.`,
+      );
+    }
+    return bag;
   }
 
   private async generateUniqueUsername(email: string | undefined, fullName: string): Promise<string> {
@@ -669,6 +690,40 @@ export class RiderPickupController {
     return {message: 'Pickup request created.', pickupRequest};
   }
 
+  // ─── Bag lookup (scan a real bag before confirming pickup) ─────────────────
+  // Must be declared before /rider/bags/{id}-style paths if any get added
+  // later — same "static path first" note as garment lookup.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/bags/lookup')
+  @response(200, {description: 'Bag details by bag number or UUID — used to confirm a scan before pickup'})
+  async lookupBag(
+    @param.query.string('q') q: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<object> {
+    await this.resolveActiveRider(currentUser);
+    if (!q?.trim()) throw new HttpErrors.BadRequest('Query param "q" is required.');
+
+    const trimmed = q.trim();
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(trimmed);
+
+    const bag = isUuid
+      ? await this.bagRepository.findOne({where: {id: trimmed, isDeleted: false}})
+      : await this.bagRepository.findOne({where: {bagNumber: Number(trimmed), isDeleted: false}});
+
+    if (!bag) throw new HttpErrors.NotFound(`Bag "${q}" not found.`);
+    if (!bag.isActive) throw new HttpErrors.BadRequest('This bag is inactive.');
+    if (bag.status !== BagStatus.AVAILABLE) {
+      throw new HttpErrors.Conflict(
+        `Bag ${bag.bagNumber} is already ${bag.status === BagStatus.FULL ? 'full' : 'in use'}.`,
+      );
+    }
+
+    return {id: bag.id, bagNumber: bag.bagNumber, status: bag.status, maxCapacity: bag.maxCapacity};
+  }
+
   // ─── Rider-driven status transitions ────────────────────────────────────────
 
   @authenticate('jwt')
@@ -684,12 +739,31 @@ export class RiderPickupController {
           schema: {
             type: 'object',
             required: ['status'],
-            properties: {status: {type: 'string', enum: RIDER_STATUS_TRANSITIONS}},
+            properties: {
+              status: {type: 'string', enum: RIDER_STATUS_TRANSITIONS},
+              bagId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'Required when status is picked_up — the bag from GET /rider/bags/lookup.',
+              },
+              itemsByService: {
+                type: 'array',
+                description: 'Required when status is picked_up — real counts confirmed at the doorstep.',
+                items: {
+                  type: 'object',
+                  required: ['serviceId', 'quantity'],
+                  properties: {
+                    serviceId: {type: 'string', format: 'uuid'},
+                    quantity: {type: 'number', minimum: 1},
+                  },
+                },
+              },
+            },
           },
         },
       },
     })
-    body: {status: PickupRequestStatus},
+    body: {status: PickupRequestStatus; bagId?: string; itemsByService?: Array<{serviceId: string; quantity: number}>},
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
     const pickupRequest = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false}});
@@ -707,7 +781,64 @@ export class RiderPickupController {
       throw new HttpErrors.BadRequest(`Cannot move a pickup request from ${current} to ${body.status}.`);
     }
 
+    // Confirming pickup now requires the real bag + real per-service counts
+    // scanned/entered at the doorstep — this is the one place that data
+    // gets attached, not a separate step.
+    if (body.status === PickupRequestStatus.PICKED_UP) {
+      if (!body.bagId || !body.itemsByService?.length) {
+        throw new HttpErrors.BadRequest('bagId and itemsByService are required to confirm pickup.');
+      }
+
+      const bag = await this.assertBagAvailable(body.bagId);
+
+      const serviceIds = [...new Set(body.itemsByService.map(i => i.serviceId))];
+      const services = await this.serviceRepository.find({
+        where: {id: {inq: serviceIds}, isDeleted: false, isActive: true} as object,
+      });
+      if (services.length !== serviceIds.length) {
+        throw new HttpErrors.BadRequest('One or more services were not found or are inactive.');
+      }
+      const serviceNameById = new Map(services.map(s => [s.id, s.name]));
+
+      const actualItemsByService = body.itemsByService.map(i => ({
+        serviceId: i.serviceId,
+        serviceName: serviceNameById.get(i.serviceId),
+        quantity: i.quantity,
+      }));
+      const totalItems = actualItemsByService.reduce((sum, i) => sum + i.quantity, 0);
+
+      const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+      try {
+        await this.pickupRequestRepository.updateById(
+          id,
+          {status: body.status, bagId: body.bagId, actualItemsByService},
+          {transaction: tx},
+        );
+        await this.bagRepository.updateById(
+          bag.id,
+          {status: BagStatus.IN_USE, itemCount: totalItems, currentPickupRequestId: id},
+          {transaction: tx},
+        );
+        await tx.commit();
+      } catch (error) {
+        await tx.rollback();
+        throw error;
+      }
+      return {message: 'Pickup confirmed.'};
+    }
+
     await this.pickupRequestRepository.updateById(id, {status: body.status});
+
+    // Back at the store — release the bag this pickup was using, same
+    // shape as TransferController.receive()'s bag release.
+    if (body.status === PickupRequestStatus.RECEIVED_AT_STORE && pickupRequest.bagId) {
+      await this.bagRepository.updateById(pickupRequest.bagId, {
+        status: BagStatus.AVAILABLE,
+        itemCount: 0,
+        currentPickupRequestId: null as unknown as string,
+      });
+    }
+
     return {message: 'Pickup request status updated.'};
   }
 }

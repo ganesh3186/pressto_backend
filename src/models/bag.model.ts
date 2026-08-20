@@ -72,6 +72,12 @@ export class Bag extends Entity {
   @property({ type: 'string', postgresql: { dataType: 'uuid' } })
   currentDeliveryId?: string;
 
+  // The open PickupRequest this bag is locked to. Null when AVAILABLE —
+  // same mutually-exclusive custody-pointer pattern as currentTransferId/
+  // currentDeliveryId above, this time for a rider's in-progress pickup.
+  @property({ type: 'string', postgresql: { dataType: 'uuid' } })
+  currentPickupRequestId?: string;
+
   @property({
     type: 'boolean',
     default: false,

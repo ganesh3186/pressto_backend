@@ -11,6 +11,7 @@ import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {
   CustomerRepository,
+  OrderRepository,
   PickupDeliverySlotRepository,
   PickupRequestRepository,
   RiderPincodeMappingRepository,
@@ -46,6 +47,7 @@ interface UpdateBody {
   itemCountEstimate?: number;
   remarks?: string;
   status?: PickupRequestStatus;
+  convertedOrderId?: string;
 }
 
 export class PickupRequestController {
@@ -62,6 +64,8 @@ export class PickupRequestController {
     private pickupSlotRepository: PickupDeliverySlotRepository,
     @repository(RiderPincodeMappingRepository)
     private riderPincodeMappingRepository: RiderPincodeMappingRepository,
+    @repository(OrderRepository)
+    private orderRepository: OrderRepository,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
   ) {}
@@ -250,6 +254,7 @@ export class PickupRequestController {
               itemCountEstimate: {type: 'number'},
               remarks: {type: 'string'},
               status: {type: 'string', enum: Object.values(PickupRequestStatus)},
+              convertedOrderId: {type: 'string', format: 'uuid'},
             },
           },
         },
@@ -260,14 +265,23 @@ export class PickupRequestController {
     const existing = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false}});
     if (!existing) throw new HttpErrors.NotFound('Pickup request not found.');
 
-    const {status, ...rest} = body;
+    const {status, convertedOrderId, ...rest} = body;
     if (status !== undefined && status !== existing.status) {
       this.assertTransition(existing.status ?? PickupRequestStatus.REQUESTED, status);
+    }
+
+    if (convertedOrderId !== undefined) {
+      if (existing.convertedOrderId) {
+        throw new HttpErrors.Conflict('This pickup request has already been converted to an order.');
+      }
+      const order = await this.orderRepository.findOne({where: {id: convertedOrderId, isDeleted: false}});
+      if (!order) throw new HttpErrors.NotFound('Order not found.');
     }
 
     await this.pickupRequestRepository.updateById(id, {
       ...rest,
       ...(status !== undefined ? {status} : {}),
+      ...(convertedOrderId !== undefined ? {convertedOrderId} : {}),
     });
     return {message: 'Pickup request updated.'};
   }

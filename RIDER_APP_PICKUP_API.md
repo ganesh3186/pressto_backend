@@ -5,6 +5,9 @@ a rider already on the ground creating a brand-new customer and pickup
 request, seeing their own assigned pickups, and moving one through its
 status lifecycle. All new this pass (`rider-pickup.controller.ts`).
 
+See `RIDER_APP_DELIVERY_API.md` for the opposite leg — a rider's assigned
+deliveries, starting a run, and handing over finished orders to customers.
+
 **Auth**: the rider app already signs in via `POST /auth/rider/send-otp` →
 `POST /auth/rider/verify-otp` (phone + OTP, pre-existing —
 `rider-auth.controller.ts`), returning a JWT whose role is `rider`. Every
@@ -21,6 +24,7 @@ system) — an inactive rider account gets a `403` on every call
 PickupHandoverBy: self | family_member | household_help
 PickupRequestStatus (rider-relevant subset — see §4):
   rider_assigned → out_for_pickup → picked_up → received_at_store
+BagStatus (§5a's lookup response): available | in_use | full
 ```
 
 ---
@@ -290,6 +294,31 @@ the object.
 
 ---
 
+## 5a. Bag lookup (before confirming pickup)
+
+```
+GET /rider/bags/lookup?q=<bag number or uuid>
+```
+Scan the bag before confirming pickup (§6) — resolves a bag number (or its
+uuid) to the real `Bag` record and confirms it's actually usable, so the
+app can show "Bag 42 — ready" instead of only finding out at submit time.
+
+**Response `200`**
+```json
+{"id": "uuid", "bagNumber": 42, "status": "available", "maxCapacity": 25}
+```
+
+**Error cases:**
+| Status | Cause |
+|---|---|
+| `404` | No bag matches that number/uuid |
+| `400` | Bag is inactive |
+| `409` | Bag is already `in_use` or `full` (message names which) |
+
+Pass the returned `id` as `bagId` in §6's `picked_up` call.
+
+---
+
 ## 6. Move a pickup through its lifecycle
 
 ```
@@ -307,6 +336,39 @@ a legal transition per §1's chain (`400` naming the current/target status
 if not, e.g. can't jump straight from `rider_assigned` to `picked_up`
 without passing through `out_for_pickup`).
 
+### Confirming pickup — `status: "picked_up"` needs the bag + real counts
+
+This is the one transition that carries more than just `status`. Scan the
+bag first (§5a), let the rider enter what's actually going into it —
+"3 for this service, 4 for that one" — then send it all in one call:
+```json
+{
+  "status": "picked_up",
+  "bagId": "uuid-from-§5a",
+  "itemsByService": [
+    {"serviceId": "uuid", "quantity": 3},
+    {"serviceId": "uuid", "quantity": 4}
+  ]
+}
+```
+- `bagId` and `itemsByService` are **both required** on this transition —
+  `400` ("bagId and itemsByService are required to confirm pickup.") if
+  either is missing. This is new: confirming a pickup didn't require this
+  before.
+- Every `serviceId` must resolve to a real, active `Service` — `400` if
+  any don't. Quantities must be `>= 1` each.
+- This is the rider's **real, confirmed count at the doorstep** — a
+  separate thing from `itemCategoryEstimate` (§5), which is only ever the
+  customer's rough guess by category at booking time, before the rider
+  ever sees the items. Both are stored; neither overwrites the other.
+- The bag flips to `in_use` for the rest of this pickup's journey back to
+  the store — trying to scan it again on another pickup (§5a or this same
+  call on a different `id`) fails with `409` until it's released.
+- **Response `200`**: `{"message": "Pickup confirmed."}`.
+
+The bag is released automatically — no separate call — the moment this
+same pickup request reaches `received_at_store` below.
+
 ---
 
 ## Typical flow, end to end
@@ -320,7 +382,12 @@ without passing through `out_for_pickup`).
    d. `PATCH /rider/customers/{customerId}/preferences` → save any auto-approval/"apply to all orders" choices from the special-instructions sheet (§2b).
    e. `GET /rider/pickup-slots?date=<the date they picked>` → pick a `slotId` (§4a), already filtered if they picked today.
    f. `POST /rider/pickup-requests {customerId, addressId, slotId, requestedDate, itemCategoryEstimate, deliveryGroupingPreference, pickupNow: true}` → joins the same run, already `out_for_pickup`.
-4. Back at the store: `PATCH .../{id}/status {status: "picked_up"}` for each, then `{status: "received_at_store"}` once handed off.
+4. At each stop, confirming pickup: `GET /rider/bags/lookup?q=<scanned bag>` (§5a) → `PATCH .../{id}/status {status: "picked_up", bagId, itemsByService}` (§6).
+5. Back at the store, for each: `PATCH .../{id}/status {status: "received_at_store"}` — releases that pickup's bag automatically.
 
 Everything created here is immediately visible to the admin Pickup
 Management screen (see `LOGISTICS_ADMIN_API.md`) under the same `runId`.
+Once a pickup reaches `received_at_store`, staff can create the real Order
+from it directly from that screen — the customer carries over automatically,
+same `convertedOrderId` link this doc's PickupRequest model has always
+reserved for it.

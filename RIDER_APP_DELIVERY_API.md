@@ -1,32 +1,29 @@
-# Rider App — Delivery + Cash Handover Integration Guide
+# Rider App — Delivery Integration Guide
 
-For the rider app team. Covers the opposite leg of the lifecycle from
-`RIDER_APP_PICKUP_API.md`: a finished order going back out to the customer.
-When admin assigns a bag + rider to one or more ready orders (Dispatch), a
-`Delivery` is created — this is the "delivery request" the rider taps into,
-single or multiple orders at once. At the door the rider collects any
-remaining balance (cash or wallet), then later batches up collected cash
-and hands it to the store. All new this pass (`rider-delivery.controller.ts`,
-`rider-cash-handover.controller.ts` is the admin-side counterpart).
+For the rider app team. The counterpart to `RIDER_APP_PICKUP_API.md` for the
+opposite leg of the lifecycle: a finished order going from store → customer,
+instead of raw items going customer → store. All in `rider-delivery.controller.ts`.
 
-**Auth**: same as pickup — `Authorization: Bearer <jwt>` from the existing
-rider OTP login, gated purely by the `rider` role. An inactive rider account
-gets `403` ("This rider account is inactive") on every call below.
+**Auth**: same as pickup — sign in via `POST /auth/rider/send-otp` →
+`POST /auth/rider/verify-otp` (phone + OTP), returning a JWT whose role is
+`rider`. Every endpoint below requires `Authorization: Bearer <jwt>` and is
+gated purely by having the `rider` role — an inactive rider account gets a
+`403` on every call ("This rider account is inactive").
 
 ---
 
 ## 1. Enums
 
 ```
-DeliveryStatus: assigned | out_for_delivery | completed | cancelled
-RiderCashHandoverStatus: pending | confirmed
-PaymentMode (relevant subset): cash | wallet
+DeliveryStatus: assigned → out_for_delivery → completed
+                              ↘ cancelled (from assigned only)
 ```
-
-A `Delivery` never has an independent "is this done" flag beyond `status` —
-completion is always derived from whether every order on it has reached
-`delivered`/`returned`. There's no rider-settable status besides
-`out_for_delivery` (§4); `completed`/`cancelled` are system/admin-driven.
+A `Delivery` is one rider's bagged run of orders for delivery — created when
+a store assigns orders for delivery with a bag attached (Dispatch Management's
+"Assign rider" flow). It carries no per-order status of its own; whether an
+order is actually delivered is always read live off that **order's** own
+status (`ready`/`out_for_delivery`/`delivered`), never duplicated onto the
+delivery record — so the two can't drift apart.
 
 ---
 
@@ -36,43 +33,78 @@ completion is always derived from whether every order on it has reached
 GET /rider/deliveries?status=<optional>
 ```
 Without `status`, returns only the active ones (`assigned` or
-`out_for_delivery`) — the working list, "delivery requests" waiting at the
-store. Pass `status` explicitly (e.g. `completed`) to see history instead.
-Ordered `assignedAt DESC`.
+`out_for_delivery`) — the working list. Pass `status` explicitly (e.g.
+`completed`) to see history instead. Ordered `assignedAt DESC`.
+
+**Response `200`**
+```json
+{
+  "deliveries": [
+    {
+      "id": "uuid",
+      "deliveryNumber": "DL-STR1-2008-1",
+      "status": "assigned",
+      "storeId": "uuid",
+      "riderId": "uuid",
+      "riderName": "Rohan Sharma",
+      "bagId": "uuid",
+      "deliverySlot": "2:00 PM - 5:00 PM",
+      "deliverySlotId": "uuid",
+      "deliveryDate": "2026-08-20T12:00:00.000Z",
+      "orderCount": 4,
+      "assignedAt": "2026-08-20T09:12:00.000Z",
+      "assignedBy": "uuid",
+      "startedAt": null,
+      "completedAt": null,
+      "remarks": null
+    }
+  ]
+}
+```
+`orderCount` is the manifest size — use it for a badge/count without a
+separate call. Use §3 to get the actual orders in one.
 
 ---
 
-## 3. Delivery detail
+## 3. Delivery detail — the orders on this run
 
 ```
 GET /rider/deliveries/{id}
 ```
-`403` ("This delivery is not assigned to you.") if it isn't the calling
-rider's. Returns `{delivery, orders}` — `orders` is one entry per order on
-the delivery (single order → array of 1; multiple → several), each enriched
-at read time with live data so the app never has to make a second call per
-order:
+`403` ("This delivery is not assigned to you.") if the delivery belongs to
+another rider.
 
+**Response `200`**
 ```json
 {
-  "orderId": "uuid",
-  "orderNumber": "ORD0102",
-  "customerName": "...",
-  "customerMobile": "...",
-  "orderStatus": "out_for_delivery",
-  "deliveryAddress": "...",
-  "itemCount": 4,
-  "balanceDue": 350,
-  "isOnAccount": false
+  "delivery": { "...same shape as §2's list entries..." },
+  "orders": [
+    {
+      "id": "uuid",
+      "deliveryId": "uuid",
+      "orderId": "uuid",
+      "orderNumber": "ORD-00001234",
+      "customerName": "Priya Verma",
+      "customerMobile": "9876543210",
+      "balanceDueAtAssignment": 450,
+      "orderStatus": "out_for_delivery",
+      "deliveryAddress": "12, Sample Society, Andheri, Mumbai, Maharashtra, 400072",
+      "itemCount": 6,
+      "balanceDue": 450,
+      "isOnAccount": false
+    }
+  ]
 }
 ```
-
-**`isOnAccount: true`** means this order is on deferred B2B billing — the
-app should skip the payment-collection UI for it entirely and go straight
-to marking it delivered (§5 accepts no payment for these anyway).
-**`balanceDue`** is the live, split-aware amount still owed (handles
-partially-paid parent/child order splits correctly) — always use this over
-any locally-cached total.
+- `balanceDueAtAssignment` is a display snapshot taken when the rider was
+  assigned — use it only as a fallback. **`balanceDue` is the live figure**
+  (recomputed from the order right now) and is what §5's payment collection
+  must actually match — always prefer it.
+- `isOnAccount: true` means this customer has deferred billing — §5 skips
+  payment collection entirely for that order, so don't prompt for cash/wallet
+  on it.
+- `deliveryAddress` is a frozen text snapshot taken when the order's delivery
+  address was set — safe to display as-is, never changes underfoot.
 
 ---
 
@@ -84,15 +116,18 @@ PATCH /rider/deliveries/{id}/status
 ```json
 {"status": "out_for_delivery"}
 ```
-Only legal call a rider can make here (`400` for anything else). Requires
-`delivery.status === assigned` (`400` naming the current status otherwise).
-Cascades every linked order still `ready`/`partially_dispatched` to
-`out_for_delivery`. Call this once per delivery, before delivering any of
-its orders — §5 rejects an order that isn't `out_for_delivery` yet.
+Riders may only ever set this one value here (`400` for anything else —
+`"Riders can only set status to out_for_delivery."`). Must currently be
+`assigned` (`400` naming the current status otherwise — call this once per
+run, not per order). On success, every linked order that's `ready` or
+`partially_dispatched` is moved to `out_for_delivery` server-side — the
+rider app doesn't need to touch order status directly.
+
+**Response `200`**: `{ "message": "Delivery started." }`
 
 ---
 
-## 5. Deliver an order + collect payment
+## 5. Deliver one order + collect payment
 
 ```
 POST /rider/deliveries/{id}/orders/{orderId}/deliver
@@ -100,113 +135,103 @@ POST /rider/deliveries/{id}/orders/{orderId}/deliver
 ```json
 {
   "paymentMode": "cash",
-  "amount": 350,
+  "amount": 450,
   "walletAmount": 0,
-  "transactionReference": "optional — wallet/UPI ref",
+  "transactionReference": "optional — UPI/card ref if not cash",
   "remarks": "optional"
 }
 ```
-This is the write path behind the "Handover Cash" screen for a single
-order. Requires `order.status === out_for_delivery` (`400` naming the
-current status otherwise) and the order to actually belong to this delivery
-(`404` — "This order is not on this delivery.").
+Call this once per order as the rider hands each one over — not once for
+the whole run. The target order must currently be `out_for_delivery` (`400`
+naming the current status otherwise — call §4 first).
 
-### Payment rule
+- **On-account orders (`isOnAccount: true`)** skip payment entirely — send
+  the body without payment fields, or omit the body. Deferred billing, same
+  posture as order creation elsewhere in the system.
+- **Every other order must arrive paid in full** — no partial handover.
+  `amount + walletAmount` must cover the live `balanceDue` from §3
+  (`400` — `"Full payment of ₹X is required at delivery for this order."` —
+  if short). `paymentMode` defaults to `cash` when omitted but `amount` is
+  sent.
+- `walletAmount` is a separate deduction from the customer's Pressto wallet,
+  on top of whatever `paymentMode` amount is collected in person — send both
+  if the customer is paying with a mix.
+- If `due <= 0` already (nothing owed), sending no payment fields at all is
+  fine — the order still moves to `delivered`.
 
-- **`order.isOnAccount === true`**: skip the payment body entirely — no
-  amount is collected or required, the call goes straight to marking the
-  order delivered.
-- **Otherwise**: full balance is required at the door, **no partial
-  handover accepted**. `amount + walletAmount` must cover the live
-  `balanceDue` (§3) or the call fails:
-  ```json
-  {"error": {"message": "Full payment of ₹350 is required at delivery for this order."}}
-  ```
-  Split `amount` (cash) and `walletAmount` (wallet) however the customer
-  actually pays — both settle in the same call. Wallet payments settle
-  instantly; cash stays recorded against the rider (see §6) until they hand
-  it to the store.
-
-**Response `200`**:
+**Response `200`**
 ```json
 {"message": "Order delivered.", "deliveryCompleted": false}
 ```
-`deliveryCompleted: true` once *every* order on this delivery has reached
-`delivered`/`returned` — at that point the delivery itself flips to
-`completed` and its bag is released server-side automatically. If you're
-showing a multi-order delivery, keep calling this endpoint per order and
-watch this flag to know when the whole run is done — no separate "complete
-the delivery" call exists or is needed.
+`deliveryCompleted: true` means this was the last order on the run — the
+whole `Delivery` auto-completed and its bag was released, no separate
+"finish run" call needed. Keep calling this endpoint for each remaining
+order on the manifest until every one reports it's delivered (or was
+already `returned`, which also counts toward completion).
+
+**Error cases:**
+| Status | Cause |
+|---|---|
+| `404` | Delivery not found, or this order isn't on this delivery's manifest |
+| `403` | This delivery is not assigned to the calling rider |
+| `400` | Order isn't `out_for_delivery` yet |
+| `400` | Payment short of the live balance due (non-on-account order) |
 
 ---
 
-## 6. Cash handover — the "Handover Cash" screen
+## 6. Cash handover (collected payments → store)
 
-Every `cash` payment collected via §5 is tagged against the rider and
-starts life as `with_rider`. It settles the order immediately either way —
-this tracking is bookkeeping for getting the physical cash back to the
-store, it never blocks or reverses the order.
-
-### 6a. Pending items (not yet submitted)
+Cash/UPI collected at the door piles up "with the rider" until they submit
+it as a batch back to the store. Wallet payments never appear here — only
+`paymentMode: cash` (and similar in-person modes) from §5 create a
+handover-eligible transaction.
 
 ```
 GET /rider/cash-handovers/pending-items
 ```
-**Response**: `{items: [{id, orderId, orderNumber, amount, paymentDate}]}`
-— every `with_rider` cash collection, newest first. This is the
-selectable list on the screen.
+Everything the calling rider has collected but not yet submitted.
 
-### 6b. Submit a batch
+**Response `200`**
+```json
+{
+  "items": [
+    {"id": "uuid", "orderId": "uuid", "orderNumber": "ORD-00001234", "amount": 450, "paymentDate": "2026-08-20T14:32:00.000Z"}
+  ]
+}
+```
 
 ```
 POST /rider/cash-handovers
 ```
 ```json
-{"paymentTransactionIds": ["id1", "id2"], "remarks": "optional"}
+{
+  "paymentTransactionIds": ["uuid-from-pending-items", "..."],
+  "remarks": "optional"
+}
 ```
-Select several (or one) pending items and submit as one batch — matches
-the screenshot's checkbox-select-then-submit flow. `400` if any id isn't
-yours or isn't still `with_rider` (e.g. already submitted). On success,
-every selected item moves `with_rider → submitted` and is locked into a new
-`RiderCashHandover` batch (visible to the store on the admin Cash Received
-→ Cash Pending screen). Submitting does **not** clear the item from your
-own history (§6c) — it just changes its status.
+Bundles the listed pending items into one batch, awaiting store confirmation.
+`400` if any id isn't the calling rider's own, or was already submitted.
 
-**Response**: `{message: "Cash handover submitted.", handover: {...}}`
-
-### 6c. Your handover history
+**Response `200`**: `{ "message": "...", "handover": {...} }` — includes the
+generated `handoverNumber` (`CH-{riderCode}-{ddMM}-{seq}`) and `totalAmount`.
 
 ```
 GET /rider/cash-handovers?status=<optional>
 ```
-`{handovers: [{..., items: [...]}]}` — your own batches, newest first,
-each with its line items nested. Use this for the screen's "Completed" tab
-(filter client-side on `status === 'confirmed'`, or pass
-`?status=confirmed`) versus a submitted-but-not-yet-confirmed batch
-(`status === 'pending'` — store hasn't confirmed receipt yet, see below).
-
-**Store-side confirmation** (`POST /rider-cash-handovers/{id}/confirm`,
-admin panel only, not a rider-app call) flips a batch's items to
-`handed_over` once the store physically counts and accepts the cash — the
-rider app has no action to take here, just reflect the status.
+The rider's own handover batch history, each with its line items attached.
+Statuses: `pending` (awaiting store confirmation), plus whatever the store
+side sets on confirm/dispute — pass `status` to filter, omit for everything.
 
 ---
 
 ## Typical flow, end to end
 
-1. `GET /rider/deliveries` → see today's delivery requests (single or
-   multiple orders each).
-2. Tap one → `GET /rider/deliveries/{id}` → see every order on it,
-   `balanceDue`/`isOnAccount` per order.
-3. `PATCH .../{id}/status {status: "out_for_delivery"}` → heading out.
-4. At each stop: `POST .../orders/{orderId}/deliver` with the payment
-   split (skip payment fields for on-account orders). Watch
-   `deliveryCompleted` — once `true`, that delivery's bag is already
-   released, nothing further to do for it.
-5. Back at the store, periodically: `GET /rider/cash-handovers/pending-items`
-   → select some/all → `POST /rider/cash-handovers` → wait for the store to
-   confirm (reflected via `GET /rider/cash-handovers`).
+1. `GET /rider/deliveries` → see today's assigned runs.
+2. `GET /rider/deliveries/{id}` → see the orders on this run, addresses, and live balance due for each.
+3. `PATCH .../{id}/status {status: "out_for_delivery"}` → start the run; linked orders flip to `out_for_delivery` automatically.
+4. At each stop: `POST .../{id}/orders/{orderId}/deliver` with payment details (skip payment fields for on-account orders) → order marked `delivered`.
+5. When the last order's `deliver` call reports `deliveryCompleted: true`, the run and bag are already closed out — nothing further to call.
+6. Periodically (or at shift end): `GET /rider/cash-handovers/pending-items` → `POST /rider/cash-handovers` with the ids to submit collected cash back to the store.
 
-Everything created here is immediately visible to admin under Logistics →
-Dispatch (the delivery + its orders) and Invoices → Cash Received → Cash
-Pending (handover batches, per-rider).
+Everything here is immediately visible to the admin Dispatch Management /
+Logistics screens (see `LOGISTICS_ADMIN_API.md`) under the same delivery.

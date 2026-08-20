@@ -184,9 +184,31 @@ export class PickupRequest extends Entity {
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   assignedBy?: string;
 
-  // Placeholder only — set by a future intake flow, not this pass.
+  // Set once the store exec creates the real Order from this pickup
+  // request (admin PATCH /pickup-requests/{id} {convertedOrderId}) — see
+  // pickup-request.controller.ts's updateById() guard against overwriting
+  // an already-set value.
   @belongsTo(() => Order)
   convertedOrderId?: string;
+
+  // Real bag the rider used for this pickup — plain uuid, not @belongsTo,
+  // matching Transfer's fromStoreId/toStoreId/bagId convention (batch-
+  // resolve display names at read time rather than relying on auto
+  // `include`). Set together with actualItemsByService when the rider
+  // confirms pickup (PATCH .../status {status: 'picked_up'}); released
+  // back to the Bag's own AVAILABLE state when the pickup reaches
+  // received_at_store.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  bagId?: string;
+
+  // Rider-confirmed real counts at the doorstep, by service — set
+  // alongside bagId. Distinct from itemCategoryEstimate above: that one is
+  // the customer's pre-arrival guess, by category, collected at booking
+  // time; this is the rider's actual count, by service, collected at
+  // pickup time. serviceName is a snapshot, same denormalization
+  // convention as assignedRiderName alongside assignedRiderId below.
+  @property({type: 'array', itemType: 'object', postgresql: {dataType: 'jsonb'}})
+  actualItemsByService?: Array<{serviceId: string; serviceName?: string; quantity: number}>;
 
   @property({type: 'boolean', default: false})
   isDeleted?: boolean;
