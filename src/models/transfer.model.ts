@@ -5,7 +5,10 @@ import {TransferStatus} from './transfer-status.enum';
  * Header record for one bag's worth of garments sent between stores.
  * Atomic create-and-send: there is no draft state — a Transfer is always
  * created already SENT, matching the frontend's single "Create transfer"
- * action (scan bag, scan items, done).
+ * action (scan bag, scan items, done). From there, rider assignment is
+ * mandatory: SENT -> RIDER_ASSIGNED -> IN_TRANSIT -> RECEIVED/DISCREPANCY
+ * (see TransferStatus) — the destination store can no longer receive a
+ * transfer straight out of SENT.
  *
  * fromStoreId/toStoreId/bagId are plain uuid properties, not @belongsTo —
  * matches SalesReturn/ApprovalRequest's convention for permanent,
@@ -63,6 +66,28 @@ export class Transfer extends Entity {
 
   @property({type: 'string', required: true, postgresql: {dataType: 'uuid'}})
   sentBy: string;
+
+  // Set via POST /transfers/{id}/assign-rider — mandatory before the
+  // destination store can receive this transfer (see TransferStatus).
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  riderId?: string;
+
+  // Denormalized snapshot, same convention as Delivery.riderName.
+  @property({type: 'string'})
+  riderName?: string;
+
+  @property({type: 'date'})
+  riderAssignedAt?: Date;
+
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  riderAssignedBy?: string;
+
+  // Set by the rider themself via PATCH /rider/transfers/{id}/status.
+  @property({type: 'date'})
+  inTransitAt?: Date;
+
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  inTransitBy?: string;
 
   @property({type: 'date'})
   receivedAt?: Date;

@@ -297,9 +297,17 @@ export class SalesReturnController {
     const orderById = new Map(orders.map(o => [o.id, o]));
 
     const scope = await this.storeScopeService.resolve(currentUser!);
+    // Also allow orders reachable via an active inter-store transfer grant
+    // to this scope — additive, doesn't narrow anything the direct
+    // storeId check already allowed.
+    const transferGrantedOrderIds = scope.global
+      ? []
+      : await this.storeScopeService.transferGrantedOrderIds(scope.storeIds);
+    const grantedOrderIdSet = new Set(transferGrantedOrderIds.map(String));
     const inScope = scope.global
       ? salesReturns
       : salesReturns.filter(sr => {
+          if (grantedOrderIdSet.has(String(sr.orderId))) return true;
           const order = orderById.get(sr.orderId);
           return order ? this.storeScopeService.allows(scope, order.storeId) : false;
         });

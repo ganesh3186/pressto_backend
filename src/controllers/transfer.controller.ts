@@ -6,19 +6,25 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {BagStatus} from '../models/bag-status.enum';
+import {OrderStatus} from '../models/order-status.enum';
 import {TransferCustodyEventType} from '../models/transfer-custody-event-type.enum';
 import {TransferItemScanStatus} from '../models/transfer-item-status.enum';
 import {TransferStatus} from '../models/transfer-status.enum';
 import {Transfer} from '../models/transfer.model';
 import {
   BagRepository,
+  CustomerRepository,
   GarmentRepository,
+  ItemRepository,
   OrderItemRepository,
   OrderRepository,
+  RiderRepository,
+  ServiceRepository,
   StoreRepository,
   TransferCustodyEventRepository,
   TransferItemRepository,
   TransferRepository,
+  UsersRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 
@@ -32,6 +38,11 @@ export class TransferController {
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
+    @repository(RiderRepository) private riderRepo: RiderRepository,
+    @repository(CustomerRepository) private customerRepo: CustomerRepository,
+    @repository(ItemRepository) private itemRepo: ItemRepository,
+    @repository(ServiceRepository) private serviceRepo: ServiceRepository,
+    @repository(UsersRepository) private usersRepo: UsersRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
@@ -50,13 +61,22 @@ export class TransferController {
     return bag;
   }
 
+  // Every status before RECEIVED/DISCREPANCY is "still open, not yet at the
+  // destination" — a garment scanned onto one of these must not also be
+  // scannable into a second transfer.
+  private static readonly OPEN_TRANSFER_STATUSES: TransferStatus[] = [
+    TransferStatus.SENT,
+    TransferStatus.RIDER_ASSIGNED,
+    TransferStatus.IN_TRANSIT,
+  ];
+
   /**
-   * Blocks a garment already "in an active transfer": scanned on a still-SENT
-   * transfer (in flight), or missing on a still-DISCREPANCY transfer (its
-   * whereabouts are unresolved — there's no reconciliation endpoint this
-   * pass to clear that flag, so letting it back into a fresh transfer would
-   * let the same physical item get "sent" twice on paper). A RECEIVED
-   * transfer's items are free to move again.
+   * Blocks a garment already "in an active transfer": scanned on a still-open
+   * transfer (sent/rider_assigned/in_transit — in flight), or missing on a
+   * still-DISCREPANCY transfer (its whereabouts are unresolved — there's no
+   * reconciliation endpoint this pass to clear that flag, so letting it back
+   * into a fresh transfer would let the same physical item get "sent" twice
+   * on paper). A RECEIVED transfer's items are free to move again.
    */
   private async assertGarmentsTransferable(garmentIds: string[]) {
     const garments = await this.garmentRepo.find({
@@ -84,7 +104,7 @@ export class TransferController {
       if (!parent) continue;
       const blocked =
         item.scanStatus === TransferItemScanStatus.SCANNED
-          ? parent.status === TransferStatus.SENT
+          ? TransferController.OPEN_TRANSFER_STATUSES.includes(parent.status ?? TransferStatus.SENT)
           : item.scanStatus === TransferItemScanStatus.MISSING &&
             parent.status === TransferStatus.DISCREPANCY;
       if (blocked) blockedTags.add(item.garmentTagNumber);
@@ -93,6 +113,45 @@ export class TransferController {
       throw new HttpErrors.Conflict(`Already in an active transfer: ${[...blockedTags].join(', ')}.`);
     }
     return garments;
+  }
+
+  private async assertRiderAssignable(riderId: string) {
+    const rider = await this.riderRepo.findOne({where: {id: riderId, isDeleted: false}});
+    if (!rider) throw new HttpErrors.NotFound('Rider not found.');
+    if (!rider.isActive) throw new HttpErrors.BadRequest('This rider is inactive.');
+    return rider;
+  }
+
+  /**
+   * Plain-language answer to "where are these garments right now" — the
+   * whole point of tracking rider assignment/in-transit at all. Computed at
+   * read time from status + the already-resolved store/rider names, not
+   * stored, so it's never stale.
+   */
+  private buildLocationLabel(
+    t: {status?: TransferStatus | string; riderName?: string | null},
+    fromStoreName: string | null,
+    toStoreName: string | null,
+  ): string {
+    const from = fromStoreName ?? 'origin store';
+    const to = toStoreName ?? 'destination store';
+    const rider = t.riderName ?? 'the rider';
+    switch (t.status) {
+      case TransferStatus.SENT:
+        return `Packed at ${from}, awaiting rider`;
+      case TransferStatus.RIDER_ASSIGNED:
+        return `Rider assigned (${rider}), awaiting pickup at ${from}`;
+      case TransferStatus.IN_TRANSIT:
+        return `In transit with ${rider} → ${to}`;
+      case TransferStatus.RECEIVED:
+        return `Received at ${to}`;
+      case TransferStatus.DISCREPANCY:
+        return `Discrepancy at ${to} — awaiting resolution`;
+      case TransferStatus.RESOLVED:
+        return `Discrepancy resolved at ${to}`;
+      default:
+        return String(t.status ?? '');
+    }
   }
 
   /** Batch-resolve store names/codes + bag number for list/detail display. */
@@ -107,14 +166,19 @@ export class TransferController {
     const storeById = new Map(stores.map(s => [s.id, s]));
     const bagById = new Map(bags.map(b => [b.id, b]));
 
-    return transfers.map(t => ({
-      ...t,
-      fromStoreName: storeById.get(t.fromStoreId)?.name ?? null,
-      fromStoreCode: storeById.get(t.fromStoreId)?.code ?? null,
-      toStoreName: storeById.get(t.toStoreId)?.name ?? null,
-      toStoreCode: storeById.get(t.toStoreId)?.code ?? null,
-      bagNumber: bagById.get(t.bagId)?.bagNumber ?? null,
-    }));
+    return transfers.map(t => {
+      const fromStoreName = storeById.get(t.fromStoreId)?.name ?? null;
+      const toStoreName = storeById.get(t.toStoreId)?.name ?? null;
+      return {
+        ...t,
+        fromStoreName,
+        fromStoreCode: storeById.get(t.fromStoreId)?.code ?? null,
+        toStoreName,
+        toStoreCode: storeById.get(t.toStoreId)?.code ?? null,
+        bagNumber: bagById.get(t.bagId)?.bagNumber ?? null,
+        currentLocationLabel: this.buildLocationLabel(t, fromStoreName, toStoreName),
+      };
+    });
   }
 
   /**
@@ -222,6 +286,115 @@ export class TransferController {
     }
   }
 
+  // ─── Eligible Items (for the Send Out screen) ────────────────────────────────
+  // GET /orders only returns an aggregate item COUNT per order (see
+  // OrderService.listOrders) — no garment tag numbers, no serviceId. The
+  // Send Out screen's scan box and order-browse tiles both need real
+  // garment-level data (garmentTagNumber, serviceId) to work at all, so
+  // this is a dedicated bulk read scoped to one store's currently-in-house
+  // orders. The frontend's own store-service-mapping eligibility filter
+  // (buildTransferCandidateRows) runs client-side against this data — this
+  // endpoint just makes real data available for it to filter, it does not
+  // pre-filter itself.
+
+  private static readonly ELIGIBLE_ORDER_STATUSES: OrderStatus[] = [
+    OrderStatus.RECEIVED_AT_STORE,
+    OrderStatus.IN_INSPECTION,
+    OrderStatus.IN_PROCESS,
+    OrderStatus.QUALITY_CHECK,
+    OrderStatus.ON_HOLD,
+  ];
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:create']})
+  @get('/transfers/eligible-items')
+  @response(200, {description: 'Orders + garment-level items at a store, eligible to transfer out'})
+  async eligibleItems(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId: string,
+  ): Promise<object> {
+    if (!storeId) throw new HttpErrors.BadRequest('storeId query parameter is required.');
+
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (!this.storeScopeService.allows(scope, storeId)) {
+      throw new HttpErrors.NotFound('Store not found.');
+    }
+
+    const orders = await this.orderRepo.find({
+      where: {
+        storeId,
+        isDeleted: false,
+        status: {inq: TransferController.ELIGIBLE_ORDER_STATUSES},
+      } as object,
+      order: ['createdAt DESC'],
+      limit: 100,
+    });
+    if (!orders.length) return {orders: []};
+
+    const orderIds = orders.map(o => o.id);
+    const [orderItems, customers] = await Promise.all([
+      this.orderItemRepo.find({where: {orderId: {inq: orderIds}} as object}),
+      this.customerRepo.find({where: {id: {inq: [...new Set(orders.map(o => o.customerId))]}} as object}),
+    ]);
+
+    const orderItemIds = orderItems.map(oi => oi.id);
+    const garments = orderItemIds.length
+      ? await this.garmentRepo.find({
+          where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as object,
+        })
+      : [];
+
+    const serviceIds = [...new Set(orderItems.map(oi => oi.serviceId))];
+    const itemIds = [...new Set(orderItems.map(oi => oi.itemId))];
+    const [services, items] = await Promise.all([
+      serviceIds.length ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as object}) : [],
+      itemIds.length ? this.itemRepo.find({where: {id: {inq: itemIds}} as object}) : [],
+    ]);
+
+    const orderItemById = new Map(orderItems.map(oi => [oi.id, oi]));
+    const serviceById = new Map(services.map(s => [s.id, s]));
+    const itemById = new Map(items.map(i => [i.id, i]));
+    const customerById = new Map(customers.map(c => [c.id, c]));
+    const garmentsByOrderId = new Map<string, typeof garments>();
+    for (const garment of garments) {
+      const orderItem = orderItemById.get(garment.orderItemId);
+      if (!orderItem) continue;
+      const list = garmentsByOrderId.get(orderItem.orderId) ?? [];
+      list.push(garment);
+      garmentsByOrderId.set(orderItem.orderId, list);
+    }
+
+    const result = orders
+      .map(order => {
+        const orderGarments = garmentsByOrderId.get(order.id) ?? [];
+        const orderItemsList = orderGarments.map(garment => {
+          const orderItem = orderItemById.get(garment.orderItemId);
+          const service = orderItem ? serviceById.get(orderItem.serviceId) : undefined;
+          const item = orderItem ? itemById.get(orderItem.itemId) : undefined;
+          return {
+            id: garment.id,
+            garmentId: garment.id,
+            garmentTagNumber: garment.garmentTagNumber,
+            itemName: item?.name ?? 'Garment',
+            serviceId: orderItem?.serviceId ?? null,
+            serviceName: service?.name ?? 'Service',
+          };
+        });
+        const customer = customerById.get(order.customerId);
+        return {
+          orderId: order.orderNumber ?? order.id,
+          orderNumber: order.orderNumber,
+          customerName: customer ? `${customer.firstName} ${customer.lastName}`.trim() : 'Customer',
+          orderType: order.orderType,
+          createdAt: order.createdAt,
+          items: orderItemsList,
+        };
+      })
+      .filter(order => order.items.length > 0);
+
+    return {orders: result};
+  }
+
   // ─── Create + Send (atomic) ─────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -287,6 +460,126 @@ export class TransferController {
       remarks: body.remarks,
     });
     return {message: 'Transfer created and sent.', transfer, items};
+  }
+
+  // ─── Assign Rider ───────────────────────────────────────────────────────────
+  // Mandatory step between create() and receive() — a transfer can no longer
+  // be received straight out of SENT (see TransferStatus/
+  // TRANSFER_STATUS_TRANSITIONS). The rider then marks themself in transit
+  // via PATCH /rider/transfers/{id}/status (rider-transfer.controller.ts)
+  // before receive() will accept it. Gated by transfer:update (manager
+  // level), same posture as resolve-discrepancy — assigning who carries the
+  // goods is an ops decision, not routine counter work.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:update']})
+  @post('/transfers/{id}/assign-rider')
+  @response(200, {description: 'Rider assigned to this transfer'})
+  async assignRider(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['riderId'],
+            properties: {riderId: {type: 'string', format: 'uuid'}},
+          },
+        },
+      },
+    })
+    body: {riderId: string},
+  ): Promise<object> {
+    const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
+    const assignableFrom: TransferStatus[] = [TransferStatus.SENT, TransferStatus.RIDER_ASSIGNED];
+    if (!assignableFrom.includes(transfer.status ?? TransferStatus.SENT)) {
+      throw new HttpErrors.BadRequest(`Cannot assign a rider to a transfer that is ${transfer.status}.`);
+    }
+
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (!this.storeScopeService.allows(scope, transfer.fromStoreId)) {
+      throw new HttpErrors.NotFound('Transfer not found.');
+    }
+
+    const rider = await this.assertRiderAssignable(body.riderId);
+
+    const {v4} = await import('uuid');
+    const now = new Date();
+    const riderName = `${rider.firstName} ${rider.lastName}`;
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      await this.transferRepo.updateById(
+        id,
+        {
+          status: TransferStatus.RIDER_ASSIGNED,
+          riderId: rider.id,
+          riderName,
+          riderAssignedAt: now,
+          riderAssignedBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
+      await this.custodyEventRepo.create(
+        {
+          id: v4(),
+          transferId: id,
+          eventType: TransferCustodyEventType.RIDER_ASSIGNED,
+          performedBy: currentUser[securityId],
+          remarks: `Assigned to ${riderName}.`,
+        },
+        {transaction: tx},
+      );
+      await tx.commit();
+      return {message: 'Rider assigned.', transfer: await this.transferRepo.findById(id)};
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
+  // ─── TEST ONLY: mark in transit from the admin panel ───────────────────────
+  // There is no rider-app repo in this workspace yet, so there's no real UI
+  // for a rider to call PATCH /rider/transfers/{id}/status themselves.
+  // This lets an admin simulate that one step so the receive() flow can be
+  // exercised end-to-end without a rider JWT/OTP. Remove this endpoint (and
+  // its admin-panel button) once a real rider app exists — it deliberately
+  // bypasses the rider-ownership check that the real endpoint enforces.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:update']})
+  @post('/transfers/{id}/test-mark-in-transit')
+  @response(200, {description: 'TEST ONLY — transfer marked in transit without a real rider call'})
+  async testMarkInTransit(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
+    if (transfer.status !== TransferStatus.RIDER_ASSIGNED) {
+      throw new HttpErrors.BadRequest(
+        `Cannot mark in transit a transfer that is ${transfer.status}, not rider_assigned.`,
+      );
+    }
+
+    const now = new Date();
+    await this.transferRepo.updateById(id, {
+      status: TransferStatus.IN_TRANSIT,
+      inTransitAt: now,
+      inTransitBy: currentUser[securityId],
+    });
+
+    const {v4} = await import('uuid');
+    await this.custodyEventRepo.create({
+      id: v4(),
+      transferId: id,
+      eventType: TransferCustodyEventType.IN_TRANSIT,
+      performedBy: currentUser[securityId],
+      remarks: 'Marked in transit via admin test shortcut (no rider app yet).',
+    });
+
+    return {message: 'Transfer marked in transit (test).', transfer: await this.transferRepo.findById(id)};
   }
 
   // ─── Return Batch ───────────────────────────────────────────────────────────
@@ -479,6 +772,8 @@ export class TransferController {
       stats: {
         total: transfers.length,
         sent: transfers.filter(t => t.status === TransferStatus.SENT).length,
+        riderAssigned: transfers.filter(t => t.status === TransferStatus.RIDER_ASSIGNED).length,
+        inTransit: transfers.filter(t => t.status === TransferStatus.IN_TRANSIT).length,
         received: transfers.filter(t => t.status === TransferStatus.RECEIVED).length,
         discrepancy: transfers.filter(t => t.status === TransferStatus.DISCREPANCY).length,
         resolved: transfers.filter(t => t.status === TransferStatus.RESOLVED).length,
@@ -541,10 +836,12 @@ export class TransferController {
   }
 
   // ─── Receive ────────────────────────────────────────────────────────────────
-  // Bag releases ONLY on a clean receive. A discrepant transfer keeps its bag
-  // locked — there is no resolution endpoint this pass to clear a
-  // discrepancy and free a stuck bag afterward. Known limitation; a
-  // follow-up pass owns fixing it.
+  // Requires IN_TRANSIT — rider assignment is mandatory, so a transfer can
+  // no longer be received straight out of SENT/RIDER_ASSIGNED. Bag releases
+  // ONLY on a clean receive. A discrepant transfer keeps its bag locked —
+  // there is no resolution endpoint this pass to clear a discrepancy and
+  // free a stuck bag afterward. Known limitation; a follow-up pass owns
+  // fixing it.
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:create']})
@@ -572,8 +869,10 @@ export class TransferController {
   ): Promise<object> {
     const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
-    if (transfer.status !== TransferStatus.SENT) {
-      throw new HttpErrors.BadRequest(`Transfer is already ${transfer.status}.`);
+    if (transfer.status !== TransferStatus.IN_TRANSIT) {
+      throw new HttpErrors.BadRequest(
+        `Cannot receive a transfer that is ${transfer.status} — it must be in_transit first.`,
+      );
     }
 
     const scope = await this.storeScopeService.resolve(currentUser);
@@ -590,6 +889,12 @@ export class TransferController {
     try {
       let receivedCount = 0;
       let missingCount = 0;
+      // Every garment actually confirmed present — normally-matched
+      // RECEIVED items and newly-created EXTRA items alike (both are a
+      // real garment now physically at this store) — gets a dual-access
+      // grant/clear applied below, independent of whether the transfer
+      // overall ends up clean or discrepant.
+      const presentGarments: {garmentId: string; orderId: string}[] = [];
       for (const item of items) {
         const isReceived = receivedIds.has(item.garmentId);
         await this.transferItemRepo.updateById(
@@ -597,8 +902,12 @@ export class TransferController {
           {scanStatus: isReceived ? TransferItemScanStatus.RECEIVED : TransferItemScanStatus.MISSING},
           {transaction: tx},
         );
-        if (isReceived) receivedCount++;
-        else missingCount++;
+        if (isReceived) {
+          receivedCount++;
+          presentGarments.push({garmentId: item.garmentId, orderId: item.orderId});
+        } else {
+          missingCount++;
+        }
       }
 
       const warnings: string[] = [];
@@ -624,6 +933,24 @@ export class TransferController {
           {transaction: tx},
         );
         extraCount++;
+        if (orderItem?.orderId) presentGarments.push({garmentId: garment.id, orderId: orderItem.orderId});
+      }
+
+      if (presentGarments.length) {
+        const presentOrderIds = [...new Set(presentGarments.map(g => g.orderId))];
+        const presentOrders = await this.orderRepo.find({
+          where: {id: {inq: presentOrderIds}} as object,
+          fields: {id: true, storeId: true} as object,
+        });
+        const storeIdByOrderId = new Map(presentOrders.map(o => [o.id, o.storeId]));
+        for (const {garmentId, orderId} of presentGarments) {
+          const isHome = storeIdByOrderId.get(orderId) === transfer.toStoreId;
+          await this.garmentRepo.updateById(
+            garmentId,
+            {activeTransferId: isHome ? (null as unknown as string) : transfer.id},
+            {transaction: tx},
+          );
+        }
       }
 
       const isClean = missingCount === 0 && extraCount === 0;
@@ -751,6 +1078,7 @@ export class TransferController {
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
       let foundCount = 0;
+      const foundGarments: {garmentId: string; orderId: string}[] = [];
       for (const item of items) {
         if (item.scanStatus === TransferItemScanStatus.MISSING && foundIds.has(item.garmentId)) {
           await this.transferItemRepo.updateById(
@@ -759,6 +1087,27 @@ export class TransferController {
             {transaction: tx},
           );
           foundCount++;
+          foundGarments.push({garmentId: item.garmentId, orderId: item.orderId});
+        }
+      }
+
+      // Same dual-access grant/clear as receive() — a garment located
+      // late still needs the same access grant it would have gotten if
+      // it had been received cleanly the first time.
+      if (foundGarments.length) {
+        const foundOrderIds = [...new Set(foundGarments.map(g => g.orderId))];
+        const foundOrders = await this.orderRepo.find({
+          where: {id: {inq: foundOrderIds}} as object,
+          fields: {id: true, storeId: true} as object,
+        });
+        const storeIdByOrderId = new Map(foundOrders.map(o => [o.id, o.storeId]));
+        for (const {garmentId, orderId} of foundGarments) {
+          const isHome = storeIdByOrderId.get(orderId) === transfer.toStoreId;
+          await this.garmentRepo.updateById(
+            garmentId,
+            {activeTransferId: isHome ? (null as unknown as string) : transfer.id},
+            {transaction: tx},
+          );
         }
       }
 
@@ -850,6 +1199,7 @@ export class TransferController {
       garmentTagNumber: garmentTag,
       currentStage: item.scanStatus,
       currentTransfer: transfer,
+      currentLocationLabel: this.buildLocationLabel(transfer, fromStore?.name ?? null, toStore?.name ?? null),
       bag,
       fromStore,
       toStore,
@@ -922,6 +1272,31 @@ export class TransferController {
       where: (transferIds ? {transferId: {inq: transferIds}} : {}) as object,
       order: ['performedAt DESC'],
     });
-    return {events};
+    if (!events.length) return {events: []};
+
+    // Raw events only carry transferId/performedBy uuids — resolve both to
+    // display values (transitId, performer name) the same way
+    // enrichTransfers() already does for list/detail, rather than making
+    // the admin panel show raw ids.
+    const [transfers, users] = await Promise.all([
+      this.transferRepo.find({
+        where: {id: {inq: [...new Set(events.map(e => e.transferId))]}} as object,
+        fields: {id: true, transitId: true} as object,
+      }),
+      this.usersRepo.find({
+        where: {id: {inq: [...new Set(events.map(e => e.performedBy).filter(Boolean))]}} as object,
+        fields: {id: true, fullName: true} as object,
+      }),
+    ]);
+    const transitIdByTransferId = new Map(transfers.map(t => [t.id, t.transitId]));
+    const nameByUserId = new Map(users.map(u => [u.id, u.fullName]));
+
+    return {
+      events: events.map(e => ({
+        ...e,
+        transitId: transitIdByTransferId.get(e.transferId) ?? null,
+        performedByName: nameByUserId.get(e.performedBy) ?? null,
+      })),
+    };
   }
 }

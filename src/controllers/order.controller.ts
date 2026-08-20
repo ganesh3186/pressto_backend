@@ -239,6 +239,12 @@ export class OrderController {
       storeId: storeIdFilter,
       clusterId: clusterIdFilter,
     });
+    // Also surface orders reachable via an active inter-store transfer
+    // grant to whichever stores this request is scoped to — additive,
+    // widens the storeId filter rather than narrowing it.
+    const transferGrantedOrderIds = Array.isArray(storeIds)
+      ? await this.storeScopeService.transferGrantedOrderIds(storeIds)
+      : undefined;
     return this.orderService.listOrders({
       search,
       dateFrom,
@@ -252,6 +258,7 @@ export class OrderController {
       limit,
       skip,
       storeIds,
+      transferGrantedOrderIds,
     });
   }
 

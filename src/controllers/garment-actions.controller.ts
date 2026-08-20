@@ -8,6 +8,7 @@ import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {GARMENT_STATUS_RANK, GarmentStatus} from '../models/garment-status.enum';
 import {ApprovalService} from '../services/approval.service';
+import {StoreScopeService} from '../services/store-scope.service';
 import {
   ApprovalRequestRepository,
   BagRepository,
@@ -20,6 +21,7 @@ import {
 export class GarmentActionsController {
   constructor(
     @inject('services.approval') private approvalService: ApprovalService,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
@@ -55,6 +57,7 @@ export class GarmentActionsController {
     })
     body: {reason?: string; remarks?: string; mediaIds?: string[]},
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
@@ -109,6 +112,7 @@ export class GarmentActionsController {
     })
     body: {toServiceId: string; remarks?: string; mediaIds?: string[]},
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
@@ -172,6 +176,7 @@ export class GarmentActionsController {
     })
     body: {reason: string; mediaIds?: string[]},
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
@@ -220,6 +225,7 @@ export class GarmentActionsController {
     })
     body: {remarks?: string; mediaIds?: string[]},
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
@@ -261,6 +267,7 @@ export class GarmentActionsController {
     })
     body: {remarks?: string; mediaIds?: string[]},
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
@@ -299,8 +306,10 @@ export class GarmentActionsController {
   @patch('/garments/{id}/mark-ready-dispatch')
   @response(200, {description: 'Garment flagged for dispatch'})
   async markReadyDispatch(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
@@ -321,6 +330,7 @@ export class GarmentActionsController {
   @patch('/garments/{id}/change-bag')
   @response(200, {description: 'Garment bag updated'})
   async changeBag(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
     @requestBody({
       content: {
@@ -335,6 +345,7 @@ export class GarmentActionsController {
     })
     body: {bagId: string},
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 

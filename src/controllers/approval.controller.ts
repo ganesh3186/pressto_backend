@@ -88,6 +88,12 @@ export class ApprovalController {
     const allowedOrderIds = new Set(
       orders.filter(o => this.storeScopeService.allows(scope, o.storeId)).map(o => String(o.id)),
     );
+    // Also allow orders reachable via an active inter-store transfer grant
+    // to this scope — additive, doesn't narrow anything the direct
+    // storeId check already allowed.
+    for (const id of await this.storeScopeService.transferGrantedOrderIds(scope.storeIds)) {
+      allowedOrderIds.add(String(id));
+    }
 
     return requests.filter((_, index) => {
       const orderId = orderIds[index];

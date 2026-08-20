@@ -2273,6 +2273,13 @@ export class OrderService {
      * unaffected.
      */
     excludeStatuses?: string[];
+    /**
+     * Order ids visible to this caller via an active inter-store transfer
+     * grant (StoreScopeService.transferGrantedOrderIds) — resolved by the
+     * controller, same pattern as storeIds. Additive: widens the storeId
+     * filter with an OR, never narrows it. Omitted/empty changes nothing.
+     */
+    transferGrantedOrderIds?: string[];
   }): Promise<{rows: object[]; total: number}> {
     const limit = Math.min(Number(params.limit ?? 20), 100);
     const skip = Number(params.skip ?? 0);
@@ -2280,7 +2287,11 @@ export class OrderService {
     const baseConditions: object[] = [{isDeleted: false}];
 
     if (Array.isArray(params.storeIds)) {
-      baseConditions.push({storeId: {inq: params.storeIds}});
+      baseConditions.push(
+        params.transferGrantedOrderIds?.length
+          ? {or: [{storeId: {inq: params.storeIds}}, {id: {inq: params.transferGrantedOrderIds}}]}
+          : {storeId: {inq: params.storeIds}},
+      );
     }
 
     // Scopes the list to a single customer (used by the customer-facing APIs).

@@ -7,6 +7,7 @@ import {UnprocessedHandlingMode} from './unprocessed-handling-mode.enum';
     postgresql: {table: 'garment', schema: 'public'},
     indexes: {
       uniqueGarmentTagNumber: {keys: ['garmentTagNumber'], options: {unique: true}},
+      garmentActiveTransferId: {keys: ['activeTransferId']},
     },
   },
 })
@@ -51,6 +52,17 @@ export class Garment extends Entity {
   // Bag this garment is currently assigned to (changed via scan workflow)
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   bagId?: string;
+
+  // Denormalized dual-access grant, mirrors Bag.currentTransferId's
+  // pattern. Set to a Transfer's id when this garment is cleanly confirmed
+  // received at a store OTHER than its order's home store
+  // (transfer.controller.ts's receive()/resolveDiscrepancy()) — grants
+  // that store additional access alongside the home store, which never
+  // loses it. Cleared back to null once the garment is received back at
+  // its home store (a return-batch's own receive() call, since a return's
+  // toStoreId is always the origin).
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  activeTransferId?: string;
 
   // Set true when garment is flagged for dispatch batch (status = ready)
   @property({type: 'boolean', default: false})
