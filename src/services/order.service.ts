@@ -57,6 +57,7 @@ import {
   ShiftRepository,
   StoreRepository,
   StorePriceOverrideRepository,
+  TransferRepository,
   WalletRepository,
   WalletTransactionRepository,
 } from '../repositories';
@@ -185,6 +186,7 @@ export class OrderService {
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(CustomerSecurityDepositRepository) private securityDepositRepo: CustomerSecurityDepositRepository,
     @repository(StoreRepository) private storeRepo: StoreRepository,
+    @repository(TransferRepository) private transferRepo: TransferRepository,
     @repository(ShiftRepository) private shiftRepo: ShiftRepository,
     @repository(ClusterRepository) private clusterRepo: ClusterRepository,
     @repository(ClusterPriceListRepository) private clusterPriceListRepo: ClusterPriceListRepository,
@@ -2566,6 +2568,24 @@ export class OrderService {
     ]);
     const pendingApprovalByGarment = new Map(pendingApprovals.map(a => [a.entityId, a.type]));
 
+    // ── Garments currently away at another store via an active transfer ──────
+    // Mirrors GarmentController.lookupGarment's currentStoreId/currentStoreName
+    // enrichment — here only populated when the garment is actually away
+    // (activeTransferId set), so the UI can badge just those, not every row.
+    const activeTransferIds = [...new Set(garments.map(g => g.activeTransferId).filter(Boolean))] as string[];
+    const activeTransfers = activeTransferIds.length
+      ? await this.transferRepo.find({
+          where: {id: {inq: activeTransferIds}} as any,
+          fields: {id: true, toStoreId: true} as any,
+        })
+      : [];
+    const transferById = new Map(activeTransfers.map(t => [t.id, t]));
+    const awayStoreIds = [...new Set(activeTransfers.map(t => t.toStoreId))];
+    const awayStores = awayStoreIds.length
+      ? await this.storeRepo.find({where: {id: {inq: awayStoreIds}} as any, fields: {id: true, name: true} as any})
+      : [];
+    const awayStoreNameById = new Map(awayStores.map(s => [s.id, s.name]));
+
     // ── Build lookup maps ─────────────────────────────────────────────────────
     const serviceMap = new Map(services.map(s => [s.id, s]));
     const itemMap = new Map(items.map(i => [i.id, i]));
@@ -2655,6 +2675,13 @@ export class OrderService {
         isTagPrinted: g.isTagPrinted ?? false,
         unprocessedHandlingMode: g.unprocessedHandlingMode ?? null,
         stages: resolveStages(g.id),
+        // Set only while this garment is away at another store via an
+        // active inter-store transfer — null once it's back home.
+        activeTransferId: g.activeTransferId ?? null,
+        currentStoreId: g.activeTransferId ? transferById.get(g.activeTransferId)?.toStoreId ?? null : null,
+        currentStoreName: g.activeTransferId
+          ? awayStoreNameById.get(transferById.get(g.activeTransferId)?.toStoreId ?? '') ?? null
+          : null,
       })),
     }));
 
