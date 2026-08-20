@@ -279,6 +279,25 @@ export class StoreScopeService {
     throw new HttpErrors.BadRequest('This garment is currently at a different store and cannot be edited here.');
   }
 
+  /**
+   * Where a garment physically is right now: the transfer's toStoreId while
+   * activeTransferId is set (same resolution as assertGarmentEditable's
+   * write guard), otherwise its order's home store. Used by the garment
+   * scan/lookup surface so staff can see which store currently holds a
+   * scanned garment.
+   */
+  async resolveGarmentCurrentStoreId(
+    garment: {activeTransferId?: string | null},
+    homeStoreId: string | null,
+  ): Promise<string | null> {
+    if (!garment.activeTransferId) return homeStoreId;
+    const transfer = await this.transferRepo.findOne({
+      where: {id: garment.activeTransferId} as object,
+      fields: {id: true, toStoreId: true} as object,
+    });
+    return transfer?.toStoreId ?? homeStoreId;
+  }
+
   /** True when the caller may act on / see the given store. */
   allows(scope: StoreScope, storeId?: string | null): boolean {
     if (scope.global) return true;

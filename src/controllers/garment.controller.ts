@@ -37,6 +37,7 @@ import {
   OrderRepository,
   OrderStatusHistoryRepository,
   ServiceRepository,
+  StoreRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 
@@ -67,6 +68,7 @@ export class GarmentController {
     @repository(ServiceRepository) private serviceRepository: ServiceRepository,
     @repository(BrandRepository) private brandRepository: BrandRepository,
     @repository(ColorRepository) private colorRepository: ColorRepository,
+    @repository(StoreRepository) private storeRepository: StoreRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -262,6 +264,16 @@ export class GarmentController {
       this.garmentStatusHistoryRepository.find({where: {garmentId: garment.id}, order: ['changedAt DESC']}),
     ]);
 
+    // Where this garment physically is right now — its order's home store,
+    // unless an active inter-store transfer currently holds it elsewhere.
+    const currentStoreId = await this.storeScopeService.resolveGarmentCurrentStoreId(
+      garment,
+      order?.storeId ?? null,
+    );
+    const currentStore = currentStoreId
+      ? await this.storeRepository.findOne({where: {id: currentStoreId}})
+      : null;
+
     return {
       ...garment,
       orderId,
@@ -271,6 +283,8 @@ export class GarmentController {
       serviceName: service?.name ?? null,
       brandName: (brand as any)?.name ?? null,
       colorName: (color as any)?.name ?? null,
+      currentStoreId,
+      currentStoreName: currentStore?.name ?? null,
       damages,
       stains,
       images,

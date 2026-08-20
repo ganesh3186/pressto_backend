@@ -21,6 +21,7 @@ import {
 @injectable({scope: BindingScope.TRANSIENT})
 export class ProcessService {
   private qrScanRequired: boolean;
+  private processingEnabled: boolean;
 
   constructor(
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
@@ -35,6 +36,10 @@ export class ProcessService {
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {
     this.qrScanRequired = process.env.QR_SCAN_REQUIRED === 'true';
+    // Default TRUE (enforced) — preserves today's real behavior for any
+    // deployment that doesn't set this var. Explicitly set to 'false' to
+    // allow the fast-track-to-ready bypass below.
+    this.processingEnabled = process.env.PROCESSING_ENABLED !== 'false';
   }
 
   // ─── Init Process ──────────────────────────────────────────────────────────
@@ -379,6 +384,61 @@ export class ProcessService {
       await tx.rollback();
       throw err;
     }
+  }
+
+  // ─── Fast-Track to Ready (processing-disabled bypass) ─────────────────────
+  // When PROCESSING_ENABLED=false, staff can skip the stage-by-stage flow
+  // entirely: auto-complete every remaining step (same logic as
+  // completeAllProcesses above) and then take the one further
+  // quality_check -> ready hop that's normally a separate, unrelated action
+  // (GarmentActionsController's generic status update).
+
+  async fastTrackToReady(garmentId: string, performedBy: string, qrCode?: string): Promise<object> {
+    if (this.processingEnabled) {
+      throw new HttpErrors.BadRequest('Processing is enabled — follow the standard stage-by-stage flow.');
+    }
+
+    const {v4} = await import('uuid');
+    const garment = await this.garmentRepo.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+
+    if (garment.status !== GarmentStatus.IN_PROCESS && garment.status !== GarmentStatus.QUALITY_CHECK) {
+      throw new HttpErrors.BadRequest(
+        `Garment must be in 'in_process' or 'quality_check' status to fast-track to ready. Current: '${garment.status}'.`,
+      );
+    }
+
+    let stepsCompleted = 0;
+    if (garment.status === GarmentStatus.IN_PROCESS) {
+      const result = (await this.completeAllProcesses(garmentId, performedBy, qrCode)) as {stepsCompleted: number};
+      stepsCompleted = result.stepsCompleted;
+    }
+
+    const now = new Date();
+    await this.garmentRepo.updateById(garmentId, {status: GarmentStatus.READY, readyForDispatch: true});
+    await this.garmentStatusHistoryRepo.create({
+      id: v4(),
+      garmentId,
+      status: GarmentStatus.READY,
+      changedAt: now,
+      changedBy: performedBy,
+      remarks: 'Fast-tracked to ready — processing disabled (PROCESSING_ENABLED=false)',
+    });
+
+    await this.syncOrderStatusFromGarment(garmentId, performedBy);
+
+    const updated = await this.garmentRepo.findOne({where: {id: garmentId}});
+    return {
+      message: 'Garment fast-tracked to ready.',
+      stepsCompleted,
+      garment: updated,
+    };
+  }
+
+  // ─── Processing Config ──────────────────────────────────────────────────────
+
+  getConfig(): {processingEnabled: boolean} {
+    return {processingEnabled: this.processingEnabled};
   }
 
   // ─── Reverse Last Step ────────────────────────────────────────────────────
