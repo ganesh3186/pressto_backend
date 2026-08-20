@@ -62,6 +62,49 @@ export class AdminCustomerRechargeController {
     };
   }
 
+  // ─── Admin Wallet Debit (correction) ─────────────────────────────────────
+  // Counterpart to adminWalletRecharge — for reversing a wallet credit that
+  // was applied by mistake. Distinct permission (customer_recharge:debit)
+  // so it can be granted independently of ordinary recharge ability.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['customer_recharge:debit']})
+  @post('/admin/customers/{customerId}/wallet/debit')
+  @response(200, {description: 'Wallet debited by admin'})
+  async adminWalletDebit(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('customerId') customerId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['amount', 'remarks'],
+            properties: {
+              amount: {type: 'number', minimum: 1},
+              remarks: {
+                type: 'string',
+                description: 'Required — the reason this wallet is being debited.',
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {amount: number; remarks: string},
+  ): Promise<object> {
+    // A human-readable label for the remarks trail (see WalletService.adminDebit) —
+    // WalletTransaction has no performedBy column of its own, so raw
+    // currentUser[securityId] (a uuid) must never land there directly.
+    const userLabel = currentUser as {name?: string; email?: string};
+    const performedByLabel = userLabel.name ?? userLabel.email ?? currentUser[securityId];
+    const result = await this.walletService.adminDebit(customerId, body.amount, performedByLabel, body.remarks);
+    return {
+      message: 'Wallet debited successfully.',
+      walletBalance: result.walletBalance,
+    };
+  }
+
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['customer_recharge:read']})
   @get('/admin/customers/{customerId}/wallet/recharge-history')

@@ -207,4 +207,46 @@ export class WalletService {
     const updatedWallet = await this.walletRepository.findById(wallet.id);
     return {rechargeRequest, walletBalance: updatedWallet.currentBalance!};
   }
+
+  // Admin manually removes money from a wallet — the correction counterpart
+  // to adminRecharge above, for when an incorrect amount was credited.
+  // Reuses this.debit() (already existed but was never called from any
+  // controller), which itself rejects a debit larger than the current
+  // balance. No WalletRechargeRequest row — that model is credit/recharge-
+  // specific (carries paymentMode); the WalletTransaction row debit()
+  // already creates is the full audit record for this action.
+  async adminDebit(
+    customerId: string,
+    amount: number,
+    performedByLabel: string,
+    remarks: string,
+  ): Promise<{walletBalance: number}> {
+    if (amount <= 0) {
+      throw new HttpErrors.BadRequest('Debit amount must be greater than zero.');
+    }
+    if (!remarks?.trim()) {
+      throw new HttpErrors.BadRequest('A reason is required to debit a wallet.');
+    }
+
+    const wallet = await this.walletRepository.findOne({where: {customerId}});
+    if (!wallet) {
+      throw new HttpErrors.NotFound('Wallet not found for this customer.');
+    }
+
+    // WalletTransaction has no performedBy column of its own (unlike
+    // WalletRechargeRequest) — fold it into remarks so the audit trail still
+    // names who made the correction. performedByLabel must already be a
+    // human-readable name/email (resolved by the caller) — never the raw
+    // user id, since this string is shown as-is in the admin wallet ledger.
+    await this.debit(
+      wallet.id,
+      amount,
+      ReferenceType.MANUAL,
+      undefined,
+      `Admin wallet debit by ${performedByLabel} - ${remarks.trim()}`,
+    );
+
+    const updatedWallet = await this.walletRepository.findById(wallet.id);
+    return {walletBalance: updatedWallet.currentBalance!};
+  }
 }

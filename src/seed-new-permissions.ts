@@ -93,6 +93,10 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'coupon:read',   description: 'View coupons, redemption history, and validate a coupon code'},
   {permission: 'coupon:update', description: 'Update a coupon, and manage its individually-targeted customers'},
   {permission: 'coupon:delete', description: 'Delete a coupon'},
+  // Wallet manual debit (see AdminCustomerRechargeController.adminWalletDebit)
+  // — a distinct permission from customer_recharge:create (credit only), so
+  // it can be granted independently for correcting a mistaken top-up.
+  {permission: 'customer_recharge:debit', description: 'Manually debit a customer wallet (correction/adjustment)'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -182,6 +186,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // generic ApprovalRequest system) and credit-note approvals (which
       // finance already reaches via order:update, granted in seed.ts).
       'approval:create', 'approval:read', 'approval:update', 'finance_approval:read',
+      // Manually debit a wallet to correct a mistaken top-up — finance
+      // already has customer_recharge:create (credit) from seed.ts.
+      'customer_recharge:debit',
     ],
   },
 ];
