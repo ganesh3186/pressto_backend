@@ -10,9 +10,12 @@ import {
   CustomerAddress,
   CustomerPreference,
   CustomerWithRelations,
+  ItemCategory,
   PickupDeliverySlot,
   PickupHandoverBy,
   PickupRequest,
+  Service,
+  Store,
   UpgradeServiceChoice,
 } from '../models';
 import {BagStatus} from '../models/bag-status.enum';
@@ -22,6 +25,7 @@ import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/
 import {
   BagRepository,
   CustomerRepository,
+  ItemCategoryRepository,
   PickupDeliverySlotRepository,
   PickupRequestRepository,
   RiderRepository,
@@ -80,6 +84,8 @@ export class RiderPickupController {
     private bagRepository: BagRepository,
     @repository(ServiceRepository)
     private serviceRepository: ServiceRepository,
+    @repository(ItemCategoryRepository)
+    private itemCategoryRepository: ItemCategoryRepository,
     @inject('services.customer-address')
     private addressService: CustomerAddressService,
     @inject('service.hasher')
@@ -437,6 +443,54 @@ export class RiderPickupController {
     const customer = await this.customerRepository.findOne({where: {id: customerId, isDeleted: false}});
     if (!customer) throw new HttpErrors.NotFound('Customer not found.');
     return this.preferenceService.update(customerId, body, currentUser[securityId]);
+  }
+
+  // ─── Master data (dropdowns for the pickup-request form) ────────────────────
+  // itemCategoryEstimate[].itemCategoryId / .serviceId and the top-level
+  // storeId (pickupNow=false) all need a picker — these mirror the admin
+  // panel's GET /item-categories, /services, /stores, just explicitly
+  // rider-scoped like the rest of this controller.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/item-categories')
+  @response(200, {
+    description: 'Active item categories, for the pickup-request itemCategoryEstimate picker',
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(ItemCategory)}}},
+  })
+  async getItemCategories(): Promise<ItemCategory[]> {
+    return this.itemCategoryRepository.find({
+      where: {isActive: true, isDeleted: false} as object,
+      order: ['sequence ASC', 'name ASC'],
+    });
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/services')
+  @response(200, {
+    description: 'Active services, for the pickup-request itemCategoryEstimate picker',
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(Service)}}},
+  })
+  async getServices(): Promise<Service[]> {
+    return this.serviceRepository.find({
+      where: {isActive: true, isDeleted: false} as object,
+      order: ['sequence ASC', 'name ASC'],
+    });
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/stores')
+  @response(200, {
+    description: 'Active stores, for the pickup-request storeId picker',
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(Store)}}},
+  })
+  async getStores(): Promise<Store[]> {
+    return this.storeRepository.find({
+      where: {isActive: true, isDeleted: false} as object,
+      order: ['name ASC'],
+    });
   }
 
   // ─── Pickup / delivery slots ─────────────────────────────────────────────────
