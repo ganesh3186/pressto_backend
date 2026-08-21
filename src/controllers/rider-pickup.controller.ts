@@ -604,13 +604,17 @@ export class RiderPickupController {
               pickupNow: {
                 type: 'boolean',
                 description:
-                  'true: attach to the rider\'s current out_for_pickup run (must have one). ' +
-                  'false: create a standalone new run — storeId then becomes required.',
+                  'true: attach to the rider\'s current out_for_pickup run, if they have one. ' +
+                  'If not, falls back to creating a standalone new run instead (same as false) ' +
+                  '— storeId becomes required either way in that case. ' +
+                  'false: always create a standalone new run — storeId is required.',
               },
               storeId: {
                 type: 'string',
                 format: 'uuid',
-                description: 'Required when pickupNow is false — nothing to inherit it from.',
+                description:
+                  'Required when pickupNow is false, or when pickupNow is true but the rider ' +
+                  'has no active run to attach to — nothing to inherit it from either way.',
               },
             },
           },
@@ -720,20 +724,24 @@ export class RiderPickupController {
         } as object,
         order: ['assignedAt DESC'],
       });
-      if (!currentRun) {
-        throw new HttpErrors.BadRequest('No ongoing pickup run to attach to — assign yourself a pickup first.');
+      if (currentRun) {
+        const pickupRequest = await this.pickupRequestRepository.create({
+          ...base,
+          storeId: currentRun.storeId,
+          runId: currentRun.runId,
+          status: PickupRequestStatus.OUT_FOR_PICKUP,
+        });
+        return {message: 'Pickup request created and attached to the current run.', pickupRequest};
       }
-      const pickupRequest = await this.pickupRequestRepository.create({
-        ...base,
-        storeId: currentRun.storeId,
-        runId: currentRun.runId,
-        status: PickupRequestStatus.OUT_FOR_PICKUP,
-      });
-      return {message: 'Pickup request created and attached to the current run.', pickupRequest};
+      // No active run to attach to — fall through to the standalone path
+      // below instead of blocking the rider outright; they just need to
+      // send storeId too, same as an explicit pickupNow:false.
     }
 
     if (!body.storeId) {
-      throw new HttpErrors.BadRequest('storeId is required when pickupNow is false.');
+      throw new HttpErrors.BadRequest(
+        'storeId is required when pickupNow is false, or when pickupNow is true but there is no active run to attach to.',
+      );
     }
     const store = await this.storeRepository.findOne({where: {id: body.storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
