@@ -1,4 +1,5 @@
 import {Entity, hasMany, model, property} from '@loopback/repository';
+import {ContactRelationship} from './contact-relationship.enum';
 import {DeliveryType} from './delivery-type.enum';
 import {OrderDeliveryMethod} from './order-delivery-method.enum';
 import {OrderLabel} from './order-label.model';
@@ -56,6 +57,29 @@ export class Order extends Entity {
   // Customer contact (person who came on behalf of the customer)
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   customerContactId?: string;
+
+  // Alternative to customerContactId — set instead of it when the "placed
+  // by" person is a family-group member rather than a saved contact.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  placedByFamilyGroupMemberId?: string;
+
+  // Denormalized "who physically handed the garments over" snapshot,
+  // resolved from whichever of customerContactId/placedByFamilyGroupMemberId
+  // was set at creation — same style as assignedRiderName next to
+  // assignedRiderId. All three unset means the customer dropped off their
+  // own order. Frozen at creation so a contact's name changing later never
+  // rewrites order history.
+  @property({type: 'string'})
+  placedByName?: string;
+
+  @property({type: 'string'})
+  placedByPhone?: string;
+
+  @property({
+    type: 'string',
+    jsonSchema: {enum: Object.values(ContactRelationship)},
+  })
+  placedByRelationship?: ContactRelationship;
 
   // For split sub-orders: UUID of the original parent order
   @property({type: 'string', postgresql: {dataType: 'uuid'}})

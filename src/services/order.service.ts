@@ -136,6 +136,7 @@ export interface CreateOrderInput {
   deliveryType?: DeliveryType;      // standard | express | lightning
   additionalChargeIds?: string[];
   customerContactId?: string;       // person who came on behalf of customer
+  familyGroupMemberId?: string;     // alternative to customerContactId — a family-group member instead
   specialInstructions?: string;
   specialInstructionMediaIds?: string[];
   remarks?: string;
@@ -631,7 +632,17 @@ export class OrderService {
       wallet = {id: found.id, currentBalance: Number(found.currentBalance)};
     }
 
-    // ── Validate customer contact (if provided) ──
+    // ── Resolve "placed by" — who physically handed the garments over, if
+    // not the customer themself. Denormalized (name/phone/relationship) so
+    // display never needs a live join later; resolved from the real
+    // contact/family-member record rather than trusting client-sent
+    // labels, same posture as every other master-data resolution here.
+    // Absence of both ids means the customer dropped off their own order.
+    let placedByFamilyGroupMemberId: string | undefined;
+    let placedByName: string | undefined;
+    let placedByPhone: string | undefined;
+    let placedByRelationship: ContactRelationship | undefined;
+
     if (input.customerContactId) {
       const contact = await this.customerContactRepo.findOne({
         where: {id: input.customerContactId, customerId: input.customerId, isDeleted: false},
@@ -639,6 +650,25 @@ export class OrderService {
       if (!contact) {
         throw new HttpErrors.NotFound('Customer contact not found or does not belong to this customer.');
       }
+      placedByName = contact.name;
+      placedByPhone = contact.phone;
+      placedByRelationship = contact.relationship;
+    } else if (input.familyGroupMemberId) {
+      const familyGroup = await this.familyGroupRepo.findOne({
+        where: {primaryCustomerId: input.customerId, isDeleted: false} as object,
+      });
+      const familyMember = familyGroup
+        ? await this.familyMemberRepo.findOne({
+            where: {id: input.familyGroupMemberId, groupId: familyGroup.id, isDeleted: false} as object,
+          })
+        : null;
+      if (!familyMember) {
+        throw new HttpErrors.NotFound('Family group member not found or does not belong to this customer.');
+      }
+      placedByFamilyGroupMemberId = familyMember.id;
+      placedByName = familyMember.name;
+      placedByPhone = familyMember.phone;
+      placedByRelationship = familyMember.relationship;
     }
 
     // ── Delivery type percentage ──
@@ -1011,6 +1041,10 @@ export class OrderService {
           deliveryType: input.deliveryType,
           deliveryTypePercentage,
           customerContactId: input.customerContactId,
+          placedByFamilyGroupMemberId,
+          placedByName,
+          placedByPhone,
+          placedByRelationship,
           deliveryDate,
           subtotal,
           discountAmount,
@@ -2479,6 +2513,9 @@ export class OrderService {
         subtotal: order.subtotal,
         discountAmount: order.discountAmount,
         couponCode: order.couponCode ?? null,
+        placedByName: order.placedByName ?? null,
+        placedByPhone: order.placedByPhone ?? null,
+        placedByRelationship: order.placedByRelationship ?? null,
         taxAmount: order.taxAmount,
         totalAmount: order.totalAmount,
         totalCollected,
