@@ -202,7 +202,18 @@ export class SalesReturnController {
 
     const invoice = await this.invoiceRepo.findOne({where: {orderId}} as any);
 
-    const creditAmount = (body.returnedItems ?? []).reduce((s, i) => s + (Number(i.amount) || 0), 0);
+    // GST is applied once, at the order level (see order.service.ts's
+    // createOrder), never per line item — OrderItem.totalPrice, and so the
+    // per-item `amount` the frontend sends here, is pre-tax. Gross the
+    // aggregate up by the order's own effective tax rate before storing it
+    // as creditAmount, so the credit note (and the wallet refund it drives
+    // in approve()) matches what the customer actually paid, GST included —
+    // not just the item's pre-tax price. Same "effective tax rate" derivation
+    // already used by OrderService.splitOrder() for the same reason.
+    const preTaxCreditAmount = (body.returnedItems ?? []).reduce((s, i) => s + (Number(i.amount) || 0), 0);
+    const taxableBase = money(order.subtotal) - money(order.discountAmount);
+    const effectiveTaxRate = taxableBase > 0 ? money(order.taxAmount) / taxableBase : 0;
+    const creditAmount = preTaxCreditAmount * (1 + effectiveTaxRate);
 
     const now = new Date();
     const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
