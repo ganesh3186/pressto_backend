@@ -794,7 +794,16 @@ export class TransferController {
     @param.path.string('id') id: string,
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
-    const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    // Accept either the real uuid or the human-readable transitId (the
+    // frontend's transit-details route is keyed by transitId, not id) —
+    // same dual-lookup posture as GarmentController.lookupGarment, so a
+    // non-uuid value resolves cleanly instead of Postgres throwing on a
+    // malformed uuid literal.
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(id.trim());
+    const transfer = await this.transferRepo.findOne({
+      where: isUuid ? {id, isDeleted: false} : {transitId: id.trim(), isDeleted: false},
+    });
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
 
     const scope = await this.storeScopeService.resolve(currentUser);
@@ -807,8 +816,8 @@ export class TransferController {
     }
 
     const [items, custodyEvents] = await Promise.all([
-      this.transferItemRepo.find({where: {transferId: id} as object}),
-      this.custodyEventRepo.find({where: {transferId: id} as object, order: ['performedAt ASC']}),
+      this.transferItemRepo.find({where: {transferId: transfer.id} as object}),
+      this.custodyEventRepo.find({where: {transferId: transfer.id} as object, order: ['performedAt ASC']}),
     ]);
 
     const orderIds = [...new Set(items.map(i => i.orderId))];
@@ -823,7 +832,7 @@ export class TransferController {
     // only ever non-empty for a RECEIVED/RESOLVED transfer, but cheap to
     // query unconditionally rather than special-casing by status here.
     const returnBatches = await this.transferRepo.find({
-      where: {returnOfTransferId: id, isDeleted: false} as object,
+      where: {returnOfTransferId: transfer.id, isDeleted: false} as object,
       order: ['createdAt DESC'],
     });
 

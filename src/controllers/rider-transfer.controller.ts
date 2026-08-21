@@ -79,13 +79,21 @@ export class RiderTransferController {
     @param.path.string('id') id: string,
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
-    const transfer = await this.transferRepository.findOne({where: {id, isDeleted: false}});
+    // Accept either the real uuid or the human-readable transitId, same
+    // dual-lookup posture as the admin GET /transfers/{id} — a non-uuid
+    // value resolves cleanly instead of Postgres throwing on a malformed
+    // uuid literal.
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const isUuid = uuidRegex.test(id.trim());
+    const transfer = await this.transferRepository.findOne({
+      where: isUuid ? {id, isDeleted: false} : {transitId: id.trim(), isDeleted: false},
+    });
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
     if (transfer.riderId !== rider.id) {
       throw new HttpErrors.Forbidden('This transfer is not assigned to you.');
     }
 
-    const items = await this.transferItemRepository.find({where: {transferId: id} as object});
+    const items = await this.transferItemRepository.find({where: {transferId: transfer.id} as object});
     return {transfer, items};
   }
 
