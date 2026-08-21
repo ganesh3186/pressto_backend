@@ -16,6 +16,8 @@ import {
   ProcessStepRepository,
   ServiceProcessMappingRepository,
   ServiceRepository,
+  StoreRepository,
+  TransferRepository,
 } from '../repositories';
 
 @injectable({scope: BindingScope.TRANSIENT})
@@ -33,6 +35,8 @@ export class ProcessService {
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(ProcessStepRepository) private processStepRepo: ProcessStepRepository,
     @repository(GarmentProcessLogRepository) private processLogRepo: GarmentProcessLogRepository,
+    @repository(StoreRepository) private storeRepo: StoreRepository,
+    @repository(TransferRepository) private transferRepo: TransferRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {
     this.qrScanRequired = process.env.QR_SCAN_REQUIRED === 'true';
@@ -580,16 +584,68 @@ export class ProcessService {
     }
   }
 
+  // ─── Garment Tracking ──────────────────────────────────────────────────────
+  // Where this garment physically is right now, and the inter-store transfer
+  // (if any) currently holding it — same "home store, unless an active
+  // transfer holds it elsewhere" rule garment.controller.ts's scan lookup
+  // already uses, but returning the full transfer record (not just an id)
+  // so a caller can show route + live status, not just a location.
+
+  private async resolveGarmentTracking(garment: {
+    orderItemId: string;
+    activeTransferId?: string | null;
+  }): Promise<object> {
+    const orderItem = await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
+    const order = orderItem?.orderId
+      ? await this.orderRepo.findOne({where: {id: orderItem.orderId}})
+      : null;
+    const homeStoreId = order?.storeId ?? null;
+
+    const transfer = garment.activeTransferId
+      ? await this.transferRepo.findOne({where: {id: garment.activeTransferId}})
+      : null;
+
+    const storeIds = [...new Set([homeStoreId, transfer?.fromStoreId, transfer?.toStoreId].filter(Boolean))] as string[];
+    const stores = storeIds.length ? await this.storeRepo.find({where: {id: {inq: storeIds}}}) : [];
+    const storeNameById = new Map(stores.map(s => [s.id, s.name ?? null]));
+
+    const currentStoreId = transfer ? transfer.toStoreId : homeStoreId;
+
+    return {
+      homeStoreId,
+      homeStoreName: homeStoreId ? storeNameById.get(homeStoreId) ?? null : null,
+      currentStoreId,
+      currentStoreName: currentStoreId ? storeNameById.get(currentStoreId) ?? null : null,
+      activeTransfer: transfer
+        ? {
+            id: transfer.id,
+            transitId: transfer.transitId,
+            status: transfer.status,
+            fromStoreId: transfer.fromStoreId,
+            fromStoreName: storeNameById.get(transfer.fromStoreId) ?? null,
+            toStoreId: transfer.toStoreId,
+            toStoreName: storeNameById.get(transfer.toStoreId) ?? null,
+            sentAt: transfer.sentAt ?? null,
+            inTransitAt: transfer.inTransitAt ?? null,
+            receivedAt: transfer.receivedAt ?? null,
+          }
+        : null,
+    };
+  }
+
   // ─── Process Status ────────────────────────────────────────────────────────
 
   async getProcessStatus(garmentId: string): Promise<object> {
     const garment = await this.garmentRepo.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
-    const logs = await this.processLogRepo.find({
-      where: {garmentId} as any,
-      order: ['serviceSequence ASC', 'stepSequence ASC'],
-    });
+    const [logs, tracking] = await Promise.all([
+      this.processLogRepo.find({
+        where: {garmentId} as any,
+        order: ['serviceSequence ASC', 'stepSequence ASC'],
+      }),
+      this.resolveGarmentTracking(garment),
+    ]);
 
     if (!logs.length) {
       return {
@@ -598,6 +654,7 @@ export class ProcessService {
         status: garment.status,
         processInitialised: false,
         services: [],
+        tracking,
       };
     }
 
@@ -666,6 +723,7 @@ export class ProcessService {
           }
         : null,
       services: serviceList,
+      tracking,
     };
   }
 }
