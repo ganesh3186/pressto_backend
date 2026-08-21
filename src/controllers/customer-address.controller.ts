@@ -38,7 +38,12 @@ export class CustomerAddressController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['customerId', 'addressLine1', 'city', 'state', 'pincode'],
+            // Pincode is the only mandatory field — everything else helps
+            // narrow it down but shouldn't block saving an address the
+            // customer only half-remembers. City/state auto-fill from
+            // pincode client-side; the pincode itself is still validated
+            // (format) at that same layer.
+            required: ['customerId', 'pincode'],
             properties: {
               customerId: {type: 'string', format: 'uuid'},
               addressType: {type: 'string'},
@@ -66,13 +71,13 @@ export class CustomerAddressController {
       // ('billing', 'primary') still flow through this field.
       addressType?: string;
       addressName?: string;
-      addressLine1: string;
+      addressLine1?: string;
       addressLine2?: string;
       doorFloorFlat?: string;
       societyName?: string;
       landmark?: string;
-      city: string;
-      state: string;
+      city?: string;
+      state?: string;
       country?: string;
       pincode: string;
       latitude?: number;
