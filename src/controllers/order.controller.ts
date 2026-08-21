@@ -1123,6 +1123,20 @@ export class OrderController {
     return {history};
   }
 
+  // ─── Activity Log ───────────────────────────────────────────────────────
+  // Unified timeline for Order Summary — every action across the order and
+  // its garments (status changes, processing, approvals, sales returns,
+  // transfers, delivery, handover, the originating pickup), merged and
+  // sorted. See OrderService.getActivityLog for the source-by-source detail.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
+  @get('/orders/{id}/activity-log')
+  @response(200, {description: 'Unified activity log for an order and its garments'})
+  async activityLog(@param.path.string('id') id: string): Promise<object> {
+    return this.orderService.getActivityLog(id);
+  }
+
   // ─── Soft Delete ──────────────────────────────────────────────────────────
 
   @authenticate('jwt')

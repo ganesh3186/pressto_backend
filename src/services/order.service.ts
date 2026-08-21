@@ -17,8 +17,10 @@ import {
   isActiveGarmentStatus,
 } from '../models/garment-status.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
+import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {
   AdditionalChargeMasterRepository,
+  ApprovalAuditLogRepository,
   ApprovalRequestRepository,
   ChallanRepository,
   ClusterPriceListRepository,
@@ -30,14 +32,20 @@ import {
   CustomerFamilyGroupRepository,
   CustomerRepository,
   CustomerSecurityDepositRepository,
+  DeliveryCustodyEventRepository,
+  DeliveryOrderRepository,
   DeliveryTypeConfigurationRepository,
   ItemRepository,
+  PickupRequestRepository,
+  ProcessStepRepository,
+  SalesReturnRepository,
   ServiceRepository,
   UsersRepository,
   GarmentAdditionalServiceRepository,
   GarmentDamageImageRepository,
   GarmentDamageRepository,
   GarmentImageRepository,
+  GarmentProcessLogRepository,
   GarmentRepository,
   GarmentStainImageRepository,
   GarmentStainRepository,
@@ -57,6 +65,8 @@ import {
   ShiftRepository,
   StoreRepository,
   StorePriceOverrideRepository,
+  TransferCustodyEventRepository,
+  TransferItemRepository,
   TransferRepository,
   WalletRepository,
   WalletTransactionRepository,
@@ -217,6 +227,15 @@ export class OrderService {
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(CouponRepository) private couponRepo: CouponRepository,
     @repository(CouponRedemptionRepository) private couponRedemptionRepo: CouponRedemptionRepository,
+    @repository(GarmentProcessLogRepository) private garmentProcessLogRepo: GarmentProcessLogRepository,
+    @repository(ProcessStepRepository) private processStepRepo: ProcessStepRepository,
+    @repository(ApprovalAuditLogRepository) private approvalAuditLogRepo: ApprovalAuditLogRepository,
+    @repository(SalesReturnRepository) private salesReturnRepo: SalesReturnRepository,
+    @repository(TransferItemRepository) private transferItemRepo: TransferItemRepository,
+    @repository(TransferCustodyEventRepository) private transferCustodyEventRepo: TransferCustodyEventRepository,
+    @repository(DeliveryOrderRepository) private deliveryOrderRepo: DeliveryOrderRepository,
+    @repository(DeliveryCustodyEventRepository) private deliveryCustodyEventRepo: DeliveryCustodyEventRepository,
+    @repository(PickupRequestRepository) private pickupRequestRepo: PickupRequestRepository,
     @inject('services.coupon') private couponService: CouponService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
@@ -2752,6 +2771,362 @@ export class OrderService {
       // Nothing outstanding = paid, including a ₹0 free rework order.
       paymentStatus: balanceDue === 0 ? 'paid' : totalCollected > 0 ? 'partial' : 'pending',
     };
+  }
+
+  // ─── Activity Log ───────────────────────────────────────────────────────
+  // Unified timeline for one order — merges every already-existing,
+  // live-written audit trail (order status, garment status, processing
+  // steps, approvals, sales returns, interstore transfers, delivery
+  // custody, in-store handover, and the originating pickup request if any)
+  // into one sorted list. Nothing here invents new tracking — every source
+  // already exists and is written by its own controller/service; this only
+  // aggregates and normalizes for display.
+
+  private static readonly APPROVAL_TYPE_LABEL: Record<string, string> = {
+    [ApprovalRequestType.RETURN_ITEM]: 'Return',
+    [ApprovalRequestType.UPGRADE_SERVICE]: 'Service upgrade',
+    [ApprovalRequestType.ITEM_DAMAGED]: 'Damage report',
+    [ApprovalRequestType.REPROCESS]: 'Reprocess',
+    [ApprovalRequestType.POST_TAG_EDIT]: 'Tag edit',
+    [ApprovalRequestType.CHEQUE_PAYMENT]: 'Cheque payment',
+    [ApprovalRequestType.PDC_PAYMENT]: 'PDC payment',
+    [ApprovalRequestType.PROCESS_AT_RISK]: 'Process-at-risk',
+  };
+
+  async getActivityLog(orderId: string): Promise<{
+    orderId: string;
+    entries: Array<{
+      id: string;
+      entityType: 'order' | 'garment';
+      garmentId: string | null;
+      garmentTagNumber: string | null;
+      action: string;
+      detail: string | null;
+      performedAt: Date;
+      performedById: string | null;
+      performedByName: string | null;
+    }>;
+  }> {
+    const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const orderItems = await this.orderItemRepo.find({
+      where: {orderId},
+      fields: {id: true},
+    });
+    const orderItemIds = orderItems.map(oi => oi.id);
+    const garments = orderItemIds.length
+      ? await this.garmentRepo.find({
+          where: {orderItemId: {inq: orderItemIds}, isDeleted: false},
+          fields: {id: true, garmentTagNumber: true},
+        })
+      : [];
+    const garmentIds = garments.map(g => g.id);
+    const garmentTagById = new Map(garments.map(g => [g.id, g.garmentTagNumber]));
+    const entityIds = [orderId, ...garmentIds];
+
+    const [
+      orderStatusRows,
+      garmentStatusRows,
+      processLogRows,
+      approvalRequests,
+      salesReturns,
+      transferItems,
+      deliveryOrders,
+      orderHandovers,
+      pickupRequests,
+    ] = await Promise.all([
+      this.statusHistoryRepo.find({where: {orderId}}),
+      garmentIds.length
+        ? this.garmentStatusHistoryRepo.find({where: {garmentId: {inq: garmentIds}}})
+        : Promise.resolve([]),
+      garmentIds.length
+        ? this.garmentProcessLogRepo.find({
+            where: {garmentId: {inq: garmentIds}, completedAt: {neq: null as unknown as Date}},
+          })
+        : Promise.resolve([]),
+      this.approvalRequestRepo.find({where: {entityId: {inq: entityIds}}}),
+      this.salesReturnRepo.find({where: {orderId}}),
+      this.transferItemRepo.find({where: {orderId}}),
+      this.deliveryOrderRepo.find({where: {orderId}}),
+      this.orderHandoverRepo.find({where: {orderId}}),
+      this.pickupRequestRepo.find({where: {convertedOrderId: orderId}}),
+    ]);
+
+    const approvalRequestIds = approvalRequests.map(a => a.id);
+    const approvalAuditRows = approvalRequestIds.length
+      ? await this.approvalAuditLogRepo.find({where: {approvalRequestId: {inq: approvalRequestIds}}})
+      : [];
+    const approvalRequestById = new Map(approvalRequests.map(a => [a.id, a]));
+
+    const transferIds = [...new Set(transferItems.map(ti => ti.transferId))];
+    const transferCustodyRows = transferIds.length
+      ? await this.transferCustodyEventRepo.find({where: {transferId: {inq: transferIds}}})
+      : [];
+
+    const deliveryIds = [...new Set(deliveryOrders.map(d => d.deliveryId))];
+    const deliveryCustodyRows = await this.deliveryCustodyEventRepo.find({
+      where: deliveryIds.length
+        ? {or: [{deliveryId: {inq: deliveryIds}}, {orderId}]}
+        : {orderId},
+    });
+
+    const processStepIds = [...new Set(processLogRows.map(p => p.processStepId))];
+    const serviceIds = [...new Set(processLogRows.map(p => p.serviceId))];
+    const [processSteps, services] = await Promise.all([
+      processStepIds.length
+        ? this.processStepRepo.find({where: {id: {inq: processStepIds}}})
+        : Promise.resolve([]),
+      serviceIds.length
+        ? this.serviceRepo.find({where: {id: {inq: serviceIds}}})
+        : Promise.resolve([]),
+    ]);
+    const stepNameById = new Map(processSteps.map(s => [s.id, s.name]));
+    const serviceNameById = new Map(services.map(s => [s.id, s.name]));
+
+    // Batch-resolve every distinct actor id to a display name in one pass —
+    // mirrors the customerMap/userMap pattern already used in listOrders().
+    const actorIds = new Set<string>();
+    const collect = (id?: string | null) => {
+      if (id) actorIds.add(id);
+    };
+    orderStatusRows.forEach(r => collect(r.changedBy));
+    garmentStatusRows.forEach(r => collect(r.changedBy));
+    processLogRows.forEach(r => collect(r.completedBy));
+    approvalRequests.forEach(r => collect(r.requestedBy));
+    approvalAuditRows.forEach(r => collect(r.performedBy));
+    salesReturns.forEach(r => {
+      collect(r.requestedBy);
+      collect(r.resolvedBy);
+    });
+    transferCustodyRows.forEach(r => collect(r.performedBy));
+    deliveryCustodyRows.forEach(r => collect(r.performedBy));
+    orderHandovers.forEach(r => collect(r.handedOverBy));
+    pickupRequests.forEach(r => collect(r.assignedBy));
+
+    const actors = actorIds.size
+      ? await this.userRepo.find({
+          where: {id: {inq: [...actorIds]}},
+          fields: {id: true, fullName: true},
+        })
+      : [];
+    const nameById = new Map(actors.map(u => [u.id, u.fullName ?? null]));
+    const nameFor = (id?: string | null) => (id ? nameById.get(id) ?? null : null);
+
+    type Entry = {
+      id: string;
+      entityType: 'order' | 'garment';
+      garmentId: string | null;
+      garmentTagNumber: string | null;
+      action: string;
+      detail: string | null;
+      performedAt: Date;
+      performedById: string | null;
+      performedByName: string | null;
+    };
+    const entries: Entry[] = [];
+
+    for (const row of orderStatusRows) {
+      if (!row.changedAt) continue;
+      entries.push({
+        id: row.id,
+        entityType: 'order',
+        garmentId: null,
+        garmentTagNumber: null,
+        action: `Order status: ${row.status}`,
+        detail: row.remarks ?? null,
+        performedAt: row.changedAt,
+        performedById: row.changedBy ?? null,
+        performedByName: nameFor(row.changedBy),
+      });
+    }
+
+    for (const row of garmentStatusRows) {
+      if (!row.changedAt) continue;
+      const tag = garmentTagById.get(row.garmentId) ?? null;
+      entries.push({
+        id: row.id,
+        entityType: 'garment',
+        garmentId: row.garmentId,
+        garmentTagNumber: tag,
+        action: `Garment ${tag ?? ''} status: ${row.status}`.trim(),
+        detail: row.remarks ?? null,
+        performedAt: row.changedAt,
+        performedById: row.changedBy ?? null,
+        performedByName: nameFor(row.changedBy),
+      });
+    }
+
+    for (const row of processLogRows) {
+      if (!row.completedAt) continue;
+      const tag = garmentTagById.get(row.garmentId) ?? null;
+      const stepName = stepNameById.get(row.processStepId) ?? 'step';
+      const serviceName = serviceNameById.get(row.serviceId) ?? 'service';
+      entries.push({
+        id: row.id,
+        entityType: 'garment',
+        garmentId: row.garmentId,
+        garmentTagNumber: tag,
+        action: `Processing: ${serviceName} — ${stepName} completed`,
+        detail: row.remarks ?? null,
+        performedAt: row.completedAt,
+        performedById: row.completedBy ?? null,
+        performedByName: nameFor(row.completedBy),
+      });
+    }
+
+    for (const request of approvalRequests) {
+      if (!request.createdAt) continue;
+      const label = OrderService.APPROVAL_TYPE_LABEL[request.type] ?? request.type;
+      const isGarment = request.entityType === 'garment' && garmentTagById.has(request.entityId);
+      entries.push({
+        id: `${request.id}-requested`,
+        entityType: isGarment ? 'garment' : 'order',
+        garmentId: isGarment ? request.entityId : null,
+        garmentTagNumber: isGarment ? garmentTagById.get(request.entityId) ?? null : null,
+        action: `${label} requested`,
+        detail: request.requestReason ?? null,
+        performedAt: request.createdAt,
+        performedById: request.requestedBy ?? null,
+        performedByName: nameFor(request.requestedBy),
+      });
+    }
+
+    for (const row of approvalAuditRows) {
+      if (!row.performedAt || row.eventType === 'created') continue; // covered by the "requested" entry above
+      const request = approvalRequestById.get(row.approvalRequestId);
+      const label = request ? OrderService.APPROVAL_TYPE_LABEL[request.type] ?? request.type : 'Approval';
+      const isGarment = Boolean(
+        request && request.entityType === 'garment' && garmentTagById.has(request.entityId),
+      );
+      // reprocess_order_created is its own distinct milestone (the free
+      // rework order actually got created), not a verb that reads onto the
+      // request label the way approved/rejected/reverted do.
+      const action =
+        row.eventType === 'reprocess_order_created'
+          ? `${label}: free reprocess order created`
+          : `${label} ${row.eventType}`;
+      entries.push({
+        id: row.id,
+        entityType: isGarment ? 'garment' : 'order',
+        garmentId: isGarment ? request!.entityId : null,
+        garmentTagNumber: isGarment ? garmentTagById.get(request!.entityId) ?? null : null,
+        action,
+        detail: row.remarks ?? null,
+        performedAt: row.performedAt,
+        performedById: row.performedBy ?? null,
+        performedByName: nameFor(row.performedBy),
+      });
+    }
+
+    for (const row of salesReturns) {
+      if (row.createdAt) {
+        entries.push({
+          id: `${row.id}-requested`,
+          entityType: 'order',
+          garmentId: null,
+          garmentTagNumber: null,
+          action: `Sales return requested${row.creditNoteNumber ? ` (${row.creditNoteNumber})` : ''}`,
+          detail: row.reason ?? null,
+          performedAt: row.createdAt,
+          performedById: row.requestedBy ?? null,
+          performedByName: nameFor(row.requestedBy),
+        });
+      }
+      if (row.resolvedAt) {
+        entries.push({
+          id: `${row.id}-resolved`,
+          entityType: 'order',
+          garmentId: null,
+          garmentTagNumber: null,
+          action: `Sales return ${row.status}${row.creditNoteNumber ? ` (${row.creditNoteNumber})` : ''}`,
+          detail: row.remarks ?? null,
+          performedAt: row.resolvedAt,
+          performedById: row.resolvedBy ?? null,
+          performedByName: nameFor(row.resolvedBy),
+        });
+      }
+    }
+
+    for (const row of transferCustodyRows) {
+      if (!row.performedAt) continue;
+      entries.push({
+        id: row.id,
+        entityType: 'order',
+        garmentId: null,
+        garmentTagNumber: null,
+        action: `Transfer: ${row.eventType}`,
+        detail: row.remarks ?? null,
+        performedAt: row.performedAt,
+        performedById: row.performedBy ?? null,
+        performedByName: nameFor(row.performedBy),
+      });
+    }
+
+    for (const row of deliveryCustodyRows) {
+      if (!row.performedAt) continue;
+      entries.push({
+        id: row.id,
+        entityType: 'order',
+        garmentId: null,
+        garmentTagNumber: null,
+        action: `Delivery: ${row.eventType}`,
+        detail: row.remarks ?? null,
+        performedAt: row.performedAt,
+        performedById: row.performedBy ?? null,
+        performedByName: nameFor(row.performedBy),
+      });
+    }
+
+    for (const row of orderHandovers) {
+      if (!row.handedOverAt) continue;
+      entries.push({
+        id: row.id,
+        entityType: 'order',
+        garmentId: null,
+        garmentTagNumber: null,
+        action: 'Handed over in store',
+        detail: row.collectorName ? `To ${row.collectorName} (${row.collectorType})` : row.remarks ?? null,
+        performedAt: row.handedOverAt,
+        performedById: row.handedOverBy ?? null,
+        performedByName: nameFor(row.handedOverBy),
+      });
+    }
+
+    // Pickup lifecycle before the order existed — coarse, since PickupRequest
+    // has no per-transition history table, only current status + assignedAt.
+    for (const row of pickupRequests) {
+      if (row.createdAt) {
+        entries.push({
+          id: `${row.id}-created`,
+          entityType: 'order',
+          garmentId: null,
+          garmentTagNumber: null,
+          action: `Pickup requested${row.pickupNumber ? ` (${row.pickupNumber})` : ''}`,
+          detail: null,
+          performedAt: row.createdAt,
+          performedById: null,
+          performedByName: null,
+        });
+      }
+      if (row.assignedAt) {
+        entries.push({
+          id: `${row.id}-assigned`,
+          entityType: 'order',
+          garmentId: null,
+          garmentTagNumber: null,
+          action: `Pickup rider assigned${row.assignedRiderName ? `: ${row.assignedRiderName}` : ''}`,
+          detail: null,
+          performedAt: row.assignedAt,
+          performedById: row.assignedBy ?? null,
+          performedByName: nameFor(row.assignedBy),
+        });
+      }
+    }
+
+    entries.sort((a, b) => b.performedAt.getTime() - a.performedAt.getTime());
+
+    return {orderId, entries};
   }
 
   // ─── Split Order ─────────────────────────────────────────────────────────
