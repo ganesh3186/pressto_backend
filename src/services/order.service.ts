@@ -2361,7 +2361,7 @@ export class OrderService {
         : Promise.resolve([]),
       this.orderItemRepo.find({
         where: {orderId: {inq: orderIds}} as any,
-        fields: {orderId: true, quantity: true} as any,
+        fields: {orderId: true, quantity: true, rejectedAtIntake: true} as any,
       }),
       this.orderLabelAssignmentRepo.find({where: {orderId: {inq: orderIds}, isDeleted: false} as any}),
     ]);
@@ -2394,9 +2394,15 @@ export class OrderService {
 
     // Pieces in the order (3 shirts + 1 trouser = 4), not the number of item rows.
     const itemsCountByOrder = new Map<string, number>();
+    // Cheap per-order flag reusing this same orderItems fetch — no extra
+    // query — so the Manage Order list can badge a row without opening it,
+    // mirroring the item-level "Rejected at Intake" chip Order Details
+    // already shows (order.service.ts's own getOrderDetails/enrichedItems).
+    const hasRejectedItemsByOrder = new Set<string>();
     for (const oi of orderItems) {
       const qty = Number(oi.quantity ?? 0) || 0;
       itemsCountByOrder.set(oi.orderId, (itemsCountByOrder.get(oi.orderId) ?? 0) + qty);
+      if (oi.rejectedAtIntake) hasRejectedItemsByOrder.add(oi.orderId);
     }
 
     const paymentsByOrder = new Map<string, number>();
@@ -2450,6 +2456,7 @@ export class OrderService {
         assignedRiderName: (order as any).assignedRiderName ?? null,
         storeId: (order as any).storeId ?? null,
         orderItemsCount: itemsCountByOrder.get(order.id) ?? 0,
+        hasRejectedItems: hasRejectedItemsByOrder.has(order.id),
         subtotal: order.subtotal,
         discountAmount: order.discountAmount,
         taxAmount: order.taxAmount,
