@@ -520,7 +520,10 @@ export class RiderPickupController {
                 type: 'array',
                 items: {
                   type: 'object',
-                  required: ['itemCategoryId', 'quantity'],
+                  // itemCategoryId is optional for now — the app can send a
+                  // bare quantity estimate before its category picker
+                  // (GET /rider/item-categories) is wired up.
+                  required: ['quantity'],
                   properties: {
                     itemCategoryId: {type: 'string', format: 'uuid'},
                     quantity: {type: 'number'},
@@ -570,7 +573,7 @@ export class RiderPickupController {
       handoverPersonName?: string;
       itemCountEstimate?: number;
       itemCategoryEstimate?: Array<{
-        itemCategoryId: string;
+        itemCategoryId?: string;
         quantity: number;
         serviceId?: string;
         deliverySpeed?: DeliveryType;
