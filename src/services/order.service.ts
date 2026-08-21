@@ -2478,6 +2478,7 @@ export class OrderService {
         hasRejectedItems: hasRejectedItemsByOrder.has(order.id),
         subtotal: order.subtotal,
         discountAmount: order.discountAmount,
+        couponCode: order.couponCode ?? null,
         taxAmount: order.taxAmount,
         totalAmount: order.totalAmount,
         totalCollected,
@@ -2612,6 +2613,25 @@ export class OrderService {
       : [];
     const awayStoreNameById = new Map(awayStores.map(s => [s.id, s.name]));
 
+    // ── Additional charge names ───────────────────────────────────────────────
+    // orderCharges/itemCharges are raw junction rows (additionalChargeId +
+    // frozen amount only) — join against the master for a display name,
+    // mirroring serviceMap's role for additionalServices below.
+    const chargeMasterIds = [
+      ...new Set([...orderCharges, ...itemCharges].map(c => c.additionalChargeId)),
+    ];
+    const chargeMasters = chargeMasterIds.length
+      ? await this.additionalChargeRepo.find({where: {id: {inq: chargeMasterIds}}})
+      : [];
+    const chargeMasterMap = new Map(chargeMasters.map(c => [c.id, c]));
+    const withChargeName = <T extends {additionalChargeId: string}>(charge: T) => ({
+      ...charge,
+      name: chargeMasterMap.get(charge.additionalChargeId)?.name ?? null,
+      chargeScope: chargeMasterMap.get(charge.additionalChargeId)?.chargeScope ?? null,
+      chargeType: chargeMasterMap.get(charge.additionalChargeId)?.chargeType ?? null,
+    });
+    const namedOrderCharges = orderCharges.map(withChargeName);
+
     // ── Build lookup maps ─────────────────────────────────────────────────────
     const serviceMap = new Map(services.map(s => [s.id, s]));
     const itemMap = new Map(items.map(i => [i.id, i]));
@@ -2627,8 +2647,9 @@ export class OrderService {
       list.push(h);
       historiesByGarment.set(h.garmentId, list);
     }
-    const chargesByItem = new Map<string, typeof itemCharges[0][]>();
-    for (const c of itemCharges) {
+    const namedItemCharges = itemCharges.map(withChargeName);
+    const chargesByItem = new Map<string, typeof namedItemCharges>();
+    for (const c of namedItemCharges) {
       const list = chargesByItem.get(c.orderItemId) ?? [];
       list.push(c);
       chargesByItem.set(c.orderItemId, list);
@@ -2763,7 +2784,7 @@ export class OrderService {
         })),
       },
       items: enrichedItems,
-      orderCharges,
+      orderCharges: namedOrderCharges,
       statusHistory,
       paymentTransactions,
       totalCollected,
