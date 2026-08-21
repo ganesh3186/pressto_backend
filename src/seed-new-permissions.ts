@@ -97,6 +97,10 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   // — a distinct permission from customer_recharge:create (credit only), so
   // it can be granted independently for correcting a mistaken top-up.
   {permission: 'customer_recharge:debit', description: 'Manually debit a customer wallet (correction/adjustment)'},
+  // Correct a recorded payment's mode (see OrderController.correctPaymentMode)
+  // — distinct from order:create (which records a NEW payment), so it can be
+  // granted to finance independently for fixing a mis-recorded payment method.
+  {permission: 'payment:update', description: "Correct an already-recorded payment's mode"},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -189,6 +193,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // Manually debit a wallet to correct a mistaken top-up — finance
       // already has customer_recharge:create (credit) from seed.ts.
       'customer_recharge:debit',
+      // Correct a payment's recorded mode (e.g. logged as UPI, actually cash).
+      'payment:update',
     ],
   },
 ];

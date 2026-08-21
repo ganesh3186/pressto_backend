@@ -3263,4 +3263,63 @@ export class OrderService {
       throw err;
     }
   }
+
+  // ─── Correct a Payment's Mode ─────────────────────────────────────────────
+  // Finance-only fix for "the cashier recorded UPI but it was actually
+  // cash" — relabels an already-recorded payment, nothing more. Deliberately
+  // narrower than a general payment editor: amount/order balance are
+  // untouched, and wallet/on-account are excluded on both ends because they
+  // carry a real side effect elsewhere (a WalletTransaction row, a running
+  // B2B deposit) that this relabel would never create or reverse, leaving
+  // that other ledger out of sync with what this transaction claims.
+
+  private static readonly PAYMENT_MODE_CORRECTION_EXCLUDED: PaymentMode[] = [
+    PaymentMode.WALLET,
+    PaymentMode.ON_ACCOUNT,
+  ];
+
+  async correctPaymentMode(
+    orderId: string,
+    paymentId: string,
+    newPaymentMode: PaymentMode,
+    performedByLabel: string,
+    reason: string,
+  ): Promise<object> {
+    if (!reason?.trim()) {
+      throw new HttpErrors.BadRequest('A reason is required to change a payment mode.');
+    }
+
+    const payment = await this.paymentTransactionRepo.findOne({where: {id: paymentId, orderId}});
+    if (!payment) throw new HttpErrors.NotFound('Payment not found on this order.');
+
+    if (OrderService.PAYMENT_MODE_CORRECTION_EXCLUDED.includes(payment.paymentMode)) {
+      throw new HttpErrors.BadRequest(
+        `Cannot change the mode of a ${payment.paymentMode} payment here — it has its own ledger (wallet/on-account) this action does not touch.`,
+      );
+    }
+    if (OrderService.PAYMENT_MODE_CORRECTION_EXCLUDED.includes(newPaymentMode)) {
+      throw new HttpErrors.BadRequest(
+        `Cannot correct a payment to ${newPaymentMode} here — that mode has its own ledger (wallet/on-account) this action does not create.`,
+      );
+    }
+    if (newPaymentMode === payment.paymentMode) {
+      throw new HttpErrors.BadRequest(`Payment is already recorded as ${newPaymentMode}.`);
+    }
+
+    // gatewayResponse has no dedicated audit column of its own (same gap
+    // WalletService.adminDebit hit) — append rather than overwrite so a
+    // payment corrected more than once keeps the full trail.
+    const auditNote = `[Payment mode corrected: ${payment.paymentMode} -> ${newPaymentMode} by ${performedByLabel} on ${new Date().toISOString()}. Reason: ${reason.trim()}]`;
+    const gatewayResponse = payment.gatewayResponse
+      ? `${payment.gatewayResponse}\n${auditNote}`
+      : auditNote;
+
+    await this.paymentTransactionRepo.updateById(paymentId, {
+      paymentMode: newPaymentMode,
+      gatewayResponse,
+      updatedAt: new Date(),
+    });
+
+    return this.paymentTransactionRepo.findById(paymentId);
+  }
 }

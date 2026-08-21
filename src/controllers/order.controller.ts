@@ -1068,6 +1068,47 @@ export class OrderController {
     return {paymentTransactions, totalCollected, balanceDue, totalAmount: order.totalAmount};
   }
 
+  // ─── Correct a Payment's Mode (finance) ────────────────────────────────────
+  // "The cashier recorded UPI but it was actually cash" — relabels an
+  // already-recorded payment. Distinct permission from order:create (which
+  // records a new payment) so it can be granted to finance on its own.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['payment:update']})
+  @patch('/orders/{id}/payments/{paymentId}')
+  @response(200, {description: "Payment's mode corrected"})
+  async correctPaymentMode(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @param.path.string('paymentId') paymentId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['paymentMode', 'reason'],
+            properties: {
+              paymentMode: {type: 'string', enum: Object.values(PaymentMode)},
+              reason: {type: 'string', description: 'Required — why this payment is being corrected.'},
+            },
+          },
+        },
+      },
+    })
+    body: {paymentMode: PaymentMode; reason: string},
+  ): Promise<object> {
+    const userLabel = currentUser as {name?: string; email?: string};
+    const performedByLabel = userLabel.name ?? userLabel.email ?? currentUser[securityId];
+    const payment = await this.orderService.correctPaymentMode(
+      id,
+      paymentId,
+      body.paymentMode,
+      performedByLabel,
+      body.reason,
+    );
+    return {message: 'Payment mode corrected.', payment};
+  }
+
   // ─── Status History ───────────────────────────────────────────────────────
 
   @authenticate('jwt')
