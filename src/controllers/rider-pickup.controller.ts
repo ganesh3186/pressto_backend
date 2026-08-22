@@ -525,16 +525,33 @@ export class RiderPickupController {
   @response(200, {description: "The calling rider's own pickup requests"})
   async myPickupRequests(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    // Exact status, when a caller wants one specific bucket by name (e.g.
+    // a future "Cancelled" view) — takes priority over tab when both are
+    // sent, though callers should only ever send one.
     @param.query.string('status') status?: PickupRequestStatus,
+    // The app's two tabs, as buckets of statuses rather than one exact
+    // value — Pending: assigned but not yet picked up. Completed: the
+    // rider's own part is done, regardless of whether the store has
+    // confirmed receipt yet. Omitting both (or tab=pending) is Pending —
+    // the original default, kept so existing callers don't need to change.
+    @param.query.string('tab') tab?: 'pending' | 'completed',
   ): Promise<PickupRequest[]> {
     const rider = await this.resolveActiveRider(currentUser);
+
+    let statusWhere: object;
+    if (status) {
+      statusWhere = {status};
+    } else if (tab === 'completed') {
+      statusWhere = {status: {inq: [PickupRequestStatus.PICKED_UP, PickupRequestStatus.RECEIVED_AT_STORE]}};
+    } else {
+      statusWhere = {status: {inq: [PickupRequestStatus.RIDER_ASSIGNED, PickupRequestStatus.OUT_FOR_PICKUP]}};
+    }
+
     return this.pickupRequestRepository.find({
       where: {
         assignedRiderId: rider.id,
         isDeleted: false,
-        ...(status
-          ? {status}
-          : {status: {inq: [PickupRequestStatus.RIDER_ASSIGNED, PickupRequestStatus.OUT_FOR_PICKUP]}}),
+        ...statusWhere,
       } as object,
       order: ['assignedAt DESC'],
     });
