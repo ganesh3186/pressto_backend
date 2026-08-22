@@ -469,12 +469,16 @@ export class RiderPickupController {
   @authorize({roles: ['rider']})
   @get('/rider/services')
   @response(200, {
-    description: 'Active services, for the pickup-request itemCategoryEstimate picker',
+    description:
+      'Active, independent services with their own process — for the pickup-request ' +
+      'itemCategoryEstimate picker. Excludes dependent add-on services (e.g. Presstoke, ' +
+      'Repair) that only do real work when attached to another service, since a pickup ' +
+      'estimate is standalone and has nothing for those to attach to.',
     content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(Service)}}},
   })
   async getServices(): Promise<Service[]> {
     return this.serviceRepository.find({
-      where: {isActive: true, isDeleted: false} as object,
+      where: {isActive: true, isDeleted: false, dependencyType: 'independent', hasOwnProcess: true} as object,
       order: ['sequence ASC', 'name ASC'],
     });
   }
