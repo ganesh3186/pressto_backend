@@ -11,6 +11,7 @@ import {DeliveryStatus} from '../models/delivery-status.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
+import {RiderCashHandoverTargetType} from '../models/rider-cash-handover-target-type.enum';
 import {
   BagRepository,
   CustomerRepository,
@@ -23,6 +24,7 @@ import {
   RiderCashHandoverItemRepository,
   RiderCashHandoverRepository,
   RiderRepository,
+  StoreRepository,
 } from '../repositories';
 import {OrderService, roundRupee} from '../services/order.service';
 
@@ -48,6 +50,7 @@ export class RiderDeliveryController {
     private riderCashHandoverRepository: RiderCashHandoverRepository,
     @repository(RiderCashHandoverItemRepository)
     private riderCashHandoverItemRepository: RiderCashHandoverItemRepository,
+    @repository(StoreRepository) private storeRepository: StoreRepository,
     @inject('services.order') private orderService: OrderService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
@@ -388,16 +391,33 @@ export class RiderDeliveryController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['paymentTransactionIds'],
+            required: ['paymentTransactionIds', 'handoverToType'],
             properties: {
               paymentTransactionIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
+              handoverToType: {type: 'string', enum: Object.values(RiderCashHandoverTargetType)},
+              handoverToStoreId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'Required when handoverToType is "store" — covers both "Washing Facility" and "Nearby Store" in the app UI, same picker either way.',
+              },
+              handoverToRiderId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'Required when handoverToType is "rider" — covers both "Van" and "Rider" in the app UI, filtered by that rider\'s own riderType.',
+              },
               remarks: {type: 'string'},
             },
           },
         },
       },
     })
-    body: {paymentTransactionIds: string[]; remarks?: string},
+    body: {
+      paymentTransactionIds: string[];
+      handoverToType: RiderCashHandoverTargetType;
+      handoverToStoreId?: string;
+      handoverToRiderId?: string;
+      remarks?: string;
+    },
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
     const transactions = await this.paymentTransactionRepository.find({
@@ -412,6 +432,33 @@ export class RiderDeliveryController {
     );
     if (invalid.length) {
       throw new HttpErrors.BadRequest('One or more transactions are not yours to hand over, or already submitted.');
+    }
+
+    // ── Resolve who this is going to ──
+    let handoverToName: string;
+    if (body.handoverToType === RiderCashHandoverTargetType.STORE) {
+      if (!body.handoverToStoreId) {
+        throw new HttpErrors.BadRequest('handoverToStoreId is required when handoverToType is "store".');
+      }
+      const targetStore = await this.storeRepository.findOne({
+        where: {id: body.handoverToStoreId, isDeleted: false} as object,
+      });
+      if (!targetStore) throw new HttpErrors.NotFound('Target store not found.');
+      handoverToName = targetStore.name;
+    } else if (body.handoverToType === RiderCashHandoverTargetType.RIDER) {
+      if (!body.handoverToRiderId) {
+        throw new HttpErrors.BadRequest('handoverToRiderId is required when handoverToType is "rider".');
+      }
+      if (body.handoverToRiderId === rider.id) {
+        throw new HttpErrors.BadRequest('Cannot hand cash over to yourself.');
+      }
+      const targetRider = await this.riderRepository.findOne({
+        where: {id: body.handoverToRiderId, isActive: true, isDeleted: false} as object,
+      });
+      if (!targetRider) throw new HttpErrors.NotFound('Target rider not found or inactive.');
+      handoverToName = `${targetRider.firstName} ${targetRider.lastName}`;
+    } else {
+      throw new HttpErrors.BadRequest(`Unknown handoverToType: ${body.handoverToType}.`);
     }
 
     const orderIds = [...new Set(transactions.map(t => t.orderId))];
@@ -442,6 +489,10 @@ export class RiderDeliveryController {
           riderCode: rider.riderCode,
           totalAmount,
           itemCount: transactions.length,
+          handoverToType: body.handoverToType,
+          handoverToStoreId: body.handoverToStoreId,
+          handoverToRiderId: body.handoverToRiderId,
+          handoverToName,
           submittedAt: now,
           submittedBy: currentUser[securityId],
           remarks: body.remarks,
@@ -510,5 +561,94 @@ export class RiderDeliveryController {
     return {
       handovers: handovers.map(h => ({...h, items: itemsByHandover.get(h.id) ?? []})),
     };
+  }
+
+  // ─── Cash handed to ME by another rider ────────────────────────────────────
+  // Only ever non-empty for a handoverToType:'rider' batch — a store-
+  // targeted one is confirmed by store staff on the admin panel instead
+  // (RiderCashHandoverController.confirm), never appears here.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/cash-handovers/incoming')
+  @response(200, {description: 'Cash handover batches directed to the calling rider by another rider'})
+  async incomingHandovers(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    // Pending: awaiting my confirmation. Completed: I've already confirmed
+    // it. Same tab shape as GET /rider/pickup-requests?tab=.
+    @param.query.string('tab') tab?: 'pending' | 'completed',
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const handovers = await this.riderCashHandoverRepository.find({
+      where: {
+        handoverToType: RiderCashHandoverTargetType.RIDER,
+        handoverToRiderId: rider.id,
+        isDeleted: false,
+        status: tab === 'completed' ? RiderCashHandoverStatus.CONFIRMED : RiderCashHandoverStatus.PENDING,
+      } as object,
+      order: ['submittedAt DESC'],
+    });
+    const handoverIds = handovers.map(h => h.id);
+    const items = handoverIds.length
+      ? await this.riderCashHandoverItemRepository.find({
+          where: {riderCashHandoverId: {inq: handoverIds}} as object,
+        })
+      : [];
+    const itemsByHandover = new Map<string, typeof items>();
+    for (const item of items) {
+      const list = itemsByHandover.get(item.riderCashHandoverId) ?? [];
+      list.push(item);
+      itemsByHandover.set(item.riderCashHandoverId, list);
+    }
+
+    return {
+      handovers: handovers.map(h => ({...h, items: itemsByHandover.get(h.id) ?? []})),
+    };
+  }
+
+  // ─── Confirm receipt of cash handed to me ──────────────────────────────────
+  // NOT the same effect as the admin confirm below — a rider receiving cash
+  // from another rider isn't the final destination the way a store is.
+  // Confirming here reassigns the underlying transactions to ME
+  // (riderId + back to riderHandoverStatus:'with_rider'), so they show up
+  // in my OWN GET /rider/cash-handovers/pending-items afterward, ready to
+  // hand off again (to another rider, or eventually a store) — same
+  // "custody moves on, doesn't just vanish" principle as a transfer
+  // custody event. Only the store-targeted path ever marks a transaction
+  // handed_over (truly settled).
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/cash-handovers/{id}/confirm')
+  @response(200, {description: 'Cash handover confirmed received'})
+  async confirmIncomingHandover(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const handover = await this.riderCashHandoverRepository.findOne({where: {id, isDeleted: false}});
+    if (!handover) throw new HttpErrors.NotFound('Handover not found.');
+    if (handover.handoverToType !== RiderCashHandoverTargetType.RIDER || handover.handoverToRiderId !== rider.id) {
+      throw new HttpErrors.Forbidden('This handover was not directed to you.');
+    }
+    if (handover.status !== RiderCashHandoverStatus.PENDING) {
+      throw new HttpErrors.BadRequest(`This handover is already ${handover.status}.`);
+    }
+
+    const items = await this.riderCashHandoverItemRepository.find({where: {riderCashHandoverId: id} as object});
+    for (const item of items) {
+      await this.paymentTransactionRepository.updateById(
+        item.paymentTransactionId,
+        {riderId: rider.id, riderHandoverStatus: 'with_rider'} as object,
+      );
+    }
+
+    await this.riderCashHandoverRepository.updateById(id, {
+      status: RiderCashHandoverStatus.CONFIRMED,
+      confirmedAt: new Date(),
+      confirmedBy: currentUser[securityId],
+    });
+
+    return {message: 'Cash handover confirmed received.'};
   }
 }

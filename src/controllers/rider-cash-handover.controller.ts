@@ -5,6 +5,7 @@ import {get, HttpErrors, param, post, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
+import {RiderCashHandoverTargetType} from '../models/rider-cash-handover-target-type.enum';
 import {
   PaymentTransactionRepository,
   RiderCashHandoverItemRepository,
@@ -139,6 +140,15 @@ export class RiderCashHandoverController {
     if (!handover) throw new HttpErrors.NotFound('Handover not found.');
     if (handover.status !== RiderCashHandoverStatus.PENDING) {
       throw new HttpErrors.BadRequest(`This handover is already ${handover.status}.`);
+    }
+    // A rider-targeted handover (Van/Rider in the app UI) is confirmed by
+    // the receiving rider themselves — POST /rider/cash-handovers/{id}/confirm
+    // — not here. Anything else (including a legacy row from before
+    // handoverToType existed) is store-targeted and belongs on this path.
+    if (handover.handoverToType === RiderCashHandoverTargetType.RIDER) {
+      throw new HttpErrors.BadRequest(
+        'This handover is directed to a rider, not a store — it must be confirmed by that rider, not here.',
+      );
     }
 
     const items = await this.handoverItemRepo.find({where: {riderCashHandoverId: id} as object});
