@@ -52,16 +52,36 @@ export class RiderTransferController {
   @response(200, {description: "The calling rider's own transfers"})
   async myTransfers(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    // Exact status, when a caller wants one specific bucket by name —
+    // takes priority over tab when both are sent, though callers should
+    // only ever send one.
     @param.query.string('status') status?: TransferStatus,
+    // The app's two tabs, as buckets of statuses rather than one exact
+    // value — same shape as GET /rider/pickup-requests?tab=. Pending: the
+    // rider still has the bag. Completed: the destination store has
+    // already acted on it — received cleanly or flagged a discrepancy,
+    // either way the rider's own leg is done. Omitting both (or
+    // tab=pending) is Pending — the original default.
+    @param.query.string('tab') tab?: 'pending' | 'completed',
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
+
+    let statusWhere: object;
+    if (status) {
+      statusWhere = {status};
+    } else if (tab === 'completed') {
+      statusWhere = {
+        status: {inq: [TransferStatus.RECEIVED, TransferStatus.DISCREPANCY, TransferStatus.RESOLVED]},
+      };
+    } else {
+      statusWhere = {status: {inq: [TransferStatus.RIDER_ASSIGNED, TransferStatus.IN_TRANSIT]}};
+    }
+
     const transfers = await this.transferRepository.find({
       where: {
         riderId: rider.id,
         isDeleted: false,
-        ...(status
-          ? {status}
-          : {status: {inq: [TransferStatus.RIDER_ASSIGNED, TransferStatus.IN_TRANSIT]}}),
+        ...statusWhere,
       } as object,
       order: ['riderAssignedAt DESC'],
     });
