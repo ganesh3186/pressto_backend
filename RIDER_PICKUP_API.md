@@ -215,7 +215,7 @@ The app's two tabs:
 
 | `tab` | Statuses included |
 |---|---|
-| `pending` (or omit both `tab` and `status`) | `rider_assigned`, `out_for_pickup` |
+| `pending` (or omit both `tab` and `status`) | `rider_assigned`, `out_for_pickup`, `arrived_at_pickup` |
 | `completed` | `picked_up`, `received_at_store` |
 
 `?status=<exact value>` still works if a specific single status is
@@ -296,9 +296,9 @@ Response (standalone):
 ### `PATCH /rider/pickup-requests/{id}/status` — advance the rider's own pickup
 
 A rider may only move a pickup through:
-`rider_assigned → out_for_pickup → picked_up → received_at_store`.
+`rider_assigned → out_for_pickup → arrived_at_pickup → picked_up → received_at_store`.
 
-**`out_for_pickup` / `received_at_store`** — just the status:
+**`out_for_pickup` / `arrived_at_pickup` / `received_at_store`** — just the status:
 
 ```json
 { "status": "out_for_pickup" }
@@ -306,6 +306,14 @@ A rider may only move a pickup through:
 
 ```json
 { "message": "Pickup request status updated." }
+```
+
+`arrived_at_pickup` is a pure "rider is physically at the customer's
+location" breadcrumb — set it the moment the rider reaches the address,
+before actually confirming the pickup:
+
+```json
+{ "status": "arrived_at_pickup" }
 ```
 
 **`picked_up`** — also requires the real bag and real per-service
@@ -361,10 +369,10 @@ binding) — `standard` · `express` · `lightning`
 app) — always `web` for rider-originated requests.
 
 **Pickup request lifecycle** — `requested → scheduled → rider_assigned
-→ out_for_pickup → picked_up → received_at_store`, with `cancelled` as
-an early exit. A rider only ever drives the last three transitions
-(see the status-update endpoint above); `requested`/`scheduled` belong
-to the call-center/admin intake flow.
+→ out_for_pickup → arrived_at_pickup → picked_up → received_at_store`,
+with `cancelled` as an early exit. A rider only ever drives the last four
+transitions (see the status-update endpoint above); `requested`/`scheduled`
+belong to the call-center/admin intake flow.
 
 **Preference choices** —
 `colourBleedingChoice`: `ask_every_time` · `accept_risk_and_process` ·

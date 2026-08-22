@@ -7,6 +7,7 @@ import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {BagStatus} from '../models/bag-status.enum';
 import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.enum';
+import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
 import {DeliveryStatus} from '../models/delivery-status.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -205,6 +206,54 @@ export class RiderDeliveryController {
     });
 
     return {message: 'Delivery started.'};
+  }
+
+  // ─── Mark reached at one stop ─────────────────────────────────────────────
+  // Purely a "rider is physically here" breadcrumb — does not move Order
+  // status and is not required before calling deliver() below. Idempotent:
+  // calling it again while already arrived just re-confirms, no error.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @patch('/rider/deliveries/{id}/orders/{orderId}/status')
+  @response(200, {description: 'Order marked as reached'})
+  async markOrderArrived(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @param.path.string('orderId') orderId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['status'],
+            properties: {status: {type: 'string', enum: [DeliveryOrderStatus.ARRIVED]}},
+          },
+        },
+      },
+    })
+    body: {status: DeliveryOrderStatus},
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const delivery = await this.deliveryRepository.findOne({where: {id, isDeleted: false}});
+    if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
+    if (delivery.riderId !== rider.id) {
+      throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
+    }
+    if (body.status !== DeliveryOrderStatus.ARRIVED) {
+      throw new HttpErrors.BadRequest(`Riders can only set status to ${DeliveryOrderStatus.ARRIVED}.`);
+    }
+    const deliveryOrder = await this.deliveryOrderRepository.findOne({
+      where: {deliveryId: id, orderId} as object,
+    });
+    if (!deliveryOrder) throw new HttpErrors.NotFound('This order is not on this delivery.');
+
+    await this.deliveryOrderRepository.updateById(deliveryOrder.id, {
+      status: DeliveryOrderStatus.ARRIVED,
+      arrivedAt: new Date(),
+    });
+
+    return {message: 'Marked as reached.'};
   }
 
   // ─── Deliver an order + collect payment ──────────────────────────────────

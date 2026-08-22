@@ -47,6 +47,7 @@ import {PROTECTED_ROLES} from '../utils/role-guard';
 
 const RIDER_STATUS_TRANSITIONS: PickupRequestStatus[] = [
   PickupRequestStatus.OUT_FOR_PICKUP,
+  PickupRequestStatus.ARRIVED_AT_PICKUP,
   PickupRequestStatus.PICKED_UP,
   PickupRequestStatus.RECEIVED_AT_STORE,
 ];
@@ -548,7 +549,15 @@ export class RiderPickupController {
     } else if (tab === 'completed') {
       statusWhere = {status: {inq: [PickupRequestStatus.PICKED_UP, PickupRequestStatus.RECEIVED_AT_STORE]}};
     } else {
-      statusWhere = {status: {inq: [PickupRequestStatus.RIDER_ASSIGNED, PickupRequestStatus.OUT_FOR_PICKUP]}};
+      statusWhere = {
+        status: {
+          inq: [
+            PickupRequestStatus.RIDER_ASSIGNED,
+            PickupRequestStatus.OUT_FOR_PICKUP,
+            PickupRequestStatus.ARRIVED_AT_PICKUP,
+          ],
+        },
+      };
     }
 
     return this.pickupRequestRepository.find({

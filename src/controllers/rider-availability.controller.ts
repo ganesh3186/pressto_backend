@@ -98,7 +98,13 @@ export class RiderAvailabilityController {
         where: {
           assignedRiderId: {inq: riderIds},
           isDeleted: false,
-          status: {inq: [PickupRequestStatus.RIDER_ASSIGNED, PickupRequestStatus.OUT_FOR_PICKUP]},
+          status: {
+            inq: [
+              PickupRequestStatus.RIDER_ASSIGNED,
+              PickupRequestStatus.OUT_FOR_PICKUP,
+              PickupRequestStatus.ARRIVED_AT_PICKUP,
+            ],
+          },
         } as object,
         fields: {id: true, assignedRiderId: true} as object,
       }),

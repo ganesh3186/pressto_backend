@@ -23,7 +23,7 @@ system) — an inactive rider account gets a `403` on every call
 ```
 PickupHandoverBy: self | family_member | household_help
 PickupRequestStatus (rider-relevant subset — see §4):
-  rider_assigned → out_for_pickup → picked_up → received_at_store
+  rider_assigned → out_for_pickup → arrived_at_pickup → picked_up → received_at_store
 BagStatus (§5a's lookup response): available | in_use | full
 ```
 
@@ -192,10 +192,14 @@ empty.
 ```
 GET /rider/pickup-requests?status=<optional>
 ```
-Without `status`, returns only the active ones (`rider_assigned` or
-`out_for_pickup`) — the working list. Pass `status` explicitly to see
-`picked_up`/`received_at_store`/etc. history instead. Ordered
-`assignedAt DESC`.
+Without `status`, returns only the active ones (`rider_assigned`,
+`out_for_pickup`, or `arrived_at_pickup`) — the working list. Pass `status`
+explicitly to see `picked_up`/`received_at_store`/etc. history instead.
+Ordered `assignedAt DESC`.
+
+(This endpoint also accepts `tab=pending|completed` as a bucket shorthand
+for the same split — see `RIDER_PICKUP_API.md` for the current, fuller
+reference on this and every other rider-pickup endpoint.)
 
 ---
 
@@ -327,14 +331,19 @@ PATCH /rider/pickup-requests/{id}/status
 ```json
 {"status": "out_for_pickup"}
 ```
-Riders may only ever set one of: `out_for_pickup`, `picked_up`,
-`received_at_store` (attempting anything else, e.g. `cancelled`, is
-`400` — "Riders cannot set status to X"; that stays an admin/manager
-action). Must currently be assigned to the calling rider (`403` — "This
-pickup request is not assigned to you." — otherwise), and the move must be
-a legal transition per §1's chain (`400` naming the current/target status
-if not, e.g. can't jump straight from `rider_assigned` to `picked_up`
-without passing through `out_for_pickup`).
+Riders may only ever set one of: `out_for_pickup`, `arrived_at_pickup`,
+`picked_up`, `received_at_store` (attempting anything else, e.g.
+`cancelled`, is `400` — "Riders cannot set status to X"; that stays an
+admin/manager action). Must currently be assigned to the calling rider
+(`403` — "This pickup request is not assigned to you." — otherwise), and
+the move must be a legal transition per §1's chain (`400` naming the
+current/target status if not, e.g. can't jump straight from
+`out_for_pickup` to `picked_up` without passing through
+`arrived_at_pickup` first).
+
+`arrived_at_pickup` takes just the status, same shape as `out_for_pickup`
+above — it's a pure "I'm physically at the customer's location now"
+breadcrumb, set before the doorstep confirmation below.
 
 ### Confirming pickup — `status: "picked_up"` needs the bag + real counts
 
@@ -382,7 +391,7 @@ same pickup request reaches `received_at_store` below.
    d. `PATCH /rider/customers/{customerId}/preferences` → save any auto-approval/"apply to all orders" choices from the special-instructions sheet (§2b).
    e. `GET /rider/pickup-slots?date=<the date they picked>` → pick a `slotId` (§4a), already filtered if they picked today.
    f. `POST /rider/pickup-requests {customerId, addressId, slotId, requestedDate, itemCategoryEstimate, deliveryGroupingPreference, pickupNow: true}` → joins the same run, already `out_for_pickup`.
-4. At each stop, confirming pickup: `GET /rider/bags/lookup?q=<scanned bag>` (§5a) → `PATCH .../{id}/status {status: "picked_up", bagId, itemsByService}` (§6).
+4. At each stop: `PATCH .../{id}/status {status: "arrived_at_pickup"}` the moment the rider reaches the address, then confirming pickup: `GET /rider/bags/lookup?q=<scanned bag>` (§5a) → `PATCH .../{id}/status {status: "picked_up", bagId, itemsByService}` (§6).
 5. Back at the store, for each: `PATCH .../{id}/status {status: "received_at_store"}` — releases that pickup's bag automatically.
 
 Everything created here is immediately visible to the admin Pickup

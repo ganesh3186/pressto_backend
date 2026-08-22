@@ -87,6 +87,8 @@ another rider.
       "customerName": "Priya Verma",
       "customerMobile": "9876543210",
       "balanceDueAtAssignment": 450,
+      "status": "arrived",
+      "arrivedAt": "2026-08-22T13:40:00.000Z",
       "orderStatus": "out_for_delivery",
       "deliveryAddress": "12, Sample Society, Andheri, Mumbai, Maharashtra, 400072",
       "itemCount": 6,
@@ -96,6 +98,10 @@ another rider.
   ]
 }
 ```
+- `status`/`arrivedAt` are this order's own "reached" breadcrumb (§4a) —
+  `status: "pending"` and `arrivedAt: null` until the rider calls §4a for
+  this stop. Distinct from `orderStatus`, which is the order's real
+  lifecycle state.
 - `balanceDueAtAssignment` is a display snapshot taken when the rider was
   assigned — use it only as a fallback. **`balanceDue` is the live figure**
   (recomputed from the order right now) and is what §5's payment collection
@@ -124,6 +130,29 @@ run, not per order). On success, every linked order that's `ready` or
 rider app doesn't need to touch order status directly.
 
 **Response `200`**: `{ "message": "Delivery started." }`
+
+---
+
+## 4a. Mark reached at one stop
+
+```
+PATCH /rider/deliveries/{id}/orders/{orderId}/status
+```
+```json
+{"status": "arrived"}
+```
+Purely a "rider is physically at this stop now" breadcrumb, per order on
+the manifest — a run can have several stops, each reached at a different
+time. Does **not** touch `Order.status` and is **not required** before §5's
+`deliver` call; skip it if the app doesn't need the breadcrumb. `400` for
+any value other than `arrived`. `404` if `orderId` isn't on this delivery's
+manifest. Calling it again on an already-`arrived` stop just re-confirms —
+no error.
+
+**Response `200`**: `{ "message": "Marked as reached." }`
+
+The order's `status`/`arrivedAt` fields then appear on that order's entry
+in §3's delivery-detail response.
 
 ---
 
@@ -179,48 +208,16 @@ already `returned`, which also counts toward completion).
 
 ---
 
-## 6. Cash handover (collected payments → store)
+## 6. Cash handover (collected payments → store or another rider)
 
-Cash/UPI collected at the door piles up "with the rider" until they submit
-it as a batch back to the store. Wallet payments never appear here — only
-`paymentMode: cash` (and similar in-person modes) from §5 create a
-handover-eligible transaction.
+Cash/UPI collected at the door piles up "with the rider" until submitted as
+a batch — to a store, or to another rider/van for consolidation. Wallet
+payments never appear here — only `paymentMode: cash` (and similar in-person
+modes) from §5 create a handover-eligible transaction.
 
-```
-GET /rider/cash-handovers/pending-items
-```
-Everything the calling rider has collected but not yet submitted.
-
-**Response `200`**
-```json
-{
-  "items": [
-    {"id": "uuid", "orderId": "uuid", "orderNumber": "ORD-00001234", "amount": 450, "paymentDate": "2026-08-20T14:32:00.000Z"}
-  ]
-}
-```
-
-```
-POST /rider/cash-handovers
-```
-```json
-{
-  "paymentTransactionIds": ["uuid-from-pending-items", "..."],
-  "remarks": "optional"
-}
-```
-Bundles the listed pending items into one batch, awaiting store confirmation.
-`400` if any id isn't the calling rider's own, or was already submitted.
-
-**Response `200`**: `{ "message": "...", "handover": {...} }` — includes the
-generated `handoverNumber` (`CH-{riderCode}-{ddMM}-{seq}`) and `totalAmount`.
-
-```
-GET /rider/cash-handovers?status=<optional>
-```
-The rider's own handover batch history, each with its line items attached.
-Statuses: `pending` (awaiting store confirmation), plus whatever the store
-side sets on confirm/dispute — pass `status` to filter, omit for everything.
+Full detail, including the "Handover To" picker and receiving cash from
+another rider, has moved to its own doc:
+**`RIDER_APP_CASH_HANDOVER_API.md`**.
 
 ---
 
@@ -229,9 +226,9 @@ side sets on confirm/dispute — pass `status` to filter, omit for everything.
 1. `GET /rider/deliveries` → see today's assigned runs.
 2. `GET /rider/deliveries/{id}` → see the orders on this run, addresses, and live balance due for each.
 3. `PATCH .../{id}/status {status: "out_for_delivery"}` → start the run; linked orders flip to `out_for_delivery` automatically.
-4. At each stop: `POST .../{id}/orders/{orderId}/deliver` with payment details (skip payment fields for on-account orders) → order marked `delivered`.
+4. At each stop (optional): `PATCH .../{id}/orders/{orderId}/status {status: "arrived"}` (§4a) the moment the rider reaches the address, then `POST .../{id}/orders/{orderId}/deliver` with payment details (skip payment fields for on-account orders) → order marked `delivered`.
 5. When the last order's `deliver` call reports `deliveryCompleted: true`, the run and bag are already closed out — nothing further to call.
-6. Periodically (or at shift end): `GET /rider/cash-handovers/pending-items` → `POST /rider/cash-handovers` with the ids to submit collected cash back to the store.
+6. Periodically (or at shift end): submit collected cash for handover — see `RIDER_APP_CASH_HANDOVER_API.md`.
 
 Everything here is immediately visible to the admin Dispatch Management /
 Logistics screens (see `LOGISTICS_ADMIN_API.md`) under the same delivery.
