@@ -27,6 +27,7 @@ import {
   CustomerRepository,
   ItemCategoryRepository,
   PickupDeliverySlotRepository,
+  PickupEscalationRepository,
   PickupRequestRepository,
   RiderRepository,
   RolesRepository,
@@ -87,6 +88,8 @@ export class RiderPickupController {
     private serviceRepository: ServiceRepository,
     @repository(ItemCategoryRepository)
     private itemCategoryRepository: ItemCategoryRepository,
+    @repository(PickupEscalationRepository)
+    private pickupEscalationRepository: PickupEscalationRepository,
     @inject('services.customer-address')
     private addressService: CustomerAddressService,
     @inject('service.hasher')
@@ -935,5 +938,77 @@ export class RiderPickupController {
     }
 
     return {message: 'Pickup request status updated.'};
+  }
+
+  // ─── Raise to support ────────────────────────────────────────────────────
+  // A side-channel issue report against one of the rider's own pickups —
+  // filing one does not block or change the pickup's own status/
+  // transitions, it just gives the support team a queue to triage.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/pickup-requests/{id}/escalations')
+  @response(200, {description: 'Escalation raised'})
+  async raiseEscalation(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['reason'],
+            properties: {
+              reason: {type: 'string'},
+              remark: {type: 'string'},
+              mediaIds: {type: 'array', items: {type: 'string'}},
+            },
+          },
+        },
+      },
+    })
+    body: {reason: string; remark?: string; mediaIds?: string[]},
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const pickupRequest = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false}});
+    if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
+    if (pickupRequest.assignedRiderId !== rider.id) {
+      throw new HttpErrors.Forbidden('This pickup request is not assigned to you.');
+    }
+    if (!body.reason?.trim()) throw new HttpErrors.BadRequest('reason is required.');
+
+    const {v4} = await import('uuid');
+    const escalation = await this.pickupEscalationRepository.create({
+      id: v4(),
+      pickupRequestId: id,
+      pickupNumber: pickupRequest.pickupNumber,
+      riderId: rider.id,
+      riderName: `${rider.firstName} ${rider.lastName}`,
+      reason: body.reason.trim(),
+      remark: body.remark,
+      mediaIds: body.mediaIds,
+      raisedAt: new Date(),
+      raisedBy: currentUser[securityId],
+    });
+
+    return {message: 'Escalation raised.', escalation};
+  }
+
+  // ─── The rider's own raised escalations for one pickup ───────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/pickup-requests/{id}/escalations')
+  @response(200, {description: 'Escalations the calling rider raised for this pickup'})
+  async myEscalations(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const escalations = await this.pickupEscalationRepository.find({
+      where: {pickupRequestId: id, riderId: rider.id, isDeleted: false} as object,
+      order: ['raisedAt DESC'],
+    });
+    return {escalations};
   }
 }
