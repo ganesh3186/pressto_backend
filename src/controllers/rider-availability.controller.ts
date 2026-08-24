@@ -103,6 +103,7 @@ export class RiderAvailabilityController {
               PickupRequestStatus.RIDER_ASSIGNED,
               PickupRequestStatus.OUT_FOR_PICKUP,
               PickupRequestStatus.ARRIVED_AT_PICKUP,
+              PickupRequestStatus.PICKUP_UNSUCCESSFUL,
             ],
           },
         } as object,

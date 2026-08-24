@@ -210,6 +210,26 @@ export class PickupRequest extends Entity {
   @property({type: 'array', itemType: 'object', postgresql: {dataType: 'jsonb'}})
   actualItemsByService?: Array<{serviceId: string; serviceName?: string; quantity: number}>;
 
+  // Set together when the rider marks status: pickup_unsuccessful — see
+  // PickupUnsuccessfulReason. unsuccessfulOtherReason is free text, only
+  // meaningful when unsuccessfulReasons includes 'other'.
+  @property({type: 'array', itemType: 'string', postgresql: {dataType: 'jsonb'}})
+  unsuccessfulReasons?: string[];
+
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  unsuccessfulOtherReason?: string;
+
+  @property({type: 'date'})
+  unsuccessfulAt?: Date;
+
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  unsuccessfulBy?: string;
+
+  // How many times POST .../reprocess has sent this back out — purely a
+  // display counter, doesn't gate anything.
+  @property({type: 'number', default: 0})
+  reprocessCount?: number;
+
   @property({type: 'boolean', default: false})
   isDeleted?: boolean;
 

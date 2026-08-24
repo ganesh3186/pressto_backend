@@ -22,6 +22,7 @@ import {BagStatus} from '../models/bag-status.enum';
 import {PickupDeliverySlotType} from '../models/pickup-delivery-slot-type.enum';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
+import {PickupUnsuccessfulReason} from '../models/pickup-unsuccessful-reason.enum';
 import {
   BagRepository,
   CustomerRepository,
@@ -51,6 +52,7 @@ const RIDER_STATUS_TRANSITIONS: PickupRequestStatus[] = [
   PickupRequestStatus.ARRIVED_AT_PICKUP,
   PickupRequestStatus.PICKED_UP,
   PickupRequestStatus.RECEIVED_AT_STORE,
+  PickupRequestStatus.PICKUP_UNSUCCESSFUL,
 ];
 
 /**
@@ -558,6 +560,9 @@ export class RiderPickupController {
             PickupRequestStatus.RIDER_ASSIGNED,
             PickupRequestStatus.OUT_FOR_PICKUP,
             PickupRequestStatus.ARRIVED_AT_PICKUP,
+            // Still needs the rider's attention — reprocess or give up —
+            // so it belongs in the working list, not off to the side.
+            PickupRequestStatus.PICKUP_UNSUCCESSFUL,
           ],
         },
       };
@@ -856,12 +861,27 @@ export class RiderPickupController {
                   },
                 },
               },
+              reasons: {
+                type: 'array',
+                description: 'Required when status is pickup_unsuccessful — one or more PickupUnsuccessfulReason values.',
+                items: {type: 'string', enum: Object.values(PickupUnsuccessfulReason)},
+              },
+              otherReason: {
+                type: 'string',
+                description: 'Required when reasons includes "other".',
+              },
             },
           },
         },
       },
     })
-    body: {status: PickupRequestStatus; bagId?: string; itemsByService?: Array<{serviceId: string; quantity: number}>},
+    body: {
+      status: PickupRequestStatus;
+      bagId?: string;
+      itemsByService?: Array<{serviceId: string; quantity: number}>;
+      reasons?: PickupUnsuccessfulReason[];
+      otherReason?: string;
+    },
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
     const pickupRequest = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false}});
@@ -923,6 +943,25 @@ export class RiderPickupController {
         throw error;
       }
       return {message: 'Pickup confirmed.'};
+    }
+
+    // Structured, multi-select reason capture — the "Pickup Unsuccessful"
+    // screen. Doesn't touch the bag (nothing was collected yet).
+    if (body.status === PickupRequestStatus.PICKUP_UNSUCCESSFUL) {
+      if (!body.reasons?.length) {
+        throw new HttpErrors.BadRequest('reasons is required when marking a pickup unsuccessful.');
+      }
+      if (body.reasons.includes(PickupUnsuccessfulReason.OTHER) && !body.otherReason?.trim()) {
+        throw new HttpErrors.BadRequest('otherReason is required when reasons includes "other".');
+      }
+      await this.pickupRequestRepository.updateById(id, {
+        status: body.status,
+        unsuccessfulReasons: body.reasons,
+        unsuccessfulOtherReason: body.otherReason?.trim(),
+        unsuccessfulAt: new Date(),
+        unsuccessfulBy: currentUser[securityId],
+      });
+      return {message: 'Pickup marked unsuccessful.'};
     }
 
     await this.pickupRequestRepository.updateById(id, {status: body.status});
@@ -1010,5 +1049,39 @@ export class RiderPickupController {
       order: ['raisedAt DESC'],
     });
     return {escalations};
+  }
+
+  // ─── Reprocess a pickup that was marked unsuccessful ─────────────────────
+  // A dedicated action, not a plain status-map transition — sends the same
+  // pickup request back out (status → rider_assigned) rather than creating
+  // a new one, and bumps reprocessCount for visibility. Stays with the same
+  // rider; there's no reassignment step here.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/pickup-requests/{id}/reprocess')
+  @response(200, {description: 'Pickup request sent back out for another attempt'})
+  async reprocess(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const pickupRequest = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false}});
+    if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
+    if (pickupRequest.assignedRiderId !== rider.id) {
+      throw new HttpErrors.Forbidden('This pickup request is not assigned to you.');
+    }
+    if (pickupRequest.status !== PickupRequestStatus.PICKUP_UNSUCCESSFUL) {
+      throw new HttpErrors.BadRequest(
+        `Cannot reprocess a pickup request that is ${pickupRequest.status}, not pickup_unsuccessful.`,
+      );
+    }
+
+    await this.pickupRequestRepository.updateById(id, {
+      status: PickupRequestStatus.RIDER_ASSIGNED,
+      reprocessCount: (pickupRequest.reprocessCount ?? 0) + 1,
+    });
+
+    return {message: 'Pickup request sent back out for another attempt.'};
   }
 }
