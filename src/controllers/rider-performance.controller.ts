@@ -6,6 +6,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {DeliveryStatus} from '../models/delivery-status.enum';
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
+import {TransferStatus} from '../models/transfer-status.enum';
 import {
   DeliveryRepository,
   PaymentTransactionRepository,
@@ -13,6 +14,7 @@ import {
   PickupRequestRepository,
   RiderCashHandoverRepository,
   RiderRepository,
+  TransferRepository,
 } from '../repositories';
 
 const MAX_RANGE_DAYS = 366;
@@ -47,6 +49,7 @@ export class RiderPerformanceController {
     @repository(RiderCashHandoverRepository)
     private riderCashHandoverRepository: RiderCashHandoverRepository,
     @repository(PickupHandoverRepository) private pickupHandoverRepository: PickupHandoverRepository,
+    @repository(TransferRepository) private transferRepository: TransferRepository,
   ) {}
 
   private async resolveActiveRider(currentUser: UserProfile) {
@@ -228,5 +231,83 @@ export class RiderPerformanceController {
     const completionRate = assigned > 0 ? Math.round((completed / assigned) * 10000) / 100 : 0;
 
     return {type, fromDate: from, toDate: to, assigned, completed, cancelled, completionRate};
+  }
+
+  // ─── Dashboard — single-date snapshot across every rider activity ────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/dashboard')
+  @response(200, {description: "The calling rider's own activity counts for a single date"})
+  async dashboard(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('date') date?: string,
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const day = date ?? toDateKey(new Date());
+    if (new Date(day).toString() === 'Invalid Date') {
+      throw new HttpErrors.BadRequest('date must be a valid date.');
+    }
+    const dayEnd = endOfDay(day);
+
+    const [pickups, deliveries, transfers, pickupHandovers, cashHandovers] = await Promise.all([
+      this.pickupRequestRepository.find({
+        where: {assignedRiderId: rider.id, isDeleted: false, requestedDate: {between: [day, day]}} as object,
+        fields: {status: true} as object,
+      }),
+      this.deliveryRepository.find({
+        where: {riderId: rider.id, isDeleted: false, deliveryDate: {between: [day, dayEnd]}} as object,
+        fields: {status: true} as object,
+      }),
+      // riderAssignedAt, not receivedAt — that's the one timestamp on
+      // Transfer that's actually authored by this rider (receivedAt is
+      // set by the destination store), so it's the field a rider-scoped
+      // "on date D" count should key off, same as myTransfers' own sort.
+      this.transferRepository.find({
+        where: {riderId: rider.id, isDeleted: false, riderAssignedAt: {between: [day, dayEnd]}} as object,
+        fields: {status: true} as object,
+      }),
+      this.pickupHandoverRepository.find({
+        where: {riderId: rider.id, isDeleted: false, submittedAt: {between: [day, dayEnd]}} as object,
+        fields: {id: true} as object,
+      }),
+      this.riderCashHandoverRepository.find({
+        where: {riderId: rider.id, isDeleted: false, submittedAt: {between: [day, dayEnd]}} as object,
+        fields: {id: true} as object,
+      }),
+    ]);
+
+    const PICKUP_COMPLETED: PickupRequestStatus[] = [
+      PickupRequestStatus.PICKED_UP,
+      PickupRequestStatus.RECEIVED_AT_STORE,
+    ];
+    const PICKUP_PENDING: PickupRequestStatus[] = [
+      PickupRequestStatus.RIDER_ASSIGNED,
+      PickupRequestStatus.OUT_FOR_PICKUP,
+      PickupRequestStatus.ARRIVED_AT_PICKUP,
+      PickupRequestStatus.PICKUP_UNSUCCESSFUL,
+    ];
+    const TRANSFER_COMPLETED: TransferStatus[] = [
+      TransferStatus.RECEIVED,
+      TransferStatus.DISCREPANCY,
+      TransferStatus.RESOLVED,
+    ];
+    const TRANSFER_PENDING: TransferStatus[] = [TransferStatus.RIDER_ASSIGNED, TransferStatus.IN_TRANSIT];
+
+    return {
+      date: day,
+      completedPickupsCount: pickups.filter(p => PICKUP_COMPLETED.includes(p.status as PickupRequestStatus)).length,
+      pendingPickupsCount: pickups.filter(p => PICKUP_PENDING.includes(p.status as PickupRequestStatus)).length,
+      completedDeliveriesCount: deliveries.filter(d => d.status === DeliveryStatus.COMPLETED).length,
+      pendingDeliveriesCount: deliveries.filter(
+        d => d.status === DeliveryStatus.ASSIGNED || d.status === DeliveryStatus.OUT_FOR_DELIVERY,
+      ).length,
+      completedStoreTransfersCount: transfers.filter(t => TRANSFER_COMPLETED.includes(t.status as TransferStatus))
+        .length,
+      pendingStoreTransfersCount: transfers.filter(t => TRANSFER_PENDING.includes(t.status as TransferStatus))
+        .length,
+      handoverOrdersCount: pickupHandovers.length,
+      handoverCashCount: cashHandovers.length,
+    };
   }
 }

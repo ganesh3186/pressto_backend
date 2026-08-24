@@ -1,11 +1,11 @@
-# Rider App — Work Summary & Performance Integration Guide
+# Rider App — Work Summary, Performance & Dashboard Integration Guide
 
-For the rider app team. Covers the "Work Summary" and "Performance"
-screens. Both in `rider-performance.controller.ts` — pure read/aggregate
-views over data already tracked elsewhere (`PickupRequest`/`Delivery`/
-`PaymentTransaction`/handover batches). Nothing new is recorded to support
-these; there's no distance, time-worked, or rating data anywhere in this
-system, so those aren't available.
+For the rider app team. Covers the "Work Summary", "Performance", and
+"Dashboard" screens. All three in `rider-performance.controller.ts` — pure
+read/aggregate views over data already tracked elsewhere (`PickupRequest`/
+`Delivery`/`Transfer`/`PaymentTransaction`/handover batches). Nothing new
+is recorded to support these; there's no distance, time-worked, or rating
+data anywhere in this system, so those aren't available.
 
 **Auth**: `Authorization: Bearer <jwt>` with the `rider` role, same as the
 rest of the rider app.
@@ -84,3 +84,47 @@ GET /rider/performance?type=delivery&fromDate=2026-08-01&toDate=2026-08-23
 - `cancelled` — status `cancelled` on either.
 - `completionRate` — `completed / assigned * 100`, rounded to 2 decimals;
   `0` when `assigned` is `0` (not a divide-by-zero error).
+
+---
+
+## 3. Dashboard — single-date snapshot across every activity
+
+```
+GET /rider/dashboard?date=2026-08-24
+```
+`date` is `YYYY-MM-DD`, optional, defaults to **today**. Unlike the two
+endpoints above this is a single day, not a range — built for a home-screen
+"today" tile view, not a history/trend screen.
+
+**Response `200`**
+```json
+{
+  "date": "2026-08-24",
+  "completedPickupsCount": 5,
+  "pendingPickupsCount": 2,
+  "completedDeliveriesCount": 8,
+  "pendingDeliveriesCount": 3,
+  "completedStoreTransfersCount": 1,
+  "pendingStoreTransfersCount": 0,
+  "handoverOrdersCount": 4,
+  "handoverCashCount": 2
+}
+```
+- **Pickups** — this rider's own `PickupRequest`s, bucketed by
+  `requestedDate`. `completed` = `picked_up`/`received_at_store`; `pending`
+  = `rider_assigned`/`out_for_pickup`/`arrived_at_pickup`/
+  `pickup_unsuccessful`. `cancelled` pickups aren't counted in either
+  bucket.
+- **Deliveries** — this rider's own `Delivery` rows, bucketed by
+  `deliveryDate`. `completed` = `completed`; `pending` = `assigned`/
+  `out_for_delivery`. `cancelled` isn't counted in either bucket.
+- **Store transfers** — `Transfer`s with `riderId` = this rider, bucketed
+  by `riderAssignedAt` (the one transfer timestamp this rider actually
+  authors — `receivedAt` is set by the destination store, not the rider).
+  `completed` = `received`/`discrepancy`/`resolved`; `pending` =
+  `rider_assigned`/`in_transit`.
+- `handoverOrdersCount` — `PickupHandover` (garment) batches this rider
+  submitted that day, by `submittedAt`. Submission is a one-shot event, so
+  there's no pending/completed split — same as `pickupHandoversSubmitted`
+  in Work Summary above.
+- `handoverCashCount` — same, for `RiderCashHandover` batches.
