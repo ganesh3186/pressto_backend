@@ -31,6 +31,35 @@ export class PickupHandoverController {
     @repository(BagRepository) private bagRepo: BagRepository,
   ) {}
 
+  // Batch-attaches each item's PickupRequest detail — bag number, real
+  // confirmed per-service counts, and any special instructions — so the
+  // admin receive screen doesn't have to make a separate call per pickup.
+  private async enrichItems<T extends {pickupRequestId: string}>(items: T[]) {
+    const pickupIds = [...new Set(items.map(i => i.pickupRequestId))];
+    const pickups = pickupIds.length
+      ? await this.pickupRequestRepo.find({where: {id: {inq: pickupIds}} as object})
+      : [];
+    const pickupById = new Map(pickups.map(p => [p.id, p]));
+
+    const bagIds = [...new Set(pickups.map(p => p.bagId).filter((id): id is string => Boolean(id)))];
+    const bags = bagIds.length ? await this.bagRepo.find({where: {id: {inq: bagIds}} as object}) : [];
+    const bagNumberById = new Map(bags.map(b => [b.id, b.bagNumber]));
+
+    return items.map(item => {
+      const pickup = pickupById.get(item.pickupRequestId);
+      return {
+        ...item,
+        bagId: pickup?.bagId ?? null,
+        bagNumber: pickup?.bagId ? bagNumberById.get(pickup.bagId) ?? null : null,
+        itemCountEstimate: pickup?.itemCountEstimate ?? null,
+        itemCategoryEstimate: pickup?.itemCategoryEstimate ?? null,
+        actualItemsByService: pickup?.actualItemsByService ?? null,
+        remarks: pickup?.remarks ?? null,
+        mediaIds: pickup?.mediaIds ?? null,
+      };
+    });
+  }
+
   // ─── Store-targeted batches (pending list / receive history) ────────────
 
   @authenticate('jwt')
@@ -47,9 +76,10 @@ export class PickupHandoverController {
       order: ['submittedAt DESC'],
     });
     const handoverIds = handovers.map(h => h.id);
-    const items = handoverIds.length
+    const rawItems = handoverIds.length
       ? await this.handoverItemRepo.find({where: {pickupHandoverId: {inq: handoverIds}} as object})
       : [];
+    const items = await this.enrichItems(rawItems);
     const itemsByHandover = new Map<string, typeof items>();
     for (const item of items) {
       const list = itemsByHandover.get(item.pickupHandoverId) ?? [];
@@ -77,7 +107,8 @@ export class PickupHandoverController {
       );
     }
 
-    const items = await this.handoverItemRepo.find({where: {pickupHandoverId: handover.id} as object});
+    const rawItems = await this.handoverItemRepo.find({where: {pickupHandoverId: handover.id} as object});
+    const items = await this.enrichItems(rawItems);
     return {handover, items};
   }
 
