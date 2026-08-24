@@ -52,6 +52,7 @@ GET /rider/deliveries/{id}
       "id": "uuid-deliveryOrder",
       "orderId": "uuid-order",
       "orderNumber": "ORD-00001234",
+      "customerId": "uuid-customer",
       "customerName": "Priya Verma",
       "customerMobile": "9876543210",
       "status": "pending",

@@ -149,6 +149,7 @@ export class RiderDeliveryController {
           : {due: 0};
         return {
           ...deliveryOrder,
+          customerId: order?.customerId ?? null,
           orderStatus: order?.status ?? null,
           deliveryAddress: order?.deliveryAddress ?? null,
           itemCount: itemCountByOrder.get(deliveryOrder.orderId) ?? 0,

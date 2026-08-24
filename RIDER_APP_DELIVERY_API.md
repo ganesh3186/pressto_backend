@@ -84,6 +84,7 @@ another rider.
       "deliveryId": "uuid",
       "orderId": "uuid",
       "orderNumber": "ORD-00001234",
+      "customerId": "uuid",
       "customerName": "Priya Verma",
       "customerMobile": "9876543210",
       "balanceDueAtAssignment": 450,
@@ -98,6 +99,10 @@ another rider.
   ]
 }
 ```
+- `customerId` is what §5's `deliverTo.collectorType: "contact"`/`"family_member"`
+  needs — pass it as the `customerId` path param on
+  `GET /rider/customers/{customerId}/contacts` / `.../family-members`
+  (see `RIDER_APP_CUSTOMER_CONTACTS_API.md`) to populate that picker.
 - `status`/`arrivedAt` are this order's own "reached" breadcrumb (§4a) —
   `status: "pending"` and `arrivedAt: null` until the rider calls §4a for
   this stop. Distinct from `orderStatus`, which is the order's real
