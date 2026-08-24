@@ -342,11 +342,19 @@ counts confirmed at the doorstep:
   "status": "picked_up",
   "bagId": "a1b2...",
   "itemsByService": [
-    { "serviceId": "c84dfe93-f45f-48bc-86d3-4710264eb200", "quantity": 3 },
-    { "serviceId": "00354f2b-363f-4a8f-9e68-44cab7256c3a", "quantity": 1 }
+    { "serviceId": "c84dfe93-f45f-48bc-86d3-4710264eb200", "quantity": 3, "deliverySpeed": "express" },
+    { "serviceId": "00354f2b-363f-4a8f-9e68-44cab7256c3a", "quantity": 1, "deliverySpeed": "standard" }
   ]
 }
 ```
+`deliverySpeed` per line is **optional but strongly recommended** —
+`standard` | `express` | `lightning`. This is what the store actually
+builds the real order against once the pickup arrives (see
+`RIDER_APP_PICKUP_HANDOVER_API.md`); it's separate from — and takes
+priority over — the pre-arrival `itemCategoryEstimate[].deliverySpeed`
+guess collected at booking time, which can be stale by the time the
+rider is at the door. Confirm the speed with the customer before
+sending this, don't just carry over the estimate blind.
 
 ```json
 { "message": "Pickup confirmed." }

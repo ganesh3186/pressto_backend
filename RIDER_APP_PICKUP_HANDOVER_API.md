@@ -143,6 +143,42 @@ GET /pickup-handovers/lookup?code=954229
 Resolves a scanned/entered code to the batch + its items, **read-only** —
 lets the store preview before receiving. `400` if the code belongs to a
 rider-targeted batch (must be confirmed by that rider, not here).
+`GET /pickup-handovers` (the pending-list equivalent) returns the same
+enriched item shape. Each item comes back with everything the store needs
+to actually build the real order — not just customer name and pickup
+number:
+
+```json
+{
+  "handover": { "id": "uuid", "handoverNumber": "PH-RID001-2508-3", "riderName": "Rohan Sharma", "handoverToName": "Andheri Store" },
+  "items": [
+    {
+      "pickupRequestId": "uuid",
+      "pickupNumber": "PU000123",
+      "customerName": "Priya Shah",
+      "bagId": "uuid",
+      "bagNumber": 482,
+      "actualItemsByService": [
+        { "serviceId": "uuid", "serviceName": "Clean", "quantity": 2, "deliverySpeed": "express" }
+      ],
+      "itemCategoryEstimate": [
+        { "itemCategoryId": "uuid", "quantity": 2, "serviceId": "uuid", "deliverySpeed": "standard" }
+      ],
+      "remarks": "Leave with security if not home",
+      "mediaIds": []
+    }
+  ]
+}
+```
+- **`actualItemsByService` is what the rider confirmed at the doorstep —
+  build the order against this.** `itemCategoryEstimate` is the customer's
+  pre-arrival guess (collected at booking, can be stale) — only fall back
+  to it if `actualItemsByService` is empty or a line's `deliverySpeed`
+  wasn't sent.
+- `deliverySpeed` on `actualItemsByService` is optional — a rider app that
+  hasn't been updated yet may omit it. Treat a missing speed as
+  **unconfirmed, not `standard`** — don't silently assume; ask the
+  customer or check with the rider before finalizing the order.
 
 ```
 POST /pickup-handovers/{id}/confirm

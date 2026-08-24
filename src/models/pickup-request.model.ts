@@ -207,8 +207,16 @@ export class PickupRequest extends Entity {
   // time; this is the rider's actual count, by service, collected at
   // pickup time. serviceName is a snapshot, same denormalization
   // convention as assignedRiderName alongside assignedRiderId below.
+  // deliverySpeed is optional — the real speed confirmed with the customer
+  // at the door, when the rider app sends it; store staff should build the
+  // real order against this, not the (possibly stale) pre-arrival estimate.
   @property({type: 'array', itemType: 'object', postgresql: {dataType: 'jsonb'}})
-  actualItemsByService?: Array<{serviceId: string; serviceName?: string; quantity: number}>;
+  actualItemsByService?: Array<{
+    serviceId: string;
+    serviceName?: string;
+    quantity: number;
+    deliverySpeed?: DeliveryType;
+  }>;
 
   // Set together when the rider marks status: pickup_unsuccessful — see
   // PickupUnsuccessfulReason. unsuccessfulOtherReason is free text, only
