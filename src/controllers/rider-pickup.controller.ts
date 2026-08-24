@@ -728,9 +728,12 @@ export class RiderPickupController {
 
     const {v4} = await import('uuid');
     const now = new Date();
+    const count = await this.pickupRequestRepository.count();
+    const pickupNumber = `PU${String(count.count + 1).padStart(6, '0')}`;
 
     const base = {
       id: v4(),
+      pickupNumber,
       customerId: customer.id,
       customerName: `${customer.firstName} ${customer.lastName}`,
       customerCountryCode: customer.user?.countryCode ?? '+91',

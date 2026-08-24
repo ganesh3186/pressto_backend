@@ -664,8 +664,11 @@ export class CustomerProfileController {
     }
 
     const {v4} = await import('uuid');
+    const count = await this.pickupRequestRepository.count();
+    const pickupNumber = `PU${String(count.count + 1).padStart(6, '0')}`;
     const pickupRequest = await this.pickupRequestRepository.create({
       id: v4(),
+      pickupNumber,
       customerId: customer.id,
       customerName: `${customer.firstName} ${customer.lastName}`,
       customerCountryCode: user.countryCode ?? '+91',
