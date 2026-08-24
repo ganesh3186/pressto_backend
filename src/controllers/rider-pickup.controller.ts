@@ -15,6 +15,7 @@ import {
   PickupHandoverBy,
   PickupRequest,
   Service,
+  ServiceCategory,
   Store,
   UpgradeServiceChoice,
 } from '../models';
@@ -32,6 +33,7 @@ import {
   PickupRequestRepository,
   RiderRepository,
   RolesRepository,
+  ServiceCategoryRepository,
   ServiceRepository,
   StoreRepository,
   UserRolesRepository,
@@ -90,6 +92,8 @@ export class RiderPickupController {
     private serviceRepository: ServiceRepository,
     @repository(ItemCategoryRepository)
     private itemCategoryRepository: ItemCategoryRepository,
+    @repository(ServiceCategoryRepository)
+    private serviceCategoryRepository: ServiceCategoryRepository,
     @repository(PickupEscalationRepository)
     private pickupEscalationRepository: PickupEscalationRepository,
     @inject('services.customer-address')
@@ -468,6 +472,25 @@ export class RiderPickupController {
     return this.itemCategoryRepository.find({
       where: {isActive: true, isDeleted: false} as object,
       order: ['sequence ASC', 'name ASC'],
+    });
+  }
+
+  // Some pickup requests store a ServiceCategory id under
+  // itemCategoryEstimate[].itemCategoryId instead of a real ItemCategory id
+  // (the admin panel's own "item category" picker actually selects a
+  // service category) — resolve against this list when a lookup against
+  // GET /rider/item-categories above comes up empty.
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/service-categories')
+  @response(200, {
+    description: 'Active service categories — fallback resolver for itemCategoryEstimate.itemCategoryId when it isn\'t a real item category id',
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(ServiceCategory)}}},
+  })
+  async getServiceCategories(): Promise<ServiceCategory[]> {
+    return this.serviceCategoryRepository.find({
+      where: {isActive: true, isDeleted: false} as object,
+      order: ['name ASC'],
     });
   }
 
