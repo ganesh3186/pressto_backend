@@ -34,6 +34,16 @@ export class RiderCashHandover extends Entity {
   @property({type: 'string', required: true})
   handoverNumber: string;
 
+  // 6-digit numeric, shown as text and encoded into a QR on the rider's
+  // "Handover Cash" screen — same scan/manual-entry-confirm convention as
+  // PickupHandover.handoverCode. Optional at the type level only so adding
+  // this column doesn't require a NOT NULL backfill migration for rows
+  // that predate this field — the submit endpoint always sets it, so in
+  // practice every new row has one; an old row simply has no scan path
+  // (falls back to the pre-existing tap-to-confirm flow).
+  @property({type: 'string'})
+  handoverCode?: string;
+
   @property({
     type: 'string',
     default: RiderCashHandoverStatus.PENDING,

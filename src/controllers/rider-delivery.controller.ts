@@ -67,6 +67,19 @@ export class RiderDeliveryController {
     return rider;
   }
 
+  // 6-digit numeric, unique among currently-PENDING batches only — same
+  // convention as RiderPickupHandoverController.generateHandoverCode.
+  private async generateCashHandoverCode(): Promise<string> {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      const existing = await this.riderCashHandoverRepository.findOne({
+        where: {handoverCode: code, status: RiderCashHandoverStatus.PENDING} as object,
+      });
+      if (!existing) return code;
+    }
+    throw new HttpErrors.InternalServerError('Could not generate a unique handover code.');
+  }
+
   // ─── The rider's own assigned deliveries ─────────────────────────────────
 
   @authenticate('jwt')
@@ -525,6 +538,7 @@ export class RiderDeliveryController {
     const seq = (await this.riderCashHandoverRepository.count()).count + 1;
     const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
     const handoverNumber = `CH-${rider.riderCode}-${ddMM}-${seq}`;
+    const handoverCode = await this.generateCashHandoverCode();
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
@@ -532,6 +546,7 @@ export class RiderDeliveryController {
         {
           id: v4(),
           handoverNumber,
+          handoverCode,
           status: RiderCashHandoverStatus.PENDING,
           riderId: rider.id,
           riderName: `${rider.firstName} ${rider.lastName}`,

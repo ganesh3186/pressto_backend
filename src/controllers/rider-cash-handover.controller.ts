@@ -126,6 +126,33 @@ export class RiderCashHandoverController {
     return {rider: {riderId: rider.id, riderCode: rider.riderCode, firstName: rider.firstName, lastName: rider.lastName}, history: rows};
   }
 
+  // ─── Resolve a scanned/entered code before receiving ─────────────────────
+  // Same scan-or-manual-entry-confirm convention as PickupHandoverController
+  // .lookup — resolves the rider's "Handover Cash" QR/code so the admin
+  // panel can preview the batch before confirming, instead of only being
+  // able to tap "Confirm Receipt" on an already-browsed list row.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['rider_cash_handover:read']})
+  @get('/rider-cash-handovers/lookup')
+  @response(200, {description: 'Cash handover batch resolved by its scanned/entered code'})
+  async lookup(@param.query.string('code') code: string): Promise<object> {
+    if (!code?.trim()) throw new HttpErrors.BadRequest('Query param "code" is required.');
+
+    const handover = await this.handoverRepo.findOne({
+      where: {handoverCode: code.trim(), isDeleted: false} as object,
+    });
+    if (!handover) throw new HttpErrors.NotFound('No handover found for this code.');
+    if (handover.handoverToType === RiderCashHandoverTargetType.RIDER) {
+      throw new HttpErrors.BadRequest(
+        'This handover is directed to a rider, not a store — it must be confirmed by that rider, not here.',
+      );
+    }
+
+    const items = await this.handoverItemRepo.find({where: {riderCashHandoverId: handover.id} as object});
+    return {handover, items};
+  }
+
   // ─── Confirm receipt of a handover batch ─────────────────────────────────
 
   @authenticate('jwt')
