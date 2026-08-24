@@ -9,6 +9,7 @@ import {PickupRequest} from '../models';
 import {RiderPincodeMappingWithRelations} from '../models/rider-pincode-mapping.model';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
+import {DeliveryType} from '../models/delivery-type.enum';
 import {
   CustomerRepository,
   OrderRepository,
@@ -32,6 +33,12 @@ interface CreateBody {
   storeId?: string;
   source: PickupRequestSource;
   itemCountEstimate?: number;
+  itemCategoryEstimate?: Array<{
+    itemCategoryId: string;
+    quantity: number;
+    serviceId?: string;
+    deliverySpeed?: DeliveryType;
+  }>;
   remarks?: string;
 }
 
@@ -153,6 +160,20 @@ export class PickupRequestController {
               storeId: {type: 'string', format: 'uuid'},
               source: {type: 'string', enum: Object.values(PickupRequestSource)},
               itemCountEstimate: {type: 'number'},
+              itemCategoryEstimate: {
+                type: 'array',
+                description: 'Per-category counts (e.g. how many clothes vs curtains) — used to size the pickup (bike vs van). Not binding; the real order is built after in-store inspection.',
+                items: {
+                  type: 'object',
+                  required: ['itemCategoryId', 'quantity'],
+                  properties: {
+                    itemCategoryId: {type: 'string', format: 'uuid'},
+                    quantity: {type: 'number'},
+                    serviceId: {type: 'string', format: 'uuid'},
+                    deliverySpeed: {type: 'string', enum: Object.values(DeliveryType)},
+                  },
+                },
+              },
               remarks: {type: 'string'},
             },
           },
