@@ -20,6 +20,7 @@ import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {ContactRelationship} from '../models/contact-relationship.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
+import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
 import {BagStatus} from '../models/bag-status.enum';
 import {DeliveryStatus} from '../models/delivery-status.enum';
 import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.enum';
@@ -685,45 +686,26 @@ export class OrderController {
                 type: 'string',
                 description: 'Why the delivery attempt failed / the order came back to the store.',
               },
+              reasons: {
+                type: 'array',
+                description: 'Optional structured reasons, alongside remarks — see DeliveryFailureReason.',
+                items: {type: 'string', enum: Object.values(DeliveryFailureReason)},
+              },
+              otherReason: {type: 'string', description: 'Required when reasons includes "other".'},
             },
           },
         },
       },
     })
-    body: {remarks: string},
+    body: {remarks: string; reasons?: DeliveryFailureReason[]; otherReason?: string},
   ): Promise<object> {
-    const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
-    if (!order) throw new HttpErrors.NotFound('Order not found.');
-    if (order.status !== OrderStatus.OUT_FOR_DELIVERY) {
-      throw new HttpErrors.BadRequest(
-        `Cannot return a delivery for an order that is ${order.status}, not out_for_delivery.`,
-      );
-    }
-    if (!body.remarks?.trim()) {
-      throw new HttpErrors.BadRequest('Remarks are required to record why the delivery was returned.');
-    }
-
-    await this.orderRepository.updateById(id, {
-      status: OrderStatus.READY,
-      assignedRiderId: null as unknown as string,
-      assignedRiderName: null as unknown as string,
-      deliveryMethod: null as unknown as OrderDeliveryMethod,
-      deliveryDate: null as unknown as Date,
-      deliverySlot: null as unknown as string,
-      deliverySlotId: null as unknown as string,
-    });
-
-    const {v4} = await import('uuid');
-    await this.statusHistoryRepository.create({
-      id: v4(),
+    const updated = await this.orderService.returnDeliveryToStore({
       orderId: id,
-      status: OrderStatus.READY,
-      changedAt: new Date(),
+      remarks: body.remarks,
+      reasons: body.reasons,
+      otherReason: body.otherReason,
       changedBy: currentUser[securityId],
-      remarks: `Delivery attempt failed — returned to store: ${body.remarks.trim()}`,
     });
-
-    const updated = await this.orderRepository.findById(id);
     return {message: 'Delivery returned to store. Order is ready for redispatch.', order: updated};
   }
 

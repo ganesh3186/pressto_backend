@@ -7,8 +7,10 @@ import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {BagStatus} from '../models/bag-status.enum';
 import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.enum';
+import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
 import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
 import {DeliveryStatus} from '../models/delivery-status.enum';
+import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
@@ -294,6 +296,19 @@ export class RiderDeliveryController {
               walletAmount: {type: 'number', minimum: 0},
               transactionReference: {type: 'string'},
               remarks: {type: 'string'},
+              deliverTo: {
+                type: 'object',
+                description: 'Who physically received the order — omit to skip recording this (not required).',
+                required: ['collectorType'],
+                properties: {
+                  collectorType: {type: 'string', enum: Object.values(HandoverCollectorType)},
+                  customerContactId: {type: 'string', format: 'uuid', description: 'Required when collectorType is "contact" (household).'},
+                  familyGroupMemberId: {type: 'string', format: 'uuid', description: 'Required when collectorType is "family_member".'},
+                  collectorName: {type: 'string', description: 'Required when collectorType is "other" (e.g. a neighbour).'},
+                  collectorPhone: {type: 'string'},
+                  photoMediaId: {type: 'string', description: 'Required when collectorType is "guard" or "at_door".'},
+                },
+              },
             },
           },
         },
@@ -305,6 +320,14 @@ export class RiderDeliveryController {
       walletAmount?: number;
       transactionReference?: string;
       remarks?: string;
+      deliverTo?: {
+        collectorType: HandoverCollectorType;
+        customerContactId?: string;
+        familyGroupMemberId?: string;
+        collectorName?: string;
+        collectorPhone?: string;
+        photoMediaId?: string;
+      };
     },
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
@@ -324,6 +347,19 @@ export class RiderDeliveryController {
       throw new HttpErrors.BadRequest(
         `Cannot deliver an order that is ${order.status}, not out_for_delivery.`,
       );
+    }
+
+    // Record who received it before anything else mutates — same ordering
+    // as OrderService.handoverInStore (handover record, then the
+    // status/completion effects). Optional: an app that hasn't been
+    // updated to send this yet can still call deliver() as before.
+    if (body.deliverTo) {
+      await this.orderService.recordDeliveryHandover({
+        orderId,
+        ...body.deliverTo,
+        remarks: body.remarks,
+        handedOverBy: rider.userId,
+      });
     }
 
     if (!order.isOnAccount) {
@@ -375,7 +411,14 @@ export class RiderDeliveryController {
         fields: {id: true, status: true} as object,
       });
       const remaining = allOrders.filter(
-        o => o.id !== orderId && o.status !== OrderStatus.DELIVERED && o.status !== OrderStatus.RETURNED,
+        o =>
+          o.id !== orderId &&
+          o.status !== OrderStatus.DELIVERED &&
+          o.status !== OrderStatus.RETURNED &&
+          // READY here means a sibling order on this same run was already
+          // sent back to the store via deliveryUnsuccessful below — that
+          // order's own leg is done too, just not successfully.
+          o.status !== OrderStatus.READY,
       );
 
       let completed = false;
@@ -403,6 +446,119 @@ export class RiderDeliveryController {
 
       await tx.commit();
       return {message: 'Order delivered.', deliveryCompleted: completed};
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
+  // ─── Drop Unsuccessful ────────────────────────────────────────────────────
+  // Structured, multi-select reason capture, same posture as pickup's
+  // PICKUP_UNSUCCESSFUL — the rider-facing counterpart to the admin's own
+  // POST /orders/{id}/delivery-return, sharing the same service logic
+  // (OrderService.returnDeliveryToStore). This order's own leg on the
+  // delivery run is now done (just not successfully) — same run-completion
+  // check as a successful deliver() call, so the bag still gets released
+  // once every order on the manifest is accounted for one way or another.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/deliveries/{id}/orders/{orderId}/delivery-unsuccessful')
+  @response(200, {description: 'Delivery attempt failed — order returned to store'})
+  async deliveryUnsuccessful(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @param.path.string('orderId') orderId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['reasons'],
+            properties: {
+              reasons: {type: 'array', minItems: 1, items: {type: 'string', enum: Object.values(DeliveryFailureReason)}},
+              otherReason: {type: 'string', description: 'Required when reasons includes "other".'},
+              remarks: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {reasons: DeliveryFailureReason[]; otherReason?: string; remarks?: string},
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const delivery = await this.deliveryRepository.findOne({where: {id, isDeleted: false}});
+    if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
+    if (delivery.riderId !== rider.id) {
+      throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
+    }
+    const deliveryOrder = await this.deliveryOrderRepository.findOne({
+      where: {deliveryId: id, orderId} as object,
+    });
+    if (!deliveryOrder) throw new HttpErrors.NotFound('This order is not on this delivery.');
+
+    const trimmedRemarks = body.remarks?.trim();
+    await this.orderService.returnDeliveryToStore({
+      orderId,
+      remarks: trimmedRemarks?.length ? trimmedRemarks : body.reasons.join(', '),
+      reasons: body.reasons,
+      otherReason: body.otherReason,
+      changedBy: rider.userId,
+    });
+
+    const {v4} = await import('uuid');
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      await this.custodyEventRepository.create(
+        {
+          id: v4(),
+          deliveryId: id,
+          orderId,
+          eventType: DeliveryCustodyEventType.ORDER_DELIVERED,
+          remarks: `Delivery unsuccessful: ${body.reasons.join(', ')}`,
+          performedBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
+
+      const allDeliveryOrders = await this.deliveryOrderRepository.find({where: {deliveryId: id} as object});
+      const allOrders = await this.orderRepository.find({
+        where: {id: {inq: allDeliveryOrders.map(o => o.orderId)}} as object,
+        fields: {id: true, status: true} as object,
+      });
+      const remaining = allOrders.filter(
+        o =>
+          o.id !== orderId &&
+          o.status !== OrderStatus.DELIVERED &&
+          o.status !== OrderStatus.RETURNED &&
+          o.status !== OrderStatus.READY,
+      );
+
+      let completed = false;
+      if (remaining.length === 0) {
+        completed = true;
+        await this.deliveryRepository.updateById(
+          id,
+          {status: DeliveryStatus.COMPLETED, completedAt: new Date(), completedBy: currentUser[securityId]},
+          {transaction: tx},
+        );
+        await this.bagRepository.updateById(
+          delivery.bagId,
+          {status: BagStatus.AVAILABLE, currentDeliveryId: null as unknown as string},
+          {transaction: tx},
+        );
+        await this.custodyEventRepository.create(
+          {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.BAG_RELEASED, performedBy: currentUser[securityId]},
+          {transaction: tx},
+        );
+        await this.custodyEventRepository.create(
+          {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.COMPLETED, performedBy: currentUser[securityId]},
+          {transaction: tx},
+        );
+      }
+
+      await tx.commit();
+      return {message: 'Delivery marked unsuccessful — order returned to store.', deliveryCompleted: completed};
     } catch (error) {
       await tx.rollback();
       throw error;

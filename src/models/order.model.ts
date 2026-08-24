@@ -186,6 +186,12 @@ export class Order extends Entity {
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   deliveryAddressId?: string;
 
+  // Bumped each time a delivery attempt fails and the order is returned to
+  // the store (POST /orders/{id}/delivery-return, admin or rider-triggered)
+  // — a "2nd attempt / 3rd attempt" display counter, doesn't gate anything.
+  @property({type: 'number', default: 0})
+  deliveryAttemptCount?: number;
+
   // Frozen text snapshot of the address at assignment time, resolved from
   // CustomerAddress — so a later address edit/delete never rewrites order
   // history, same principle as OrderItemAdditionalCharge.amount being

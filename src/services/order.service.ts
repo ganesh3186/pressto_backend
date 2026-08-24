@@ -8,7 +8,9 @@ import {PaymentMode} from '../models/payment-mode.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {OrderStatus, ORDER_STATUS_TRANSITIONS} from '../models/order-status.enum';
 import {ContactRelationship} from '../models/contact-relationship.enum';
-import {HandoverCollectorType} from '../models/order-handover.model';
+import {HandoverCollectorType, OrderHandover} from '../models/order-handover.model';
+import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
+import {OrderDeliveryMethod} from '../models/order-delivery-method.enum';
 import {OrderType} from '../models/order-type.enum';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {
@@ -2081,12 +2083,56 @@ export class OrderService {
     });
     if (existing) throw new HttpErrors.Conflict('This order has already been handed over.');
 
-    // 3. Resolve the collector into a stored snapshot.
+    // 3+4. Resolve the collector and write the handover record.
+    const handover = await this._createHandoverRecord(order, handoverCustomer, params, v4);
+
+    // 5a. Order → delivered (+ status history).
+    await this.orderRepo.updateById(params.orderId, {status: OrderStatus.DELIVERED});
+    await this.statusHistoryRepo.create({
+      id: v4(),
+      orderId: params.orderId,
+      status: OrderStatus.DELIVERED,
+      changedAt: new Date(),
+      changedBy: params.handedOverBy,
+      remarks: `In-store handover to ${handover.collectorName}${params.remarks ? ` — ${params.remarks.trim()}` : ''}`,
+    });
+
+    // 5b. Cascade every still-active garment on the order to delivered.
+    const cascaded = await this._cascadeGarmentsToDelivered(params.orderId, params.handedOverBy, v4);
+
+    return {
+      message: 'Order handed over.',
+      handover,
+      garmentsDelivered: cascaded,
+    };
+  }
+
+  // Shared collector-resolution + record-write, used by both handoverInStore
+  // (counter pickup) and recordDeliveryHandover (rider doorstep delivery)
+  // below — same "who received this order" concept either way.
+  private async _createHandoverRecord(
+    order: Order,
+    handoverCustomer: {firstName?: string; lastName?: string} | null,
+    params: {
+      collectorType: HandoverCollectorType;
+      customerContactId?: string;
+      familyGroupMemberId?: string;
+      collectorName?: string;
+      collectorPhone?: string;
+      collectorRelationship?: ContactRelationship;
+      saveAsContact?: boolean;
+      photoMediaId?: string;
+      remarks?: string;
+      handedOverBy: string;
+    },
+    v4: () => string,
+  ): Promise<OrderHandover> {
     let collectorName = (params.collectorName ?? '').trim();
     let collectorPhone = (params.collectorPhone ?? '').trim();
     let collectorRelationship = params.collectorRelationship;
     let customerContactId = params.customerContactId;
     let familyGroupMemberId = params.familyGroupMemberId;
+    const photoMediaId = params.photoMediaId;
 
     if (params.collectorType === HandoverCollectorType.SELF) {
       if (handoverCustomer) {
@@ -2133,6 +2179,26 @@ export class OrderService {
       collectorPhone = contact.phone;
       collectorRelationship = contact.relationship;
       familyGroupMemberId = undefined;
+    } else if (params.collectorType === HandoverCollectorType.GUARD) {
+      // Rider delivery only — no name captured, a photo stands in for it.
+      if (!photoMediaId) {
+        throw new HttpErrors.BadRequest('A photo is required when leaving the order with a guard.');
+      }
+      collectorName = 'Security guard';
+      collectorPhone = '';
+      collectorRelationship = undefined;
+      customerContactId = undefined;
+      familyGroupMemberId = undefined;
+    } else if (params.collectorType === HandoverCollectorType.AT_DOOR) {
+      // Rider delivery only — nobody was available; a photo is the proof.
+      if (!photoMediaId) {
+        throw new HttpErrors.BadRequest('A photo is required when leaving the order at the door.');
+      }
+      collectorName = 'Left at door (unattended)';
+      collectorPhone = '';
+      collectorRelationship = undefined;
+      customerContactId = undefined;
+      familyGroupMemberId = undefined;
     } else {
       // OTHER — ad-hoc collector.
       if (!collectorName) {
@@ -2154,40 +2220,108 @@ export class OrderService {
       }
     }
 
-    // 4. Handover record.
-    const handover = await this.orderHandoverRepo.create({
+    return this.orderHandoverRepo.create({
       id: v4(),
-      orderId: params.orderId,
+      orderId: order.id,
       collectorType: params.collectorType,
       customerContactId,
       familyGroupMemberId,
       collectorName,
       collectorPhone: collectorPhone || undefined,
       collectorRelationship,
+      photoMediaId,
       remarks: params.remarks?.trim() || undefined,
       handedOverBy: params.handedOverBy,
       handedOverAt: new Date(),
     });
+  }
 
-    // 5a. Order → delivered (+ status history).
-    await this.orderRepo.updateById(params.orderId, {status: OrderStatus.DELIVERED});
+  // ─── Rider delivery handover (deliver-to recipient capture) ────────────────
+  // Called from RiderDeliveryController.deliver() — payment collection and
+  // the order → delivered transition already happen there; this only
+  // resolves the collector and writes the order_handover record, same
+  // shared logic as the in-store path above.
+
+  async recordDeliveryHandover(params: {
+    orderId: string;
+    collectorType: HandoverCollectorType;
+    customerContactId?: string;
+    familyGroupMemberId?: string;
+    collectorName?: string;
+    collectorPhone?: string;
+    collectorRelationship?: ContactRelationship;
+    saveAsContact?: boolean;
+    photoMediaId?: string;
+    remarks?: string;
+    handedOverBy: string;
+  }): Promise<OrderHandover> {
+    const {v4} = await import('uuid');
+    const order = await this.orderRepo.findOne({where: {id: params.orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const existing = await this.orderHandoverRepo.findOne({
+      where: {orderId: params.orderId, isDeleted: false} as any,
+    });
+    if (existing) throw new HttpErrors.Conflict('This order has already been handed over.');
+
+    const handoverCustomer = await this.customerRepo.findOne({
+      where: {id: order.customerId, isDeleted: false},
+    });
+
+    return this._createHandoverRecord(order, handoverCustomer, params, v4);
+  }
+
+  // ─── Delivery Return (failed/undeliverable attempt) ────────────────────────
+  // Shared by the admin delivery-return endpoint and the rider's own
+  // "Drop Unsuccessful" action — same effect either way: order reverts to
+  // READY with the delivery assignment cleared, ready to be redispatched.
+  // Distinct from OrderStatus.RETURNED (the sales-return/refund flow) — see
+  // that comment on OrderController.deliveryReturn for the full reasoning.
+
+  async returnDeliveryToStore(params: {
+    orderId: string;
+    remarks: string;
+    reasons?: DeliveryFailureReason[];
+    otherReason?: string;
+    changedBy: string;
+  }): Promise<Order> {
+    const order = await this.orderRepo.findOne({where: {id: params.orderId, isDeleted: false}});
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (order.status !== OrderStatus.OUT_FOR_DELIVERY) {
+      throw new HttpErrors.BadRequest(
+        `Cannot return a delivery for an order that is ${order.status}, not out_for_delivery.`,
+      );
+    }
+    if (!params.remarks?.trim()) {
+      throw new HttpErrors.BadRequest('Remarks are required to record why the delivery was returned.');
+    }
+    if (params.reasons?.includes(DeliveryFailureReason.OTHER) && !params.otherReason?.trim()) {
+      throw new HttpErrors.BadRequest('otherReason is required when reasons includes "other".');
+    }
+
+    await this.orderRepo.updateById(params.orderId, {
+      status: OrderStatus.READY,
+      assignedRiderId: null as unknown as string,
+      assignedRiderName: null as unknown as string,
+      deliveryMethod: null as unknown as OrderDeliveryMethod,
+      deliveryDate: null as unknown as Date,
+      deliverySlot: null as unknown as string,
+      deliverySlotId: null as unknown as string,
+      deliveryAttemptCount: (order.deliveryAttemptCount ?? 0) + 1,
+    });
+
+    const {v4} = await import('uuid');
+    const reasonSuffix = params.reasons?.length ? ` [${params.reasons.join(', ')}]` : '';
     await this.statusHistoryRepo.create({
       id: v4(),
       orderId: params.orderId,
-      status: OrderStatus.DELIVERED,
+      status: OrderStatus.READY,
       changedAt: new Date(),
-      changedBy: params.handedOverBy,
-      remarks: `In-store handover to ${collectorName}${params.remarks ? ` — ${params.remarks.trim()}` : ''}`,
+      changedBy: params.changedBy,
+      remarks: `Delivery attempt failed — returned to store: ${params.remarks.trim()}${reasonSuffix}`,
     });
 
-    // 5b. Cascade every still-active garment on the order to delivered.
-    const cascaded = await this._cascadeGarmentsToDelivered(params.orderId, params.handedOverBy, v4);
-
-    return {
-      message: 'Order handed over.',
-      handover,
-      garmentsDelivered: cascaded,
-    };
+    return this.orderRepo.findById(params.orderId);
   }
 
   // Move every non-terminal garment on the order to delivered, with history.
