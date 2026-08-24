@@ -167,12 +167,32 @@ POST /rider/deliveries/{id}/orders/{orderId}/deliver
   "amount": 450,
   "walletAmount": 0,
   "transactionReference": "optional — UPI/card ref if not cash",
-  "remarks": "optional"
+  "remarks": "optional",
+  "deliverTo": {
+    "collectorType": "self",
+    "customerContactId": "required when collectorType is 'contact' (household)",
+    "familyGroupMemberId": "required when collectorType is 'family_member'",
+    "collectorName": "required when collectorType is 'other' (e.g. a neighbour)",
+    "collectorPhone": "optional",
+    "photoMediaId": "required when collectorType is 'guard' or 'at_door'"
+  }
 }
 ```
 Call this once per order as the rider hands each one over — not once for
 the whole run. The target order must currently be `out_for_delivery` (`400`
 naming the current status otherwise — call §4 first).
+
+- **`deliverTo` is optional** — omit it entirely to keep the old behaviour
+  (order still delivers, nothing recorded about who received it).
+- `collectorType` — `self` | `contact` (household) | `family_member` |
+  `other` (neighbour, ad-hoc name/phone) | `guard` | `at_door`.
+  `guard`/`at_door` skip name entirely — send `photoMediaId` (a proof-of-delivery
+  photo) instead; the app fills in a fixed label ("Security guard" /
+  "Left at door (unattended)") server-side.
+- Validated the same way order-placement contacts are: a `contact`/`family_member`
+  id must actually belong to this order's customer, or it's a `400`.
+- `409` if this order already has a handover recorded (shouldn't normally
+  happen — `deliver()` is a one-shot call per order).
 
 - **On-account orders (`isOnAccount: true`)** skip payment entirely — send
   the body without payment fields, or omit the body. Deferred billing, same
@@ -208,6 +228,35 @@ already `returned`, which also counts toward completion).
 
 ---
 
+## 5a. Drop Unsuccessful
+
+```
+POST /rider/deliveries/{id}/orders/{orderId}/delivery-unsuccessful
+```
+```json
+{
+  "reasons": ["customer_not_answering"],
+  "otherReason": "required when reasons includes \"other\"",
+  "remarks": "optional — free text, defaults to the reasons list if omitted"
+}
+```
+Use instead of §5's `deliver` when the attempt failed — `reasons` is
+required, multi-select from `customer_not_answering` | `not_approving_entry` |
+`other`. The order reverts to `ready` (assignment/delivery-slot cleared,
+`deliveryAttemptCount` incremented) — same "returned to store" state the
+admin panel's own "Send back to Store" action produces, just triggered
+from the rider app instead. `400` if the order isn't `out_for_delivery`.
+
+**Response `200`**
+```json
+{"message": "Delivery marked unsuccessful — order returned to store.", "deliveryCompleted": false}
+```
+Same `deliveryCompleted` semantics as §5 — if this was the last
+unresolved order on the run (whether delivered *or* returned), the whole
+`Delivery` still auto-completes and releases the bag.
+
+---
+
 ## 6. Cash handover (collected payments → store or another rider)
 
 Cash/UPI collected at the door piles up "with the rider" until submitted as
@@ -226,8 +275,8 @@ another rider, has moved to its own doc:
 1. `GET /rider/deliveries` → see today's assigned runs.
 2. `GET /rider/deliveries/{id}` → see the orders on this run, addresses, and live balance due for each.
 3. `PATCH .../{id}/status {status: "out_for_delivery"}` → start the run; linked orders flip to `out_for_delivery` automatically.
-4. At each stop (optional): `PATCH .../{id}/orders/{orderId}/status {status: "arrived"}` (§4a) the moment the rider reaches the address, then `POST .../{id}/orders/{orderId}/deliver` with payment details (skip payment fields for on-account orders) → order marked `delivered`.
-5. When the last order's `deliver` call reports `deliveryCompleted: true`, the run and bag are already closed out — nothing further to call.
+4. At each stop (optional): `PATCH .../{id}/orders/{orderId}/status {status: "arrived"}` (§4a) the moment the rider reaches the address, then either `POST .../{id}/orders/{orderId}/deliver` with payment + `deliverTo` (skip payment fields for on-account orders) → order marked `delivered`, or — if nobody could receive it — `POST .../{id}/orders/{orderId}/delivery-unsuccessful` (§5a) with `reasons` → order returned to store instead.
+5. When the last order's `deliver`/`delivery-unsuccessful` call reports `deliveryCompleted: true`, the run and bag are already closed out — nothing further to call.
 6. Periodically (or at shift end): submit collected cash for handover — see `RIDER_APP_CASH_HANDOVER_API.md`.
 
 Everything here is immediately visible to the admin Dispatch Management /

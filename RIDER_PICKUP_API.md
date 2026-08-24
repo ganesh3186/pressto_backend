@@ -215,7 +215,7 @@ The app's two tabs:
 
 | `tab` | Statuses included |
 |---|---|
-| `pending` (or omit both `tab` and `status`) | `rider_assigned`, `out_for_pickup`, `arrived_at_pickup` |
+| `pending` (or omit both `tab` and `status`) | `rider_assigned`, `out_for_pickup`, `arrived_at_pickup`, `pickup_unsuccessful` |
 | `completed` | `picked_up`, `received_at_store` |
 
 `?status=<exact value>` still works if a specific single status is
@@ -337,6 +337,36 @@ counts confirmed at the doorstep:
 `bagId` comes from the bag lookup below — scan the physical bag before
 sending this, don't let the rider type a bag number blind.
 
+**`pickup_unsuccessful`** — the pickup couldn't be completed. Reachable
+from `out_for_pickup` or `arrived_at_pickup`. Requires structured,
+multi-select `reasons`:
+
+```json
+{
+  "status": "pickup_unsuccessful",
+  "reasons": ["customer_not_answering", "denied_pickup"],
+  "otherReason": "required when reasons includes \"other\""
+}
+```
+```json
+{ "message": "Pickup marked unsuccessful." }
+```
+Reason values: `customer_not_answering` · `not_approving_entry` ·
+`denied_pickup` · `other`. Still shows up in `GET /rider/pickup-requests?tab=pending`
+(the rider still needs to act on it) and still counts as "active" for
+availability — see below to send it back out.
+
+### `POST /rider/pickup-requests/{id}/reprocess` — retry an unsuccessful pickup
+
+No body. Only valid when the pickup's current status is
+`pickup_unsuccessful` (`400` otherwise). Sends it back to
+`rider_assigned` — same rider, no reassignment — and bumps
+`reprocessCount` (a plain display counter, doesn't gate anything).
+
+```json
+{ "message": "Pickup request sent back out for another attempt." }
+```
+
 ---
 
 ## Bags
@@ -370,9 +400,14 @@ app) — always `web` for rider-originated requests.
 
 **Pickup request lifecycle** — `requested → scheduled → rider_assigned
 → out_for_pickup → arrived_at_pickup → picked_up → received_at_store`,
-with `cancelled` as an early exit. A rider only ever drives the last four
-transitions (see the status-update endpoint above); `requested`/`scheduled`
-belong to the call-center/admin intake flow.
+with `cancelled` as an early exit and `pickup_unsuccessful` a detour from
+`out_for_pickup`/`arrived_at_pickup` back to `rider_assigned` via
+`POST .../reprocess`. A rider only ever drives the last five transitions
+(see the status-update endpoint above); `requested`/`scheduled` belong
+to the call-center/admin intake flow.
+
+**`pickupUnsuccessfulReasons`** — `customer_not_answering` ·
+`not_approving_entry` · `denied_pickup` · `other`.
 
 **Preference choices** —
 `colourBleedingChoice`: `ask_every_time` · `accept_risk_and_process` ·
