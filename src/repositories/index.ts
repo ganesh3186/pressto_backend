@@ -21,6 +21,7 @@ export * from './rider-cash-handover-item.repository';
 export * from './pickup-handover.repository';
 export * from './pickup-handover-item.repository';
 export * from './pickup-escalation.repository';
+export * from './pickup-change-request.repository';
 export * from './pickup-delivery-slot.repository';
 export * from './shift.repository';
 export * from './brand.repository';

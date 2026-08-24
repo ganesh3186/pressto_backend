@@ -41,6 +41,8 @@ export * from './pickup-handover-status.enum';
 export * from './pickup-handover-item.model';
 export * from './pickup-escalation.model';
 export * from './pickup-escalation-status.enum';
+export * from './pickup-change-request.model';
+export * from './pickup-change-request-status.enum';
 export * from './shift.model';
 export * from './shift-status.enum';
 export * from './brand.model';
