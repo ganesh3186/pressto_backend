@@ -60,11 +60,30 @@ export class PettyCashService {
    * form's pettyCash.recvFromFinance/used/disapprovedAmt fields (a
    * prefill starting point, same "not a silent override" posture as
    * ShiftController.collected()'s cash/banking numbers).
+   *
+   * `used` = total *submitted* this window (createdAt-scoped), any status
+   * — not "approved this window". Since computeBalance() now reserves an
+   * expense's full amount the moment it's submitted, that's the number
+   * that actually moved the balance during this shift; an entry can be
+   * submitted and resolved in different shifts, so scoping `used` by
+   * resolution would double-count or miss money depending on timing.
+   * `disapprovedAmt` stays resolvedAt-scoped — releasing a reservation
+   * only happens at resolution, whichever shift that falls in.
+   *
+   * ShiftController.recalcClosingDerived's formula
+   * (prevSupposed + recvFromFinance − used + disapprovedAmt) relies on
+   * this exact split to reconstruct the same number computeBalance()
+   * would return live — see that method's own comment for the full
+   * derivation.
    */
   async computeWindowActivity(storeId: string, from: Date, to: Date): Promise<PettyCashWindowActivity> {
-    const [financeEntries, resolvedEntries] = await Promise.all([
+    const [financeEntries, submittedEntries, resolvedEntries] = await Promise.all([
       this.financeRepo.find({
         where: {storeId, createdAt: {between: [from, to]}} as object,
+        fields: {amount: true} as object,
+      }),
+      this.registerRepo.find({
+        where: {storeId, isDeleted: false, createdAt: {between: [from, to]}} as object,
         fields: {amount: true} as object,
       }),
       this.registerRepo.find({
@@ -74,11 +93,11 @@ export class PettyCashService {
           status: {inq: [PettyCashStatus.APPROVED, PettyCashStatus.REJECTED]},
           resolvedAt: {between: [from, to]},
         } as object,
-        fields: {approvedAmount: true, disapprovedAmt: true} as object,
+        fields: {disapprovedAmt: true} as object,
       }),
     ]);
     const recvFromFinance = financeEntries.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
-    const used = resolvedEntries.reduce((sum, e) => sum + (Number(e.approvedAmount) || 0), 0);
+    const used = submittedEntries.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
     const disapprovedAmt = resolvedEntries.reduce((sum, e) => sum + (Number(e.disapprovedAmt) || 0), 0);
     return {recvFromFinance, used, disapprovedAmt};
   }

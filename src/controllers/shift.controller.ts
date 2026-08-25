@@ -170,10 +170,18 @@ export class ShiftController {
     const bankingCumulativeDiff =
       Number(input.banking.deposited || 0) + Number(input.banking.inSafe || 0) - Number(input.banking.supposed || 0);
 
+    // used = total submitted this shift (reserved the moment it was
+    // claimed, per PettyCashService.computeBalance's deduct-on-submit
+    // rule) — so it's subtracted here. disapprovedAmt = reservations
+    // released back this shift (a rejection, or a partial approval's
+    // shortfall) — so it's added back, not subtracted. See
+    // PettyCashService.computeWindowActivity's own comment for the full
+    // derivation of why this specific split reconstructs the same number
+    // computeBalance() would return live.
     const pettyBalance =
       Number(input.pettyCash.prevSupposed || 0) +
       Number(input.pettyCash.recvFromFinance || 0) -
-      Number(input.pettyCash.used || 0) -
+      Number(input.pettyCash.used || 0) +
       Number(input.pettyCash.disapprovedAmt || 0);
     const pettyDifference = Number(input.pettyCash.actualBalance || 0) - pettyBalance;
 

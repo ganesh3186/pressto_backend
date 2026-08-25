@@ -237,17 +237,36 @@ shift's self-reported numbers:
   "pettyCash": { "recvFromFinance": 5000, "used": 200, "disapprovedAmt": 50 }
   ```
   `recvFromFinance` = finance top-ups created in that window for the
-  shift's store. `used` = sum of `approvedAmount` on register entries
-  **resolved** (not just created) in that window. `disapprovedAmt` =
-  sum of `disapprovedAmt` on entries resolved in that window (partial
-  shortfalls and full rejections both count). Same posture as the
-  endpoint's existing `collections`/`bankingSupposed` fields: a prefill
-  starting point for the closing form, not a silent override — the
-  cashier still submits their own counted numbers on close.
+  shift's store. `used` = sum of `amount` on register entries
+  **submitted** (`createdAt`-scoped) in that window, regardless of
+  status — not "approved this window". `disapprovedAmt` = sum of
+  `disapprovedAmt` on entries **resolved** (`resolvedAt`-scoped) in that
+  window (partial shortfalls and full rejections both count). An entry
+  can be submitted in one shift and resolved in a later one — `used` and
+  `disapprovedAmt` are scoped independently on purpose so each shift only
+  gets credited/debited for what actually happened during it. Same
+  posture as the endpoint's existing `collections`/`bankingSupposed`
+  fields: a prefill starting point for the closing form, not a silent
+  override — the cashier still submits their own counted numbers on
+  close.
+
+  **Why `used` is submitted-not-approved:** the balance now reserves an
+  expense's full amount the moment it's *submitted* (see above), not
+  once it's approved — so `used` has to mirror that to reconstruct the
+  real balance. The closing formula is
+  `prevSupposed + recvFromFinance − used + disapprovedAmt` — note
+  `disapprovedAmt` is **added back**, not subtracted, since it represents
+  a reservation being released, not a second deduction. (Both
+  `shift.controller.ts`'s `recalcClosingDerived` and the frontend's
+  mirror in `shift-module.js` implement this same formula — they must
+  stay in sync; the server always re-verifies the client's math and is
+  the actual source of truth.)
 
 The admin panel's `shift-close-view.js` now actually consumes this —
 `applyCollectedPrefill` merges `collected.pettyCash` into the closing
 form's `pettyCash.recvFromFinance`/`used`/`disapprovedAmt` fields
 (previously it merged `collections`/`banking`/`register` from this same
 response but silently dropped `pettyCash`, so the Petty Cash section of
-the closing form always showed zeros regardless of real activity).
+the closing form always showed zeros regardless of real activity). The
+"Used" field is labeled "Submitted This Shift" in that screen for
+clarity, since it no longer means "approved this shift".
