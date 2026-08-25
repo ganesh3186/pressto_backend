@@ -2324,6 +2324,38 @@ export class OrderService {
     return this.orderRepo.findById(params.orderId);
   }
 
+  /**
+   * Dispatch (delivery assignment) must only ever happen from an order's
+   * home store — a garment can visit several stores for processing via
+   * interstore transfer, but it has to actually be back home before it can
+   * go to the customer. Garment.activeTransferId is the same custody
+   * pointer store-scope.service.ts's assertGarmentEditable already uses to
+   * grant the *visiting* store write access — here it's the opposite
+   * check: still set means still away, so dispatch is blocked regardless
+   * of who's asking.
+   */
+  async assertGarmentsHomeForDispatch(orderIds: string[]): Promise<void> {
+    const orderItems = await this.orderItemRepo.find({where: {orderId: {inq: orderIds}} as object});
+    const orderItemIds = orderItems.map(oi => oi.id);
+    if (!orderItemIds.length) return;
+
+    const awayGarments = await this.garmentRepo.find({
+      where: {
+        orderItemId: {inq: orderItemIds},
+        activeTransferId: {neq: null as unknown as string},
+        isDeleted: false,
+      } as object,
+      fields: {garmentTagNumber: true} as object,
+    });
+    if (awayGarments.length) {
+      throw new HttpErrors.BadRequest(
+        `Still away at another store, not back home yet — cannot dispatch: ${awayGarments
+          .map(g => g.garmentTagNumber)
+          .join(', ')}.`,
+      );
+    }
+  }
+
   // Move every non-terminal garment on the order to delivered, with history.
   private async _cascadeGarmentsToDelivered(
     orderId: string,

@@ -11,6 +11,7 @@ import {TransferCustodyEventType} from '../models/transfer-custody-event-type.en
 import {TransferItemScanStatus} from '../models/transfer-item-status.enum';
 import {TransferStatus} from '../models/transfer-status.enum';
 import {Transfer} from '../models/transfer.model';
+import {Order} from '../models/order.model';
 import {
   BagRepository,
   CustomerRepository,
@@ -373,7 +374,7 @@ export class TransferController {
       throw new HttpErrors.NotFound('Store not found.');
     }
 
-    const orders = await this.orderRepo.find({
+    const homeOrders = await this.orderRepo.find({
       where: {
         storeId,
         isDeleted: false,
@@ -382,6 +383,45 @@ export class TransferController {
       order: ['createdAt DESC'],
       limit: 100,
     });
+
+    // Garments currently in this store's custody via an inbound transfer,
+    // even though their order was booked elsewhere — same "custody grants
+    // rights" rule store-scope.service.ts's assertGarmentEditable already
+    // applies to editing a garment, applied here to outbound eligibility:
+    // whoever currently holds a garment can send it onward.
+    const inboundTransfers = await this.transferRepo.find({
+      where: {
+        toStoreId: storeId,
+        status: {inq: [TransferStatus.RECEIVED, TransferStatus.RESOLVED]},
+        isDeleted: false,
+      } as object,
+      fields: {id: true} as object,
+    });
+    const visitingGarments = inboundTransfers.length
+      ? await this.garmentRepo.find({
+          where: {activeTransferId: {inq: inboundTransfers.map(t => t.id)}, isDeleted: false} as object,
+        })
+      : [];
+
+    let visitingOrders: Order[] = [];
+    if (visitingGarments.length) {
+      const visitingOrderItems = await this.orderItemRepo.find({
+        where: {id: {inq: [...new Set(visitingGarments.map(g => g.orderItemId))]}} as object,
+      });
+      const visitingOrderIds = [...new Set(visitingOrderItems.map(oi => oi.orderId))];
+      visitingOrders = visitingOrderIds.length
+        ? await this.orderRepo.find({
+            where: {
+              id: {inq: visitingOrderIds},
+              isDeleted: false,
+              status: {inq: TransferController.ELIGIBLE_ORDER_STATUSES},
+            } as object,
+          })
+        : [];
+    }
+
+    const orderById = new Map([...homeOrders, ...visitingOrders].map(o => [o.id, o]));
+    const orders = [...orderById.values()];
     if (!orders.length) return {orders: []};
 
     const orderIds = orders.map(o => o.id);
@@ -391,11 +431,24 @@ export class TransferController {
     ]);
 
     const orderItemIds = orderItems.map(oi => oi.id);
-    const garments = orderItemIds.length
+    const allGarments = orderItemIds.length
       ? await this.garmentRepo.find({
           where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as object,
         })
       : [];
+
+    // Keep only garments actually here right now: a home garment must not
+    // itself be away, and a visiting garment must be visiting THIS store
+    // specifically (its order can be merged in above for a different
+    // reason — e.g. it also has other garments genuinely home here).
+    const visitingGarmentIds = new Set(visitingGarments.map(g => g.id));
+    const orderStoreById = new Map(orders.map(o => [o.id, o.storeId]));
+    const orderIdByOrderItemId = new Map(orderItems.map(oi => [oi.id, oi.orderId]));
+    const garments = allGarments.filter(g => {
+      if (g.activeTransferId) return visitingGarmentIds.has(g.id);
+      const orderId = orderIdByOrderItemId.get(g.orderItemId);
+      return orderId ? orderStoreById.get(orderId) === storeId : false;
+    });
 
     const serviceIds = [...new Set(orderItems.map(oi => oi.serviceId))];
     const itemIds = [...new Set(orderItems.map(oi => oi.itemId))];

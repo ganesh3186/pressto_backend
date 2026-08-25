@@ -491,6 +491,10 @@ export class OrderController {
     if (storeIds.size > 1) {
       throw new HttpErrors.BadRequest('All orders in one assignment must belong to the same store.');
     }
+    // A garment can visit other stores for processing via interstore
+    // transfer, but dispatch to the customer only happens from home —
+    // block it if anything is still away.
+    await this.orderService.assertGarmentsHomeForDispatch(body.orderIds);
 
     let deliverySlot = body.deliverySlot;
     if (body.deliverySlotId !== undefined) {
