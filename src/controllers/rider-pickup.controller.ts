@@ -889,6 +889,10 @@ export class RiderPickupController {
                       enum: Object.values(DeliveryType),
                       description: 'Real speed confirmed with the customer at the doorstep for this line — optional, but this is what the store should build the order against, not the pre-arrival estimate.',
                     },
+                    remarks: {
+                      type: 'string',
+                      description: 'Optional rider note against this specific service line (e.g. a condition or count caveat noticed at the doorstep).',
+                    },
                   },
                 },
               },
@@ -909,7 +913,12 @@ export class RiderPickupController {
     body: {
       status: PickupRequestStatus;
       bagId?: string;
-      itemsByService?: Array<{serviceId: string; quantity: number; deliverySpeed?: DeliveryType}>;
+      itemsByService?: Array<{
+        serviceId: string;
+        quantity: number;
+        deliverySpeed?: DeliveryType;
+        remarks?: string;
+      }>;
       reasons?: PickupUnsuccessfulReason[];
       otherReason?: string;
     },
@@ -954,6 +963,7 @@ export class RiderPickupController {
         serviceName: serviceNameById.get(i.serviceId),
         quantity: i.quantity,
         deliverySpeed: i.deliverySpeed,
+        remarks: i.remarks,
       }));
       const totalItems = actualItemsByService.reduce((sum, i) => sum + i.quantity, 0);
 

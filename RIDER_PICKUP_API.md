@@ -342,7 +342,7 @@ counts confirmed at the doorstep:
   "status": "picked_up",
   "bagId": "a1b2...",
   "itemsByService": [
-    { "serviceId": "c84dfe93-f45f-48bc-86d3-4710264eb200", "quantity": 3, "deliverySpeed": "express" },
+    { "serviceId": "c84dfe93-f45f-48bc-86d3-4710264eb200", "quantity": 3, "deliverySpeed": "express", "remarks": "2 shirts have a small stain near the collar" },
     { "serviceId": "00354f2b-363f-4a8f-9e68-44cab7256c3a", "quantity": 1, "deliverySpeed": "standard" }
   ]
 }
@@ -355,6 +355,11 @@ priority over — the pre-arrival `itemCategoryEstimate[].deliverySpeed`
 guess collected at booking time, which can be stale by the time the
 rider is at the door. Confirm the speed with the customer before
 sending this, don't just carry over the estimate blind.
+
+`remarks` per line is optional free text — a rider's note against that
+specific service (condition, a count caveat, anything worth flagging to
+the store before they build the order). Shown as a tooltip on the
+service chip in the store's Receive Items screen.
 
 ```json
 { "message": "Pickup confirmed." }

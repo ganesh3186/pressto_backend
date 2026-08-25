@@ -216,6 +216,7 @@ export class PickupRequest extends Entity {
     serviceName?: string;
     quantity: number;
     deliverySpeed?: DeliveryType;
+    remarks?: string;
   }>;
 
   // Set together when the rider marks status: pickup_unsuccessful — see
