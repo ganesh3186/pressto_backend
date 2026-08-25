@@ -1,12 +1,10 @@
 # Petty Cash API — Integration Guide
 
-For the admin panel team. Real backend behind the existing `Petty Cash
-Finance` / `Petty Cash Register` / `Petty Cash Approval` screens
-(`src/sections/petty-cash/`), which today run entirely on
-`sessionStorage` (`petty-cash-storage.js`, `_mock/petty-cash.js`). This
-doc covers the new endpoints only — wiring the three screens to them
-(replacing `usePettyCashState`'s storage calls with real API calls) is a
-separate follow-up, not done as part of this pass.
+For the admin panel team. Real backend behind the `Petty Cash Finance` /
+`Petty Cash Register` / `Petty Cash Approval` screens
+(`src/sections/petty-cash/`), now wired to these endpoints via
+`src/api/petty-cash.js` (the old `sessionStorage` mock,
+`petty-cash-storage.js`/`use-petty-cash-state.js`, is gone).
 
 **Auth**: `Authorization: Bearer <jwt>`. New permissions (seeded via
 `npm run seed:new-permissions`):
@@ -19,10 +17,20 @@ separate follow-up, not done as part of this pass.
 | `petty_cash_register:delete` | Delete a still-pending expense | manager, store_exec, counter_staff |
 | `petty_cash_register:update` | Approve/reject an expense | manager only |
 
-The balance is **never stored** — always computed live as
-`sum(finance entries) − sum(APPROVED register entries' approvedAmount)`,
-so it can't drift out of sync the way a cached counter could. A
-`REJECTED` or still-`PENDING` entry never touches it.
+The balance is **never stored** — always computed live as:
+
+```
+sum(finance entries) − sum(PENDING entries' amount) − sum(APPROVED entries' approvedAmount)
+```
+
+An expense reserves its full requested amount the moment it's
+**submitted**, not just once a manager resolves it — otherwise two
+pending expenses together could claim more cash than the store actually
+has. `REJECTED` releases the reservation in full (contributes `0`).
+`APPROVED` keeps only `approvedAmount` reserved — on a **partial**
+approval the disapproved remainder is released back to the balance the
+instant it's resolved. Deleting a still-pending entry (§6) also releases
+its reservation, same as a rejection.
 
 ---
 
@@ -106,6 +114,12 @@ store-unbound caller (manager, super_admin with no fixed store) needs to
 pass `storeId` explicitly.
 
 `userId`/`userName` are resolved from the caller too, never client-supplied.
+
+`400` ("This expense (250) exceeds the available petty cash balance
+(100).") if `amount` is more than `GET /petty-cash/balance` would
+currently return for this store — the balance already accounts for every
+other still-pending expense, so this is a real "can't over-commit the
+float" check, not just a sanity check against the funded total.
 
 **Response `200`**
 ```json
@@ -230,3 +244,10 @@ shift's self-reported numbers:
   endpoint's existing `collections`/`bankingSupposed` fields: a prefill
   starting point for the closing form, not a silent override — the
   cashier still submits their own counted numbers on close.
+
+The admin panel's `shift-close-view.js` now actually consumes this —
+`applyCollectedPrefill` merges `collected.pettyCash` into the closing
+form's `pettyCash.recvFromFinance`/`used`/`disapprovedAmt` fields
+(previously it merged `collections`/`banking`/`register` from this same
+response but silently dropped `pettyCash`, so the Petty Cash section of
+the closing form always showed zeros regardless of real activity).

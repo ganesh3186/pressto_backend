@@ -17,10 +17,16 @@ export interface PettyCashWindowActivity {
  * being the one place order-total math lives.
  *
  * The balance itself is never stored — always computed live from the
- * finance + resolved-register ledger, so it can't drift the way a cached
- * counter could. A REJECTED or still-PENDING register entry never debits
- * it; only APPROVED (using approvedAmount, which may be a partial
- * approval — see PettyCashRegisterEntry's own doc comment).
+ * finance + register ledger, so it can't drift the way a cached counter
+ * could. A submitted (PENDING) expense reserves its full requested amount
+ * against the balance immediately — the money is "spoken for" the moment
+ * it's claimed, not just once a manager gets to it — so a second expense
+ * can't be submitted against cash that's already committed elsewhere.
+ * REJECTED contributes nothing (the reservation is released in full).
+ * APPROVED contributes only approvedAmount, which may be a partial
+ * approval (see PettyCashRegisterEntry's own doc comment) — the
+ * disapproved remainder is released back the moment it's resolved, simply
+ * by no longer counting the full PENDING amount.
  */
 @injectable({scope: BindingScope.TRANSIENT})
 export class PettyCashService {
@@ -30,16 +36,23 @@ export class PettyCashService {
   ) {}
 
   async computeBalance(storeId: string): Promise<number> {
-    const [financeEntries, approvedEntries] = await Promise.all([
+    const [financeEntries, registerEntries] = await Promise.all([
       this.financeRepo.find({where: {storeId} as object, fields: {amount: true} as object}),
       this.registerRepo.find({
-        where: {storeId, status: PettyCashStatus.APPROVED, isDeleted: false} as object,
-        fields: {approvedAmount: true} as object,
+        where: {
+          storeId,
+          isDeleted: false,
+          status: {inq: [PettyCashStatus.PENDING, PettyCashStatus.APPROVED]},
+        } as object,
+        fields: {status: true, amount: true, approvedAmount: true} as object,
       }),
     ]);
     const funded = financeEntries.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
-    const spent = approvedEntries.reduce((sum, e) => sum + (Number(e.approvedAmount) || 0), 0);
-    return Math.max(0, funded - spent);
+    const committed = registerEntries.reduce((sum, e) => {
+      const held = e.status === PettyCashStatus.APPROVED ? Number(e.approvedAmount) : Number(e.amount);
+      return sum + (held || 0);
+    }, 0);
+    return Math.max(0, funded - committed);
   }
 
   /**

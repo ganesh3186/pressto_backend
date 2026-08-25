@@ -189,8 +189,21 @@ export class PettyCashController {
   ): Promise<object> {
     if (!body.remarks?.trim()) throw new HttpErrors.BadRequest('Remarks are required.');
     if (!body.description?.trim()) throw new HttpErrors.BadRequest('Description is required.');
+    if (!body.amount || body.amount <= 0) throw new HttpErrors.BadRequest('Enter a valid amount.');
 
     const caller = await this.resolveCallerStore(currentUser, body.storeId);
+
+    // A submitted expense reserves its full amount immediately (see
+    // PettyCashService.computeBalance) — can't claim more than the store
+    // actually has available right now, including whatever's already
+    // reserved by other still-pending expenses.
+    const balance = await this.pettyCashService.computeBalance(caller.storeId);
+    if (body.amount > balance) {
+      throw new HttpErrors.BadRequest(
+        `This expense (${body.amount}) exceeds the available petty cash balance (${balance}).`,
+      );
+    }
+
     const {v4} = await import('uuid');
     const entry = await this.registerRepo.create({
       id: v4(),
