@@ -69,14 +69,17 @@ store.") if the logged-in user has no store assignment. Only send
 `actual` per category — `supposed` is server-computed (see below), never
 client-supplied.
 
-**"Supposed" values** chain from the **store's** last `closed` shift (any
-user, not just this one) — `cashInTill` from that shift's
-`actualCashInTill.actual` (falling back through `register.currSupCashInTill`
-→ its own opening `cashInTill.actual` → `0`), `banking` from
-`banking.inSafe`, `pettyCash` from `pettyCash.actualBalance`,
-`prepaidVouchers` from `ppVoucher.actualVoucher`. No prior closed shift at
-this store → defaults `cashInTill: 2000`, everything else `0` (same seed
-values the mock used).
+**"Supposed" values** — `pettyCash` is the store's **real, live petty
+cash balance** right now (see `PETTY_CASH_API.md` — computed from actual
+finance top-ups and approved expenses, not chained). The other three
+have no real ledger behind them yet, so they still chain from the
+**store's** last `closed` shift (any user, not just this one) —
+`cashInTill` from that shift's `actualCashInTill.actual` (falling back
+through `register.currSupCashInTill` → its own opening `cashInTill.actual`
+→ `0`), `banking` from `banking.inSafe`, `prepaidVouchers` from
+`ppVoucher.actualVoucher`. No prior closed shift at this store → defaults
+`cashInTill: 2000`, `banking`/`prepaidVouchers`: `0` (same seed values the
+mock used) — `pettyCash` still comes from the live balance either way.
 
 `409 Conflict` ("A shift is already open for this user at this store.")
 if the caller already has one open here — same rule as today, just

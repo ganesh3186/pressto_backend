@@ -17,6 +17,7 @@ import {
   UsersRepository,
   WalletRechargeRequestRepository,
 } from '../repositories';
+import {PettyCashService} from '../services/petty-cash.service';
 import {StoreScopeService} from '../services/store-scope.service';
 
 interface ReconciliationRowInput {
@@ -68,6 +69,7 @@ export class ShiftController {
     @repository(PaymentTransactionRepository) private paymentTransactionRepository: PaymentTransactionRepository,
     @repository(WalletRechargeRequestRepository) private walletRechargeRequestRepository: WalletRechargeRequestRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @inject('services.petty-cash') private pettyCashService: PettyCashService,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -108,14 +110,22 @@ export class ShiftController {
    * last CLOSED shift (any user) — mirrors buildOpeningSupposedValues() in
    * the frontend's shift-module.js exactly. No prior closed shift at this
    * store → the same seed defaults the mock used.
+   *
+   * pettyCash is the one exception: a real ledger backs it now (see
+   * PettyCashService), so "supposed" is the actual current balance, not a
+   * number chained from a previous shift's own self-report — that can't
+   * drift out of sync with reality the way chaining could. The other
+   * three categories have no real ledger behind them yet, so they keep
+   * chaining as before.
    */
   private async resolveSupposedOpeningValues(storeId: string) {
     const lastClosed = await this.shiftRepository.findOne({
       where: {storeId, status: ShiftStatus.CLOSED} as object,
       order: ['closedAt DESC'],
     });
+    const pettyCash = await this.pettyCashService.computeBalance(storeId);
     if (!lastClosed) {
-      return {cashInTill: 2000, banking: 0, pettyCash: 0, prepaidVouchers: 0};
+      return {cashInTill: 2000, banking: 0, pettyCash, prepaidVouchers: 0};
     }
     const closing = (lastClosed.closing ?? {}) as Record<string, {actual?: number; inSafe?: number; actualBalance?: number; actualVoucher?: number; currSupCashInTill?: number}>;
     const opening = (lastClosed.opening ?? {}) as Record<string, {actual?: number}>;
@@ -126,7 +136,7 @@ export class ShiftController {
         opening.cashInTill?.actual ??
         0,
       banking: closing.banking?.inSafe ?? opening.banking?.actual ?? 0,
-      pettyCash: closing.pettyCash?.actualBalance ?? opening.pettyCash?.actual ?? 0,
+      pettyCash,
       prepaidVouchers:
         closing.ppVoucher?.actualVoucher ??
         (closing.prepaidV as {inSafe?: number} | undefined)?.inSafe ??
@@ -353,6 +363,11 @@ export class ShiftController {
   // ppVoucher and Wallet Collections' own upi/card have no further
   // PaymentMode source beyond what's summed here and stay operator-typed —
   // same documented gap as the revenue-by-brand matrix.
+  //
+  // pettyCash is real too (see PettyCashService.computeWindowActivity) —
+  // finance top-ups and resolved (approved/rejected) expenses within this
+  // same [openedAt, windowEnd] window, for the closing form's
+  // recvFromFinance/used/disapprovedAmt fields.
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts/{id}/collected')
@@ -424,7 +439,9 @@ export class ShiftController {
       Number((shift.opening as {banking?: {actual?: number}} | undefined)?.banking?.actual) || 0;
     const bankingSupposed = openingBankingActual + cashReceived;
 
-    return {collections, walletCollections, cashReceived, bankingSupposed};
+    const pettyCash = await this.pettyCashService.computeWindowActivity(shift.storeId, shift.openedAt, windowEnd);
+
+    return {collections, walletCollections, cashReceived, bankingSupposed, pettyCash};
   }
 
   // ─── Close ────────────────────────────────────────────────────────────────

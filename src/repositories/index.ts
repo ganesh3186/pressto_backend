@@ -24,6 +24,8 @@ export * from './pickup-escalation.repository';
 export * from './pickup-change-request.repository';
 export * from './pickup-delivery-slot.repository';
 export * from './shift.repository';
+export * from './petty-cash-finance-entry.repository';
+export * from './petty-cash-register-entry.repository';
 export * from './brand.repository';
 export * from './cluster.repository';
 export * from './customer-discount-group.repository';

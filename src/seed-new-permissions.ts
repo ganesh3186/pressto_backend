@@ -101,6 +101,16 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   // — distinct from order:create (which records a NEW payment), so it can be
   // granted to finance independently for fixing a mis-recorded payment method.
   {permission: 'payment:update', description: "Correct an already-recorded payment's mode"},
+  // Petty Cash (see PettyCashController) — split into finance (topping up
+  // a store's float, HQ-only) vs register (staff logging/deleting an
+  // expense) vs the manager-only approve/reject action, since each is a
+  // genuinely different role's job. petty_cash:read covers viewing the
+  // balance and both entry lists for everyone who touches any of this.
+  {permission: 'petty_cash:read', description: 'View petty cash balance, finance entries, and expense entries'},
+  {permission: 'petty_cash_finance:create', description: "Add a finance top-up to a store's petty cash float"},
+  {permission: 'petty_cash_register:create', description: 'Log a petty cash expense'},
+  {permission: 'petty_cash_register:delete', description: 'Delete a still-pending petty cash expense'},
+  {permission: 'petty_cash_register:update', description: 'Approve (fully or partially) or reject a petty cash expense'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -137,6 +147,10 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'delivery:read', 'delivery:update',
       // Rider Cash Handover: managers can view and confirm receipt too.
       'rider_cash_handover:read', 'rider_cash_handover:update',
+      // Petty Cash: managers log/delete expenses like any counter staff,
+      // plus the approve/reject action — no petty_cash_finance:create,
+      // that's an HQ finance-only lever, not a store manager one.
+      'petty_cash:read', 'petty_cash_register:create', 'petty_cash_register:delete', 'petty_cash_register:update',
       // Coupon: full control — a marketing/ops lever managers own outright,
       // same posture as Pickup/Delivery Slot master.
       'coupon:create', 'coupon:read', 'coupon:update', 'coupon:delete',
@@ -169,6 +183,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // Coupon: read-only — needs to see/validate a coupon a customer
       // presents at the counter, not author one.
       'coupon:read',
+      // Petty Cash: logs and can delete their own pending expenses;
+      // approval and finance top-ups stay out of reach.
+      'petty_cash:read', 'petty_cash_register:create', 'petty_cash_register:delete',
     ],
   },
   {
@@ -179,9 +196,14 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // Coupon: same reason as store_exec — validates a coupon code
       // during order creation, doesn't author coupons.
       'coupon:read',
+      // Petty Cash: same front-desk expense-logging as store_exec.
+      'petty_cash:read', 'petty_cash_register:create', 'petty_cash_register:delete',
     ],
   },
-  {roleValue: 'asm', permissions: ['customer_address:read', 'customer_phone:read', 'coupon:read']},
+  {
+    roleValue: 'asm',
+    permissions: ['customer_address:read', 'customer_phone:read', 'coupon:read', 'petty_cash:read'],
+  },
   {
     roleValue: 'finance',
     permissions: [
@@ -195,6 +217,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'customer_recharge:debit',
       // Correct a payment's recorded mode (e.g. logged as UPI, actually cash).
       'payment:update',
+      // Petty Cash: the one role that funds a store's float — HQ-level,
+      // not a store day-to-day action, same posture as customer_recharge.
+      'petty_cash:read', 'petty_cash_finance:create',
     ],
   },
 ];

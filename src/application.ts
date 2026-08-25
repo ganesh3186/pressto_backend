@@ -33,6 +33,7 @@ import { AuditService } from './services/audit.service';
 import { StoreScopeService } from './services/store-scope.service';
 import { CouponService } from './services/coupon.service';
 import { CustomerPreferenceService } from './services/customer-preference.service';
+import { PettyCashService } from './services/petty-cash.service';
 
 export { ApplicationConfig };
 
@@ -94,6 +95,7 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.store-scope').toClass(StoreScopeService);
     this.bind('services.coupon').toClass(CouponService);
     this.bind('services.customer-preference').toClass(CustomerPreferenceService);
+    this.bind('services.petty-cash').toClass(PettyCashService);
   }
 
   protected configureFileUpload(destination?: string) {
