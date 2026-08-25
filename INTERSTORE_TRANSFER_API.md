@@ -77,7 +77,7 @@ resolve-discrepancy — see §7.
 POST /transfers
 ```
 
-**Body**
+**Body — single bag** (unchanged, still works exactly as before):
 ```json
 {
   "fromStoreId": "uuid",
@@ -89,20 +89,54 @@ POST /transfers
 }
 ```
 
+**Body — multiple bags** (new): send `bags[]` instead of `bagId`, one entry
+per bag with that bag's own `garmentIds`. `garmentIds` at the top level is
+still required — send the flat union of every bag's items.
+```json
+{
+  "fromStoreId": "uuid",
+  "toStoreId": "uuid",
+  "bags": [
+    { "bagId": "uuid-bag-1", "garmentIds": ["uuid", "uuid"] },
+    { "bagId": "uuid-bag-2", "garmentIds": ["uuid", "uuid", "uuid"] }
+  ],
+  "garmentIds": ["uuid", "uuid", "uuid", "uuid", "uuid"],
+  "reason": "optional string",
+  "remarks": "optional string"
+}
+```
+An item may only appear under one bag — `400` if the same `garmentId`
+shows up in more than one bag's `garmentIds`. If both `bagId` and `bags`
+are omitted, `400`.
+
 **Response `200`**
 ```json
 {
   "message": "Transfer created and sent.",
-  "transfer": { "...Transfer row, see §8..." },
-  "items": [ { "...TransferItem row..." } ]
+  "transfer": {
+    "...Transfer row, see §8...",
+    "bagId": "uuid-bag-1",
+    "bags": [
+      { "bagId": "uuid-bag-1", "bagNumber": 1, "itemCount": 2 },
+      { "bagId": "uuid-bag-2", "bagNumber": 2, "itemCount": 3 }
+    ]
+  },
+  "items": [ { "...TransferItem row, now including bagId..." } ]
 }
 ```
+`transfer.bagId` is always the *first* bag — kept so anything reading the
+old single-bag field still works. `transfer.bags` is the real breakdown;
+use it for anything bag-count-aware (chips, "N bags" labels, per-bag item
+lists).
 
 Atomic — there is no draft state. One call scans-and-sends: server
 generates `transitId` (`TR-{fromCode}-{toCode}-{ddMM}-{seq}`) and
-`transferOrderNumber` (`TO-{yyyyMM}-{00001}`), creates the manifest, writes
-3 opening custody events (`bag_scanned`, `items_mapped`, `sent_out`), and
-locks the bag (`in_use` or `full` if `garmentIds.length >= maxCapacity`).
+`transferOrderNumber` (`TO-{yyyyMM}-{00001}`), creates the manifest (each
+`TransferItem` tagged with which bag it's in), writes one `bag_scanned`
+custody event **per bag** plus one `items_mapped` and one `sent_out` for
+the whole transfer, and locks every bag involved (`in_use` or `full` if
+that bag's own item count `>= maxCapacity`) — each bag's capacity is
+checked independently.
 
 **Error cases to handle in the UI:**
 | Status | Cause | Suggested UI |
@@ -111,7 +145,8 @@ locks the bag (`in_use` or `full` if `garmentIds.length >= maxCapacity`).
 | `404` | store or garment not found | shouldn't happen from a proper picker, but handle |
 | `400` | bag inactive | "This bag is inactive" |
 | `409` | bag already `in_use`/`full` | disable the bag in the picker (see §2), show conflict toast if a race occurs |
-| `400` | `garmentIds.length > bag.maxCapacity` | client should already cap this before submit |
+| `400` | a bag's `garmentIds.length > bag.maxCapacity` | client should already cap this per bag before submit |
+| `400` | same garment assigned to two bags | "An item cannot be assigned to more than one bag" |
 | `409` | garment already in an active transfer | "Already in an active transfer: GT0001, GT0002" — dedupe scan input against this |
 
 ---
@@ -149,11 +184,16 @@ POST /transfers/{id}/receive
 ```
 
 - Clean receive (`missing === 0 && extra === 0`) → `status: received`,
-  bag is released back to `available` immediately.
-- Anything missing or extra → `status: discrepancy`, **bag stays locked**
-  until a manager resolves it (§6). Show this clearly — the frontend's
-  "Assign driver"/bag-reuse flow should treat a `discrepancy` transfer's bag
-  as unavailable, same as the backend does.
+  every bag this transfer used (one or many) is released back to
+  `available` immediately.
+- Anything missing or extra → `status: discrepancy`, **all of this
+  transfer's bags stay locked** until a manager resolves it (§6). Show this
+  clearly — the frontend's "Assign driver"/bag-reuse flow should treat a
+  `discrepancy` transfer's bags as unavailable, same as the backend does.
+
+Receipt is still all-or-nothing for the whole manifest regardless of which
+bag each item came from — there's no per-bag receive step; scan everything
+in, across every bag, then confirm once.
 
 Only callable while `status === sent`; only by someone scoped to the
 `toStoreId`. `400` if already received/discrepancy/resolved.
@@ -280,6 +320,9 @@ GET /transfers/{id}
     "fromStoreId": "uuid", "fromStoreName": "Babulnath", "fromStoreCode": "ST113",
     "toStoreId": "uuid",   "toStoreName": "Bandra",     "toStoreCode": "ST002",
     "bagId": "uuid", "bagNumber": 1,
+    "bags": [
+      { "bagId": "uuid", "bagNumber": 1, "itemCount": 2 }
+    ],
     "reason": null, "remarks": null,
     "sentAt": "2026-08-10T10:00:00.000Z", "sentBy": "uuid",
     "receivedAt": null, "receivedBy": null,
@@ -293,12 +336,13 @@ GET /transfers/{id}
       "id": "uuid", "transferId": "uuid", "garmentId": "uuid",
       "garmentTagNumber": "GT00000033", "orderId": "uuid",
       "orderNumber": "ORD000123",
+      "bagId": "uuid",
       "scanStatus": "scanned",
       "createdAt": "...", "updatedAt": "..."
     }
   ],
   "custodyEvents": [
-    { "id": "uuid", "transferId": "uuid", "eventType": "bag_scanned", "performedBy": "uuid", "performedAt": "..." },
+    { "id": "uuid", "transferId": "uuid", "eventType": "bag_scanned", "bagId": "uuid", "performedBy": "uuid", "performedAt": "..." },
     { "id": "uuid", "transferId": "uuid", "eventType": "items_mapped", "performedBy": "uuid", "performedAt": "..." },
     { "id": "uuid", "transferId": "uuid", "eventType": "sent_out", "performedBy": "uuid", "performedAt": "..." }
   ],
@@ -394,10 +438,15 @@ All params optional; combine freely.
 
 **Response `200`**
 ```json
-{ "events": [ { "...TransferCustodyEvent row..." } ] }
+{ "events": [ { "...TransferCustodyEvent row...", "bagId": "uuid", "bagNumber": 2 } ] }
 ```
 Ordered `performedAt DESC` (newest first — this is a trail/report view,
 unlike the ascending order in the Detail endpoint's `custodyEvents`).
+`bagId`/`bagNumber` are only set on the two bag-level event types
+(`bag_scanned`, `bag_released`) — on a multi-bag transfer there's one of
+each per bag. Every other event type (`items_mapped`/`sent_out`/
+`received`/`discrepancy`/`discrepancy_resolved`) is whole-transfer and has
+neither.
 
 ---
 

@@ -2,7 +2,11 @@ import {Entity, model, property} from '@loopback/repository';
 import {TransferStatus} from './transfer-status.enum';
 
 /**
- * Header record for one bag's worth of garments sent between stores.
+ * Header record for one or more bags' worth of garments sent between
+ * stores. bagId here is always the first/primary bag (kept for back-compat
+ * display and as the common single-bag case) — the authoritative per-bag
+ * breakdown is TransferItem.bagId, grouped at read time (see
+ * TransferController.enrichTransfers).
  * Atomic create-and-send: there is no draft state — a Transfer is always
  * created already SENT, matching the frontend's single "Create transfer"
  * action (scan bag, scan items, done). From there, rider assignment is

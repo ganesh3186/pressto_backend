@@ -44,6 +44,13 @@ export class TransferItem extends Entity {
   @property({type: 'string', required: true, postgresql: {dataType: 'uuid'}})
   orderId: string;
 
+  // Which bag (of the transfer's possibly several) this garment was packed
+  // into. Optional — unset on rows written before multi-bag transfers
+  // existed, which should fall back to the parent Transfer's own bagId
+  // (see TransferController.enrichTransfers).
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  bagId?: string;
+
   @property({
     type: 'string',
     default: TransferItemScanStatus.SCANNED,

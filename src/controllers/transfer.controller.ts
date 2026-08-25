@@ -154,28 +154,61 @@ export class TransferController {
     }
   }
 
-  /** Batch-resolve store names/codes + bag number for list/detail display. */
+  /**
+   * Batch-resolve store names/codes + the per-bag breakdown for list/detail
+   * display. Bag breakdown comes from TransferItem.bagId, grouped per
+   * transfer — items written before multi-bag transfers existed have no
+   * bagId, so those fall back to the parent Transfer's own singular bagId,
+   * resolving to exactly the one bag they always had.
+   */
   private async enrichTransfers(transfers: Transfer[]): Promise<object[]> {
     if (!transfers.length) return [];
     const storeIds = [...new Set(transfers.flatMap(t => [t.fromStoreId, t.toStoreId]))];
-    const bagIds = [...new Set(transfers.map(t => t.bagId))];
-    const [stores, bags] = await Promise.all([
+    const transferById = new Map(transfers.map(t => [t.id, t]));
+
+    const [stores, items] = await Promise.all([
       this.storeRepo.find({where: {id: {inq: storeIds}} as object}),
-      this.bagRepo.find({where: {id: {inq: bagIds}} as object}),
+      this.transferItemRepo.find({
+        where: {transferId: {inq: transfers.map(t => t.id)}} as object,
+        fields: {transferId: true, bagId: true} as object,
+      }),
     ]);
     const storeById = new Map(stores.map(s => [s.id, s]));
+
+    const bagCountByTransfer = new Map<string, Map<string, number>>();
+    for (const item of items) {
+      const bagId = item.bagId ?? transferById.get(item.transferId)?.bagId;
+      if (!bagId) continue;
+      const perTransfer = bagCountByTransfer.get(item.transferId) ?? new Map<string, number>();
+      perTransfer.set(bagId, (perTransfer.get(bagId) ?? 0) + 1);
+      bagCountByTransfer.set(item.transferId, perTransfer);
+    }
+
+    const allBagIds = [...new Set([...bagCountByTransfer.values()].flatMap(m => [...m.keys()]))];
+    const bags = allBagIds.length
+      ? await this.bagRepo.find({where: {id: {inq: allBagIds}} as object})
+      : [];
     const bagById = new Map(bags.map(b => [b.id, b]));
 
     return transfers.map(t => {
       const fromStoreName = storeById.get(t.fromStoreId)?.name ?? null;
       const toStoreName = storeById.get(t.toStoreId)?.name ?? null;
+      const bagCounts = bagCountByTransfer.get(t.id);
+      const transferBags = bagCounts
+        ? [...bagCounts.entries()].map(([bagId, itemCount]) => ({
+            bagId,
+            bagNumber: bagById.get(bagId)?.bagNumber ?? null,
+            itemCount,
+          }))
+        : [];
       return {
         ...t,
         fromStoreName,
         fromStoreCode: storeById.get(t.fromStoreId)?.code ?? null,
         toStoreName,
         toStoreCode: storeById.get(t.toStoreId)?.code ?? null,
-        bagNumber: bagById.get(t.bagId)?.bagNumber ?? null,
+        bagNumber: transferBags[0]?.bagNumber ?? null,
+        bags: transferBags,
         currentLocationLabel: this.buildLocationLabel(t, fromStoreName, toStoreName),
       };
     });
@@ -185,9 +218,10 @@ export class TransferController {
    * Shared transaction body for both a fresh outbound transfer (create())
    * and a return-batch (returnBatch()) — same mechanics either way: mint a
    * transitId/transferOrderNumber, create the Transfer header + one
-   * TransferItem per garment + the 3 opening custody events, lock the bag.
-   * Callers own their own pre-checks (store validity, bag availability,
-   * which garments are eligible) since those differ between the two flows.
+   * TransferItem per garment (tagged with which bag it's in) + the opening
+   * custody events, lock every bag involved. Callers own their own
+   * pre-checks (store validity, bag availability, which garments are
+   * eligible) since those differ between the two flows.
    */
   private async _createAndSendTransfer(params: {
     currentUser: UserProfile;
@@ -195,14 +229,16 @@ export class TransferController {
     toStoreId: string;
     fromStoreCode: string;
     toStoreCode: string;
-    bagId: string;
-    bagMaxCapacity: number;
+    bags: {bagId: string; garmentIds: string[]; maxCapacity: number}[];
     garments: {id: string; garmentTagNumber: string; orderItemId: string}[];
     reason?: string;
     remarks?: string;
     returnOfTransferId?: string;
   }): Promise<{transfer: Transfer; items: object[]}> {
-    const {currentUser, fromStoreId, toStoreId, bagId, garments} = params;
+    const {currentUser, fromStoreId, toStoreId, bags, garments} = params;
+
+    const bagIdByGarmentId = new Map<string, string>();
+    for (const bag of bags) for (const gid of bag.garmentIds) bagIdByGarmentId.set(gid, bag.bagId);
 
     // Batch-resolve each garment's orderId via its orderItem — one inq, not N+1.
     const orderItemIds = [...new Set(garments.map(g => g.orderItemId))];
@@ -228,7 +264,9 @@ export class TransferController {
           status: TransferStatus.SENT,
           fromStoreId,
           toStoreId,
-          bagId,
+          // First/primary bag — kept for back-compat single-bag display.
+          // The real per-bag breakdown is TransferItem.bagId (see bags[]).
+          bagId: bags[0].bagId,
           reason: params.reason,
           remarks: params.remarks,
           sentAt: now,
@@ -249,6 +287,7 @@ export class TransferController {
               garmentId: garment.id,
               garmentTagNumber: garment.garmentTagNumber,
               orderId: orderIdByOrderItemId.get(garment.orderItemId) ?? '',
+              bagId: bagIdByGarmentId.get(garment.id),
               scanStatus: TransferItemScanStatus.SCANNED,
             },
             {transaction: tx},
@@ -256,27 +295,41 @@ export class TransferController {
         );
       }
 
-      for (const eventType of [
-        TransferCustodyEventType.BAG_SCANNED,
-        TransferCustodyEventType.ITEMS_MAPPED,
-        TransferCustodyEventType.SENT_OUT,
-      ]) {
+      // One BAG_SCANNED event per bag (each bag really was scanned
+      // separately) — ITEMS_MAPPED/SENT_OUT stay whole-transfer events,
+      // no bagId, same as before multi-bag existed.
+      for (const bag of bags) {
+        await this.custodyEventRepo.create(
+          {
+            id: v4(),
+            transferId: transfer.id,
+            eventType: TransferCustodyEventType.BAG_SCANNED,
+            bagId: bag.bagId,
+            performedBy: currentUser[securityId],
+          },
+          {transaction: tx},
+        );
+      }
+      for (const eventType of [TransferCustodyEventType.ITEMS_MAPPED, TransferCustodyEventType.SENT_OUT]) {
         await this.custodyEventRepo.create(
           {id: v4(), transferId: transfer.id, eventType, performedBy: currentUser[securityId]},
           {transaction: tx},
         );
       }
 
-      await this.bagRepo.updateById(
-        bagId,
-        {
-          status: garments.length >= params.bagMaxCapacity ? BagStatus.FULL : BagStatus.IN_USE,
-          itemCount: garments.length,
-          currentTransferId: transfer.id,
-          currentStoreId: fromStoreId,
-        },
-        {transaction: tx},
-      );
+      for (const bag of bags) {
+        const bagItemCount = bag.garmentIds.length;
+        await this.bagRepo.updateById(
+          bag.bagId,
+          {
+            status: bagItemCount >= bag.maxCapacity ? BagStatus.FULL : BagStatus.IN_USE,
+            itemCount: bagItemCount,
+            currentTransferId: transfer.id,
+            currentStoreId: fromStoreId,
+          },
+          {transaction: tx},
+        );
+      }
 
       await tx.commit();
       return {transfer, items};
@@ -408,13 +461,30 @@ export class TransferController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['fromStoreId', 'toStoreId', 'bagId', 'garmentIds'],
+            required: ['fromStoreId', 'toStoreId', 'garmentIds'],
             properties: {
               fromStoreId: {type: 'string', format: 'uuid'},
               toStoreId: {type: 'string', format: 'uuid'},
+              // Single-bag shape (still supported): send bagId instead of
+              // bags. Multi-bag shape: send bags[], each with its own
+              // garmentIds — bagId is then omitted.
               bagId: {type: 'string', format: 'uuid'},
+              bags: {
+                type: 'array',
+                minItems: 1,
+                items: {
+                  type: 'object',
+                  required: ['bagId', 'garmentIds'],
+                  properties: {
+                    bagId: {type: 'string', format: 'uuid'},
+                    garmentIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
+                  },
+                },
+              },
               reason: {type: 'string'},
               remarks: {type: 'string'},
+              // Flat union of every bag's garmentIds — still required so a
+              // single-bag caller's existing payload keeps working as-is.
               garmentIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
             },
           },
@@ -424,7 +494,8 @@ export class TransferController {
     body: {
       fromStoreId: string;
       toStoreId: string;
-      bagId: string;
+      bagId?: string;
+      bags?: {bagId: string; garmentIds: string[]}[];
       reason?: string;
       remarks?: string;
       garmentIds: string[];
@@ -440,12 +511,31 @@ export class TransferController {
     if (!fromStore) throw new HttpErrors.NotFound('From store not found.');
     if (!toStore) throw new HttpErrors.NotFound('To store not found.');
 
-    const bag = await this.assertBagAvailable(body.bagId);
-    const garmentIds = [...new Set(body.garmentIds)];
-    if (garmentIds.length > (bag.maxCapacity ?? 25)) {
-      throw new HttpErrors.BadRequest(`This bag holds at most ${bag.maxCapacity} items.`);
+    // Normalize to one shape regardless of which the caller sent.
+    const bagInputs: {bagId: string; garmentIds: string[]}[] =
+      body.bags?.length ? body.bags : body.bagId ? [{bagId: body.bagId, garmentIds: body.garmentIds}] : [];
+    if (!bagInputs.length) throw new HttpErrors.BadRequest('bagId or bags is required.');
+
+    const seenGarmentIds = new Set<string>();
+    const bags: {bagId: string; garmentIds: string[]; maxCapacity: number}[] = [];
+    const bagNumberById = new Map<string, number>();
+    for (const input of bagInputs) {
+      const garmentIds = [...new Set(input.garmentIds)];
+      for (const gid of garmentIds) {
+        if (seenGarmentIds.has(gid)) {
+          throw new HttpErrors.BadRequest('An item cannot be assigned to more than one bag.');
+        }
+        seenGarmentIds.add(gid);
+      }
+      const bag = await this.assertBagAvailable(input.bagId);
+      if (garmentIds.length > (bag.maxCapacity ?? 25)) {
+        throw new HttpErrors.BadRequest(`Bag ${bag.bagNumber} holds at most ${bag.maxCapacity} items.`);
+      }
+      bagNumberById.set(input.bagId, bag.bagNumber);
+      bags.push({bagId: input.bagId, garmentIds, maxCapacity: bag.maxCapacity ?? 25});
     }
-    const garments = await this.assertGarmentsTransferable(garmentIds);
+
+    const garments = await this.assertGarmentsTransferable([...seenGarmentIds]);
 
     const {transfer, items} = await this._createAndSendTransfer({
       currentUser,
@@ -453,13 +543,21 @@ export class TransferController {
       toStoreId: body.toStoreId,
       fromStoreCode: fromStore.code,
       toStoreCode: toStore.code,
-      bagId: body.bagId,
-      bagMaxCapacity: bag.maxCapacity ?? 25,
+      bags,
       garments,
       reason: body.reason,
       remarks: body.remarks,
     });
-    return {message: 'Transfer created and sent.', transfer, items};
+    const responseBags = bags.map(b => ({
+      bagId: b.bagId,
+      bagNumber: bagNumberById.get(b.bagId) ?? null,
+      itemCount: b.garmentIds.length,
+    }));
+    return {
+      message: 'Transfer created and sent.',
+      transfer: {...transfer, bags: responseBags},
+      items,
+    };
   }
 
   // ─── Assign Rider ───────────────────────────────────────────────────────────
@@ -689,14 +787,17 @@ export class TransferController {
       toStoreId: original.fromStoreId,
       fromStoreCode: fromStore.code,
       toStoreCode: toStore.code,
-      bagId: body.bagId,
-      bagMaxCapacity: bag.maxCapacity ?? 25,
+      bags: [{bagId: body.bagId, garmentIds, maxCapacity: bag.maxCapacity ?? 25}],
       garments,
       reason: body.reason,
       remarks: body.remarks,
       returnOfTransferId: id,
     });
-    return {message: 'Return batch created and sent.', transfer, items};
+    return {
+      message: 'Return batch created and sent.',
+      transfer: {...transfer, bags: [{bagId: body.bagId, bagNumber: bag.bagNumber, itemCount: garmentIds.length}]},
+      items,
+    };
   }
 
   // ─── List ─────────────────────────────────────────────────────────────────
@@ -988,25 +1089,31 @@ export class TransferController {
       );
 
       if (isClean) {
-        await this.bagRepo.updateById(
-          transfer.bagId,
-          {
-            status: BagStatus.AVAILABLE,
-            itemCount: 0,
-            currentTransferId: null as unknown as string,
-            currentStoreId: transfer.toStoreId,
-          },
-          {transaction: tx},
-        );
-        await this.custodyEventRepo.create(
-          {
-            id: v4(),
-            transferId: id,
-            eventType: TransferCustodyEventType.BAG_RELEASED,
-            performedBy: currentUser[securityId],
-          },
-          {transaction: tx},
-        );
+        // Release every bag this transfer actually used, not just the
+        // primary bagId — a multi-bag transfer locks one Bag row per bag.
+        const bagIds = [...new Set(items.map(item => item.bagId ?? transfer.bagId))];
+        for (const bagId of bagIds) {
+          await this.bagRepo.updateById(
+            bagId,
+            {
+              status: BagStatus.AVAILABLE,
+              itemCount: 0,
+              currentTransferId: null as unknown as string,
+              currentStoreId: transfer.toStoreId,
+            },
+            {transaction: tx},
+          );
+          await this.custodyEventRepo.create(
+            {
+              id: v4(),
+              transferId: id,
+              eventType: TransferCustodyEventType.BAG_RELEASED,
+              bagId,
+              performedBy: currentUser[securityId],
+            },
+            {transaction: tx},
+          );
+        }
       }
 
       await tx.commit();
@@ -1149,25 +1256,31 @@ export class TransferController {
         {transaction: tx},
       );
 
-      await this.bagRepo.updateById(
-        transfer.bagId,
-        {
-          status: BagStatus.AVAILABLE,
-          itemCount: 0,
-          currentTransferId: null as unknown as string,
-          currentStoreId: transfer.toStoreId,
-        },
-        {transaction: tx},
-      );
-      await this.custodyEventRepo.create(
-        {
-          id: v4(),
-          transferId: id,
-          eventType: TransferCustodyEventType.BAG_RELEASED,
-          performedBy: currentUser[securityId],
-        },
-        {transaction: tx},
-      );
+      // Release every bag this transfer actually used, not just the
+      // primary bagId — a multi-bag transfer locks one Bag row per bag.
+      const bagIds = [...new Set(items.map(item => item.bagId ?? transfer.bagId))];
+      for (const bagId of bagIds) {
+        await this.bagRepo.updateById(
+          bagId,
+          {
+            status: BagStatus.AVAILABLE,
+            itemCount: 0,
+            currentTransferId: null as unknown as string,
+            currentStoreId: transfer.toStoreId,
+          },
+          {transaction: tx},
+        );
+        await this.custodyEventRepo.create(
+          {
+            id: v4(),
+            transferId: id,
+            eventType: TransferCustodyEventType.BAG_RELEASED,
+            bagId,
+            performedBy: currentUser[securityId],
+          },
+          {transaction: tx},
+        );
+      }
 
       await tx.commit();
       return {
@@ -1196,8 +1309,11 @@ export class TransferController {
     if (!item) return {tracked: false};
 
     const transfer = await this.transferRepo.findById(item.transferId);
+    // This item's own bag — on a multi-bag transfer that isn't necessarily
+    // transfer.bagId (the primary/first bag), which only holds for
+    // pre-multi-bag rows with no bagId of their own.
     const [bag, fromStore, toStore, order] = await Promise.all([
-      this.bagRepo.findOne({where: {id: transfer.bagId}}),
+      this.bagRepo.findOne({where: {id: item.bagId ?? transfer.bagId}}),
       this.storeRepo.findOne({where: {id: transfer.fromStoreId}}),
       this.storeRepo.findOne({where: {id: transfer.toStoreId}}),
       this.orderRepo.findOne({where: {id: item.orderId}}),
@@ -1287,7 +1403,7 @@ export class TransferController {
     // display values (transitId, performer name) the same way
     // enrichTransfers() already does for list/detail, rather than making
     // the admin panel show raw ids.
-    const [transfers, users] = await Promise.all([
+    const [transfers, users, bags] = await Promise.all([
       this.transferRepo.find({
         where: {id: {inq: [...new Set(events.map(e => e.transferId))]}} as object,
         fields: {id: true, transitId: true} as object,
@@ -1296,15 +1412,21 @@ export class TransferController {
         where: {id: {inq: [...new Set(events.map(e => e.performedBy).filter(Boolean))]}} as object,
         fields: {id: true, fullName: true} as object,
       }),
+      this.bagRepo.find({
+        where: {id: {inq: [...new Set(events.map(e => e.bagId).filter(Boolean))]}} as object,
+        fields: {id: true, bagNumber: true} as object,
+      }),
     ]);
     const transitIdByTransferId = new Map(transfers.map(t => [t.id, t.transitId]));
     const nameByUserId = new Map(users.map(u => [u.id, u.fullName]));
+    const bagNumberByBagId = new Map(bags.map(b => [b.id, b.bagNumber]));
 
     return {
       events: events.map(e => ({
         ...e,
         transitId: transitIdByTransferId.get(e.transferId) ?? null,
         performedByName: nameByUserId.get(e.performedBy) ?? null,
+        bagNumber: e.bagId ? bagNumberByBagId.get(e.bagId) ?? null : null,
       })),
     };
   }

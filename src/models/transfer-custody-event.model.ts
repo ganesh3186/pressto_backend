@@ -19,6 +19,13 @@ export class TransferCustodyEvent extends Entity {
   @property({type: 'string'})
   garmentTagNumber?: string;
 
+  // Set only for bag-level events (BAG_SCANNED, BAG_RELEASED) on a
+  // multi-bag transfer — which specific bag this event is about. Left
+  // unset on whole-transfer events (ITEMS_MAPPED, SENT_OUT, RECEIVED,
+  // DISCREPANCY, DISCREPANCY_RESOLVED).
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  bagId?: string;
+
   // TransferCustodyEventType, stored as a plain string like
   // ApprovalAuditLog.eventType does.
   @property({type: 'string', required: true})
