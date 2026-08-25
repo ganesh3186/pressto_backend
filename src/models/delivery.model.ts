@@ -2,12 +2,16 @@ import {Entity, model, property} from '@loopback/repository';
 import {DeliveryStatus} from './delivery-status.enum';
 
 /**
- * Header record for one rider's bagged run of customer deliveries —
- * created only when POST /orders/delivery-assignment is called WITH a
- * bagId (Dispatch's flow). Omitting bagId there (Manual Assign's flow)
- * still assigns the rider on each Order directly, but creates no Delivery
- * — same "not every caller needs the richer model" reasoning already
- * applied elsewhere in this codebase.
+ * Header record for one rider's run of customer deliveries — created on
+ * every POST /orders/delivery-assignment call, from any caller (Dispatch,
+ * Manual Assign). This is what the rider app actually reads
+ * (GET /rider/deliveries queries this table by riderId, never
+ * Order.assignedRiderId directly), so it always has to exist for an
+ * assignment to be visible to the rider at all.
+ *
+ * bagId is optional — set only when the assignment happened to include a
+ * custody bag (adds bag-locking on top); its absence no longer means "no
+ * Delivery was created" the way it used to.
  *
  * storeId/riderId/bagId are plain uuid properties, not @belongsTo — same
  * convention as Transfer's fromStoreId/toStoreId/bagId (batch-resolve
@@ -50,8 +54,8 @@ export class Delivery extends Entity {
   @property({type: 'string', required: true})
   riderName: string;
 
-  @property({type: 'string', required: true, postgresql: {dataType: 'uuid'}})
-  bagId: string;
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  bagId?: string;
 
   @property({type: 'string'})
   deliverySlot?: string;

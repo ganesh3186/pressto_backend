@@ -430,15 +430,17 @@ export class RiderDeliveryController {
           {status: DeliveryStatus.COMPLETED, completedAt: new Date(), completedBy: currentUser[securityId]},
           {transaction: tx},
         );
-        await this.bagRepository.updateById(
-          delivery.bagId,
-          {status: BagStatus.AVAILABLE, currentDeliveryId: null as unknown as string},
-          {transaction: tx},
-        );
-        await this.custodyEventRepository.create(
-          {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.BAG_RELEASED, performedBy: currentUser[securityId]},
-          {transaction: tx},
-        );
+        if (delivery.bagId) {
+          await this.bagRepository.updateById(
+            delivery.bagId,
+            {status: BagStatus.AVAILABLE, currentDeliveryId: null as unknown as string},
+            {transaction: tx},
+          );
+          await this.custodyEventRepository.create(
+            {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.BAG_RELEASED, performedBy: currentUser[securityId]},
+            {transaction: tx},
+          );
+        }
         await this.custodyEventRepository.create(
           {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.COMPLETED, performedBy: currentUser[securityId]},
           {transaction: tx},
@@ -543,15 +545,17 @@ export class RiderDeliveryController {
           {status: DeliveryStatus.COMPLETED, completedAt: new Date(), completedBy: currentUser[securityId]},
           {transaction: tx},
         );
-        await this.bagRepository.updateById(
-          delivery.bagId,
-          {status: BagStatus.AVAILABLE, currentDeliveryId: null as unknown as string},
-          {transaction: tx},
-        );
-        await this.custodyEventRepository.create(
-          {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.BAG_RELEASED, performedBy: currentUser[securityId]},
-          {transaction: tx},
-        );
+        if (delivery.bagId) {
+          await this.bagRepository.updateById(
+            delivery.bagId,
+            {status: BagStatus.AVAILABLE, currentDeliveryId: null as unknown as string},
+            {transaction: tx},
+          );
+          await this.custodyEventRepository.create(
+            {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.BAG_RELEASED, performedBy: currentUser[securityId]},
+            {transaction: tx},
+          );
+        }
         await this.custodyEventRepository.create(
           {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.COMPLETED, performedBy: currentUser[securityId]},
           {transaction: tx},

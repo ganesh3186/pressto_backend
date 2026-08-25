@@ -40,7 +40,7 @@ export class DeliveryController {
   private async enrichDeliveries(deliveries: Delivery[]): Promise<object[]> {
     if (!deliveries.length) return [];
     const storeIds = [...new Set(deliveries.map(d => d.storeId))];
-    const bagIds = [...new Set(deliveries.map(d => d.bagId))];
+    const bagIds = [...new Set(deliveries.map(d => d.bagId).filter(Boolean))] as string[];
     const [stores, bags] = await Promise.all([
       this.storeRepo.find({where: {id: {inq: storeIds}} as object}),
       this.bagRepo.find({where: {id: {inq: bagIds}} as object}),
@@ -52,7 +52,7 @@ export class DeliveryController {
       ...d,
       storeName: storeById.get(d.storeId)?.name ?? null,
       storeCode: storeById.get(d.storeId)?.code ?? null,
-      bagNumber: bagById.get(d.bagId)?.bagNumber ?? null,
+      bagNumber: (d.bagId ? bagById.get(d.bagId)?.bagNumber : null) ?? null,
     }));
   }
 
@@ -212,10 +212,12 @@ export class DeliveryController {
       cancelledBy: currentUser[securityId],
     });
 
-    await this.bagRepo.updateById(delivery.bagId, {
-      status: BagStatus.AVAILABLE,
-      currentDeliveryId: null as unknown as string,
-    });
+    if (delivery.bagId) {
+      await this.bagRepo.updateById(delivery.bagId, {
+        status: BagStatus.AVAILABLE,
+        currentDeliveryId: null as unknown as string,
+      });
+    }
 
     await this.custodyEventRepo.create({
       id: v4(),
@@ -224,6 +226,6 @@ export class DeliveryController {
       performedBy: currentUser[securityId],
     });
 
-    return {message: 'Delivery cancelled. Bag released.'};
+    return {message: delivery.bagId ? 'Delivery cancelled. Bag released.' : 'Delivery cancelled.'};
   }
 }

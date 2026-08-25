@@ -542,65 +542,69 @@ export class OrderController {
         );
       }
 
-      let delivery = null;
-      if (bag) {
-        const store = await this.storeRepository.findOne({where: {id: orders[0].storeId}});
-        const customers = await this.customerRepository.find({
-          where: {id: {inq: [...new Set(orders.map(o => o.customerId))]}} as object,
-        });
-        const customerById = new Map(customers.map(c => [c.id, c]));
+      // A Delivery (the rider-app-visible run) is created on every
+      // assignment, not just when a bag is supplied — the rider app reads
+      // from this table, not Order.assignedRiderId directly, so without it
+      // the rider would never see the delivery at all. bagId only adds
+      // custody-bag tracking on top when one happens to be given.
+      const store = await this.storeRepository.findOne({where: {id: orders[0].storeId}});
+      const customers = await this.customerRepository.find({
+        where: {id: {inq: [...new Set(orders.map(o => o.customerId))]}} as object,
+      });
+      const customerById = new Map(customers.map(c => [c.id, c]));
 
-        const now = new Date();
-        const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
-        const seq = (await this.deliveryRepository.count()).count + 1;
-        const deliveryNumber = `DL-${store?.code ?? 'ST'}-${ddMM}-${seq}`;
+      const now = new Date();
+      const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const seq = (await this.deliveryRepository.count()).count + 1;
+      const deliveryNumber = `DL-${store?.code ?? 'ST'}-${ddMM}-${seq}`;
 
-        delivery = await this.deliveryRepository.create(
-          {
-            id: v4(),
-            deliveryNumber,
-            status: DeliveryStatus.ASSIGNED,
-            storeId: orders[0].storeId,
-            riderId: body.riderId,
-            riderName: assignedRiderName,
-            bagId: bag.id,
-            deliverySlot,
-            deliverySlotId: body.deliverySlotId,
-            deliveryDate,
-            orderCount: orders.length,
-            assignedAt: now,
-            assignedBy: currentUser[securityId],
-            remarks: body.remarks,
-          },
-          {transaction: tx},
-        );
+      const delivery = await this.deliveryRepository.create(
+        {
+          id: v4(),
+          deliveryNumber,
+          status: DeliveryStatus.ASSIGNED,
+          storeId: orders[0].storeId,
+          riderId: body.riderId,
+          riderName: assignedRiderName,
+          ...(bag ? {bagId: bag.id} : {}),
+          deliverySlot,
+          deliverySlotId: body.deliverySlotId,
+          deliveryDate,
+          orderCount: orders.length,
+          assignedAt: now,
+          assignedBy: currentUser[securityId],
+          remarks: body.remarks,
+        },
+        {transaction: tx},
+      );
 
-        for (const order of orders) {
-          const customer = customerById.get(order.customerId);
-          const {due} = await this.orderService.computeBalanceDue(order);
-          await this.deliveryOrderRepository.create(
-            {
-              id: v4(),
-              deliveryId: delivery.id,
-              orderId: order.id,
-              orderNumber: order.orderNumber,
-              customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
-              balanceDueAtAssignment: due,
-            },
-            {transaction: tx},
-          );
-        }
-
-        await this.deliveryCustodyEventRepository.create(
+      for (const order of orders) {
+        const customer = customerById.get(order.customerId);
+        const {due} = await this.orderService.computeBalanceDue(order);
+        await this.deliveryOrderRepository.create(
           {
             id: v4(),
             deliveryId: delivery.id,
-            eventType: DeliveryCustodyEventType.ASSIGNED,
-            performedBy: currentUser[securityId],
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
+            balanceDueAtAssignment: due,
           },
           {transaction: tx},
         );
+      }
 
+      await this.deliveryCustodyEventRepository.create(
+        {
+          id: v4(),
+          deliveryId: delivery.id,
+          eventType: DeliveryCustodyEventType.ASSIGNED,
+          performedBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
+
+      if (bag) {
         // Bag capacity here is "one bag, one rider run" — unlike Transfer,
         // where maxCapacity gates individual garments, a delivery bag just
         // needs to be locked to this run; no per-garment count exists at
@@ -617,7 +621,7 @@ export class OrderController {
       return {
         message: 'Orders assigned for delivery.',
         assignedCount: orders.length,
-        ...(delivery ? {delivery} : {}),
+        delivery,
       };
     } catch (error) {
       await tx.rollback();
