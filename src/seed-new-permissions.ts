@@ -111,6 +111,16 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'petty_cash_register:create', description: 'Log a petty cash expense'},
   {permission: 'petty_cash_register:delete', description: 'Delete a still-pending petty cash expense'},
   {permission: 'petty_cash_register:update', description: 'Approve (fully or partially) or reject a petty cash expense'},
+  // Rider (see RiderController) — already in seed.ts's original PERMISSIONS
+  // list, added here too so a live database that only ever ran this
+  // incremental seed (never a full `npm run seed`) still has them. No
+  // ROLE_GRANTS entry: rider.controller.ts gates every action to
+  // roles: ['super_admin'], which needs nothing here — it bypasses every
+  // permission check.
+  {permission: 'rider:create', description: 'Create a rider'},
+  {permission: 'rider:read',   description: 'View riders'},
+  {permission: 'rider:update', description: 'Update a rider'},
+  {permission: 'rider:delete', description: 'Delete a rider'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
