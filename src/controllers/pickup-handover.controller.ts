@@ -10,6 +10,7 @@ import {PickupHandoverTargetType} from '../models/pickup-handover-target-type.en
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {
   BagRepository,
+  MediaRepository,
   PickupHandoverItemRepository,
   PickupHandoverRepository,
   PickupRequestRepository,
@@ -29,6 +30,7 @@ export class PickupHandoverController {
     @repository(PickupHandoverItemRepository) private handoverItemRepo: PickupHandoverItemRepository,
     @repository(PickupRequestRepository) private pickupRequestRepo: PickupRequestRepository,
     @repository(BagRepository) private bagRepo: BagRepository,
+    @repository(MediaRepository) private mediaRepo: MediaRepository,
   ) {}
 
   // Batch-attaches each item's PickupRequest detail — bag number, real
@@ -45,6 +47,22 @@ export class PickupHandoverController {
     const bags = bagIds.length ? await this.bagRepo.find({where: {id: {inq: bagIds}} as object}) : [];
     const bagNumberById = new Map(bags.map(b => [b.id, b.bagNumber]));
 
+    // Batch-resolve every mediaId referenced anywhere (top-level special-
+    // instruction photos + each actualItemsByService line's photos) to its
+    // fileUrl in one query — same convention as
+    // GarmentController._attachMediaUrls, since image records/JSON blobs
+    // only ever store the bare mediaId.
+    const allMediaIds = new Set<string>();
+    for (const pickup of pickups) {
+      (pickup.mediaIds ?? []).forEach(id => id && allMediaIds.add(id));
+      (pickup.actualItemsByService ?? []).forEach(line => (line.mediaIds ?? []).forEach(id => id && allMediaIds.add(id)));
+    }
+    const mediaRecords = allMediaIds.size
+      ? await this.mediaRepo.find({where: {id: {inq: [...allMediaIds]}} as object})
+      : [];
+    const mediaUrlById = new Map(mediaRecords.map(m => [m.id, m.fileUrl]));
+    const toUrls = (ids?: string[]) => (ids ?? []).map(id => mediaUrlById.get(id)).filter((url): url is string => Boolean(url));
+
     return items.map(item => {
       const pickup = pickupById.get(item.pickupRequestId);
       return {
@@ -53,9 +71,13 @@ export class PickupHandoverController {
         bagNumber: pickup?.bagId ? bagNumberById.get(pickup.bagId) ?? null : null,
         itemCountEstimate: pickup?.itemCountEstimate ?? null,
         itemCategoryEstimate: pickup?.itemCategoryEstimate ?? null,
-        actualItemsByService: pickup?.actualItemsByService ?? null,
+        actualItemsByService: (pickup?.actualItemsByService ?? null)?.map(line => ({
+          ...line,
+          mediaUrls: toUrls(line.mediaIds),
+        })) ?? null,
         remarks: pickup?.remarks ?? null,
         mediaIds: pickup?.mediaIds ?? null,
+        mediaUrls: toUrls(pickup?.mediaIds),
       };
     });
   }
