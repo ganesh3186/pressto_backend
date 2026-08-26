@@ -290,12 +290,16 @@ Notes:
   entry; `itemCategoryId`/`serviceId`/`deliverySpeed` are optional
   extra detail, purely estimate metadata for the store exec (nothing
   downstream reads them as binding).
-- **`pickupNow`**:
-  - `true` → attaches to the rider's current `out_for_pickup` run, if
-    they have one. If they don't, it **falls back to creating a
-    standalone request instead** (no error) — `storeId` becomes
-    required in that case, same as `false`.
-  - `false` → always standalone; `storeId` required.
+- **`pickupNow`** — controls whether this self-assigns to the creating
+  rider, not just how it's grouped:
+  - `true` → the rider is picking this up themselves, right now.
+    Self-assigns to them. Attaches to their current `out_for_pickup`
+    run if they have one; otherwise creates a standalone
+    `rider_assigned` request (`storeId` required in that case).
+  - `false` → a request for later, **not** for the creating rider.
+    Created **unassigned** (`status: requested`, no `assignedRiderId`)
+    so it shows up on the admin panel for someone to schedule to
+    whichever rider makes sense — `storeId` required.
 - **`handoverBy`**: `self` | `family_member` | `household_help` — if
   not `self`, `handoverPersonName` is required.
 
@@ -305,10 +309,16 @@ Response (attached to a run):
 { "message": "Pickup request created and attached to the current run.", "pickupRequest": { "...": "same shape as the list above, status: out_for_pickup" } }
 ```
 
-Response (standalone):
+Response (standalone, `pickupNow: true`):
 
 ```json
 { "message": "Pickup request created.", "pickupRequest": { "...": "same shape, status: rider_assigned" } }
+```
+
+Response (`pickupNow: false` — unassigned, for admin scheduling):
+
+```json
+{ "message": "Pickup request created — awaiting rider assignment.", "pickupRequest": { "...": "same shape, status: requested, assignedRiderId: null" } }
 ```
 
 ### `PATCH /rider/pickup-requests/{id}/status` — advance the rider's own pickup

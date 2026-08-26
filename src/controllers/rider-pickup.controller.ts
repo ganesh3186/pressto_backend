@@ -665,10 +665,12 @@ export class RiderPickupController {
               pickupNow: {
                 type: 'boolean',
                 description:
-                  'true: attach to the rider\'s current out_for_pickup run, if they have one. ' +
-                  'If not, falls back to creating a standalone new run instead (same as false) ' +
-                  '— storeId becomes required either way in that case. ' +
-                  'false: always create a standalone new run — storeId is required.',
+                  'true: the rider is picking this up themselves, right now — self-assigns to ' +
+                  'them. Attaches to their current out_for_pickup run if they have one; ' +
+                  'otherwise creates a standalone rider_assigned request (storeId required). ' +
+                  'false: a request for later — created unassigned (requested) for an admin to ' +
+                  'schedule to whichever rider makes sense, not locked to whoever logged it. ' +
+                  'storeId is required.',
               },
               storeId: {
                 type: 'string',
@@ -774,10 +776,16 @@ export class RiderPickupController {
       deliveryGroupingPreference: body.deliveryGroupingPreference,
       remarks,
       mediaIds,
-      assignedRiderId: rider.id,
-      assignedAt: now,
-      assignedBy: currentUser[securityId],
     };
+
+    // Only pickupNow self-assigns to the creating rider — this is them
+    // saying "I'm picking this up myself, right now." pickupNow:false is a
+    // standalone request for later: it must stay unassigned (REQUESTED) so
+    // it shows up for an admin to schedule to whichever rider makes sense,
+    // not silently locked to whoever happened to log it.
+    const selfAssignFields = body.pickupNow
+      ? {assignedRiderId: rider.id, assignedAt: now, assignedBy: currentUser[securityId]}
+      : {};
 
     if (body.pickupNow) {
       const currentRun = await this.pickupRequestRepository.findOne({
@@ -791,15 +799,16 @@ export class RiderPickupController {
       if (currentRun) {
         const pickupRequest = await this.pickupRequestRepository.create({
           ...base,
+          ...selfAssignFields,
           storeId: currentRun.storeId,
           runId: currentRun.runId,
           status: PickupRequestStatus.OUT_FOR_PICKUP,
         });
         return {message: 'Pickup request created and attached to the current run.', pickupRequest};
       }
-      // No active run to attach to — fall through to the standalone path
-      // below instead of blocking the rider outright; they just need to
-      // send storeId too, same as an explicit pickupNow:false.
+      // No active run to attach to — the rider still intends to pick this
+      // up themselves right now, so still self-assign below, just as a
+      // standalone RIDER_ASSIGNED request instead of one attached to a run.
     }
 
     if (!body.storeId) {
@@ -812,11 +821,17 @@ export class RiderPickupController {
 
     const pickupRequest = await this.pickupRequestRepository.create({
       ...base,
+      ...selfAssignFields,
       storeId: body.storeId,
-      runId: v4(),
-      status: PickupRequestStatus.RIDER_ASSIGNED,
+      ...(body.pickupNow ? {runId: v4()} : {}),
+      status: body.pickupNow ? PickupRequestStatus.RIDER_ASSIGNED : PickupRequestStatus.REQUESTED,
     });
-    return {message: 'Pickup request created.', pickupRequest};
+    return {
+      message: body.pickupNow
+        ? 'Pickup request created.'
+        : 'Pickup request created — awaiting rider assignment.',
+      pickupRequest,
+    };
   }
 
   // ─── Bag lookup (scan a real bag before confirming pickup) ─────────────────
