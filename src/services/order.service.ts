@@ -3,6 +3,7 @@ import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {PresstoDataSource} from '../datasources';
 import {Order} from '../models/order.model';
+import {Customer} from '../models/customer.model';
 import {Challan, ChallanStatus} from '../models/challan.model';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {ReferenceType} from '../models/reference-type.enum';
@@ -30,6 +31,7 @@ import {
   CouponRedemptionRepository,
   CouponRepository,
   CustomerContactRepository,
+  CustomerDiscountGroupRepository,
   CustomerFamilyGroupMemberRepository,
   CustomerFamilyGroupRepository,
   CustomerRepository,
@@ -197,6 +199,7 @@ export class OrderService {
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
+    @repository(CustomerDiscountGroupRepository) private customerDiscountGroupRepo: CustomerDiscountGroupRepository,
     @repository(CustomerSecurityDepositRepository) private securityDepositRepo: CustomerSecurityDepositRepository,
     @repository(StoreRepository) private storeRepo: StoreRepository,
     @repository(TransferRepository) private transferRepo: TransferRepository,
@@ -548,6 +551,39 @@ export class OrderService {
       return {discountAmount: Math.min(discountValue, subtotal), discountType: 'fixed'};
     }
     return {discountAmount: 0, discountType: 'none'};
+  }
+
+  /**
+   * The discount applied when no coupon is used — an explicit per-customer
+   * override (customer.defaultDiscountType/Value, set directly via the API,
+   * not exposed in the admin UI today) takes priority when present; otherwise
+   * falls back to the percentage discount from the customer's assigned
+   * CustomerDiscountGroup, if any. Either way, applying a coupon at order
+   * time replaces this entirely — see the callers, which only reach this
+   * when input.couponCode was not given.
+   */
+  private async resolveCustomerAutoDiscount(
+    subtotal: number,
+    customer: Customer,
+  ): Promise<{discountAmount: number; discountType: string}> {
+    const direct = this.applyCustomerDiscount(
+      subtotal,
+      customer.defaultDiscountType,
+      customer.defaultDiscountValue ? Number(customer.defaultDiscountValue) : 0,
+    );
+    if (direct.discountAmount > 0) return direct;
+
+    if (!customer.customerGroupId) return {discountAmount: 0, discountType: 'none'};
+    const group = await this.customerDiscountGroupRepo.findOne({
+      where: {id: customer.customerGroupId, isActive: true, isDeleted: false} as object,
+    });
+    if (!group?.discountPercentage) return {discountAmount: 0, discountType: 'none'};
+
+    let discountAmount = roundRupee((subtotal * Number(group.discountPercentage)) / 100);
+    if (group.maxDiscountAmount != null) {
+      discountAmount = Math.min(discountAmount, roundRupee(Number(group.maxDiscountAmount)));
+    }
+    return {discountAmount, discountType: 'percentage'};
   }
 
   // ─── On-Account Credit Status ───────────────────────────────────────────
@@ -949,11 +985,7 @@ export class OrderService {
 
     const {discountAmount, discountType} = couponResult
       ? {discountAmount: couponResult.discountAmount, discountType: couponResult.discountType}
-      : this.applyCustomerDiscount(
-          subtotal,
-          customer.defaultDiscountType,
-          customer.defaultDiscountValue ? Number(customer.defaultDiscountValue) : 0,
-        );
+      : await this.resolveCustomerAutoDiscount(subtotal, customer);
 
     const gstConfig = await this.gstConfigRepo.findOne({where: {isActive: true, isDeleted: false}});
     const taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
@@ -1741,11 +1773,7 @@ export class OrderService {
     const orderChargesTotal = orderCharges.reduce((s, c) => s + Number(c.amount ?? 0), 0);
     const subtotal = parseFloat((itemsSubtotal + orderChargesTotal).toFixed(2));
 
-    const {discountAmount, discountType} = this.applyCustomerDiscount(
-      subtotal,
-      customer.defaultDiscountType,
-      customer.defaultDiscountValue ? Number(customer.defaultDiscountValue) : 0,
-    );
+    const {discountAmount, discountType} = await this.resolveCustomerAutoDiscount(subtotal, customer);
 
     const gstConfig = await this.gstConfigRepo.findOne({where: {isActive: true, isDeleted: false}});
     const taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
