@@ -210,6 +210,10 @@ export class PickupRequest extends Entity {
   // deliverySpeed is optional — the real speed confirmed with the customer
   // at the door, when the rider app sends it; store staff should build the
   // real order against this, not the (possibly stale) pre-arrival estimate.
+  // mediaIds is optional — photo(s) the rider takes against this specific
+  // service line's remark (e.g. proof of a pre-existing stain/damage noticed
+  // at pickup), uploaded first via POST /files, same two-step convention as
+  // this model's own top-level mediaIds.
   @property({type: 'array', itemType: 'object', postgresql: {dataType: 'jsonb'}})
   actualItemsByService?: Array<{
     serviceId: string;
@@ -217,6 +221,7 @@ export class PickupRequest extends Entity {
     quantity: number;
     deliverySpeed?: DeliveryType;
     remarks?: string;
+    mediaIds?: string[];
   }>;
 
   // Set together when the rider marks status: pickup_unsuccessful — see

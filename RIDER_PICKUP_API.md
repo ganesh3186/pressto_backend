@@ -342,7 +342,7 @@ counts confirmed at the doorstep:
   "status": "picked_up",
   "bagId": "a1b2...",
   "itemsByService": [
-    { "serviceId": "c84dfe93-f45f-48bc-86d3-4710264eb200", "quantity": 3, "deliverySpeed": "express", "remarks": "2 shirts have a small stain near the collar" },
+    { "serviceId": "c84dfe93-f45f-48bc-86d3-4710264eb200", "quantity": 3, "deliverySpeed": "express", "remarks": "2 shirts have a small stain near the collar", "mediaIds": ["7c2b...", "9f1a..."] },
     { "serviceId": "00354f2b-363f-4a8f-9e68-44cab7256c3a", "quantity": 1, "deliverySpeed": "standard" }
   ]
 }
@@ -360,6 +360,13 @@ sending this, don't just carry over the estimate blind.
 specific service (condition, a count caveat, anything worth flagging to
 the store before they build the order). Shown as a tooltip on the
 service chip in the store's Receive Items screen.
+
+`mediaIds` per line is optional — photo(s) backing that line's remark
+(e.g. proof of a pre-existing stain/damage noticed at the doorstep).
+Upload each photo first via `POST /files` (multipart, see
+`FileUploadController`), which returns `{ files: [{ id, fileUrl, ... }] }`
+per file — collect the `id`s and send them here alongside the remark,
+don't upload after confirming pickup.
 
 ```json
 { "message": "Pickup confirmed." }

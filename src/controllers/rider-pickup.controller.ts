@@ -893,6 +893,11 @@ export class RiderPickupController {
                       type: 'string',
                       description: 'Optional rider note against this specific service line (e.g. a condition or count caveat noticed at the doorstep).',
                     },
+                    mediaIds: {
+                      type: 'array',
+                      items: {type: 'string', format: 'uuid'},
+                      description: 'Optional photo(s) backing this line\'s remark — upload via POST /files first, then pass the returned media id(s) here.',
+                    },
                   },
                 },
               },
@@ -918,6 +923,7 @@ export class RiderPickupController {
         quantity: number;
         deliverySpeed?: DeliveryType;
         remarks?: string;
+        mediaIds?: string[];
       }>;
       reasons?: PickupUnsuccessfulReason[];
       otherReason?: string;
@@ -964,6 +970,7 @@ export class RiderPickupController {
         quantity: i.quantity,
         deliverySpeed: i.deliverySpeed,
         remarks: i.remarks,
+        mediaIds: i.mediaIds,
       }));
       const totalItems = actualItemsByService.reduce((sum, i) => sum + i.quantity, 0);
 
