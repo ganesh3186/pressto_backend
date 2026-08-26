@@ -29,17 +29,20 @@ export class RiderPincodeMappingController {
     if (!rider.isActive) throw new HttpErrors.BadRequest('This rider is inactive.');
   }
 
-  /** A pincode can only be covered by one active rider at a time. */
-  private async assertPincodeFree(pincode: string, ignoreMappingId?: string) {
+  /**
+   * A pincode can be covered by several riders at once — assignment then
+   * filters eligible riders down to whoever's mapped to the job's pincode
+   * (see RiderAssignmentService.assertRiderCoversPincode, used from
+   * order.controller.ts/pickup-request.controller.ts). Only a literal
+   * duplicate row for the *same* rider is rejected here, not a second
+   * rider on an already-covered pincode.
+   */
+  private async assertNotDuplicateForRider(riderId: string, pincode: string, ignoreMappingId?: string) {
     const existing = await this.mappingRepository.findOne({
-      where: {pincode, isActive: true, isDeleted: false} as object,
-      include: [{relation: 'rider'}],
+      where: {riderId, pincode, isActive: true, isDeleted: false} as object,
     });
     if (existing && existing.id !== ignoreMappingId) {
-      const riderLabel = existing.rider
-        ? `${existing.rider.riderCode} (${existing.rider.firstName} ${existing.rider.lastName})`
-        : 'another rider';
-      throw new HttpErrors.Conflict(`Pincode ${pincode} is already mapped to ${riderLabel}.`);
+      throw new HttpErrors.Conflict(`Pincode ${pincode} is already mapped to this rider.`);
     }
   }
 
@@ -71,15 +74,30 @@ export class RiderPincodeMappingController {
     const pincodes = [...new Set(body.pincodes.map(p => String(p).trim()))];
     for (const pincode of pincodes) {
       this.assertPincodeFormat(pincode);
-      await this.assertPincodeFree(pincode);
     }
+
+    // Bulk-add (e.g. "map all of this cluster's pincodes") shouldn't fail the
+    // whole batch just because some pincodes are already mapped to this same
+    // rider — skip those quietly and only create the new ones.
+    const alreadyMapped = new Set(
+      (
+        await this.mappingRepository.find({
+          where: {riderId: body.riderId, pincode: {inq: pincodes}, isActive: true, isDeleted: false} as object,
+        })
+      ).map(m => m.pincode),
+    );
 
     const {v4} = await import('uuid');
     const mappings = [];
+    const skipped = [];
     for (const pincode of pincodes) {
+      if (alreadyMapped.has(pincode)) {
+        skipped.push(pincode);
+        continue;
+      }
       mappings.push(await this.mappingRepository.create({id: v4(), riderId: body.riderId, pincode}));
     }
-    return {message: 'Pincodes mapped.', mappings};
+    return {message: 'Pincodes mapped.', mappings, skipped};
   }
 
   // ─── List ─────────────────────────────────────────────────────────────────
@@ -151,7 +169,7 @@ export class RiderPincodeMappingController {
 
     if (body.pincode !== undefined && body.pincode !== existing.pincode) {
       this.assertPincodeFormat(body.pincode);
-      await this.assertPincodeFree(body.pincode, id);
+      await this.assertNotDuplicateForRider(existing.riderId, body.pincode, id);
     }
 
     await this.mappingRepository.updateById(id, {

@@ -50,6 +50,7 @@ import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {CustomerAddressService} from '../services/customer-address.service';
+import {RiderAssignmentService} from '../services/rider-assignment.service';
 import {PickupDeliverySlotRepository} from '../repositories/pickup-delivery-slot.repository';
 
 const PAYMENT_ITEM_SCHEMA = {
@@ -116,6 +117,8 @@ export class OrderController {
     private deliveryCustodyEventRepository: DeliveryCustodyEventRepository,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
+    @inject('services.rider-assignment')
+    private riderAssignmentService: RiderAssignmentService,
   ) {}
 
   // Cheque/PDC legs never got a PaymentTransaction (see order.service.ts's
@@ -470,6 +473,7 @@ export class OrderController {
     const rider = await this.riderRepository.findOne({where: {id: body.riderId, isDeleted: false}});
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
     if (!rider.isActive) throw new HttpErrors.BadRequest('This rider is inactive.');
+    await this.riderAssignmentService.assertRiderAvailable(body.riderId);
 
     const orders = await this.orderRepository.find({
       where: {id: {inq: body.orderIds}, isDeleted: false} as object,
@@ -495,6 +499,25 @@ export class OrderController {
     // transfer, but dispatch to the customer only happens from home —
     // block it if anything is still away.
     await this.orderService.assertGarmentsHomeForDispatch(body.orderIds);
+
+    // Only riders mapped to an order's delivery pincode may be assigned to
+    // it — Order itself has no pincode column, so resolve it via each
+    // order's CustomerAddress. Orders with no resolvable pincode (no
+    // deliveryAddressId, or address not found) skip the check rather than
+    // being blocked by a data-quality gap unrelated to this feature.
+    const addressIds = [
+      ...new Set(orders.map(o => o.deliveryAddressId).filter((id): id is string => Boolean(id))),
+    ];
+    if (addressIds.length) {
+      const addresses = await this.customerAddressRepository.find({
+        where: {id: {inq: addressIds}} as object,
+      });
+      const pincodeByAddressId = new Map(addresses.map(a => [a.id, a.pincode]));
+      for (const order of orders) {
+        const pincode = order.deliveryAddressId ? pincodeByAddressId.get(order.deliveryAddressId) : undefined;
+        await this.riderAssignmentService.assertRiderCoversPincode(body.riderId, pincode);
+      }
+    }
 
     let deliverySlot = body.deliverySlot;
     if (body.deliverySlotId !== undefined) {

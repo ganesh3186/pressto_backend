@@ -5,6 +5,7 @@ import {del, get, getModelSchemaRef, HttpErrors, param, patch, post, requestBody
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
+import {RiderAssignmentService} from '../services/rider-assignment.service';
 import {PickupRequest} from '../models';
 import {RiderPincodeMappingWithRelations} from '../models/rider-pincode-mapping.model';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
@@ -75,6 +76,8 @@ export class PickupRequestController {
     private orderRepository: OrderRepository,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
+    @inject('services.rider-assignment')
+    private riderAssignmentService: RiderAssignmentService,
   ) {}
 
   // ─── Validation helpers ───────────────────────────────────────────────────
@@ -376,6 +379,7 @@ export class PickupRequestController {
     },
   ): Promise<object> {
     const rider = await this.assertRiderAssignable(body.riderId);
+    await this.riderAssignmentService.assertRiderAvailable(body.riderId);
     const store = await this.storeRepository.findOne({where: {id: body.storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
 
@@ -394,6 +398,10 @@ export class PickupRequestController {
       throw new HttpErrors.BadRequest(
         `Pickup request(s) already ${notAssignable.map(r => r.status).join(', ')} cannot be assigned.`,
       );
+    }
+    // Only riders mapped to a request's pincode may be assigned to it.
+    for (const req of requests) {
+      await this.riderAssignmentService.assertRiderCoversPincode(body.riderId, req.pincode);
     }
 
     const {v4} = await import('uuid');

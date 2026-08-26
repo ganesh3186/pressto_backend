@@ -2,10 +2,10 @@ import {Entity, belongsTo, model, property} from '@loopback/repository';
 import {Rider} from './rider.model';
 
 /**
- * One row per (rider, pincode) pair — a rider can cover several pincodes,
- * but a pincode can only be covered by one active rider at a time
- * (enforced in the controller via assertPincodeFree, not a DB constraint —
- * no partial-unique-index precedent exists elsewhere in this codebase).
+ * One row per (rider, pincode) pair. A pincode may be covered by several
+ * riders at once (dispatch/pickup assignment then filters eligible riders
+ * down to whoever's mapped to the order's pincode) — the controller only
+ * rejects a literal duplicate row for the same rider+pincode.
  */
 @model({
   settings: {
