@@ -7,6 +7,7 @@ import {authorize} from '../authorization';
 import {TransferCustodyEventType} from '../models/transfer-custody-event-type.enum';
 import {TransferStatus} from '../models/transfer-status.enum';
 import {
+  BagRepository,
   RiderRepository,
   TransferCustodyEventRepository,
   TransferItemRepository,
@@ -31,6 +32,7 @@ export class RiderTransferController {
     @repository(TransferItemRepository) private transferItemRepository: TransferItemRepository,
     @repository(TransferCustodyEventRepository)
     private custodyEventRepository: TransferCustodyEventRepository,
+    @repository(BagRepository) private bagRepository: BagRepository,
   ) {}
 
   // ─── Identity ─────────────────────────────────────────────────────────────
@@ -114,7 +116,22 @@ export class RiderTransferController {
     }
 
     const items = await this.transferItemRepository.find({where: {transferId: transfer.id} as object});
-    return {transfer, items};
+
+    // Every bag the rider must scan before starting transit (see startTransit
+    // below) — resolved here with real bag numbers so the app has something
+    // scannable to check off, not just uuids.
+    const bagIds = [...new Set(items.map(i => i.bagId ?? transfer.bagId).filter(Boolean))];
+    if (transfer.bagId) bagIds.push(transfer.bagId);
+    const uniqueBagIds = [...new Set(bagIds)];
+    const bags = uniqueBagIds.length
+      ? await this.bagRepository.find({where: {id: {inq: uniqueBagIds}} as object})
+      : [];
+
+    return {
+      transfer,
+      items,
+      bags: bags.map(b => ({id: b.id, bagNumber: b.bagNumber})),
+    };
   }
 
   // ─── Mark in transit ──────────────────────────────────────────────────────
@@ -131,13 +148,22 @@ export class RiderTransferController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['status'],
-            properties: {status: {type: 'string', enum: [TransferStatus.IN_TRANSIT]}},
+            required: ['status', 'bagIds'],
+            properties: {
+              status: {type: 'string', enum: [TransferStatus.IN_TRANSIT]},
+              bagIds: {
+                type: 'array',
+                items: {type: 'string', format: 'uuid'},
+                description:
+                  'Every bag belonging to this transfer, scanned by the rider before pickup — ' +
+                  'must exactly cover the transfer\'s full bag set or the status change is rejected.',
+              },
+            },
           },
         },
       },
     })
-    body: {status: TransferStatus},
+    body: {status: TransferStatus; bagIds: string[]},
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
     const transfer = await this.transferRepository.findOne({where: {id, isDeleted: false}});
@@ -152,6 +178,20 @@ export class RiderTransferController {
       throw new HttpErrors.BadRequest(`Cannot start transit on a transfer that is ${transfer.status}, not rider_assigned.`);
     }
 
+    // Every bag in the transfer must be scanned before the rider can start
+    // transit — items written before multi-bag transfers existed have no
+    // bagId of their own and fall back to the transfer's own primary bagId.
+    const items = await this.transferItemRepository.find({where: {transferId: id} as object});
+    const expectedBagIds = new Set(items.map(i => i.bagId ?? transfer.bagId).filter(Boolean));
+    if (transfer.bagId) expectedBagIds.add(transfer.bagId);
+    const scannedBagIds = new Set(body.bagIds);
+    const missing = [...expectedBagIds].filter(bagId => !scannedBagIds.has(bagId));
+    if (missing.length) {
+      const bags = await this.bagRepository.find({where: {id: {inq: missing}} as object});
+      const labels = bags.map(b => b.bagNumber).join(', ') || `${missing.length} bag(s)`;
+      throw new HttpErrors.BadRequest(`Scan every bag in this transfer before starting transit — still missing: ${labels}.`);
+    }
+
     await this.transferRepository.updateById(id, {
       status: TransferStatus.IN_TRANSIT,
       inTransitAt: new Date(),
@@ -159,6 +199,15 @@ export class RiderTransferController {
     });
 
     const {v4} = await import('uuid');
+    for (const bagId of expectedBagIds) {
+      await this.custodyEventRepository.create({
+        id: v4(),
+        transferId: id,
+        eventType: TransferCustodyEventType.BAG_SCANNED,
+        bagId,
+        performedBy: currentUser[securityId],
+      });
+    }
     await this.custodyEventRepository.create({
       id: v4(),
       transferId: id,

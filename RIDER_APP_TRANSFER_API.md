@@ -103,12 +103,20 @@ resolve one to the other client-side. `404` if not found, `403`
       "orderId": "uuid",
       "scanStatus": "scanned"
     }
+  ],
+  "bags": [
+    { "id": "uuid", "bagNumber": 1042 }
   ]
 }
 ```
 `scanStatus` starts `scanned` for every line (set when the source store
 built the manifest); it only ever changes to `missing` — and only from the
 **destination store's** receive step, never from the rider app.
+
+`bags` is every bag belonging to this transfer, with its real `bagNumber`
+— this is the checklist the rider scans against before calling §4. Match
+each scan locally against this list and collect the `id`s; there's no
+separate per-scan API call.
 
 ---
 
@@ -118,7 +126,7 @@ built the manifest); it only ever changes to `missing` — and only from the
 PATCH /rider/transfers/{id}/status
 ```
 ```json
-{"status": "in_transit"}
+{"status": "in_transit", "bagIds": ["uuid-of-bag-1", "uuid-of-bag-2"]}
 ```
 `{id}` here must be the real path param the app already has from §2/§3 —
 same dual uuid/transitId acceptance as §3. Riders may only ever set this one
@@ -126,6 +134,12 @@ value (`400` — `"Riders can only set status to in_transit."` — for
 anything else). The transfer must currently be `rider_assigned` (`400`
 naming the current status otherwise — this call is a one-time "I've picked
 up the bag" action, not repeatable).
+
+`bagIds` must cover **every** bag from §3's `bags[]` — scan each physical
+bag and collect its `id` before calling this. Missing any of them fails
+with `400` naming the still-unscanned bag number(s): `"Scan every bag in
+this transfer before starting transit — still missing: 1042, 1043."`
+Don't let the rider skip a bag; there is no partial/force option.
 
 **Response `200`**: `{ "message": "Transfer marked in transit." }`
 
@@ -139,8 +153,8 @@ you've called this, just wait for the transfer to show up under
 ## Typical flow, end to end
 
 1. `GET /rider/transfers?tab=pending` → see transfers currently assigned to you and awaiting pickup/in-transit.
-2. `GET /rider/transfers/{id}` → confirm the bag's contents (item count, tag numbers) before leaving the source store.
-3. `PATCH /rider/transfers/{id}/status {status: "in_transit"}` → mark yourself on the road.
+2. `GET /rider/transfers/{id}` → confirm the bag's contents (item count, tag numbers) and get the list of bags to scan before leaving the source store.
+3. Scan every bag in `bags[]`, then `PATCH /rider/transfers/{id}/status {status: "in_transit", bagIds: [...]}` → mark yourself on the road. Rejected until every bag is scanned.
 4. Hand the bag to the destination store — no rider-app call for this; the store's own receive step (admin panel) closes it out.
 5. `GET /rider/transfers?tab=completed` → confirm it moved to `received` (or check `discrepancy`/`resolved` if the store's count didn't match).
 
