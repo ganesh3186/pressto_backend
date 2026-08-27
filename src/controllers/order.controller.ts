@@ -237,6 +237,12 @@ export class OrderController {
     // StoreScopeService.narrowStoreIds.
     @param.query.string('storeId') storeIdFilter?: string,
     @param.query.string('clusterId') clusterIdFilter?: string,
+    // Manage Order sets this — that screen is order administration for the
+    // order's own store only, not a workflow surface for a garment merely
+    // visiting via transfer (that's what Inspection/Processing use this
+    // same endpoint for, and they must keep seeing those). Every other
+    // caller is unaffected: omitting it keeps today's additive behavior.
+    @param.query.boolean('homeStoreOnly') homeStoreOnly?: boolean,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
@@ -245,10 +251,12 @@ export class OrderController {
     });
     // Also surface orders reachable via an active inter-store transfer
     // grant to whichever stores this request is scoped to — additive,
-    // widens the storeId filter rather than narrowing it.
-    const transferGrantedOrderIds = Array.isArray(storeIds)
-      ? await this.storeScopeService.transferGrantedOrderIds(storeIds)
-      : undefined;
+    // widens the storeId filter rather than narrowing it. Skipped when the
+    // caller explicitly asked for home-store-only (see homeStoreOnly above).
+    const transferGrantedOrderIds =
+      Array.isArray(storeIds) && !homeStoreOnly
+        ? await this.storeScopeService.transferGrantedOrderIds(storeIds)
+        : undefined;
     return this.orderService.listOrders({
       search,
       dateFrom,

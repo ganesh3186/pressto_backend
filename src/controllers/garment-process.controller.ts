@@ -4,11 +4,14 @@ import {get, param, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {ProcessService} from '../services/process.service';
+import {StoreScopeService} from '../services/store-scope.service';
 
 export class GarmentProcessController {
   constructor(
     @inject('services.process')
     private processService: ProcessService,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
   ) {}
 
   // ─── Init Process ─────────────────────────────────────────────────────────
@@ -23,6 +26,7 @@ export class GarmentProcessController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     return this.processService.initProcess(id, currentUser[securityId]);
   }
 
@@ -58,6 +62,7 @@ export class GarmentProcessController {
     })
     body: {qrCode?: string},
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     return this.processService.advanceProcess(id, currentUser[securityId], body?.qrCode);
   }
 
@@ -90,6 +95,7 @@ export class GarmentProcessController {
     })
     body?: {qrCode?: string},
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     return this.processService.completeAllProcesses(id, currentUser[securityId], body?.qrCode);
   }
 
@@ -124,6 +130,7 @@ export class GarmentProcessController {
     })
     body?: {qrCode?: string},
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     return this.processService.fastTrackToReady(id, currentUser[securityId], body?.qrCode);
   }
 
@@ -151,6 +158,7 @@ export class GarmentProcessController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
+    await this.storeScopeService.assertGarmentEditable(id, currentUser);
     return this.processService.reverseStep(id, currentUser[securityId]);
   }
 

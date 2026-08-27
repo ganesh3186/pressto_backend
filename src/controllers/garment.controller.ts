@@ -198,9 +198,35 @@ export class GarmentController {
     const items = await this.orderItemRepository.find({where: {orderId}});
     const orderItemIds = items.map(i => i.id);
 
-    const garments = await this.garmentRepository.find({
+    const allGarments = await this.garmentRepository.find({
       where: {and: [{orderItemId: {inq: orderItemIds}}, {isDeleted: false}]},
     });
+
+    // assertOrderVisible above is additive/dual (home store OR any store
+    // currently holding a garment via transfer) — that only proves the
+    // caller may see SOMETHING on this order, not that every garment on it
+    // is physically in front of them. Narrow down to just the garment(s)
+    // actually at the caller's own scope, same "custody grants rights"
+    // rule TransferController.eligibleItems already applies the other way
+    // (which garments a store can send out).
+    const scope = await this.storeScopeService.resolve(currentUser!);
+    let garments = allGarments;
+    if (!scope.global) {
+      const order = await this.orderRepository.findOne({
+        where: {id: orderId, isDeleted: false},
+        fields: {id: true, storeId: true} as object,
+      });
+      const homeStoreId = order?.storeId ?? null;
+      const withCurrentStore = await Promise.all(
+        allGarments.map(async g => ({
+          garment: g,
+          currentStoreId: await this.storeScopeService.resolveGarmentCurrentStoreId(g, homeStoreId),
+        })),
+      );
+      garments = withCurrentStore
+        .filter(({currentStoreId}) => this.storeScopeService.allows(scope, currentStoreId))
+        .map(({garment}) => garment);
+    }
 
     const withContext = await this._withItemContext(garments);
 
@@ -384,6 +410,7 @@ export class GarmentController {
   @patch('/garments/{garmentId}')
   @response(200, {description: 'Garment updated'})
   async updateGarment(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('garmentId') garmentId: string,
     @requestBody({
       content: {
@@ -418,6 +445,7 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     this.assertInspectionEditable(garment);
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
     await this.garmentRepository.updateById(garmentId, body);
     return {message: 'Garment updated.'};
   }
@@ -449,6 +477,7 @@ export class GarmentController {
   ): Promise<object> {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
 
     // Block direct on_hold — must come through the approval flow
     if (body.status === GarmentStatus.ON_HOLD) {
@@ -496,6 +525,7 @@ export class GarmentController {
   @post('/garments/{garmentId}/stains')
   @response(200, {description: 'Stain recorded'})
   async addStain(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('garmentId') garmentId: string,
     @requestBody({
       content: {
@@ -521,6 +551,7 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     this.assertInspectionEditable(garment);
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
 
     const {v4} = await import('uuid');
     const stain = await this.stainRepository.create({
@@ -548,6 +579,7 @@ export class GarmentController {
   @post('/garments/{garmentId}/stains/{stainId}/images')
   @response(200, {description: 'Image added to stain'})
   async addStainImage(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('garmentId') garmentId: string,
     @param.path.string('stainId') stainId: string,
     @requestBody({
@@ -568,6 +600,7 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     this.assertInspectionEditable(garment);
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
 
     const {v4} = await import('uuid');
     const image = await this.stainImageRepository.create({id: v4(), garmentStainId: stainId, mediaId: body.mediaId});
@@ -579,6 +612,7 @@ export class GarmentController {
   @del('/garments/{garmentId}/stains/{stainId}')
   @response(200, {description: 'Stain removed'})
   async removeStain(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('garmentId') garmentId: string,
     @param.path.string('stainId') stainId: string,
   ): Promise<object> {
@@ -587,6 +621,7 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     this.assertInspectionEditable(garment);
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
     await this.stainRepository.updateById(stainId, {isDeleted: true});
     return {message: 'Stain removed.'};
   }
@@ -598,6 +633,7 @@ export class GarmentController {
   @post('/garments/{garmentId}/damages')
   @response(200, {description: 'Damage recorded'})
   async addDamage(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('garmentId') garmentId: string,
     @requestBody({
       content: {
@@ -623,6 +659,7 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     this.assertInspectionEditable(garment);
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
 
     const {v4} = await import('uuid');
     const damage = await this.damageRepository.create({
@@ -650,6 +687,7 @@ export class GarmentController {
   @post('/garments/{garmentId}/damages/{damageId}/images')
   @response(200, {description: 'Image added to damage'})
   async addDamageImage(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('garmentId') garmentId: string,
     @param.path.string('damageId') damageId: string,
     @requestBody({
@@ -670,6 +708,7 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     this.assertInspectionEditable(garment);
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
 
     const {v4} = await import('uuid');
     const image = await this.damageImageRepository.create({id: v4(), garmentDamageId: damageId, mediaId: body.mediaId});
@@ -681,6 +720,7 @@ export class GarmentController {
   @del('/garments/{garmentId}/damages/{damageId}')
   @response(200, {description: 'Damage removed'})
   async removeDamage(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('garmentId') garmentId: string,
     @param.path.string('damageId') damageId: string,
   ): Promise<object> {
@@ -689,6 +729,7 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     this.assertInspectionEditable(garment);
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
     await this.damageRepository.updateById(damageId, {isDeleted: true});
     return {message: 'Damage removed.'};
   }
@@ -700,6 +741,7 @@ export class GarmentController {
   @post('/garments/{garmentId}/images')
   @response(200, {description: 'Image attached to garment'})
   async addImage(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('garmentId') garmentId: string,
     @requestBody({
       content: {
@@ -721,6 +763,7 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     this.assertInspectionEditable(garment);
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
     const image = await this.imageRepository.create({garmentId, ...body});
     return {message: 'Image attached.', image};
   }
@@ -730,6 +773,7 @@ export class GarmentController {
   @del('/garments/{garmentId}/images/{imageId}')
   @response(200, {description: 'Image removed'})
   async removeImage(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('garmentId') garmentId: string,
     @param.path.string('imageId') imageId: string,
   ): Promise<object> {
@@ -738,6 +782,7 @@ export class GarmentController {
     const garment = await this.garmentRepository.findOne({where: {id: garmentId, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     this.assertInspectionEditable(garment);
+    await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
     await this.imageRepository.deleteById(imageId);
     return {message: 'Image removed.'};
   }
