@@ -40,7 +40,6 @@ import {
   StoreRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
-import {ProcessService} from '../services/process.service';
 
 // Shape returned when a garment's order item can't be resolved — keeps the
 // response keys stable so clients never have to guard for missing fields.
@@ -71,7 +70,6 @@ export class GarmentController {
     @repository(ColorRepository) private colorRepository: ColorRepository,
     @repository(StoreRepository) private storeRepository: StoreRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
-    @inject('services.process') private processService: ProcessService,
   ) {}
 
   // ─── Store Scoping ────────────────────────────────────────────────────────
@@ -480,22 +478,14 @@ export class GarmentController {
 
     await this.syncOrderStatus(garmentId, body.status, currentUser[securityId]);
 
-    // When processing is disabled, a garment landing on in_process should
-    // never actually sit there — the stage-by-stage Processing screen is
-    // hidden from nav in that case (see config-navigation.js), so without
-    // this it'd be a dead end with no UI path to ready. Reuses the same
-    // fast-track logic a manual "fast-track to ready" call already uses;
-    // this just makes it automatic instead of requiring staff to trigger
-    // it themselves.
-    if (body.status === GarmentStatus.IN_PROCESS && !this.processService.getConfig().processingEnabled) {
-      const result = (await this.processService.fastTrackToReady(garmentId, currentUser[securityId])) as {
-        stepsCompleted: number;
-      };
-      return {
-        message: `Garment status changed to 'ready' — processing disabled, auto fast-tracked (${result.stepsCompleted} step(s) completed).`,
-      };
-    }
-
+    // Processing disabled or not, a garment moving to in_process stops
+    // here and stays visible in that status — it is NOT auto-fast-tracked.
+    // The deliberate bypass path is GarmentScanReadyDialog's explicit
+    // per-item scan (POST /garments/{id}/fast-track-ready, see
+    // ProcessService.fastTrackToReady), shared by Dispatch Management and
+    // Manage Order — staff scan an item when it's actually done, rather
+    // than every item silently skipping straight to ready the moment it's
+    // sent to processing.
     return {message: `Garment status changed to '${body.status}'.`};
   }
 
