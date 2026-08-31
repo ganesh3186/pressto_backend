@@ -300,6 +300,13 @@ export class PickupRequestController {
       }
       const order = await this.orderRepository.findOne({where: {id: convertedOrderId, isDeleted: false}});
       if (!order) throw new HttpErrors.NotFound('Order not found.');
+      // Denormalized at the moment the link is made, same convention as
+      // assignedRiderName next to assignedRiderId — a home_pickup* order's
+      // originating channel is always this pickup's own source, resolved
+      // here rather than trusted from the client.
+      if (existing.source) {
+        await this.orderRepository.updateById(convertedOrderId, {pickupSource: existing.source});
+      }
     }
 
     await this.pickupRequestRepository.updateById(id, {
