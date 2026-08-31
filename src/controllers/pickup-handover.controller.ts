@@ -33,7 +33,7 @@ export class PickupHandoverController {
     @repository(MediaRepository) private mediaRepo: MediaRepository,
   ) {}
 
-  // Batch-attaches each item's PickupRequest detail — bag number, real
+  // Batch-attaches each item's PickupRequest detail — bag(s), real
   // confirmed per-service counts, and any special instructions — so the
   // admin receive screen doesn't have to make a separate call per pickup.
   private async enrichItems<T extends {pickupRequestId: string}>(items: T[]) {
@@ -43,8 +43,15 @@ export class PickupHandoverController {
       : [];
     const pickupById = new Map(pickups.map(p => [p.id, p]));
 
-    const bagIds = [...new Set(pickups.map(p => p.bagId).filter((id): id is string => Boolean(id)))];
-    const bags = bagIds.length ? await this.bagRepo.find({where: {id: {inq: bagIds}} as object}) : [];
+    // A pickup now uses one bag per service — collect every bag referenced
+    // anywhere (the legacy primary bagId, plus each actualItemsByService
+    // line's own bagId) in one batch.
+    const bagIds = new Set<string>();
+    for (const pickup of pickups) {
+      if (pickup.bagId) bagIds.add(pickup.bagId);
+      (pickup.actualItemsByService ?? []).forEach(line => line.bagId && bagIds.add(line.bagId));
+    }
+    const bags = bagIds.size ? await this.bagRepo.find({where: {id: {inq: [...bagIds]}} as object}) : [];
     const bagNumberById = new Map(bags.map(b => [b.id, b.bagNumber]));
 
     // Batch-resolve every mediaId referenced anywhere (top-level special-
@@ -67,6 +74,8 @@ export class PickupHandoverController {
       const pickup = pickupById.get(item.pickupRequestId);
       return {
         ...item,
+        // Legacy single-bag snapshot — still populated (first/primary bag)
+        // for anything not yet reading the per-service breakdown below.
         bagId: pickup?.bagId ?? null,
         bagNumber: pickup?.bagId ? bagNumberById.get(pickup.bagId) ?? null : null,
         itemCountEstimate: pickup?.itemCountEstimate ?? null,
@@ -74,6 +83,7 @@ export class PickupHandoverController {
         actualItemsByService: (pickup?.actualItemsByService ?? null)?.map(line => ({
           ...line,
           mediaUrls: toUrls(line.mediaIds),
+          bagNumber: line.bagId ? bagNumberById.get(line.bagId) ?? null : null,
         })) ?? null,
         remarks: pickup?.remarks ?? null,
         mediaIds: pickup?.mediaIds ?? null,
@@ -160,8 +170,18 @@ export class PickupHandoverController {
       const pickupRequest = await this.pickupRequestRepo.findOne({where: {id: item.pickupRequestId}});
       if (!pickupRequest) continue;
       await this.pickupRequestRepo.updateById(pickupRequest.id, {status: PickupRequestStatus.RECEIVED_AT_STORE});
-      if (pickupRequest.bagId) {
-        await this.bagRepo.updateById(pickupRequest.bagId, {
+
+      // One bag per service now — release every bag this pickup actually
+      // used (each actualItemsByService line's bagId), plus the legacy
+      // top-level bagId for back-compat with rows written before per-service
+      // bags existed. A Set collapses the (expected) overlap where bagId is
+      // just the first service's bag, so nothing is released twice.
+      const bagIdsToRelease = new Set<string>();
+      if (pickupRequest.bagId) bagIdsToRelease.add(pickupRequest.bagId);
+      (pickupRequest.actualItemsByService ?? []).forEach(line => line.bagId && bagIdsToRelease.add(line.bagId));
+
+      for (const bagId of bagIdsToRelease) {
+        await this.bagRepo.updateById(bagId, {
           status: BagStatus.AVAILABLE,
           itemCount: 0,
           currentPickupRequestId: null as unknown as string,

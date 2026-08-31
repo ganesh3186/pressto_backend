@@ -344,19 +344,26 @@ before actually confirming the pickup:
 { "status": "arrived_at_pickup" }
 ```
 
-**`picked_up`** — also requires the real bag and real per-service
-counts confirmed at the doorstep:
+**`picked_up`** — also requires the real per-service counts confirmed
+at the doorstep, **each with its own bag**:
 
 ```json
 {
   "status": "picked_up",
-  "bagId": "a1b2...",
   "itemsByService": [
-    { "serviceId": "c84dfe93-f45f-48bc-86d3-4710264eb200", "quantity": 3, "deliverySpeed": "express", "remarks": "2 shirts have a small stain near the collar", "mediaIds": ["7c2b...", "9f1a..."] },
-    { "serviceId": "00354f2b-363f-4a8f-9e68-44cab7256c3a", "quantity": 1, "deliverySpeed": "standard" }
+    { "serviceId": "c84dfe93-f45f-48bc-86d3-4710264eb200", "quantity": 3, "deliverySpeed": "express", "remarks": "2 shirts have a small stain near the collar", "mediaIds": ["7c2b...", "9f1a..."], "bagId": "a1b2..." },
+    { "serviceId": "00354f2b-363f-4a8f-9e68-44cab7256c3a", "quantity": 1, "deliverySpeed": "standard", "bagId": "e5f6..." }
   ]
 }
 ```
+
+`bagId` is **required on every line** — one exclusive bag per service.
+Scan a separate physical bag for each service before sending this; the
+same bag cannot be reused across two service lines on the same pickup
+(`400` if any line is missing a `bagId`, or if the same `bagId` appears
+on more than one line). Each `bagId` comes from the bag lookup below —
+scan the physical bag, don't let the rider type a bag number blind.
+
 `deliverySpeed` per line is **optional but strongly recommended** —
 `standard` | `express` | `lightning`. This is what the store actually
 builds the real order against once the pickup arrives (see
@@ -381,9 +388,6 @@ don't upload after confirming pickup.
 ```json
 { "message": "Pickup confirmed." }
 ```
-
-`bagId` comes from the bag lookup below — scan the physical bag before
-sending this, don't let the rider type a bag number blind.
 
 **`pickup_unsuccessful`** — the pickup couldn't be completed. Reachable
 from `out_for_pickup` or `arrived_at_pickup`. Requires structured,

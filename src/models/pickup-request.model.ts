@@ -191,29 +191,34 @@ export class PickupRequest extends Entity {
   @belongsTo(() => Order)
   convertedOrderId?: string;
 
-  // Real bag the rider used for this pickup — plain uuid, not @belongsTo,
-  // matching Transfer's fromStoreId/toStoreId/bagId convention (batch-
-  // resolve display names at read time rather than relying on auto
-  // `include`). Set together with actualItemsByService when the rider
-  // confirms pickup (PATCH .../status {status: 'picked_up'}); released
-  // back to the Bag's own AVAILABLE state when the pickup reaches
-  // received_at_store.
+  // The pickup's first/primary bag — kept for back-compat display only
+  // (same convention as Transfer.bagId), not @belongsTo, matching
+  // Transfer's fromStoreId/toStoreId/bagId style. A pickup spanning
+  // several services now uses one bag *per service* — see
+  // actualItemsByService[].bagId below, the real, authoritative
+  // breakdown. Released back to AVAILABLE (all bags, not just this one)
+  // when the pickup reaches received_at_store.
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   bagId?: string;
 
-  // Rider-confirmed real counts at the doorstep, by service — set
-  // alongside bagId. Distinct from itemCategoryEstimate above: that one is
-  // the customer's pre-arrival guess, by category, collected at booking
-  // time; this is the rider's actual count, by service, collected at
-  // pickup time. serviceName is a snapshot, same denormalization
-  // convention as assignedRiderName alongside assignedRiderId below.
-  // deliverySpeed is optional — the real speed confirmed with the customer
-  // at the door, when the rider app sends it; store staff should build the
-  // real order against this, not the (possibly stale) pre-arrival estimate.
-  // mediaIds is optional — photo(s) the rider takes against this specific
-  // service line's remark (e.g. proof of a pre-existing stain/damage noticed
-  // at pickup), uploaded first via POST /files, same two-step convention as
-  // this model's own top-level mediaIds.
+  // Rider-confirmed real counts at the doorstep, by service — set when the
+  // rider confirms pickup (PATCH .../status {status: 'picked_up'}).
+  // Distinct from itemCategoryEstimate above: that one is the customer's
+  // pre-arrival guess, by category, collected at booking time; this is the
+  // rider's actual count, by service, collected at pickup time. serviceName
+  // is a snapshot, same denormalization convention as assignedRiderName
+  // alongside assignedRiderId below. deliverySpeed is optional — the real
+  // speed confirmed with the customer at the door, when the rider app sends
+  // it; store staff should build the real order against this, not the
+  // (possibly stale) pre-arrival estimate. mediaIds is optional — photo(s)
+  // the rider takes against this specific service line's remark (e.g.
+  // proof of a pre-existing stain/damage noticed at pickup), uploaded first
+  // via POST /files, same two-step convention as this model's own
+  // top-level mediaIds. bagId is mandatory going forward (validated in
+  // RiderPickupController.updateStatus, not enforced at the schema level
+  // since rows written before per-service bags existed have none) — one
+  // exclusive bag per service, never shared across two service lines on
+  // the same pickup.
   @property({type: 'array', itemType: 'object', postgresql: {dataType: 'jsonb'}})
   actualItemsByService?: Array<{
     serviceId: string;
@@ -222,6 +227,7 @@ export class PickupRequest extends Entity {
     deliverySpeed?: DeliveryType;
     remarks?: string;
     mediaIds?: string[];
+    bagId?: string;
   }>;
 
   // Set together when the rider marks status: pickup_unsuccessful — see

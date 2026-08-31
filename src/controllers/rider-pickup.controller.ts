@@ -885,20 +885,20 @@ export class RiderPickupController {
             required: ['status'],
             properties: {
               status: {type: 'string', enum: RIDER_STATUS_TRANSITIONS},
-              bagId: {
-                type: 'string',
-                format: 'uuid',
-                description: 'Required when status is picked_up — the bag from GET /rider/bags/lookup.',
-              },
               itemsByService: {
                 type: 'array',
-                description: 'Required when status is picked_up — real counts confirmed at the doorstep.',
+                description: 'Required when status is picked_up — real counts confirmed at the doorstep, one bag per service.',
                 items: {
                   type: 'object',
-                  required: ['serviceId', 'quantity'],
+                  required: ['serviceId', 'quantity', 'bagId'],
                   properties: {
                     serviceId: {type: 'string', format: 'uuid'},
                     quantity: {type: 'number', minimum: 1},
+                    bagId: {
+                      type: 'string',
+                      format: 'uuid',
+                      description: 'This service\'s own bag, from GET /rider/bags/lookup — every service needs its own; the same bag cannot be reused for a different service on this pickup.',
+                    },
                     deliverySpeed: {
                       type: 'string',
                       enum: Object.values(DeliveryType),
@@ -932,10 +932,10 @@ export class RiderPickupController {
     })
     body: {
       status: PickupRequestStatus;
-      bagId?: string;
       itemsByService?: Array<{
         serviceId: string;
         quantity: number;
+        bagId: string;
         deliverySpeed?: DeliveryType;
         remarks?: string;
         mediaIds?: string[];
@@ -960,15 +960,27 @@ export class RiderPickupController {
       throw new HttpErrors.BadRequest(`Cannot move a pickup request from ${current} to ${body.status}.`);
     }
 
-    // Confirming pickup now requires the real bag + real per-service counts
-    // scanned/entered at the doorstep — this is the one place that data
-    // gets attached, not a separate step.
+    // Confirming pickup now requires real per-service counts scanned/entered
+    // at the doorstep — this is the one place that data gets attached, not
+    // a separate step. Every service gets its own exclusive bag: no bag may
+    // be shared across two service lines on the same pickup.
     if (body.status === PickupRequestStatus.PICKED_UP) {
-      if (!body.bagId || !body.itemsByService?.length) {
-        throw new HttpErrors.BadRequest('bagId and itemsByService are required to confirm pickup.');
+      if (!body.itemsByService?.length) {
+        throw new HttpErrors.BadRequest('itemsByService is required to confirm pickup.');
+      }
+      if (body.itemsByService.some(i => !i.bagId)) {
+        throw new HttpErrors.BadRequest('Every service needs its own scanned bag.');
       }
 
-      const bag = await this.assertBagAvailable(body.bagId);
+      const bagIds = body.itemsByService.map(i => i.bagId);
+      if (new Set(bagIds).size !== bagIds.length) {
+        throw new HttpErrors.BadRequest(
+          'The same bag was scanned for more than one service — each service needs its own bag.',
+        );
+      }
+      for (const bagId of bagIds) {
+        await this.assertBagAvailable(bagId);
+      }
 
       const serviceIds = [...new Set(body.itemsByService.map(i => i.serviceId))];
       const services = await this.serviceRepository.find({
@@ -986,21 +998,26 @@ export class RiderPickupController {
         deliverySpeed: i.deliverySpeed,
         remarks: i.remarks,
         mediaIds: i.mediaIds,
+        bagId: i.bagId,
       }));
-      const totalItems = actualItemsByService.reduce((sum, i) => sum + i.quantity, 0);
 
       const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
       try {
         await this.pickupRequestRepository.updateById(
           id,
-          {status: body.status, bagId: body.bagId, actualItemsByService},
+          // bagId here is just the first/primary snapshot for back-compat
+          // display (see the model's doc comment) — the real breakdown is
+          // actualItemsByService[].bagId.
+          {status: body.status, bagId: actualItemsByService[0].bagId, actualItemsByService},
           {transaction: tx},
         );
-        await this.bagRepository.updateById(
-          bag.id,
-          {status: BagStatus.IN_USE, itemCount: totalItems, currentPickupRequestId: id},
-          {transaction: tx},
-        );
+        for (const item of actualItemsByService) {
+          await this.bagRepository.updateById(
+            item.bagId,
+            {status: BagStatus.IN_USE, itemCount: item.quantity, currentPickupRequestId: id},
+            {transaction: tx},
+          );
+        }
         await tx.commit();
       } catch (error) {
         await tx.rollback();
@@ -1030,14 +1047,24 @@ export class RiderPickupController {
 
     await this.pickupRequestRepository.updateById(id, {status: body.status});
 
-    // Back at the store — release the bag this pickup was using, same
-    // shape as TransferController.receive()'s bag release.
-    if (body.status === PickupRequestStatus.RECEIVED_AT_STORE && pickupRequest.bagId) {
-      await this.bagRepository.updateById(pickupRequest.bagId, {
-        status: BagStatus.AVAILABLE,
-        itemCount: 0,
-        currentPickupRequestId: null as unknown as string,
-      });
+    // Back at the store — release every bag this pickup was using, same
+    // shape as TransferController.receive()'s bag release. One bag per
+    // service now, so this can be more than just the legacy top-level
+    // bagId — collect every actualItemsByService line's bagId too (a Set
+    // collapses the expected overlap where bagId is just the first
+    // service's bag).
+    if (body.status === PickupRequestStatus.RECEIVED_AT_STORE) {
+      const bagIdsToRelease = new Set<string>();
+      if (pickupRequest.bagId) bagIdsToRelease.add(pickupRequest.bagId);
+      (pickupRequest.actualItemsByService ?? []).forEach(line => line.bagId && bagIdsToRelease.add(line.bagId));
+
+      for (const bagId of bagIdsToRelease) {
+        await this.bagRepository.updateById(bagId, {
+          status: BagStatus.AVAILABLE,
+          itemCount: 0,
+          currentPickupRequestId: null as unknown as string,
+        });
+      }
     }
 
     return {message: 'Pickup request status updated.'};
