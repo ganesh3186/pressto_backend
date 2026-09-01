@@ -57,6 +57,7 @@ export interface EligibleCouponDisplay {
   discountType: string;
   discountValue: number;
   maxDiscountAmount?: number;
+  minQualifyingItems?: number;
   endDate: string;
 }
 
@@ -165,6 +166,33 @@ export class CouponService {
       if (coupon.maxDiscountAmount != null) {
         discountAmount = Math.min(discountAmount, roundRupee(coupon.maxDiscountAmount));
       }
+    } else if (coupon.discountType === CouponDiscountType.CHEAPEST_ITEM_FREE) {
+      // Counted by quantity, not by line — a qualifying qty-3 line is 3
+      // items toward the minimum, same granularity used to find the
+      // cheapest unit below.
+      const qualifyingUnitCount = qualifyingItemIndexes.reduce(
+        (sum, idx) => sum + (Number(input.items[idx].quantity) || 0),
+        0,
+      );
+      const minRequired = coupon.minQualifyingItems && coupon.minQualifyingItems > 0 ? coupon.minQualifyingItems : 1;
+      if (qualifyingUnitCount < minRequired) {
+        return fail(`This coupon needs at least ${minRequired} qualifying item(s) in the order.`);
+      }
+
+      // Per-unit price of each qualifying line (totalPrice is the whole
+      // line, quantity included — units within one line share the same
+      // price, so comparing per-line per-unit prices is equivalent to
+      // comparing every individual unit without actually expanding the
+      // list). The cheapest single unit anywhere in scope is freed.
+      let cheapestUnitPrice = Infinity;
+      for (const idx of qualifyingItemIndexes) {
+        const line = input.items[idx];
+        const qty = Number(line.quantity) || 0;
+        if (qty <= 0) continue;
+        const unitPrice = Number(line.totalPrice) / qty;
+        if (unitPrice < cheapestUnitPrice) cheapestUnitPrice = unitPrice;
+      }
+      discountAmount = Number.isFinite(cheapestUnitPrice) ? Math.round(cheapestUnitPrice * 100) / 100 : 0;
     } else {
       discountAmount = Math.min(roundRupee(coupon.discountValue), eligibleSubtotal);
     }
@@ -218,6 +246,7 @@ export class CouponService {
         discountType: coupon.discountType,
         discountValue: coupon.discountValue,
         maxDiscountAmount: coupon.maxDiscountAmount,
+        minQualifyingItems: coupon.minQualifyingItems,
         endDate: coupon.endDate,
       });
     }

@@ -22,6 +22,7 @@ interface CouponBody {
   discountType: CouponDiscountType;
   discountValue: number;
   maxDiscountAmount?: number;
+  minQualifyingItems?: number;
   startDate: string;
   endDate: string;
   maxUsesPerCustomer?: number;
