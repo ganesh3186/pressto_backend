@@ -227,7 +227,7 @@ cutoff for that day.
 
 ## Pickup requests
 
-### `GET /rider/pickup-requests?tab=pending|completed`
+### `GET /rider/pickup-requests?tab=pending|completed&date=<optional>`
 
 The app's two tabs:
 
@@ -238,6 +238,12 @@ The app's two tabs:
 
 `?status=<exact value>` still works if a specific single status is
 ever needed instead of a bucket (e.g. `cancelled`).
+
+`?date=2026-08-25` restricts to pickups **requested** for that one day
+(`requestedDate`, not `assignedAt`) — combines with `tab`/`status`, doesn't
+replace them. Useful for a day-picker view instead of one long list.
+Without it, every matching pickup is returned regardless of date, same as
+before.
 
 ```json
 [

@@ -190,12 +190,14 @@ empty.
 ## 4. The rider's own assigned pickups
 
 ```
-GET /rider/pickup-requests?status=<optional>
+GET /rider/pickup-requests?status=<optional>&date=<optional>
 ```
 Without `status`, returns only the active ones (`rider_assigned`,
 `out_for_pickup`, or `arrived_at_pickup`) — the working list. Pass `status`
 explicitly to see `picked_up`/`received_at_store`/etc. history instead.
-Ordered `assignedAt DESC`.
+Ordered `assignedAt DESC`. `date=2026-08-25` restricts to pickups
+**requested** for that one day (`requestedDate`) — combines with
+status/tab, doesn't replace it.
 
 (This endpoint also accepts `tab=pending|completed` as a bucket shorthand
 for the same split — see `RIDER_PICKUP_API.md` for the current, fuller

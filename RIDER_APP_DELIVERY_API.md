@@ -30,11 +30,15 @@ delivery record — so the two can't drift apart.
 ## 2. The rider's own assigned deliveries
 
 ```
-GET /rider/deliveries?status=<optional>
+GET /rider/deliveries?status=<optional>&date=<optional>
 ```
 Without `status`, returns only the active ones (`assigned` or
 `out_for_delivery`) — the working list. Pass `status` explicitly (e.g.
 `completed`) to see history instead. Ordered `assignedAt DESC`.
+
+`date=2026-08-25` restricts to deliveries **scheduled** for that one day
+(`deliveryDate`) — combines with `status`, doesn't replace it. Without it,
+every matching delivery is returned regardless of date, same as before.
 
 **Response `200`**
 ```json

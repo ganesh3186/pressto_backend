@@ -568,6 +568,12 @@ export class RiderPickupController {
     // confirmed receipt yet. Omitting both (or tab=pending) is Pending —
     // the original default, kept so existing callers don't need to change.
     @param.query.string('tab') tab?: 'pending' | 'completed',
+    // Restricts to pickups requested for one specific day (requestedDate,
+    // not assignedAt) — e.g. the rider app's own day picker. Combines with
+    // status/tab, doesn't replace them. requestedDate is stored date-only
+    // (see rider-performance.controller.ts), so an exact/between-same-day
+    // match is exact, no end-of-day boundary math needed.
+    @param.query.string('date') date?: string,
   ): Promise<PickupRequest[]> {
     const rider = await this.resolveActiveRider(currentUser);
 
@@ -596,6 +602,7 @@ export class RiderPickupController {
         assignedRiderId: rider.id,
         isDeleted: false,
         ...statusWhere,
+        ...(date ? {requestedDate: {between: [date, date]}} : {}),
       } as object,
       order: ['assignedAt DESC'],
     });

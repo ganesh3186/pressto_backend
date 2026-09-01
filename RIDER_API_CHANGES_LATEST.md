@@ -2,10 +2,11 @@
 
 Changes for the rider app: optional photos on a pickup's actual-service
 remark, a mandatory bag-scan gate before starting transit on an interstore
-transfer, one exclusive bag per service on pickup confirmation, and a
-QR/code-scan confirm for rider-to-rider cash handover. §5 is not a change
-— it's the pre-existing "handover orders" flow, included as a reference
-since it's the same code/QR pattern as the cash-handover change in §4.
+transfer, one exclusive bag per service on pickup confirmation, a
+QR/code-scan confirm for rider-to-rider cash handover, and a date filter on
+the pickup-requests/deliveries lists. §5 is not a change — it's the
+pre-existing "handover orders" flow, included as a reference since it's the
+same code/QR pattern as the cash-handover change in §4.
 
 ---
 
@@ -228,3 +229,27 @@ code, no id needed up front. Confirming reassigns each pickup to you
 
 Full reference (incl. store-side receive, and the separate "raise to
 support" escalation flow in the same doc): `RIDER_APP_PICKUP_HANDOVER_API.md`.
+
+---
+
+## 6. Date filter on the pickup-requests and deliveries lists
+
+Both of the rider app's own job lists now accept an optional `date`, so a
+day-picker view is possible instead of one long undated list. Combines
+with the existing `status`/`tab` params, doesn't replace them.
+
+```
+GET /rider/pickup-requests?date=2026-08-25
+```
+Restricts to pickups **requested** for that day (`requestedDate`).
+
+```
+GET /rider/deliveries?date=2026-08-25
+```
+Restricts to deliveries **scheduled** for that day (`deliveryDate`).
+
+Omit `date` on either and nothing changes — every matching job is
+returned regardless of date, same as before this change.
+
+Docs updated: `RIDER_PICKUP_API.md`, `RIDER_APP_PICKUP_API.md`,
+`RIDER_APP_DELIVERY_API.md`.

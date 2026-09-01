@@ -93,6 +93,14 @@ export class RiderDeliveryController {
   async myDeliveries(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('status') status?: DeliveryStatus,
+    // Restricts to deliveries scheduled for one specific day (deliveryDate,
+    // not assignedAt) — e.g. the rider app's own day picker. Combines with
+    // status, doesn't replace it. Unlike PickupRequest.requestedDate,
+    // deliveryDate is a real timestamp (see rider-performance.controller.ts),
+    // so the upper bound needs pushing to the end of the day — a plain
+    // same-day `between` would silently exclude any record with a
+    // time-of-day component.
+    @param.query.string('date') date?: string,
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
     const deliveries = await this.deliveryRepository.find({
@@ -102,6 +110,7 @@ export class RiderDeliveryController {
         ...(status
           ? {status}
           : {status: {inq: [DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY]}}),
+        ...(date ? {deliveryDate: {between: [date, `${date}T23:59:59.999Z`]}} : {}),
       } as object,
       order: ['assignedAt DESC'],
     });
