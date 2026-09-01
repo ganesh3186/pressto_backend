@@ -13,6 +13,8 @@ import {DeliveryStatus} from '../models/delivery-status.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
+import {Rider} from '../models/rider.model';
+import {RiderCashHandover} from '../models/rider-cash-handover.model';
 import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
 import {RiderCashHandoverTargetType} from '../models/rider-cash-handover-target-type.enum';
 import {
@@ -853,6 +855,44 @@ export class RiderDeliveryController {
     const rider = await this.resolveActiveRider(currentUser);
     const handover = await this.riderCashHandoverRepository.findOne({where: {id, isDeleted: false}});
     if (!handover) throw new HttpErrors.NotFound('Handover not found.');
+    return this.doConfirmIncomingHandover(handover, rider, currentUser);
+  }
+
+  // ─── Confirm receipt by scanning the sender's QR (code-based) ─────────────
+  // Same effect as the id-based confirm above, but resolves the batch by its
+  // handoverCode instead of an id — lets the receiver scan the sender's QR
+  // cold, without already having the batch in their own incoming list. Same
+  // "resolves by code, not by knowing an id up front" convention as
+  // RiderPickupHandoverController.confirmIncomingHandover.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/cash-handovers/confirm')
+  @response(200, {description: 'Cash handover confirmed received'})
+  async confirmIncomingHandoverByCode(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {type: 'object', required: ['code'], properties: {code: {type: 'string'}}},
+        },
+      },
+    })
+    body: {code: string},
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const handover = await this.riderCashHandoverRepository.findOne({
+      where: {handoverCode: body.code, isDeleted: false} as object,
+    });
+    if (!handover) throw new HttpErrors.NotFound('No handover found for this code.');
+    return this.doConfirmIncomingHandover(handover, rider, currentUser);
+  }
+
+  private async doConfirmIncomingHandover(
+    handover: RiderCashHandover,
+    rider: Rider,
+    currentUser: UserProfile,
+  ): Promise<object> {
     if (handover.handoverToType !== RiderCashHandoverTargetType.RIDER || handover.handoverToRiderId !== rider.id) {
       throw new HttpErrors.Forbidden('This handover was not directed to you.');
     }
@@ -860,7 +900,9 @@ export class RiderDeliveryController {
       throw new HttpErrors.BadRequest(`This handover is already ${handover.status}.`);
     }
 
-    const items = await this.riderCashHandoverItemRepository.find({where: {riderCashHandoverId: id} as object});
+    const items = await this.riderCashHandoverItemRepository.find({
+      where: {riderCashHandoverId: handover.id} as object,
+    });
     for (const item of items) {
       await this.paymentTransactionRepository.updateById(
         item.paymentTransactionId,
@@ -868,7 +910,7 @@ export class RiderDeliveryController {
       );
     }
 
-    await this.riderCashHandoverRepository.updateById(id, {
+    await this.riderCashHandoverRepository.updateById(handover.id, {
       status: RiderCashHandoverStatus.CONFIRMED,
       confirmedAt: new Date(),
       confirmedBy: currentUser[securityId],

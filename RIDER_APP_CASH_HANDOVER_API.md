@@ -179,8 +179,20 @@ POST /rider/cash-handovers/{id}/confirm
 ```
 No body. `403` ("This handover was not directed to you.") if the handover
 isn't targeted at the calling rider. `400` if it isn't `pending` anymore.
+Use this when you already have the batch's `id` from §4's incoming list —
+i.e. a tap-to-confirm from a list you're already looking at.
 
-**Response `200`**: `{ "message": "Cash handover confirmed received." }`
+```
+POST /rider/cash-handovers/confirm
+{ "code": "482913" }
+```
+Same effect as the `{id}` route above, but resolves the batch by its
+6-digit `handoverCode` instead — for confirming by **scanning the sender's
+QR** cold, without the batch already being in front of you in the incoming
+list. Same `403`/`400` behavior as above; `404` if no batch matches the
+code. This is the route to use for an actual QR scan.
+
+**Response `200`** (either route): `{ "message": "Cash handover confirmed received." }`
 
 **Important — this is not a final settlement.** Confirming reassigns each
 underlying `PaymentTransaction` to *you* (`riderId` + back to
@@ -203,7 +215,7 @@ store-targeted handover ever marks a transaction truly settled
 **Handing cash to another rider/van (e.g. mid-route consolidation):**
 1. `GET /rider/cash-handovers/pending-items` → pick items.
 2. `POST /rider/cash-handovers` with `handoverToType: "rider"` and the chosen `handoverToRiderId`.
-3. The **receiving** rider sees it via `GET /rider/cash-handovers/incoming?tab=pending` and calls `POST /rider/cash-handovers/{id}/confirm`.
+3. The **receiving** rider either scans the sender's QR and calls `POST /rider/cash-handovers/confirm` with the scanned `code`, or — if they're already looking at their own `GET /rider/cash-handovers/incoming?tab=pending` list — taps the entry and calls `POST /rider/cash-handovers/{id}/confirm` instead.
 4. The cash now shows up in the receiving rider's own `pending-items` (§1) — they carry it forward from here, eventually handing it to a store the same way.
 
 Everything here is immediately visible to the admin "Cash Pending" screen
