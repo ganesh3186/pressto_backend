@@ -188,22 +188,27 @@ whoever's integrating §3 above has the whole "handover a batch, get a
 code, receiver scans it" picture in one place, since it's the exact same
 pattern applied to picked-up garments instead of cash.
 
-A rider batches several of their own `picked_up` pickup requests, picks
-who it's going to, and submits:
+**This is bulk, not one-at-a-time**: the app lets the rider multi-select
+several eligible pickups, then sends all of them in a single call — one
+resulting `handoverCode`/QR covers the whole batch, and the receiver's
+single scan/confirm reassigns every pickup in it at once, not one scan
+per garment.
 
 ```
 GET /rider/pickup-requests/handover-eligible
 ```
-Your own `picked_up` pickups not already sitting in a pending batch.
+Your own `picked_up` pickups not already sitting in a pending batch —
+multi-select from this list.
 
 ```
 POST /rider/pickup-handovers
-{ "pickupRequestIds": ["..."], "handoverToType": "store", "handoverToStoreId": "..." }
+{ "pickupRequestIds": ["uuid-1", "uuid-2", "uuid-3"], "handoverToType": "store", "handoverToStoreId": "..." }
 ```
 or `"handoverToType": "rider"` + `"handoverToRiderId"` for a rider/van
 target (covers both "Rider" and "Van" in the app UI — same field,
-distinguished by that rider's own `riderType`). Returns a `handoverCode` —
-show it as text + QR.
+distinguished by that rider's own `riderType`). `pickupRequestIds` takes
+as many as the rider selected — one call, one `handoverCode` for the
+whole batch. Returns that code — show it as text + QR.
 
 ```
 GET /rider/pickup-handovers/incoming?tab=pending|completed
