@@ -349,4 +349,65 @@ export class CouponController {
   ): Promise<object> {
     return this.couponService.evaluate(body);
   }
+
+  // ─── Referral preview (New Order screen, before submission) ───────────────
+  // A referral coupon auto-applies server-side at actual order creation
+  // (OrderService.createOrder) with no code for the operator to type in —
+  // so without this, the New Order screen's own running total would have
+  // no way to know a discount is coming, and would show/collect a
+  // different amount than what the order actually gets created with. This
+  // lets the screen check, up front, whether the selected customer has one
+  // pending and price it into the visible total before the operator ever
+  // hits submit. Never accepts an arbitrary coupon code from the client —
+  // it only ever resolves whatever this customer is already attached to
+  // (see evaluateReferralCoupon), so this can't be used to sneak a
+  // referral coupon's discount onto an unrelated checkout.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['coupon:read']})
+  @post('/coupons/referral-preview')
+  @response(200, {description: "Preview of the selected customer's referral coupon, if any applies"})
+  async referralPreview(
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['customerId', 'storeId'],
+            properties: {
+              customerId: {type: 'string', format: 'uuid'},
+              storeId: {type: 'string', format: 'uuid'},
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['serviceId', 'itemId', 'quantity', 'totalPrice'],
+                  properties: {
+                    serviceId: {type: 'string'},
+                    itemId: {type: 'string'},
+                    quantity: {type: 'number'},
+                    totalPrice: {type: 'number'},
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {
+      customerId: string;
+      storeId: string;
+      items?: {serviceId: string; itemId: string; quantity: number; totalPrice: number}[];
+    },
+  ): Promise<object> {
+    const customer = await this.customerRepository.findOne({
+      where: {id: body.customerId, isDeleted: false} as object,
+    });
+    if (!customer) return {applicable: false};
+
+    const evaluation = await this.couponService.evaluateReferralCoupon(customer, body.storeId, body.items ?? []);
+    if (!evaluation) return {applicable: false};
+    return {applicable: true, coupon: evaluation};
+  }
 }

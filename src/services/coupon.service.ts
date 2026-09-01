@@ -10,6 +10,7 @@ import {
   CouponRepository,
   CustomerLabelAssignmentRepository,
   ItemRepository,
+  OrderRepository,
   ServiceRepository,
   StoreRepository,
 } from '../repositories';
@@ -103,6 +104,7 @@ export class CouponService {
     @repository(ClusterRepository) private clusterRepo: ClusterRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
+    @repository(OrderRepository) private orderRepo: OrderRepository,
   ) {}
 
   async evaluate(input: CouponEvaluationInput): Promise<CouponEvaluationResult> {
@@ -253,15 +255,22 @@ export class CouponService {
 
   /**
    * Auto-applies a customer's attached referral coupon (see
-   * resolveReferralCoupon / Customer.referredByCouponId) — called by
-   * OrderService.createOrder only on a customer's very first order, and
-   * only when no coupon code was explicitly provided (an explicit code
-   * always wins, same "does not stack" rule as the standing discount).
+   * resolveReferralCoupon / Customer.referredByCouponId) — called both by
+   * OrderService.createOrder (at actual redemption time, only when no
+   * coupon code was explicitly provided — an explicit code always wins,
+   * same "does not stack" rule as the standing discount) and by
+   * CouponController.referralPreview (the New Order screen's live preview,
+   * so the discount is visible and already priced in *before* submission —
+   * not a surprise the frontend's own total didn't account for). Both
+   * callers must see the same answer, so "only ever the customer's very
+   * first order" is owned here, not duplicated at each call site.
+   *
    * Returns undefined when the customer has no referral coupon attached,
-   * or when it exists but doesn't evaluate cleanly against this order
-   * (wrong scope, expired, usage cap already spent) — unlike a manually-
-   * typed code, a referral mismatch is never surfaced as an error; the
-   * caller just falls back to the customer's standing discount instead.
+   * this isn't their first order, or the coupon exists but doesn't
+   * evaluate cleanly against this order (wrong scope, expired, usage cap
+   * already spent) — unlike a manually-typed code, a referral mismatch is
+   * never surfaced as an error; the caller just falls back to the
+   * customer's standing discount instead.
    */
   async evaluateReferralCoupon(
     customer: Customer,
@@ -269,6 +278,13 @@ export class CouponService {
     items: CouponEvaluationItem[],
   ): Promise<CouponEvaluationSuccess | undefined> {
     if (!customer.referredByCouponId) return undefined;
+
+    const priorOrderCount = await this.orderRepo.count({
+      customerId: customer.id,
+      isDeleted: false,
+    } as object);
+    if (priorOrderCount.count > 0) return undefined;
+
     const coupon = await this.couponRepo.findOne({
       where: {id: customer.referredByCouponId, isActive: true, isDeleted: false} as object,
     });
