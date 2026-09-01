@@ -579,9 +579,16 @@ export class OrderService {
     });
     if (!group?.discountPercentage) return {discountAmount: 0, discountType: 'none'};
 
-    let discountAmount = roundRupee((subtotal * Number(group.discountPercentage)) / 100);
+    // Rounded to 2 decimals, not a whole rupee — a component amount, same
+    // rule applyCustomerDiscount's percentage branch above already follows.
+    // This used to round to a whole rupee (roundRupee), which could silently
+    // diverge from the frontend's own 2-decimal preview by up to ~₹0.50,
+    // then get rejected at submission as "total collected exceeds order
+    // total" once the two totals landed on opposite sides of a rupee
+    // boundary.
+    let discountAmount = Math.round(((subtotal * Number(group.discountPercentage)) / 100) * 100) / 100;
     if (group.maxDiscountAmount != null) {
-      discountAmount = Math.min(discountAmount, roundRupee(Number(group.maxDiscountAmount)));
+      discountAmount = Math.min(discountAmount, Math.round(Number(group.maxDiscountAmount) * 100) / 100);
     }
     return {discountAmount, discountType: 'percentage'};
   }
