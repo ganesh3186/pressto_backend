@@ -3,7 +3,9 @@
 Changes for the rider app: optional photos on a pickup's actual-service
 remark, a mandatory bag-scan gate before starting transit on an interstore
 transfer, one exclusive bag per service on pickup confirmation, and a
-QR/code-scan confirm for rider-to-rider cash handover.
+QR/code-scan confirm for rider-to-rider cash handover. §5 is not a change
+— it's the pre-existing "handover orders" flow, included as a reference
+since it's the same code/QR pattern as the cash-handover change in §4.
 
 ---
 
@@ -176,3 +178,48 @@ confirmed) behavior on both routes; the new one also returns `404` if no
 pending batch matches the code.
 
 Docs updated: `RIDER_APP_CASH_HANDOVER_API.md`.
+
+---
+
+## 5. Handover orders — already built, unchanged (included for reference)
+
+Not a change in this batch — nothing here was touched. Included so
+whoever's integrating §3 above has the whole "handover a batch, get a
+code, receiver scans it" picture in one place, since it's the exact same
+pattern applied to picked-up garments instead of cash.
+
+A rider batches several of their own `picked_up` pickup requests, picks
+who it's going to, and submits:
+
+```
+GET /rider/pickup-requests/handover-eligible
+```
+Your own `picked_up` pickups not already sitting in a pending batch.
+
+```
+POST /rider/pickup-handovers
+{ "pickupRequestIds": ["..."], "handoverToType": "store", "handoverToStoreId": "..." }
+```
+or `"handoverToType": "rider"` + `"handoverToRiderId"` for a rider/van
+target (covers both "Rider" and "Van" in the app UI — same field,
+distinguished by that rider's own `riderType`). Returns a `handoverCode` —
+show it as text + QR.
+
+```
+GET /rider/pickup-handovers/incoming?tab=pending|completed
+```
+Batches directed at you by another rider (only ever non-empty for a
+rider/van target — a store-targeted batch is received by store staff on
+the admin panel instead).
+
+```
+POST /rider/pickup-handovers/confirm
+{ "code": "954229" }
+```
+Scan the sender's QR (or type the code manually) — resolves the batch by
+code, no id needed up front. Confirming reassigns each pickup to you
+(`assignedRiderId`); it immediately reappears in your own
+`handover-eligible` list above, ready to be handed off again.
+
+Full reference (incl. store-side receive, and the separate "raise to
+support" escalation flow in the same doc): `RIDER_APP_PICKUP_HANDOVER_API.md`.
