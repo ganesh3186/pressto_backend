@@ -52,11 +52,14 @@ export class RiderAssignmentService {
    * roster is checked against, not "right now" (a job assigned this
    * morning for a 4–6pm slot must check the rider's roster for 4–6pm, not
    * 10am). Given a slot id, uses that PickupDeliverySlot's startTime/
-   * endTime combined with dateStr's date. Without one: a caller that
-   * already has a precise instant (e.g. Order.deliveryDate, a full
-   * date-time) should pass it as fallbackInstant so the check stays tight;
-   * a caller with only a bare date (e.g. PickupRequest's date-only
-   * scheduledDate) should omit it, falling back to the whole day.
+   * endTime combined with dateStr's date.
+   *
+   * Without a slot: an explicit fallbackInstant wins when given (a caller
+   * that already resolved a precise moment itself). Otherwise dateStr
+   * itself decides — a full ISO date-time (e.g. Order.deliveryDate) is
+   * precise enough to use directly as the instant; a bare date (e.g.
+   * PickupRequest's date-only scheduledDate) has no time to go on, so it
+   * falls back to treating the whole day as the window.
    */
   async resolveSlotWindow(
     dateStr: string,
@@ -75,6 +78,12 @@ export class RiderAssignmentService {
       }
     }
     if (fallbackInstant != null) return {start: fallbackInstant, end: fallbackInstant};
+
+    const hasTimeComponent = dateStr.length > 10 && /t/i.test(dateStr);
+    if (hasTimeComponent) {
+      const parsed = new Date(dateStr).getTime();
+      if (Number.isFinite(parsed)) return {start: parsed, end: parsed};
+    }
     return {
       start: this.edgeAt(dateStr, undefined, '00:00'),
       end: this.edgeAt(dateStr, undefined, '23:59'),
