@@ -386,7 +386,11 @@ export class PickupRequestController {
     },
   ): Promise<object> {
     const rider = await this.assertRiderAssignable(body.riderId);
-    await this.riderAssignmentService.assertRiderAvailable(body.riderId);
+    // Roster is the only availability gate now — a rider with other active
+    // pickups/deliveries is assignable without limit; only their roster for
+    // this specific job's own scheduled window (not "right now") blocks it.
+    const slotWindow = await this.riderAssignmentService.resolveSlotWindow(body.scheduledDate, body.slotId);
+    await this.riderAssignmentService.assertRiderRostered(body.riderId, slotWindow);
     const store = await this.storeRepository.findOne({where: {id: body.storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
 

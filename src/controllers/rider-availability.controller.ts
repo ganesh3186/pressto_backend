@@ -1,6 +1,7 @@
 import {authenticate} from '@loopback/authentication';
+import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
-import {get, response} from '@loopback/rest';
+import {get, param, response} from '@loopback/rest';
 import {authorize} from '../authorization';
 import {OrderStatus} from '../models/order-status.enum';
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
@@ -13,6 +14,7 @@ import {
   RiderRosterRepository,
   UsersRepository,
 } from '../repositories';
+import {RiderAssignmentService} from '../services/rider-assignment.service';
 
 // Derived availability states. `on-delivery` covers BOTH an active pickup run
 // (rider_assigned/out_for_pickup on a PickupRequest) and an active delivery
@@ -48,6 +50,8 @@ export class RiderAvailabilityController {
     private pickupRequestRepository: PickupRequestRepository,
     @repository(OrderRepository)
     private orderRepository: OrderRepository,
+    @inject('services.rider-assignment')
+    private riderAssignmentService: RiderAssignmentService,
   ) {}
 
   private edgeAt(date: string, time: string | undefined, fallback: string): number {
@@ -189,5 +193,38 @@ export class RiderAvailabilityController {
     });
 
     return {riders: rows};
+  }
+
+  // ─── Availability for a specific job slot (assignment dropdowns) ──────────
+  // The dashboard above answers "who's free right now" — this answers "who's
+  // free for THIS scheduled window", which is what a pickup/delivery
+  // assignment dropdown actually needs (a job assigned this morning for a
+  // 4–6pm slot must check the rider's roster for 4–6pm, not right now).
+  // Roster is the only gate here — a rider already busy with another active
+  // pickup/delivery still counts as available (multi-job capacity; see
+  // RiderAssignmentService.assertRiderRostered, the same check the actual
+  // assignment endpoints enforce, so this list and what submission accepts
+  // can never disagree).
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['rider:read']})
+  @get('/riders/availability-for-slot')
+  @response(200, {description: 'Which active riders are rostered off for the given date/slot'})
+  async availabilityForSlot(
+    @param.query.string('date') date: string,
+    @param.query.string('slotId') slotId?: string,
+  ): Promise<object> {
+    const riders = await this.riderRepository.find({
+      where: {isDeleted: false, isActive: true} as object,
+      fields: {id: true} as object,
+    });
+    if (!riders.length) return {blockedRiderIds: []};
+
+    const window = await this.riderAssignmentService.resolveSlotWindow(date, slotId);
+    const blocking = await this.riderAssignmentService.findRosterBlockingEntries(
+      riders.map(r => r.id),
+      window,
+    );
+    return {blockedRiderIds: [...blocking.keys()]};
   }
 }

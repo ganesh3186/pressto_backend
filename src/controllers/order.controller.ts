@@ -481,7 +481,17 @@ export class OrderController {
     const rider = await this.riderRepository.findOne({where: {id: body.riderId, isDeleted: false}});
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
     if (!rider.isActive) throw new HttpErrors.BadRequest('This rider is inactive.');
-    await this.riderAssignmentService.assertRiderAvailable(body.riderId);
+    // Roster is the only availability gate now — a rider with other active
+    // pickups/deliveries is assignable without limit; only their roster for
+    // this specific delivery's own scheduled window (not "right now") blocks
+    // it. deliveryDate is already a precise date-time, so that's the
+    // fallback instant when no deliverySlotId is given.
+    const slotWindow = await this.riderAssignmentService.resolveSlotWindow(
+      body.deliveryDate,
+      body.deliverySlotId,
+      new Date(body.deliveryDate).getTime(),
+    );
+    await this.riderAssignmentService.assertRiderRostered(body.riderId, slotWindow);
 
     const orders = await this.orderRepository.find({
       where: {id: {inq: body.orderIds}, isDeleted: false} as object,
