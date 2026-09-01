@@ -96,6 +96,20 @@ export class Customer extends Entity {
   @property({type: 'number', default: 0})
   loyaltyPoints?: number;
 
+  // Set once at registration — either the public self-registration endpoint
+  // (CustomerAuthController.register) or the admin panel's create-customer
+  // flow (CustomerController.create) — when a valid referral coupon code
+  // was supplied. Never changed afterward. Plain uuid, not @belongsTo, same
+  // convention as customerGroupId above. Drives the one-time referral
+  // discount auto-applied to this customer's first order (see
+  // OrderService.createOrder); the coupon's own maxUsesPerCustomer still
+  // enforces the one-time-only rule, same as any other coupon.
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  referredByCouponId?: string;
+
   @property({type: 'string'})
   defaultDiscountType?: string;
 

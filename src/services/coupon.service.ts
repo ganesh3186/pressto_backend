@@ -2,6 +2,7 @@ import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {Coupon} from '../models/coupon.model';
 import {CouponDiscountType} from '../models/coupon-discount-type.enum';
+import {Customer} from '../models/customer.model';
 import {
   ClusterRepository,
   CouponCustomerRepository,
@@ -25,6 +26,12 @@ export interface CouponEvaluationInput {
   customerId: string;
   storeId: string;
   items: CouponEvaluationItem[];
+  // Set only by OrderService.createOrder's own referral auto-apply branch —
+  // lets an isReferralCode coupon through evaluate() for that one internal
+  // call, while every manual-entry path (POST /coupons/validate, and a
+  // directly-typed input.couponCode at order creation) leaves this unset
+  // and gets rejected above.
+  allowReferralCoupon?: boolean;
 }
 
 export interface CouponEvaluationSuccess {
@@ -104,6 +111,16 @@ export class CouponService {
       where: {code: normalizedCode, isActive: true, isDeleted: false} as object,
     });
     if (!coupon) return fail('Coupon not found.');
+
+    // A referral coupon is only ever attached via registration
+    // (CustomerAuthController.register / CustomerController.create →
+    // resolveReferralCoupon below) and auto-applied on the referred
+    // customer's first order (OrderService.createOrder, passing
+    // allowReferralCoupon: true) — never typed in manually at checkout,
+    // by staff or the customer themselves.
+    if (coupon.isReferralCode && !input.allowReferralCoupon) {
+      return fail('This coupon can only be applied through referral registration, not entered manually.');
+    }
 
     if (!this.isWithinValidityWindow(coupon)) return fail('This coupon is not currently valid.');
 
@@ -211,6 +228,63 @@ export class CouponService {
   }
 
   /**
+   * Resolves an influencer-shared referral code to the coupon it's assigned
+   * to — called at registration time, by CustomerAuthController.register()
+   * (public self-registration) and CustomerController.create() (admin
+   * panel), before the new Customer row is created. Only ever matches an
+   * isReferralCode coupon; a normal checkout coupon's code is never valid
+   * here (and a referral coupon's code is never valid at checkout — see
+   * evaluate()'s allowReferralCoupon guard above). Returns null when
+   * nothing valid matches (wrong code, inactive, deleted, outside its
+   * validity window, or not actually a referral coupon) — both current
+   * callers reject registration outright on null rather than silently
+   * proceeding without attaching it.
+   */
+  async resolveReferralCoupon(referralCode: string): Promise<Coupon | null> {
+    const normalizedCode = referralCode.trim().toUpperCase();
+    if (!normalizedCode) return null;
+    const coupon = await this.couponRepo.findOne({
+      where: {code: normalizedCode, isReferralCode: true, isActive: true, isDeleted: false} as object,
+    });
+    if (!coupon) return null;
+    if (!this.isWithinValidityWindow(coupon)) return null;
+    return coupon;
+  }
+
+  /**
+   * Auto-applies a customer's attached referral coupon (see
+   * resolveReferralCoupon / Customer.referredByCouponId) — called by
+   * OrderService.createOrder only on a customer's very first order, and
+   * only when no coupon code was explicitly provided (an explicit code
+   * always wins, same "does not stack" rule as the standing discount).
+   * Returns undefined when the customer has no referral coupon attached,
+   * or when it exists but doesn't evaluate cleanly against this order
+   * (wrong scope, expired, usage cap already spent) — unlike a manually-
+   * typed code, a referral mismatch is never surfaced as an error; the
+   * caller just falls back to the customer's standing discount instead.
+   */
+  async evaluateReferralCoupon(
+    customer: Customer,
+    storeId: string,
+    items: CouponEvaluationItem[],
+  ): Promise<CouponEvaluationSuccess | undefined> {
+    if (!customer.referredByCouponId) return undefined;
+    const coupon = await this.couponRepo.findOne({
+      where: {id: customer.referredByCouponId, isActive: true, isDeleted: false} as object,
+    });
+    if (!coupon) return undefined;
+
+    const evaluation = await this.evaluate({
+      couponCode: coupon.code,
+      customerId: customer.id,
+      storeId,
+      items,
+      allowReferralCoupon: true,
+    });
+    return evaluation.valid ? evaluation : undefined;
+  }
+
+  /**
    * Home-screen "active offers" list — every currently active, date-valid,
    * usage-available, audience-eligible coupon for this customer. No cart
    * exists yet, so item/service scope and discount amount are irrelevant
@@ -223,6 +297,10 @@ export class CouponService {
 
     const eligible: EligibleCouponDisplay[] = [];
     for (const coupon of candidates) {
+      // Referral coupons are never browsable/manually-appliable — they only
+      // ever get attached via registration (resolveReferralCoupon below)
+      // and auto-apply on that customer's first order.
+      if (coupon.isReferralCode) continue;
       if (!this.isWithinValidityWindow(coupon)) continue;
       if (await this.usageCapacityReason(coupon, customerId)) continue;
 

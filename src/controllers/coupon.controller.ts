@@ -23,6 +23,7 @@ interface CouponBody {
   discountValue: number;
   maxDiscountAmount?: number;
   minQualifyingItems?: number;
+  isReferralCode?: boolean;
   startDate: string;
   endDate: string;
   maxUsesPerCustomer?: number;

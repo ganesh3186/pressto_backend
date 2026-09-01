@@ -112,6 +112,17 @@ export class Coupon extends Entity {
   @property({type: 'array', itemType: 'string', postgresql: {dataType: 'jsonb'}})
   customerLabelIds?: string[];
 
+  // Marks this coupon as registration-only: an influencer is handed this
+  // coupon's own `code` to share, a new customer supplies it at
+  // registration (see CustomerAuthController.register / CustomerController
+  // .create), and it's auto-applied to that customer's first order (see
+  // OrderService.createOrder) — never manually typed at checkout, never
+  // shown in the general browse-offers list. discountType/discountValue
+  // work exactly the same as any other coupon; this only changes *how* the
+  // coupon gets attached to a customer, not what it discounts.
+  @property({type: 'boolean', default: false})
+  isReferralCode?: boolean;
+
   @property({type: 'boolean', default: true})
   isActive?: boolean;
 

@@ -27,6 +27,7 @@ import {
 import { CustomerPreference } from '../models/customer-preference.model';
 import { CustomerPreferenceHistory } from '../models/customer-preference-history.model';
 import { BcryptHasher } from '../services/hash.password.bcrypt';
+import { CouponService } from '../services/coupon.service';
 import { CustomerPreferenceService } from '../services/customer-preference.service';
 import { SecurityDepositService } from '../services/security-deposit.service';
 import { WalletService } from '../services/wallet.service';
@@ -64,6 +65,8 @@ export class CustomerController {
     private securityDepositService: SecurityDepositService,
     @inject('services.customer-preference')
     private preferenceService: CustomerPreferenceService,
+    @inject('services.coupon')
+    private couponService: CouponService,
   ) { }
 
   private async generateUniqueUsername(email: string | undefined, fullName: string): Promise<string> {
@@ -147,6 +150,10 @@ export class CustomerController {
               notes: { type: 'string' },
               defaultDiscountType: { type: 'string' },
               defaultDiscountValue: { type: 'number' },
+              referralCode: {
+                type: 'string',
+                description: 'An influencer-shared referral code, if this customer mentioned one — auto-applies that coupon to their first order.',
+              },
               linkExistingAccount: {
                 type: 'boolean',
                 description:
@@ -181,6 +188,7 @@ export class CustomerController {
       notes?: string;
       defaultDiscountType?: string;
       defaultDiscountValue?: number;
+      referralCode?: string;
       linkExistingAccount?: boolean;
     },
   ): Promise<object> {
@@ -230,6 +238,16 @@ export class CustomerController {
       }
     }
 
+    // Resolved before the transaction opens — an invalid referral code
+    // rejects the whole create call with a clear reason, rather than
+    // silently creating the customer without it.
+    let referralCouponId: string | undefined;
+    if (body.referralCode?.trim()) {
+      const referralCoupon = await this.couponService.resolveReferralCoupon(body.referralCode);
+      if (!referralCoupon) throw new HttpErrors.BadRequest('Invalid referral code.');
+      referralCouponId = referralCoupon.id;
+    }
+
     const customerRole = await this.resolveCustomerRole();
 
     const rawPassword = body.password ?? 'Pressto@1234';
@@ -275,6 +293,7 @@ export class CustomerController {
           notes: body.notes,
           defaultDiscountType: body.defaultDiscountType,
           defaultDiscountValue: body.defaultDiscountValue,
+          referredByCouponId: referralCouponId,
         },
         { transaction: tx },
       );

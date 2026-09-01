@@ -988,6 +988,27 @@ export class OrderService {
       });
       if (!evaluation.valid) throw new HttpErrors.BadRequest(evaluation.reason);
       couponResult = evaluation;
+    } else {
+      // No explicit code — auto-apply this customer's referral coupon
+      // (Customer.referredByCouponId, set at registration), but only on
+      // their very first order. Not retried on a later order if it
+      // doesn't happen to qualify here.
+      const priorOrderCount = await this.orderRepo.count({
+        customerId: input.customerId,
+        isDeleted: false,
+      } as object);
+      if (priorOrderCount.count === 0) {
+        couponResult = await this.couponService.evaluateReferralCoupon(
+          customer,
+          input.storeId,
+          itemPricings.map(p => ({
+            serviceId: p.serviceId,
+            itemId: p.itemId,
+            quantity: p.quantity,
+            totalPrice: p.totalPrice,
+          })),
+        );
+      }
     }
 
     const {discountAmount, discountType} = couponResult
