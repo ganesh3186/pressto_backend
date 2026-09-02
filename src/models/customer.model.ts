@@ -40,8 +40,8 @@ export class Customer extends Entity {
   @property({type: 'string', required: true})
   firstName: string;
 
-  @property({type: 'string', required: true})
-  lastName: string;
+  @property({type: 'string', required: false})
+  lastName?: string;
 
   @property({type: 'string'})
   email?: string;

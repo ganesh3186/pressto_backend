@@ -168,7 +168,7 @@ export class CustomerController {
     })
     body: {
       firstName: string;
-      lastName: string;
+      lastName?: string;
       countryCode: string;
       phone: string;
       email?: string;
@@ -262,8 +262,8 @@ export class CustomerController {
         ? existingUser
         : await this.usersRepository.create(
             {
-              fullName: `${body.firstName} ${body.lastName}`,
-              username: await this.generateUniqueUsername(body.email, `${body.firstName} ${body.lastName}`),
+              fullName: `${body.firstName} ${body.lastName && body.lastName}`,
+              username: await this.generateUniqueUsername(body.email, `${body.firstName} ${body.lastName && body.lastName}`),
               ...(body.email && { email: body.email }),
               countryCode: body.countryCode || '+91',
               phone: body.phone,
@@ -278,7 +278,7 @@ export class CustomerController {
           userId: user.id,
           customerCode,
           firstName: body.firstName,
-          lastName: body.lastName,
+          ...(body.lastName && {lastName: body.lastName}),
           ...(body.email && { email: body.email }),
           dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : undefined,
           customerEntityType: body.customerEntityType ?? 'individual',
