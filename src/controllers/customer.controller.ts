@@ -547,7 +547,10 @@ export class CustomerController {
               isActive: { type: 'boolean' },
               // customer fields
               firstName: { type: 'string' },
-              lastName: { type: 'string' },
+              lastName: { oneOf: [
+                {type: 'string'},
+                {type: 'null'},
+              ] },
               dateOfBirth: { type: 'string', format: 'date' },
               customerEntityType: { type: 'string', enum: ['individual', 'business'] },
               // customerTypeId: { type: 'string', format: 'uuid' },
@@ -577,7 +580,7 @@ export class CustomerController {
       phone?: string;
       isActive?: boolean;
       firstName?: string;
-      lastName?: string;
+      lastName?: string | null;
       dateOfBirth?: string;
       customerEntityType?: 'individual' | 'business';
       // customerTypeId?: string;
