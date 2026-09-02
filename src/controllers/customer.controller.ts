@@ -125,7 +125,7 @@ export class CustomerController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['firstName', 'lastName', 'countryCode', 'phone'],
+            required: ['firstName', 'countryCode', 'phone'],
             properties: {
               firstName: { type: 'string' },
               lastName: { type: 'string' },
