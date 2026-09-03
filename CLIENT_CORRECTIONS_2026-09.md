@@ -87,3 +87,28 @@ button.
 - Scope: Admin Panel
 - File: `src/sections/orders/order-invoice/order-invoice-dialog.js`
 - Commit: `26789da` (pressto-admin-panel)
+
+---
+
+## 4. "REVISED" label showing on order-summary print for every order
+
+**Status:** ✅ Fixed
+
+**Reported:** The "Print order summary" print (on the order challan) always
+showed "REVISED SERVICE ORDER" — even for orders that were never actually
+edited after creation. Should only say "REVISED" if the order was edited.
+
+**Root cause:** Item 3's revert made this button unconditionally print
+`REVISED_SERVICE_ORDER` — it never checked whether an edit had actually
+happened.
+
+**Fix:** Checks `orderDetails.statusHistory` for the specific, stable
+remark `updateOrderItems()` (the "Edit Order" action) always writes when it
+runs ("Items edited at counter..." — the only place order items get
+amended anywhere in the codebase). Prints plain `SERVICE_ORDER` when that
+never happened, `REVISED_SERVICE_ORDER` when it did. No backend change —
+`statusHistory` was already part of the order details response.
+
+- Scope: Admin Panel
+- File: `src/sections/orders/order-invoice/order-invoice-dialog.js`
+- Commit: `602d447` (pressto-admin-panel)
