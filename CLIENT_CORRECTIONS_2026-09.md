@@ -63,3 +63,27 @@ backend enforces). Refreshes the invoice on success so the Print button
 - Scope: Admin Panel
 - File: `src/sections/orders/order-invoice/order-invoice-dialog.js`
 - Commit: `168374f` (pressto-admin-panel)
+
+**Follow-up:** superseded item 1's approach — see item 3.
+
+---
+
+## 3. Two dedicated print buttons instead of one that switches behavior
+
+**Status:** ✅ Fixed
+
+**Requested:** Keep "Print order summary" always printing the
+order-summary/challan template, and have a separate "Print invoice" button
+that always prints the real tax invoice — rather than one button that
+silently switches behavior depending on invoice status (item 1's fix).
+
+**Fix:** Reverted "Print order summary" to unconditionally print
+`REVISED_SERVICE_ORDER`. Restored the "Print invoice" button (existed in
+code but was commented out, so unreachable) — wired to the existing
+`handlePrintTaxInvoice`, which already always shows "TAX INVOICE" with real
+numbers once an invoice has been generated via item 2's Generate Invoice
+button.
+
+- Scope: Admin Panel
+- File: `src/sections/orders/order-invoice/order-invoice-dialog.js`
+- Commit: `26789da` (pressto-admin-panel)
