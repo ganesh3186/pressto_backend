@@ -112,3 +112,39 @@ never happened, `REVISED_SERVICE_ORDER` when it did. No backend change —
 - Scope: Admin Panel
 - File: `src/sections/orders/order-invoice/order-invoice-dialog.js`
 - Commit: `602d447` (pressto-admin-panel)
+
+---
+
+## 5. "Total collected exceeds order total" — additional-service charges leaking across units
+
+**Status:** ✅ Fixed
+
+**Reported:** New Order screen showed Grand Total ₹2545 and submitted with
+that as the Cash payment amount; backend rejected with "Total collected
+(₹2545) exceeds order total (₹1651)" — a ₹894 gap, far too large to be a
+rounding issue.
+
+**User's own diagnosis (correct):** A "Shirt" line with 2 quantities had
+additional services ("Alter Large", "Darning Small") selected on only the
+first unit, but both units displayed ₹1033 on screen.
+
+**Root cause:** `buildChallanLineFromCartEntry()` (`new-order-pricing.js`)
+computed one shared `additionalServiceChargePerUnit` from the *union* of
+additional services selected anywhere on the line, then applied it
+uniformly to every unit's price — so a unit with no additional services of
+its own still got charged for ones only actually selected on a sibling
+unit. Confirmed via the real submitted payload: the second Shirt unit
+correctly had no `additionalServiceIds`, and backend's total (₹1651) was
+the correct one — this was a pure frontend overcharge. Math check: true
+base price of the addon-less unit is ₹192 (1033 − 402 − 439); that ₹841
+difference, after the order's 10% discount and 18% GST, is ₹893.14 ≈ the
+reported ₹894 gap.
+
+**Fix:** Each unit's additional-service charge is now computed from that
+unit's own `additionalServiceIds`, falling back to the line-level list
+only when a unit has none of its own — same "a unit's own selection wins"
+rule the backend already applies in `order.service.ts`'s `createOrder()`.
+
+- Scope: Admin Panel (backend was already correct — no backend change)
+- File: `src/utils/new-order-pricing.js`
+- Commit: `2ef8024` (pressto-admin-panel)
