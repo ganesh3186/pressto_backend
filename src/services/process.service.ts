@@ -317,6 +317,26 @@ export class ProcessService {
               'No process steps found for the services on this garment.',
             );
           } else {
+            // Processing disabled and nothing to check — same end state as
+            // the normal all-steps-completed path below, just without any
+            // steps to actually close out.
+            await this.garmentRepo.updateById(
+              garmentId,
+              { status: GarmentStatus.QUALITY_CHECK },
+              { transaction: tx },
+            );
+            await this.garmentStatusHistoryRepo.create(
+              {
+                id: v4(),
+                garmentId,
+                status: GarmentStatus.QUALITY_CHECK,
+                changedAt: now,
+                changedBy: performedBy,
+                remarks: 'Processing disabled — no process steps configured, marked done directly',
+              },
+              { transaction: tx },
+            );
+
             await tx.commit();
 
             // Roll the order status up now that this garment finished processing.
