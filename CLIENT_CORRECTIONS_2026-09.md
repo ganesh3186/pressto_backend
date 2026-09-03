@@ -32,3 +32,34 @@ the real one, matching the other button's own behavior.
 - Scope: Admin Panel
 - File: `src/sections/orders/order-invoice/order-invoice-dialog.js`
 - Commit: `865fb77` (pressto-admin-panel)
+
+**Follow-up found while fixing this:** even with the above fix, no order
+ever actually had a real invoice to switch to — see item 2.
+
+---
+
+## 2. No way to generate a real invoice for a regular order (delivered or not)
+
+**Status:** ✅ Fixed
+
+**Reported:** Follow-up to item 1 — for an order that's already delivered,
+how do you print its real tax invoice?
+
+**Root cause:** Traced every place an `Invoice` row can be created.
+`POST /orders/{orderId}/invoice/generate` (per-order tax invoice, gated to
+`ready`/`partially_dispatched`/`out_for_delivery`/`delivered`) was fully
+built on the backend, with a ready API wrapper (`generateOrderInvoice()` in
+`src/api/billing.js`) — but nothing in the admin panel UI ever called it.
+The only working invoice-creation path was the separate on-account/B2B
+consolidated-invoice flow (`customer-wallet-finance-panel.js`), which
+doesn't apply to a regular retail order at all. Net effect: no regular
+order — delivered or not — could ever get a real invoice through the UI.
+
+**Fix:** Added a "Generate Invoice" button to the Order Summary dialog,
+shown once the order is `ready`+ and has no invoice yet (same gate the
+backend enforces). Refreshes the invoice on success so the Print button
+(item 1's fix) immediately switches to the real tax invoice.
+
+- Scope: Admin Panel
+- File: `src/sections/orders/order-invoice/order-invoice-dialog.js`
+- Commit: `168374f` (pressto-admin-panel)
