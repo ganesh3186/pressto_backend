@@ -10,4 +10,9 @@ export enum ApprovalRequestType {
   // ordered AND no upgrade removes the risk either — the customer decides
   // whether to accept the risk and proceed, or have it returned unprocessed.
   PROCESS_AT_RISK = 'process_at_risk',
+  // Deferred refund payout — raised once staff pick a method (wallet / bank
+  // account / cash) for a RefundDue row; approving it is the moment the
+  // money actually moves. See ApprovalService.selectPayoutMethod/
+  // _applyRefundPayout.
+  REFUND_PAYOUT = 'refund_payout',
 }

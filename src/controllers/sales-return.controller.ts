@@ -5,12 +5,11 @@ import {get, HttpErrors, param, post, requestBody, response} from '@loopback/res
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {SalesReturn, SalesReturnStatus} from '../models/sales-return.model';
-import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
-import {ReferenceType} from '../models/reference-type.enum';
 import {ORDER_STATUS_TRANSITIONS, OrderStatus} from '../models/order-status.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
-import {PaymentMode} from '../models/payment-mode.enum';
 import {Order} from '../models/order.model';
+import {RefundReason} from '../models/refund-reason.enum';
+import {RefundDueStatus} from '../models/refund-due-status.enum';
 import {
   CustomerRepository,
   GarmentRepository,
@@ -23,10 +22,10 @@ import {
   PaymentTransactionRepository,
   SalesReturnRepository,
   ChallanRepository,
-  WalletRepository,
-  WalletTransactionRepository,
+  RefundDueRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
+import {ApprovalService} from '../services/approval.service';
 
 /** Coerce a Postgres numeric (returned as a string) to a usable 2dp number. */
 function money(value: unknown): number {
@@ -48,14 +47,14 @@ export class SalesReturnController {
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
-    @repository(WalletRepository) private walletRepo: WalletRepository,
-    @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
     @repository(OrderStatusHistoryRepository) private statusHistoryRepo: OrderStatusHistoryRepository,
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GstTaxConfigurationRepository) private gstConfigRepo: GstTaxConfigurationRepository,
+    @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @inject('services.approval') private approvalService: ApprovalService,
   ) {}
 
   /**
@@ -92,10 +91,20 @@ export class SalesReturnController {
       (s: number, p: any) => s + (p.transactionType === 'refund' ? 0 : money(p.amount)),
       0,
     );
-    const alreadyRefunded = payments.reduce(
+    const paidRefunds = payments.reduce(
       (s: number, p: any) => s + (p.transactionType === 'refund' ? money(p.amount) : 0),
       0,
     );
+    // A RefundDue not yet paid out (from an earlier Return Item / Upgrade-
+    // downgrade / another credit note on this same order) is still money
+    // that's spoken for — net it out too, or this credit note would treat it
+    // as still-available and double-refund the same amount. See
+    // ApprovalService._computeOverpaymentRefund for the identical reasoning.
+    const unpaidRefundDues = await this.refundDueRepo.find({
+      where: {orderId: record.orderId, status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED]}},
+    });
+    const unpaidRefundTotal = unpaidRefundDues.reduce((s, r) => s + money(r.amount), 0);
+    const alreadyAccountedFor = money(paidRefunds + unpaidRefundTotal);
     const allocPay = money((order as any).allocatedPayment);
     const isChild = !!(order as any).parentOrderId;
     const collected = isChild
@@ -104,7 +113,7 @@ export class SalesReturnController {
         ? allocPay
         : txnCollected;
 
-    const netPaid = money(collected - alreadyRefunded);
+    const netPaid = money(collected - alreadyAccountedFor);
     const refundAmount = money(Math.max(0, netPaid - newOrderTotal));
     const newBalanceDue = money(Math.max(0, newOrderTotal - netPaid));
 
@@ -387,21 +396,6 @@ export class SalesReturnController {
   async approve(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
-    @requestBody({
-      content: {
-        'application/json': {
-          schema: {
-            type: 'object',
-            properties: {
-              creditAppliedAs: {type: 'string', enum: ['wallet', 'adjustment', 'refund']},
-              payoutReference: {type: 'string', description: 'Bank UTR / cheque number used for an external refund'},
-              payoutNote: {type: 'string', description: 'Free-text note for an external refund'},
-            },
-          },
-        },
-      },
-    })
-    body: {creditAppliedAs?: string; payoutReference?: string; payoutNote?: string},
   ): Promise<object> {
     const record = await this.salesReturnRepo.findById(id);
     if (!record) throw new HttpErrors.NotFound('Sales return not found.');
@@ -413,15 +407,12 @@ export class SalesReturnController {
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     const {v4} = await import('uuid');
-    // `creditAppliedAs` never decides WHETHER a refund happens — that's fully
-    // automatic, derived below from whether the customer has already paid
-    // more than the order will owe after the return. It DOES decide WHERE
-    // that money goes, once the math says a refund is due: 'refund' books it
-    // as an external payout (bank transfer/cash — finance executes it
-    // outside this app); anything else (including the default, and
-    // 'adjustment' when a refund happens to be due anyway) credits the
-    // wallet, exactly as before.
-    const creditAppliedAs = body.creditAppliedAs ?? 'adjustment';
+    // Approving the credit note no longer decides how (or whether) a
+    // resulting refund gets paid out — that's a separate, later decision.
+    // If the math below says a refund is due, this just records it as a
+    // RefundDue; staff pick wallet/bank/cash from the order's invoice
+    // dialogue afterward, and the money only moves once that gets its own
+    // approval (see ApprovalService.selectPayoutMethod/_applyRefundPayout).
     const creditAmount = money(record.creditAmount);
     const {newOrderTotal, refundAmount, newBalanceDue} = await this._previewCreditNote(record, order);
 
@@ -473,66 +464,26 @@ export class SalesReturnController {
       } as any);
     }
 
-    if (refundAmount > 0 && creditAppliedAs === 'refund') {
-      // External payout — finance moves the money outside the wallet (bank
-      // transfer, cash, etc). This app does not integrate a payment gateway
-      // payout; this books the fact that money is owed externally so it's
-      // visible/reconcilable in the order's payment history, same as the
-      // wallet path below, just without touching the wallet.
-      await this.paymentRepo.create({
-        id: v4(),
+    if (refundAmount > 0) {
+      await this.approvalService.createRefundDue({
         orderId: record.orderId,
-        paymentMode: PaymentMode.BANK_TRANSFER,
-        transactionType: 'refund',
+        customerId: record.customerId,
         amount: refundAmount,
-        transactionReference: body.payoutReference,
-        gatewayResponse:
-          body.payoutNote ?? 'External refund — paid out via bank transfer, not credited to wallet.',
-        paymentDate: new Date(),
+        reason: RefundReason.SALES_RETURN,
+        sourceType: 'sales_return',
+        sourceId: record.id,
+        sourceLabel: `Credit Note ${record.creditNoteNumber}`,
       });
-    } else if (refundAmount > 0) {
-      let wallet = await this.walletRepo.findOne({where: {customerId: record.customerId}});
-      if (!wallet) {
-        wallet = await this.walletRepo.create({
-          id: v4(),
-          customerId: record.customerId,
-          currentBalance: 0,
-        });
-      }
-      const newBalance = money(money(wallet.currentBalance) + refundAmount);
-      await this.walletRepo.updateById(wallet.id, {
-        currentBalance: newBalance,
-        updatedAt: new Date(),
-      });
-
-      await this.walletTransactionRepo.create({
-        id: v4(),
-        walletId: wallet.id,
-        transactionType: WalletTransactionType.CREDIT,
-        amount: refundAmount,
-        referenceType: ReferenceType.REFUND,
-        referenceId: record.orderId,
-        remarks: `Sales Return Credit Note: ${record.creditNoteNumber}`,
-        transactionDate: new Date(),
-      });
-
-      // Visible refund entry in the order's payment history — excluded from
-      // `collected` above, so a second return on this order still nets out.
-      await this.paymentRepo.create({
-        id: v4(),
-        orderId: record.orderId,
-        paymentMode: PaymentMode.WALLET,
-        transactionType: 'refund',
-        amount: refundAmount,
-        paymentDate: new Date(),
-      } as any);
     }
 
     await this.salesReturnRepo.updateById(id, {
       status: SalesReturnStatus.APPROVED,
       resolvedBy: currentUser[securityId],
       resolvedAt: new Date(),
-      creditAppliedAs: creditAppliedAs,
+      // creditAppliedAs is filled in later, once a payout method is actually
+      // chosen and executed (see ApprovalService._applyRefundPayout) — left
+      // unset here when a refund is due; stays unset entirely when the
+      // credit was fully absorbed into a lower balance due.
     } as Partial<SalesReturn>);
 
     // If every item on the order now has an approved return covering its full
