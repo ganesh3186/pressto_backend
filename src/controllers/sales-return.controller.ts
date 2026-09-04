@@ -14,6 +14,7 @@ import {Order} from '../models/order.model';
 import {
   CustomerRepository,
   GarmentRepository,
+  GstTaxConfigurationRepository,
   InvoiceRepository,
   ItemRepository,
   OrderItemRepository,
@@ -53,8 +54,21 @@ export class SalesReturnController {
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(GstTaxConfigurationRepository) private gstConfigRepo: GstTaxConfigurationRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
+
+  /**
+   * The current GST rate (CGST + SGST %), same source order creation itself
+   * uses. Used instead of deriving an "effective tax rate" back out of the
+   * order's own subtotal/taxAmount — those can go stale (e.g. after an
+   * Upgrade that changes the subtotal without recomputing tax), which would
+   * silently carry that drift into every credit note's GST gross-up.
+   */
+  private async _resolveGstRate(): Promise<number> {
+    const gstConfig = await this.gstConfigRepo.findOne({where: {isActive: true, isDeleted: false} as object});
+    return gstConfig ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage) : 0;
+  }
 
   /**
    * Preview exactly what approve() would do to the order's totals, and how
@@ -205,15 +219,21 @@ export class SalesReturnController {
     // GST is applied once, at the order level (see order.service.ts's
     // createOrder), never per line item — OrderItem.totalPrice, and so the
     // per-item `amount` the frontend sends here, is pre-tax. Gross the
-    // aggregate up by the order's own effective tax rate before storing it
-    // as creditAmount, so the credit note (and the wallet refund it drives
-    // in approve()) matches what the customer actually paid, GST included —
-    // not just the item's pre-tax price. Same "effective tax rate" derivation
-    // already used by OrderService.splitOrder() for the same reason.
+    // aggregate up by the CURRENT real GST rate before storing it as
+    // creditAmount, so the credit note (and the wallet refund it drives in
+    // approve()) matches what the customer actually paid, GST included —
+    // not just the item's pre-tax price.
+    //
+    // Deliberately not derived from the order's own taxAmount/subtotal
+    // ratio (an "effective tax rate") — that pair can go stale relative to
+    // each other (e.g. after an Upgrade that changes the subtotal), and an
+    // effective-rate derivation would silently inherit that drift into
+    // every credit note's own GST gross-up, over- or under-crediting the
+    // customer. OrderService.splitOrder() still does this the old,
+    // stale-prone way — flagging for a follow-up, not fixed here.
     const preTaxCreditAmount = (body.returnedItems ?? []).reduce((s, i) => s + (Number(i.amount) || 0), 0);
-    const taxableBase = money(order.subtotal) - money(order.discountAmount);
-    const effectiveTaxRate = taxableBase > 0 ? money(order.taxAmount) / taxableBase : 0;
-    const creditAmount = preTaxCreditAmount * (1 + effectiveTaxRate);
+    const gstRate = await this._resolveGstRate();
+    const creditAmount = preTaxCreditAmount * (1 + gstRate / 100);
 
     const now = new Date();
     const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -405,8 +425,28 @@ export class SalesReturnController {
     const creditAmount = money(record.creditAmount);
     const {newOrderTotal, refundAmount, newBalanceDue} = await this._previewCreditNote(record, order);
 
+    // creditAmount is tax-INCLUSIVE (create() grosses it up by GST) — every
+    // *subtotal* field here is pre-tax, so subtracting creditAmount from
+    // one directly overshoots by the tax portion (can even drive subtotal
+    // negative). Reverse the same gross-up create() applied, using the
+    // current GST rate, to get back the pre-tax portion to actually
+    // subtract from subtotal. totalAmount/balanceDue are unaffected by this
+    // — those are already correctly tax-inclusive-minus-tax-inclusive via
+    // _previewCreditNote above.
+    const gstRate = await this._resolveGstRate();
+    const preTaxCreditAmount = gstRate > 0 ? money(creditAmount / (1 + gstRate / 100)) : creditAmount;
+    const newSubtotal = money(money(order.subtotal) - preTaxCreditAmount);
+    // Recompute tax fresh from the new subtotal rather than leaving
+    // order.taxAmount stale — a stale taxAmount would corrupt a *later*
+    // credit note on this same order the same way this one was corrupted
+    // by an earlier Upgrade (see approval.service.ts's
+    // _applyUpgradeOnOrderItem, fixed the same way).
+    const newTaxableAmount = money(newSubtotal - money(order.discountAmount));
+    const newTaxAmount = gstRate > 0 ? money((newTaxableAmount * gstRate) / 100) : 0;
+
     await this.orderRepo.updateById(record.orderId, {
-      subtotal: money(money(order.subtotal) - creditAmount),
+      subtotal: newSubtotal,
+      taxAmount: newTaxAmount,
       totalAmount: newOrderTotal,
       updatedAt: new Date(),
     } as any);
@@ -415,7 +455,7 @@ export class SalesReturnController {
       const invoice = await this.invoiceRepo.findById(record.invoiceId);
       if (invoice) {
         await this.invoiceRepo.updateById(invoice.id, {
-          subtotal: money(money(invoice.subtotal) - creditAmount),
+          subtotal: money(money(invoice.subtotal) - preTaxCreditAmount),
           totalAmount: newOrderTotal,
           balanceDue: newBalanceDue,
           updatedAt: new Date(),
@@ -428,7 +468,7 @@ export class SalesReturnController {
     if (challan) {
       await this.challanRepo.updateById(challan.id, {
         totalAmount: newOrderTotal,
-        subtotal: money(money(challan.subtotal) - creditAmount),
+        subtotal: money(money(challan.subtotal) - preTaxCreditAmount),
         updatedAt: new Date(),
       } as any);
     }

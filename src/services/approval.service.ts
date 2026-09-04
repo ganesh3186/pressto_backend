@@ -7,6 +7,7 @@ import {ApprovalRequestRepository} from '../repositories/approval-request.reposi
 import {GarmentRepository} from '../repositories/garment.repository';
 import {GarmentStatusHistoryRepository} from '../repositories/garment-status-history.repository';
 import {GarmentProcessLogRepository} from '../repositories/garment-process-log.repository';
+import {GstTaxConfigurationRepository} from '../repositories/gst-tax-configuration.repository';
 import {ChallanRepository} from '../repositories/challan.repository';
 import {InvoiceRepository} from '../repositories/invoice.repository';
 import {ItemRepository} from '../repositories/item.repository';
@@ -111,6 +112,7 @@ export class ApprovalService {
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
     @repository(GarmentProcessLogRepository) private processLogRepo: GarmentProcessLogRepository,
+    @repository(GstTaxConfigurationRepository) private gstConfigRepo: GstTaxConfigurationRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
@@ -767,10 +769,26 @@ export class ApprovalService {
 
     // Adjust order totals
     if (order && priceDiff !== 0) {
+      const oldOrderTotal = money(order.totalAmount);
+      const newSubtotal = money(money(order.subtotal) + priceDiff);
+      // Recompute tax fresh from the current GST config against the new
+      // subtotal, rather than carrying the old (now stale) taxAmount
+      // forward unchanged — an un-recomputed taxAmount silently corrupts
+      // any later credit note's own "effective tax rate" derivation
+      // (sales-return.controller.ts's create()), over- or under-crediting
+      // the customer on a subsequent return.
+      const gstConfig = await this.gstConfigRepo.findOne({where: {isActive: true, isDeleted: false}});
+      const gstRate = gstConfig ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage) : 0;
+      const taxableAmount = money(newSubtotal - money(order.discountAmount));
+      const newTaxAmount = gstRate > 0 ? money((taxableAmount * gstRate) / 100) : 0;
+      // Final total is a whole rupee; subtotal/tax keep decimals.
+      const newOrderTotal = Math.max(0, Math.round(taxableAmount + newTaxAmount));
+      const totalDiff = newOrderTotal - oldOrderTotal;
+
       await this.orderRepo.updateById(order.id, {
-        subtotal: money(money(order.subtotal) + priceDiff),
-        // Final total is a whole rupee; subtotal keeps decimals.
-        totalAmount: Math.round(money(order.totalAmount) + priceDiff),
+        subtotal: newSubtotal,
+        taxAmount: newTaxAmount,
+        totalAmount: newOrderTotal,
         updatedAt: new Date(),
       });
 
@@ -778,10 +796,13 @@ export class ApprovalService {
       if (invoice) {
         await this.invoiceRepo.updateById(invoice.id, {
           subtotal: money(money(invoice.subtotal) + priceDiff),
-          totalAmount: Math.round(money(invoice.totalAmount) + priceDiff),
+          // Mirrors the order's own freshly-recomputed total directly,
+          // rather than independently diffing invoice.totalAmount — keeps
+          // the two from ever drifting apart from separate rounding.
+          totalAmount: newOrderTotal,
           // An upgrade raises the bill, so the balance rises with it. Never let
           // it go negative if a downgrade ever produces a negative diff.
-          balanceDue: Math.max(0, Math.round(money(invoice.balanceDue) + priceDiff)),
+          balanceDue: Math.max(0, Math.round(money(invoice.balanceDue) + totalDiff)),
           updatedAt: new Date(),
         } as any);
       }
@@ -801,7 +822,7 @@ export class ApprovalService {
 
         await this.challanRepo.updateById(challan.id, {
           subtotal: money(money(challan.subtotal) + priceDiff),
-          totalAmount: Math.round(money(challan.totalAmount) + priceDiff),
+          totalAmount: newOrderTotal,
           items,
           updatedAt: new Date(),
         } as any);
