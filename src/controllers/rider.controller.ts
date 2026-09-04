@@ -1,18 +1,18 @@
-import {authenticate} from '@loopback/authentication';
-import {inject} from '@loopback/core';
-import {Filter, IsolationLevel, repository} from '@loopback/repository';
-import {del, get, getModelSchemaRef, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
-import {authorize} from '../authorization';
-import {PresstoDataSource} from '../datasources';
-import {Rider} from '../models';
-import {RiderType} from '../models/rider-type.enum';
+import { authenticate } from '@loopback/authentication';
+import { inject } from '@loopback/core';
+import { Filter, IsolationLevel, repository } from '@loopback/repository';
+import { del, get, getModelSchemaRef, HttpErrors, param, patch, post, requestBody, response } from '@loopback/rest';
+import { authorize } from '../authorization';
+import { PresstoDataSource } from '../datasources';
+import { Rider } from '../models';
+import { RiderType } from '../models/rider-type.enum';
 import {
   RiderRepository,
   RolesRepository,
   UserRolesRepository,
   UsersRepository,
 } from '../repositories';
-import {BcryptHasher} from '../services/hash.password.bcrypt';
+import { BcryptHasher } from '../services/hash.password.bcrypt';
 
 // The role a rider's login account is created under. Its permission set is
 // defined when the rider app is built; the account exists now so phone + OTP
@@ -33,7 +33,7 @@ export class RiderController {
     private dataSource: PresstoDataSource,
     @inject('service.hasher')
     private hasher: BcryptHasher,
-  ) {}
+  ) { }
 
   /**
    * The `rider` role, creating it on first use if the seed has not run yet.
@@ -41,7 +41,7 @@ export class RiderController {
    * makes matches the seed definition, so a later seed is a no-op.
    */
   private async resolveRiderRole() {
-    const existing = await this.rolesRepository.findOne({where: {value: RIDER_ROLE_VALUE}});
+    const existing = await this.rolesRepository.findOne({ where: { value: RIDER_ROLE_VALUE } });
     if (existing) return existing;
     return this.rolesRepository.create({
       value: RIDER_ROLE_VALUE,
@@ -57,7 +57,7 @@ export class RiderController {
 
   /** RID001, RID002 … — next number above the highest existing code. */
   private async generateRiderCode(): Promise<string> {
-    const riders = await this.riderRepository.find({fields: {riderCode: true}});
+    const riders = await this.riderRepository.find({ fields: { riderCode: true } });
     let maxNum = 0;
     for (const r of riders) {
       const match = r.riderCode?.match(/^RID(\d+)$/i);
@@ -72,7 +72,7 @@ export class RiderController {
       : fullName.trim().toLowerCase().replace(/\s+/g, '.');
     let username = base || 'rider';
     for (let attempt = 0; attempt < 10; attempt++) {
-      const existing = await this.usersRepository.findOne({where: {username}});
+      const existing = await this.usersRepository.findOne({ where: { username } });
       if (!existing) return username;
       username = `${base}${Math.floor(1000 + Math.random() * 9000)}`;
     }
@@ -81,9 +81,9 @@ export class RiderController {
 
   /** The user, if any, that already owns this phone/email. */
   private async findUserByContact(phone: string, email: string | undefined) {
-    const orConditions: object[] = [{phone}];
-    if (email) orConditions.push({email});
-    return this.usersRepository.findOne({where: {or: orConditions}});
+    const orConditions: object[] = [{ phone }];
+    if (email) orConditions.push({ email });
+    return this.usersRepository.findOne({ where: { or: orConditions } });
   }
 
   /**
@@ -100,9 +100,9 @@ export class RiderController {
   // ─── Create ─────────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['rider:create']})
+  @authorize({ roles: ['super_admin'], permissions: ['rider:create'] })
   @post('/riders')
-  @response(200, {description: 'Rider created'})
+  @response(200, { description: 'Rider created' })
   async create(
     @requestBody({
       content: {
@@ -111,16 +111,16 @@ export class RiderController {
             type: 'object',
             required: ['riderType', 'firstName', 'lastName', 'phone', 'address'],
             properties: {
-              riderType: {type: 'string', enum: Object.values(RiderType)},
-              firstName: {type: 'string'},
-              lastName: {type: 'string'},
-              phone: {type: 'string', description: 'Login identity — 10 digits, unique'},
-              countryCode: {type: 'string', default: '+91'},
-              emailId: {type: 'string', format: 'email'},
-              alternateNumber: {type: 'string'},
-              address: {type: 'string'},
-              doorFloorFlat: {type: 'string'},
-              landmark: {type: 'string'},
+              riderType: { type: 'string', enum: Object.values(RiderType) },
+              firstName: { type: 'string' },
+              lastName: { type: 'string' },
+              phone: { type: 'string', description: 'Login identity — 10 digits, unique' },
+              countryCode: { type: 'string', default: '+91' },
+              emailId: { type: 'string', format: 'email' },
+              alternateNumber: { type: 'string' },
+              address: { type: 'string' },
+              doorFloorFlat: { type: 'string' },
+              landmark: { type: 'string' },
             },
           },
         },
@@ -148,7 +148,7 @@ export class RiderController {
     const existingUser = await this.findUserByContact(body.phone, body.emailId);
     if (existingUser) {
       const alreadyRider = await this.riderRepository.findOne({
-        where: {userId: existingUser.id, isDeleted: false},
+        where: { userId: existingUser.id, isDeleted: false },
       });
       if (alreadyRider) {
         throw new HttpErrors.Conflict(
@@ -167,32 +167,37 @@ export class RiderController {
       const user = existingUser
         ? existingUser
         : await this.usersRepository.create(
-            {
-              fullName,
-              username: await this.generateUniqueUsername(body.emailId, fullName),
-              ...(body.emailId && {email: body.emailId}),
-              countryCode: body.countryCode?.trim() ? body.countryCode.trim() : '+91',
-              phone: body.phone,
-              // Signs in by OTP, never by password — so this is a throwaway.
-              password: await this.hasher.hashPassword(
-                `Rider@${Math.floor(100000 + Math.random() * 900000)}`,
-              ),
-              isActive: true,
-            },
-            {transaction: tx},
-          );
+          {
+            fullName,
+            username: await this.generateUniqueUsername(body.emailId, fullName),
+            ...(body.emailId && { email: body.emailId }),
+            countryCode: body.countryCode?.trim() ? body.countryCode.trim() : '+91',
+            phone: body.phone,
+            // Signs in by OTP, never by password — so this is a throwaway.
+            password: await this.hasher.hashPassword(
+              `Rider@${Math.floor(100000 + Math.random() * 900000)}`,
+            ),
+            isActive: true,
+          },
+          { transaction: tx },
+        );
 
       // Add the rider role only if this (possibly existing) user lacks it —
       // adding it twice would leave a duplicate user_roles row.
       const hasRole = existingUser
         ? await this.userRolesRepository.findOne({
-            where: {usersId: user.id, rolesId: role.id},
-          })
+          where: {
+            and: [
+              { usersId: user.id },
+              { rolesId: role.id }
+            ]
+          },
+        })
         : null;
       if (!hasRole) {
         await this.userRolesRepository.create(
-          {usersId: user.id, rolesId: role.id},
-          {transaction: tx},
+          { usersId: user.id, rolesId: role.id },
+          { transaction: tx },
         );
       }
 
@@ -209,14 +214,14 @@ export class RiderController {
           landmark: body.landmark,
           isActive: true,
         },
-        {transaction: tx},
+        { transaction: tx },
       );
 
       await tx.commit();
 
       return {
         message: 'Rider created successfully',
-        rider: {...rider, user: {...user, password: undefined}},
+        rider: { ...rider, user: { ...user, password: undefined } },
       };
     } catch (error) {
       await tx.rollback();
@@ -227,9 +232,9 @@ export class RiderController {
   // ─── List ─────────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['rider:read']})
+  @authorize({ roles: ['super_admin'], permissions: ['rider:read'] })
   @get('/riders')
-  @response(200, {description: 'Array of riders with their login account'})
+  @response(200, { description: 'Array of riders with their login account' })
   async find(
     @param.filter(Rider) filter?: Filter<Rider>,
   ): Promise<Rider[]> {
@@ -237,32 +242,32 @@ export class RiderController {
     // UI has phone/email/name without a second call.
     return this.riderRepository.find({
       ...filter,
-      where: {...filter?.where, isDeleted: false},
-      include: [{relation: 'user'}],
+      where: { ...filter?.where, isDeleted: false },
+      include: [{ relation: 'user' }],
     });
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['rider:read']})
+  @authorize({ roles: ['super_admin'], permissions: ['rider:read'] })
   @get('/riders/count')
-  @response(200, {description: 'Rider count'})
+  @response(200, { description: 'Rider count' })
   async count(
     @param.query.object('where') where?: object,
-  ): Promise<{count: number}> {
-    return this.riderRepository.count({...where, isDeleted: false} as object);
+  ): Promise<{ count: number }> {
+    return this.riderRepository.count({ ...where, isDeleted: false } as object);
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['rider:read']})
+  @authorize({ roles: ['super_admin'], permissions: ['rider:read'] })
   @get('/riders/{id}')
   @response(200, {
     description: 'Rider with login account',
-    content: {'application/json': {schema: getModelSchemaRef(Rider, {includeRelations: true})}},
+    content: { 'application/json': { schema: getModelSchemaRef(Rider, { includeRelations: true }) } },
   })
   async findById(@param.path.string('id') id: string): Promise<Rider> {
     const rider = await this.riderRepository.findOne({
-      where: {id, isDeleted: false},
-      include: [{relation: 'user'}],
+      where: { id, isDeleted: false },
+      include: [{ relation: 'user' }],
     });
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
     return rider;
@@ -271,9 +276,9 @@ export class RiderController {
   // ─── Update ─────────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['rider:update']})
+  @authorize({ roles: ['super_admin'], permissions: ['rider:update'] })
   @patch('/riders/{id}')
-  @response(200, {description: 'Rider updated'})
+  @response(200, { description: 'Rider updated' })
   async updateById(
     @param.path.string('id') id: string,
     @requestBody({
@@ -283,20 +288,20 @@ export class RiderController {
             type: 'object',
             properties: {
               // riderCode is immutable — deliberately not accepted.
-              riderType: {type: 'string', enum: Object.values(RiderType)},
-              firstName: {type: 'string'},
-              lastName: {type: 'string'},
-              phone: {type: 'string'},
-              countryCode: {type: 'string'},
-              emailId: {type: 'string', format: 'email'},
-              alternateNumber: {type: 'string'},
-              address: {type: 'string'},
-              doorFloorFlat: {type: 'string'},
-              landmark: {type: 'string'},
+              riderType: { type: 'string', enum: Object.values(RiderType) },
+              firstName: { type: 'string' },
+              lastName: { type: 'string' },
+              phone: { type: 'string' },
+              countryCode: { type: 'string' },
+              emailId: { type: 'string', format: 'email' },
+              alternateNumber: { type: 'string' },
+              address: { type: 'string' },
+              doorFloorFlat: { type: 'string' },
+              landmark: { type: 'string' },
               // Activate/deactivate goes through this same endpoint. Deletion is
               // separate (DELETE /riders/{id}) so it needs the rider:delete
               // permission rather than rider:update.
-              isActive: {type: 'boolean'},
+              isActive: { type: 'boolean' },
             },
           },
         },
@@ -316,8 +321,10 @@ export class RiderController {
       isActive?: boolean;
     },
   ): Promise<object> {
-    const rider = await this.riderRepository.findOne({where: {id, isDeleted: false}});
+    const rider = await this.riderRepository.findOne({ where: { id, isDeleted: false } });
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
+
+    const role = await this.resolveRiderRole();
 
     // Phone/email live on the account. Re-check uniqueness only when they change.
     const account = await this.usersRepository.findById(rider.userId);
@@ -345,7 +352,7 @@ export class RiderController {
       // Keep the account's active flag in step — an inactive rider can't log in.
       if (body.isActive !== undefined) userFields.isActive = body.isActive;
       if (Object.keys(userFields).length) {
-        await this.usersRepository.updateById(rider.userId, userFields, {transaction: tx});
+        await this.usersRepository.updateById(rider.userId, userFields, { transaction: tx });
       }
 
       const riderFields: Record<string, unknown> = {};
@@ -354,11 +361,27 @@ export class RiderController {
       }
       if (body.isActive !== undefined) riderFields.isActive = body.isActive;
       if (Object.keys(riderFields).length) {
-        await this.riderRepository.updateById(id, riderFields, {transaction: tx});
+        await this.riderRepository.updateById(id, riderFields, { transaction: tx });
+      }
+
+      const hasRole = await this.userRolesRepository.findOne({
+        where: {
+          and: [
+            { usersId: account.id },
+            { rolesId: role.id }
+          ]
+        }
+      }, { transaction: tx });
+
+      if(!hasRole){
+        await this.userRolesRepository.create(
+          { usersId: account.id, rolesId: role.id },
+          { transaction: tx },
+        );
       }
 
       await tx.commit();
-      return {message: 'Rider updated successfully'};
+      return { message: 'Rider updated successfully' };
     } catch (error) {
       await tx.rollback();
       throw error;
@@ -368,24 +391,24 @@ export class RiderController {
   // ─── Soft delete ────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['rider:delete']})
+  @authorize({ roles: ['super_admin'], permissions: ['rider:delete'] })
   @del('/riders/{id}')
-  @response(200, {description: 'Rider soft-deleted'})
+  @response(200, { description: 'Rider soft-deleted' })
   async deleteById(@param.path.string('id') id: string): Promise<object> {
-    const rider = await this.riderRepository.findOne({where: {id, isDeleted: false}});
+    const rider = await this.riderRepository.findOne({ where: { id, isDeleted: false } });
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
       await this.riderRepository.updateById(
         id,
-        {isDeleted: true, isActive: false, deletedAt: new Date() as unknown as Date},
-        {transaction: tx},
+        { isDeleted: true, isActive: false, deletedAt: new Date() as unknown as Date },
+        { transaction: tx },
       );
       // Block the login too — a deleted rider must not be able to sign in.
-      await this.usersRepository.updateById(rider.userId, {isActive: false}, {transaction: tx});
+      await this.usersRepository.updateById(rider.userId, { isActive: false }, { transaction: tx });
       await tx.commit();
-      return {message: 'Rider deleted.'};
+      return { message: 'Rider deleted.' };
     } catch (error) {
       await tx.rollback();
       throw error;
