@@ -203,3 +203,41 @@ is unaffected.
 - Scope: Backend
 - File: `src/services/approval.service.ts`
 - Commit: `ff7e340` (pressto_backend)
+
+---
+
+## 8. Order subtotal goes negative + credit notes over-credit after Upgrade → Sales Return
+
+**Status:** ✅ Fixed
+
+**Found via:** live DB trace of `CN-202609-00003` (requested by you) —
+journey was create order → upgrade a curtain's service → complete
+processing → deliver → sales return.
+
+**Root cause:** `order.taxAmount` was never recalculated when `subtotal`
+changed after creation. Two consequences, both real:
+1. `_applyUpgradeOnOrderItem()` changed `subtotal` by the price
+   difference but left `taxAmount` untouched.
+2. `sales-return.controller.ts`'s `create()` then derived an "effective
+   tax rate" as `taxAmount ÷ subtotal` to gross up the credit note — with
+   `taxAmount` now stale, this produced ~32% instead of the real 18%,
+   over-crediting this one credit note by **≈₹291**.
+3. `approve()` separately subtracted the tax-*inclusive* `creditAmount`
+   directly from the pre-tax `subtotal` field, driving it to **-₹146.57**
+   on this exact order — confirmed live.
+
+**Fix:**
+- `_applyUpgradeOnOrderItem()` now recomputes `taxAmount` fresh from the
+  current GST config against the new subtotal.
+- `create()`'s GST gross-up now uses the current real GST rate directly,
+  not a derived "effective rate" that can go stale.
+- `approve()` now reverses the same gross-up to get the correct pre-tax
+  amount to subtract from `subtotal`, and recomputes `taxAmount` fresh too.
+
+**Not fixed, flagged for follow-up:** `OrderService.splitOrder()` derives
+the same kind of "effective tax rate" from `taxAmount`/`subtotal` and has
+the identical staleness exposure.
+
+- Scope: Backend
+- Files: `src/services/approval.service.ts`, `src/controllers/sales-return.controller.ts`
+- Commit: `06af122` (pressto_backend)
