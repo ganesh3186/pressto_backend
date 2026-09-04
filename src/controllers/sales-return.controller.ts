@@ -8,8 +8,9 @@ import {SalesReturn, SalesReturnStatus} from '../models/sales-return.model';
 import {ORDER_STATUS_TRANSITIONS, OrderStatus} from '../models/order-status.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
 import {Order} from '../models/order.model';
-import {RefundReason} from '../models/refund-reason.enum';
 import {RefundDueStatus} from '../models/refund-due-status.enum';
+import {RefundMethod} from '../models/refund-method.enum';
+import {RefundBankDetails} from '../models/refund-due.model';
 import {
   CustomerRepository,
   GarmentRepository,
@@ -148,6 +149,19 @@ export class SalesReturnController {
                   },
                 },
               },
+              // Picked up front — only ever used if this return leaves a
+              // refund due; approve() pays it out immediately with this.
+              refundMethod: {type: 'string', enum: Object.values(RefundMethod)},
+              bankDetails: {
+                type: 'object',
+                properties: {
+                  accountHolderName: {type: 'string'},
+                  bankName: {type: 'string'},
+                  accountNumber: {type: 'string'},
+                  ifscCode: {type: 'string'},
+                  branchName: {type: 'string'},
+                },
+              },
             },
           },
         },
@@ -157,6 +171,8 @@ export class SalesReturnController {
       reason?: string;
       remarks?: string;
       returnedItems?: Array<{orderItemId: string; quantity: number; amount: number}>;
+      refundMethod?: string;
+      bankDetails?: RefundBankDetails;
     },
   ): Promise<object> {
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
@@ -244,6 +260,21 @@ export class SalesReturnController {
     const gstRate = await this._resolveGstRate();
     const creditAmount = preTaxCreditAmount * (1 + gstRate / 100);
 
+    // Refund method is picked here, up front, rather than at approval time
+    // or later on the invoice screen — approve() pays out immediately with
+    // whatever's captured here if the math ends up owing the customer
+    // money. Defaults to wallet so an older/other caller that omits this
+    // entirely still gets a sane, harmless choice.
+    const refundMethod = body.refundMethod ?? RefundMethod.WALLET;
+    if (refundMethod === RefundMethod.BANK_ACCOUNT) {
+      const b = body.bankDetails;
+      if (!b?.accountHolderName || !b?.bankName || !b?.accountNumber || !b?.ifscCode) {
+        throw new HttpErrors.BadRequest(
+          'Bank account refunds need accountHolderName, bankName, accountNumber, and ifscCode.',
+        );
+      }
+    }
+
     const now = new Date();
     const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
     const count = await this.salesReturnRepo.count();
@@ -262,6 +293,8 @@ export class SalesReturnController {
       creditAmount: parseFloat(creditAmount.toFixed(2)),
       status: SalesReturnStatus.PENDING,
       requestedBy: currentUser[securityId],
+      refundMethod,
+      bankDetails: refundMethod === RefundMethod.BANK_ACCOUNT ? body.bankDetails : undefined,
     } as Partial<SalesReturn>);
 
     return {message: 'Sales return created. Credit note pending approval.', salesReturn};
@@ -371,9 +404,16 @@ export class SalesReturnController {
       inScope.map(async sr => {
         const order = orderById.get(sr.orderId);
         const customer = customerById.get(sr.customerId);
-        const preview = order
-          ? await this._previewCreditNote(sr, order)
-          : {refundAmount: 0, newBalanceDue: 0};
+        // Only preview live for a still-PENDING record — approve() has
+        // already reduced the order's totals by this exact return for a
+        // resolved one, so re-running the same math against the
+        // now-already-adjusted order would be comparing against the wrong
+        // baseline. Use what was actually applied instead (sr.refundAmount,
+        // stored at approve() time).
+        const preview =
+          sr.status === SalesReturnStatus.PENDING && order
+            ? await this._previewCreditNote(sr, order)
+            : {refundAmount: money(sr.refundAmount), newBalanceDue: null};
         return {
           id: sr.id,
           creditNoteNumber: sr.creditNoteNumber,
@@ -389,6 +429,9 @@ export class SalesReturnController {
           createdAt: sr.createdAt,
           refundAmount: preview.refundAmount,
           newBalanceDue: preview.newBalanceDue,
+          refundMethod: sr.refundMethod,
+          creditAppliedAs: sr.creditAppliedAs,
+          bankDetails: sr.bankDetails,
         };
       }),
     );
@@ -416,12 +459,12 @@ export class SalesReturnController {
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     const {v4} = await import('uuid');
-    // Approving the credit note no longer decides how (or whether) a
-    // resulting refund gets paid out — that's a separate, later decision.
-    // If the math below says a refund is due, this just records it as a
-    // RefundDue; staff pick wallet/bank/cash from the order's invoice
-    // dialogue afterward, and the money only moves once that gets its own
-    // approval (see ApprovalService.selectPayoutMethod/_applyRefundPayout).
+    // The refund method was already chosen when this credit note was
+    // created (see create() above) — approving it is the moment the refund,
+    // if the math below says one is due, actually pays out. No separate
+    // payout approval for Sales Return, unlike Return Item/Upgrade's
+    // deferred RefundDue pipeline — the credit-note approval itself IS the
+    // human sign-off here.
     const creditAmount = money(record.creditAmount);
     const {newOrderTotal, refundAmount, newBalanceDue} = await this._previewCreditNote(record, order);
 
@@ -474,14 +517,13 @@ export class SalesReturnController {
     }
 
     if (refundAmount > 0) {
-      await this.approvalService.createRefundDue({
-        orderId: record.orderId,
+      await this.approvalService.executeRefundPayout({
         customerId: record.customerId,
+        orderId: record.orderId,
         amount: refundAmount,
-        reason: RefundReason.SALES_RETURN,
-        sourceType: 'sales_return',
-        sourceId: record.id,
-        sourceLabel: `Credit Note ${record.creditNoteNumber}`,
+        method: record.refundMethod ?? RefundMethod.WALLET,
+        bankDetails: record.bankDetails as RefundBankDetails | undefined,
+        remarks: `Sales Return Credit Note: ${record.creditNoteNumber}`,
       });
     }
 
@@ -489,10 +531,8 @@ export class SalesReturnController {
       status: SalesReturnStatus.APPROVED,
       resolvedBy: currentUser[securityId],
       resolvedAt: new Date(),
-      // creditAppliedAs is filled in later, once a payout method is actually
-      // chosen and executed (see ApprovalService._applyRefundPayout) — left
-      // unset here when a refund is due; stays unset entirely when the
-      // credit was fully absorbed into a lower balance due.
+      refundAmount,
+      creditAppliedAs: refundAmount > 0 ? record.refundMethod ?? RefundMethod.WALLET : undefined,
     } as Partial<SalesReturn>);
 
     // If every item on the order now has an approved return covering its full

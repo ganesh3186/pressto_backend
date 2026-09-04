@@ -64,6 +64,24 @@ export class SalesReturn extends Entity {
   @property({type: 'string'})
   creditAppliedAs?: string;
 
+  // Payout method picked up front, when the return is created — 'wallet' |
+  // 'bank_account' | 'cash'. Only ever used if approve() finds a refund is
+  // actually due; the refund then pays out immediately on approval using
+  // this choice, no separate payout approval.
+  @property({type: 'string', default: 'wallet'})
+  refundMethod?: string;
+
+  // Only populated when refundMethod === 'bank_account'.
+  @property({type: 'object', postgresql: {dataType: 'jsonb'}})
+  bankDetails?: object;
+
+  // The actual amount refunded at approval time (0 if the credit was fully
+  // absorbed into a lower balance due) — stored so later reads (the Finance
+  // Approvals list) show what really happened instead of recomputing a
+  // live preview against the order's now-already-adjusted totals.
+  @property({type: 'number', postgresql: {dataType: 'numeric'}})
+  refundAmount?: number;
+
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 

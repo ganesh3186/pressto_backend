@@ -20,7 +20,6 @@ import {ServiceRepository} from '../repositories/service.repository';
 import {WalletRepository} from '../repositories/wallet.repository';
 import {WalletTransactionRepository} from '../repositories/wallet-transaction.repository';
 import {RefundDueRepository} from '../repositories/refund-due.repository';
-import {SalesReturnRepository} from '../repositories/sales-return.repository';
 import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
@@ -137,7 +136,6 @@ export class ApprovalService {
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
     @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
-    @repository(SalesReturnRepository) private salesReturnRepo: SalesReturnRepository,
     @inject('services.audit') private auditService: AuditService,
     @inject('services.order') private orderService: OrderService,
   ) {}
@@ -648,6 +646,62 @@ export class ApprovalService {
   }
 
   /**
+   * Actually moves the money for a refund, by method. Shared by the
+   * deferred RefundDue payout path below (_applyRefundPayout, gated behind
+   * its own REFUND_PAYOUT approval — Return Item and Upgrade/Downgrade) and
+   * Sales Return's approve(), which executes immediately using the method
+   * chosen at credit-note creation time instead of going through a second
+   * approval.
+   */
+  async executeRefundPayout(params: {
+    customerId: string;
+    orderId: string;
+    amount: number;
+    method: string;
+    bankDetails?: RefundBankDetails;
+    remarks: string;
+  }): Promise<void> {
+    const {v4} = await import('uuid');
+    const amount = money(params.amount);
+
+    if (params.method === RefundMethod.WALLET) {
+      await this._creditWallet(params.customerId, amount, params.remarks, params.orderId);
+      await this.paymentRepo.create({
+        id: v4(),
+        orderId: params.orderId,
+        paymentMode: PaymentMode.WALLET,
+        transactionType: 'refund',
+        amount,
+        paymentDate: new Date(),
+      });
+    } else if (params.method === RefundMethod.BANK_ACCOUNT) {
+      await this.paymentRepo.create({
+        id: v4(),
+        orderId: params.orderId,
+        paymentMode: PaymentMode.BANK_TRANSFER,
+        transactionType: 'refund',
+        amount,
+        transactionReference: params.bankDetails
+          ? `${params.bankDetails.bankName} •••${String(params.bankDetails.accountNumber).slice(-4)}`
+          : undefined,
+        gatewayResponse: params.bankDetails ? JSON.stringify(params.bankDetails) : undefined,
+        paymentDate: new Date(),
+      });
+    } else {
+      // 'cash' (or a missing method, which should never happen —
+      // both callers always set one before this can run).
+      await this.paymentRepo.create({
+        id: v4(),
+        orderId: params.orderId,
+        paymentMode: PaymentMode.CASH,
+        transactionType: 'refund',
+        amount,
+        paymentDate: new Date(),
+      });
+    }
+  }
+
+  /**
    * A REFUND_PAYOUT approval was granted — the moment the money actually
    * moves. Raised against a RefundDue row (never a garment), method + bank
    * details already chosen at selectPayoutMethod() time.
@@ -657,63 +711,22 @@ export class ApprovalService {
     if (!refundDue || refundDue.status === RefundDueStatus.PAID) return;
 
     const method = refundDue.method as RefundMethod | undefined;
-    const bankDetails = refundDue.bankDetails;
     const amount = money(refundDue.amount);
-    const {v4} = await import('uuid');
 
-    if (method === RefundMethod.WALLET) {
-      await this._creditWallet(
-        refundDue.customerId,
-        amount,
-        `Refund payout — ${refundDue.sourceLabel ?? refundDue.reason} (approval ${request.id})`,
-        refundDue.orderId,
-      );
-      await this.paymentRepo.create({
-        id: v4(),
-        orderId: refundDue.orderId,
-        paymentMode: PaymentMode.WALLET,
-        transactionType: 'refund',
-        amount,
-        paymentDate: new Date(),
-      });
-    } else if (method === RefundMethod.BANK_ACCOUNT) {
-      await this.paymentRepo.create({
-        id: v4(),
-        orderId: refundDue.orderId,
-        paymentMode: PaymentMode.BANK_TRANSFER,
-        transactionType: 'refund',
-        amount,
-        transactionReference: bankDetails
-          ? `${bankDetails.bankName} •••${String(bankDetails.accountNumber).slice(-4)}`
-          : undefined,
-        gatewayResponse: bankDetails ? JSON.stringify(bankDetails) : undefined,
-        paymentDate: new Date(),
-      });
-    } else {
-      // 'cash' (or a missing method, which should never happen —
-      // selectPayoutMethod always sets one before an approval can exist).
-      await this.paymentRepo.create({
-        id: v4(),
-        orderId: refundDue.orderId,
-        paymentMode: PaymentMode.CASH,
-        transactionType: 'refund',
-        amount,
-        paymentDate: new Date(),
-      });
-    }
+    await this.executeRefundPayout({
+      customerId: refundDue.customerId,
+      orderId: refundDue.orderId,
+      amount,
+      method: method ?? RefundMethod.CASH,
+      bankDetails: refundDue.bankDetails,
+      remarks: `Refund payout — ${refundDue.sourceLabel ?? refundDue.reason} (approval ${request.id})`,
+    });
 
     await this.refundDueRepo.updateById(refundDue.id, {
       status: RefundDueStatus.PAID,
       resolvedAt: new Date(),
       updatedAt: new Date(),
     });
-
-    // Keeps the existing "Applied as: {creditAppliedAs}" display in the
-    // admin panel's credit-note view working, now that the method is chosen
-    // later than credit-note approval itself.
-    if (refundDue.sourceType === 'sales_return') {
-      await this.salesReturnRepo.updateById(refundDue.sourceId, {creditAppliedAs: method} as any);
-    }
 
     await this._mergeIntoSnapshot(request.id, {refundDueId: refundDue.id});
 
