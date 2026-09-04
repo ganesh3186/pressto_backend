@@ -181,3 +181,25 @@ itself applies.
 - Scope: Backend
 - File: `src/services/approval.service.ts`
 - Commit: `a30568e` (pressto_backend)
+
+---
+
+## 7. Upgrade repricing had the same missing-area gap as item 6
+
+**Status:** ✅ Fixed
+
+**Root cause:** `_applyUpgradeOnOrderItem()` (applying an approved
+upgrade) and `getUpgradeView()` (the customer-facing quote shown before
+approval) both computed the new total as `newUnitPrice × orderItem.quantity`
+— for a measurement item, only correct if every garment on the line
+happens to share the same area.
+
+**Fix:** Both now sum each garment's own recorded area
+(`Garment.length × Garment.width`) instead of multiplying by quantity,
+same rule order creation applies — so the pre-approval quote and what
+actually gets billed on approval always agree. A plain piece-priced item
+is unaffected.
+
+- Scope: Backend
+- File: `src/services/approval.service.ts`
+- Commit: `ff7e340` (pressto_backend)
