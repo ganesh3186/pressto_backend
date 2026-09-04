@@ -280,3 +280,23 @@ finance grants it.
   `refund-payout-approval-panel.js`, `finance-approval-details-dialog.js`,
   `credit-note-approve-dialog.js`, `finance-approval.js` (admin panel)
 - Commits: `b0f6c25`, `40a58ea` (pressto_backend); `e699a3d` (pressto-admin-panel)
+
+**Follow-ups since:**
+- Handover screen ("Handover To Store") now shows the same refund-due
+  banner + Process Refund action as the invoice screen, so staff notice a
+  pending refund while the customer is at the counter.
+  Commit: `e67c9a9` (pressto-admin-panel).
+- Finance's Credit Note tab now shows approved/rejected credit notes too,
+  not just pending — so finance can see what they've already decided.
+  `GET /sales-returns` supports a comma-separated status filter (or none,
+  for everything). Commits: `33f838a` (pressto_backend), `31d5b7d`
+  (pressto-admin-panel).
+- **Sales Return simplified back to one approval:** per a follow-up
+  request, Sales Return no longer uses the deferred RefundDue → invoice
+  screen → separate payout-approval pipeline above — Return Item and
+  Upgrade/Downgrade still do. For Sales Return specifically, the refund
+  method (wallet/bank/cash + bank details) is now picked upfront on the
+  Sales Return ("Create Credit Note") popup itself, and approving the
+  credit note pays it out immediately using that choice — one popup, one
+  approval. Commits: `132b89b` (pressto_backend), `3dafeeb`
+  (pressto-admin-panel).
