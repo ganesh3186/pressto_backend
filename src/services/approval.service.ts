@@ -1137,6 +1137,24 @@ export class ApprovalService {
       );
     }
 
+    // Reverting an approved refund payout: the money (if any) already moved —
+    // same "never claw back" stance as the wallet-refund note above. Left as
+    // PAID deliberately: _applyRefundPayout() guards on this exact status, so
+    // if this reverted request is somehow approved again it becomes a no-op
+    // instead of paying out a second time.
+    if (
+      previousStatus === ApprovalRequestStatus.APPROVED &&
+      request.entityType === 'refund_due' &&
+      request.type === ApprovalRequestType.REFUND_PAYOUT
+    ) {
+      const refundDue = await this.refundDueRepo.findOne({where: {id: request.entityId}});
+      if (refundDue?.status === RefundDueStatus.PAID) {
+        notes.push(
+          `This refund had already been paid out via ${refundDue.method ?? 'the chosen method'} and has NOT been clawed back. Re-approving this reverted request will have no further effect — correct the payout manually if it was made in error.`,
+        );
+      }
+    }
+
     if (request.type === ApprovalRequestType.REPROCESS) {
       notes.push(
         'The reprocess approval had reset this garment\'s process steps to pending. Those steps are left as they are — reverting does not restore prior step progress.',
