@@ -368,14 +368,22 @@ export class ApprovalService {
     // fully discounted) still closes out the order correctly.
     await this._maybeMarkOrderReturned(order.id, garment.garmentTagNumber, request.id, performedBy);
 
-    // Full value the customer is billed for this one piece = unit price + its
-    // share of the order's tax.
+    // Full value the customer is billed for this one piece = unit price
+    // (× this garment's own area, for a measurement item billed per square
+    // metre — same unitPrice × length × width rule order creation applies,
+    // see order.service.ts's perUnitTotalPrices) plus its share of the
+    // order's tax.
     const unitPrice = money(orderItem.unitPrice);
     if (unitPrice <= 0) return;
+    const item = await this.itemRepo.findOne({where: {id: orderItem.itemId}});
+    const area = Number(garment.length) * Number(garment.width);
+    const pieceBasePrice =
+      item?.isMeasurement && Number.isFinite(area) && area > 0 ? money(unitPrice * area) : unitPrice;
+    if (pieceBasePrice <= 0) return;
     const orderSubtotal = money(order.subtotal);
-    const share = orderSubtotal > 0 ? unitPrice / orderSubtotal : 0;
+    const share = orderSubtotal > 0 ? pieceBasePrice / orderSubtotal : 0;
     const taxShare = money(money(order.taxAmount) * share);
-    const pieceValue = money(unitPrice + taxShare);
+    const pieceValue = money(pieceBasePrice + taxShare);
 
     // The order/invoice/challan total drops by exactly what this piece was
     // billed for — a customer should never be left owing (or having paid) for
