@@ -241,3 +241,42 @@ the identical staleness exposure.
 - Scope: Backend
 - Files: `src/services/approval.service.ts`, `src/controllers/sales-return.controller.ts`
 - Commit: `06af122` (pressto_backend)
+
+---
+
+## 9. New requirement — refunds must never happen automatically
+
+**Status:** ✅ Built
+
+**Requested:** Following up on the discovery in item 8 (an upgrade's price
+drop had no refund path at all, and Return Item auto-credited the wallet
+the instant it was approved) — the client does not want ANY refund to
+happen automatically. Instead: show the amount owed on the order's
+invoice screen, let staff pick a payout method (wallet / bank account /
+cash — bank needs IFSC code, account number, account holder name), raise
+an approval for that specific payout, and only move the money once
+finance grants it.
+
+**What changed:**
+- Sales Return approval, Return Item approval, and an Upgrade/Downgrade
+  that lowers the price below what's already been paid no longer refund
+  anything themselves — each now just records a `RefundDue` (owed, no
+  method yet).
+- The order's invoice dialogue (Order Summary → Print/Invoice screen)
+  shows a "Refund due to customer" banner with a Process Refund action
+  per amount owed.
+- Picking a method there (with bank details captured for bank transfers)
+  raises a new `REFUND_PAYOUT` approval — visible under a new "Refund
+  Payouts" tab in Finance Approvals — and only approving THAT actually
+  pays out.
+- Credit note approval no longer asks "wallet or external refund" —
+  that choice happens later, from the invoice screen, same as every
+  other source.
+
+- Scope: Backend + Admin Panel
+- Files: `src/models/refund-due*.ts`, `src/services/approval.service.ts`,
+  `src/controllers/{refund,sales-return,approval}.controller.ts` (backend);
+  `order-invoice-dialog.js`, `select-refund-method-dialog.js`,
+  `refund-payout-approval-panel.js`, `finance-approval-details-dialog.js`,
+  `credit-note-approve-dialog.js`, `finance-approval.js` (admin panel)
+- Commits: `b0f6c25`, `40a58ea` (pressto_backend); `e699a3d` (pressto-admin-panel)
