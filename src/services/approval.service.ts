@@ -732,7 +732,27 @@ export class ApprovalService {
     const deliveryMultiplier = 1 + (Number(order.deliveryTypePercentage) || 0) / 100;
     const newBasePrice = pricing.basePrice;
     const newUnitPrice = parseFloat((pricing.resolvedPrice * deliveryMultiplier).toFixed(2));
-    const newTotalPrice = parseFloat((newUnitPrice * orderItem.quantity).toFixed(2));
+    // A measurement item (curtain/carpet) is billed per square metre, and
+    // its garments can each carry a different area — quantity × unit price
+    // alone understates/overstates the real total unless every garment
+    // happens to share the same area. Sum each garment's own area instead,
+    // same rule order creation applies (order.service.ts's
+    // perUnitTotalPrices) — a plain piece-priced item still reduces to
+    // unitPrice × quantity, since totalArea has no meaning for it.
+    const item = await this.itemRepo.findOne({where: {id: orderItem.itemId}});
+    let newTotalPrice: number;
+    if (item?.isMeasurement) {
+      const garments = await this.garmentRepo.find({
+        where: {orderItemId, isDeleted: false} as object,
+      });
+      const totalArea = garments.reduce(
+        (sum, g) => sum + (Number(g.length) || 0) * (Number(g.width) || 0),
+        0,
+      );
+      newTotalPrice = parseFloat((newUnitPrice * totalArea).toFixed(2));
+    } else {
+      newTotalPrice = parseFloat((newUnitPrice * orderItem.quantity).toFixed(2));
+    }
 
     const oldTotalPrice = money(orderItem.totalPrice);
     const priceDiff = newTotalPrice - oldTotalPrice;
@@ -1065,7 +1085,23 @@ export class ApprovalService {
         newUnitPrice = currentUnitPrice;
       }
     }
-    const newTotal = parseFloat((newUnitPrice * quantity).toFixed(2));
+    // Same area-aware total as _applyUpgradeOnOrderItem, which this quote
+    // must match exactly — a measurement item's garments can each carry a
+    // different area, so quantity × unit price alone doesn't reflect what
+    // approving would actually bill.
+    let newTotal: number;
+    if (item?.isMeasurement && orderItem) {
+      const garments = await this.garmentRepo.find({
+        where: {orderItemId: orderItem.id, isDeleted: false} as object,
+      });
+      const totalArea = garments.reduce(
+        (sum, g) => sum + (Number(g.length) || 0) * (Number(g.width) || 0),
+        0,
+      );
+      newTotal = parseFloat((newUnitPrice * totalArea).toFixed(2));
+    } else {
+      newTotal = parseFloat((newUnitPrice * quantity).toFixed(2));
+    }
 
     const isPending = request.status === ApprovalRequestStatus.PENDING;
 
