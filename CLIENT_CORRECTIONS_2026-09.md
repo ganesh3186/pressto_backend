@@ -148,3 +148,36 @@ rule the backend already applies in `order.service.ts`'s `createOrder()`.
 - Scope: Admin Panel (backend was already correct — no backend change)
 - File: `src/utils/new-order-pricing.js`
 - Commit: `2ef8024` (pressto-admin-panel)
+
+---
+
+## 6. Sales return on a measurement item (curtain/carpet) refunds unit price, not unit price × area
+
+**Status:** ✅ Fixed
+
+**Reported:** A curtain/carpet item is billed per square metre (length ×
+width, entered at the POS screen at intake) — but returning it only
+refunded the plain unit price (the per-sqm rate), not unit price × area
+(what the customer actually paid for that piece).
+
+**Root cause:** `_applyReturnEffect()` in `approval.service.ts` — the
+garment-level "Return Item" approval flow — computed "what this one piece
+was billed for" as plain `orderItem.unitPrice`. Correct for a normal
+piece-priced item, but for a measurement item that's just the per-sqm
+rate, not the actual billed amount for that specific garment. Order
+creation bills these as `unitPrice × length × width` per garment
+(`order.service.ts`'s `perUnitTotalPrices`) — this refund calculation
+never accounted for that.
+
+**Fix:** Now multiplies by the returned garment's own recorded area
+(`Garment.length × Garment.width`) when the item is `isMeasurement`,
+before applying its share of the order's tax — same rule order creation
+itself applies.
+
+**Related, not fixed (flagged for a follow-up, not reported today):**
+`_applyUpgradeOnOrderItem()` and `getUpgradeView()` — the separate
+"Upgrade" feature — have the identical missing-area-multiplier gap.
+
+- Scope: Backend
+- File: `src/services/approval.service.ts`
+- Commit: `a30568e` (pressto_backend)
