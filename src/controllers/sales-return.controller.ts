@@ -314,20 +314,29 @@ export class SalesReturnController {
     return {salesReturns};
   }
 
-  // ─── List Pending Credit Notes (global) ───────────────────────────────────
+  // ─── List Credit Notes (global) ────────────────────────────────────────────
   // Cross-order view for the Finance Approvals screen — listSalesReturns()
   // above only helps once you already know which order to look at.
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/sales-returns')
-  @response(200, {description: 'Sales returns across all orders, filtered by status'})
+  @response(200, {description: 'Sales returns across all orders, optionally filtered by status'})
   async listAll(
+    // Comma-separated (e.g. "pending,approved,rejected"), same convention as
+    // approval-requests' `type` filter — omit entirely for every status, so
+    // finance can see what they've already approved/rejected, not just
+    // what's still pending.
     @param.query.string('status') status?: string,
     @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
   ): Promise<object> {
+    const statuses = (status ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean) as SalesReturnStatus[];
+
     const salesReturns = await this.salesReturnRepo.find({
-      where: {status: (status as SalesReturnStatus) ?? SalesReturnStatus.PENDING},
+      where: statuses.length ? {status: statuses.length > 1 ? {inq: statuses} : statuses[0]} : {},
       order: ['createdAt DESC'],
     });
     if (!salesReturns.length) return {salesReturns: []};
