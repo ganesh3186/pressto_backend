@@ -601,14 +601,40 @@ export class RiderDeliveryController {
       : [];
     const orderById = new Map(orders.map(o => [o.id, o]));
 
+    // The store this cash is owed to — the order's own store, not
+    // necessarily wherever the rider happens to be right now.
+    const storeIds = [
+      ...new Set(orders.map(o => (o as {storeId?: string}).storeId).filter((id): id is string => Boolean(id))),
+    ];
+    const stores = storeIds.length
+      ? await this.storeRepository.find({where: {id: {inq: storeIds}} as object})
+      : [];
+    const storeById = new Map(stores.map(s => [s.id, s]));
+
     return {
-      items: transactions.map(t => ({
-        id: t.id,
-        orderId: t.orderId,
-        orderNumber: orderById.get(t.orderId)?.orderNumber ?? null,
-        amount: t.amount,
-        paymentDate: t.paymentDate,
-      })),
+      items: transactions.map(t => {
+        const order = orderById.get(t.orderId);
+        const store = order?.storeId ? storeById.get(order.storeId) : undefined;
+        return {
+          id: t.id,
+          orderId: t.orderId,
+          orderNumber: order?.orderNumber ?? null,
+          amount: t.amount,
+          paymentDate: t.paymentDate,
+          store: store
+            ? {
+                id: store.id,
+                name: store.name,
+                code: store.code,
+                address: store.address,
+                city: store.city,
+                state: store.state,
+                pincode: store.pincode,
+                phone: store.phone ?? null,
+              }
+            : null,
+        };
+      }),
     };
   }
 

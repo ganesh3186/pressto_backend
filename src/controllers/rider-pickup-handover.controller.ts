@@ -90,8 +90,40 @@ export class RiderPickupHandoverController {
         })
       : [];
     const batchedIds = new Set(batchedItems.map(i => i.pickupRequestId));
+    const eligible = pickups.filter(p => !batchedIds.has(p.id));
 
-    return {pickupRequests: pickups.filter(p => !batchedIds.has(p.id))};
+    // The store this pickup belongs to — the rider needs to know where
+    // they're taking it, not just what's in the bag.
+    const storeIds = [...new Set(eligible.map(p => p.storeId).filter((id): id is string => Boolean(id)))];
+    const stores = storeIds.length
+      ? await this.storeRepository.find({where: {id: {inq: storeIds}} as object})
+      : [];
+    const storeById = new Map(stores.map(s => [s.id, s]));
+
+    return {
+      pickupRequests: eligible.map(p => ({
+        ...p,
+        store: p.storeId ? this.toStoreSummary(storeById.get(p.storeId)) : null,
+      })),
+    };
+  }
+
+  // Consistent, trimmed shape for "which store" info handed to a rider —
+  // shared by handover-eligible (pickup's own store) and, on the cash side,
+  // RiderDeliveryController's pendingCashItems (the delivered order's
+  // store).
+  private toStoreSummary(store?: {id: string; name: string; code: string; address: string; city: string; state: string; pincode: string; phone?: string}) {
+    if (!store) return null;
+    return {
+      id: store.id,
+      name: store.name,
+      code: store.code,
+      address: store.address,
+      city: store.city,
+      state: store.state,
+      pincode: store.pincode,
+      phone: store.phone ?? null,
+    };
   }
 
   // ─── Submit a handover batch ──────────────────────────────────────────────
