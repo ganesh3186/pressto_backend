@@ -141,6 +141,33 @@ export class PickupRequestController {
     });
   }
 
+  // Resolves reworkOfOrderId to a human-readable order number, for the
+  // pickup list's "Rework" column — the model only stores the id.
+  private async enrichWithReworkOrderNumber(requests: object[]): Promise<object[]> {
+    const orderIds = [
+      ...new Set(
+        requests
+          .map(r => (r as {reworkOfOrderId?: string}).reworkOfOrderId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    if (!orderIds.length) return requests;
+
+    const orders = await this.orderRepository.find({
+      where: {id: {inq: orderIds}} as object,
+      fields: {id: true, orderNumber: true} as object,
+    });
+    const orderNumberById = new Map(orders.map(o => [o.id, o.orderNumber]));
+
+    return requests.map(r => {
+      const reworkOfOrderId = (r as {reworkOfOrderId?: string}).reworkOfOrderId;
+      return {
+        ...r,
+        reworkOfOrderNumber: reworkOfOrderId ? orderNumberById.get(reworkOfOrderId) ?? null : null,
+      };
+    });
+  }
+
   // ─── Create ─────────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -267,7 +294,7 @@ export class PickupRequestController {
       where: {...filter?.where, isDeleted: false},
       order: filter?.order ?? ['createdAt DESC'],
     });
-    return this.enrichWithSuggestedRider(requests);
+    return this.enrichWithReworkOrderNumber(await this.enrichWithSuggestedRider(requests));
   }
 
   @authenticate('jwt')
