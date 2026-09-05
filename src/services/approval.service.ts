@@ -765,6 +765,26 @@ export class ApprovalService {
       );
     }
 
+    // The garment is only physically at the store right now for an in-store
+    // request. Anything else (phone/whatsapp/other) means the customer still
+    // has it — approving just records the decision; the ₹0 rework order gets
+    // created later, once a linked pickup actually brings it back (see the
+    // pickup-handover confirm flow, which calls createReworkOrder directly).
+    const contactChannel = typeof metadata.contactChannel === 'string' ? metadata.contactChannel : 'in_store';
+    if (contactChannel !== 'in_store') {
+      const {v4} = await import('uuid');
+      await this.approvalAuditLogRepo.create({
+        id: v4(),
+        approvalRequestId: request.id,
+        eventType: 'reprocess_approved_awaiting_pickup',
+        remarks:
+          `Reprocess approved (${contactChannel}) — no order created yet, ` +
+          `awaiting a pickup to bring the garment(s) back.`,
+        performedBy,
+      });
+      return;
+    }
+
     const result = await this.orderService.createReworkOrder({
       originalOrderId: request.entityId,
       garmentIds,

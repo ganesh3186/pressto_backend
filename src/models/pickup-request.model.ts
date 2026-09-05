@@ -191,6 +191,30 @@ export class PickupRequest extends Entity {
   @belongsTo(() => Order)
   convertedOrderId?: string;
 
+  // This pickup exists to bring back a garment for a free rework, not a
+  // fresh paid order — set at creation from the "Rework Order" toggle on
+  // the Create Pickup screen. When true, confirming the pickup-handover
+  // batch creates the ₹0 rework order directly (reusing
+  // OrderService.createReworkOrder, same as the in-store flow) instead of
+  // leaving conversion to a manual New Order + convertedOrderId PATCH.
+  // Deliberately not named anything with "reprocess" — see
+  // reprocess.service.ts's ReprocessRequestSource for why.
+  @property({type: 'boolean', default: false})
+  isReworkPickup?: boolean;
+
+  // The original DELIVERED order this rework is for — only set when
+  // isReworkPickup is true.
+  @belongsTo(() => Order)
+  reworkOfOrderId?: string;
+
+  // The already-APPROVED ApprovalRequest (type REPROCESS, entityType
+  // 'order') this pickup fulfills — not a @belongsTo relation, matching
+  // this codebase's convention of resolving ApprovalRequest links manually
+  // via ApprovalRequestRepository rather than a LB4 relation (it has no
+  // relations of its own — see ApprovalRequestRelations).
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  reworkApprovalRequestId?: string;
+
   // The pickup's first/primary bag — kept for back-compat display only
   // (same convention as Transfer.bagId), not @belongsTo, matching
   // Transfer's fromStoreId/toStoreId/bagId style. A pickup spanning

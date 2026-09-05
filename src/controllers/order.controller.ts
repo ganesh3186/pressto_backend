@@ -45,7 +45,7 @@ import {
   reprocessWindowDays,
 } from '../models/reprocess-reason.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
-import {ReprocessService} from '../services/reprocess.service';
+import {ReprocessContactChannel, ReprocessService} from '../services/reprocess.service';
 import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
@@ -858,6 +858,14 @@ export class OrderController {
                 items: {type: 'string', format: 'uuid'},
                 description: 'Pieces to redo. Omit to send the whole order.',
               },
+              contactChannel: {
+                type: 'string',
+                enum: ['in_store', 'phone', 'whatsapp', 'other'],
+                description:
+                  'How the customer got in touch. "in_store" (default) creates the ₹0 rework ' +
+                  'order the moment this is approved, same as always. Anything else defers ' +
+                  'that until a linked pickup actually brings the garment back.',
+              },
             },
           },
         },
@@ -868,6 +876,7 @@ export class OrderController {
       remarks?: string;
       mediaIds?: string[];
       garmentIds?: string[];
+      contactChannel?: ReprocessContactChannel;
     },
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser);
@@ -879,6 +888,7 @@ export class OrderController {
       mediaIds: body.mediaIds,
       requestedBy: currentUser[securityId],
       source: 'store',
+      contactChannel: body.contactChannel,
     });
   }
 

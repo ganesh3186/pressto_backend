@@ -8,13 +8,22 @@ import {BagStatus} from '../models/bag-status.enum';
 import {PickupHandoverStatus} from '../models/pickup-handover-status.enum';
 import {PickupHandoverTargetType} from '../models/pickup-handover-target-type.enum';
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
+import {PickupRequest} from '../models/pickup-request.model';
 import {
+  ApprovalAuditLogRepository,
+  ApprovalRequestRepository,
   BagRepository,
+  GarmentRepository,
+  ItemRepository,
   MediaRepository,
+  OrderItemRepository,
+  OrderRepository,
   PickupHandoverItemRepository,
   PickupHandoverRepository,
   PickupRequestRepository,
+  ServiceRepository,
 } from '../repositories';
+import {OrderService} from '../services/order.service';
 
 /**
  * Admin-facing surface for the store side of "Handover orders" — the
@@ -31,7 +40,96 @@ export class PickupHandoverController {
     @repository(PickupRequestRepository) private pickupRequestRepo: PickupRequestRepository,
     @repository(BagRepository) private bagRepo: BagRepository,
     @repository(MediaRepository) private mediaRepo: MediaRepository,
+    @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
+    @repository(ApprovalAuditLogRepository) private approvalAuditLogRepo: ApprovalAuditLogRepository,
+    @repository(OrderRepository) private orderRepo: OrderRepository,
+    @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
+    @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(ItemRepository) private itemRepo: ItemRepository,
+    @repository(ServiceRepository) private serviceRepo: ServiceRepository,
+    @inject('services.order') private orderService: OrderService,
   ) {}
+
+  /**
+   * For pickups flagged isReworkPickup, batch-resolve "what this rework is
+   * actually for" — the original order number, the reason the customer gave
+   * when the reprocess request was raised, and each affected garment's
+   * item/service names — so the receiving screen can show it next to what's
+   * physically coming back, for a quick eyeball check before confirming.
+   */
+  private async _buildReworkContexts(
+    pickups: PickupRequest[],
+  ): Promise<Map<string, {
+    orderNumber: string | null;
+    reason: string | null;
+    requestReason: string | null;
+    garments: Array<{id: string; garmentTagNumber: string | null; itemName: string | null; serviceName: string | null}>;
+  }>> {
+    const reworkPickups = pickups.filter(p => p.isReworkPickup && p.reworkApprovalRequestId);
+    const result = new Map<string, {
+      orderNumber: string | null;
+      reason: string | null;
+      requestReason: string | null;
+      garments: Array<{id: string; garmentTagNumber: string | null; itemName: string | null; serviceName: string | null}>;
+    }>();
+    if (!reworkPickups.length) return result;
+
+    const approvalIds = [...new Set(reworkPickups.map(p => p.reworkApprovalRequestId!))];
+    const approvals = await this.approvalRequestRepo.find({where: {id: {inq: approvalIds}} as object});
+    const approvalById = new Map(approvals.map(a => [a.id, a]));
+
+    const orderIds = [...new Set(reworkPickups.map(p => p.reworkOfOrderId).filter((id): id is string => Boolean(id)))];
+    const orders = orderIds.length ? await this.orderRepo.find({where: {id: {inq: orderIds}} as object}) : [];
+    const orderById = new Map(orders.map(o => [o.id, o]));
+
+    const allGarmentIds = new Set<string>();
+    for (const approval of approvals) {
+      const meta = (approval.metadata ?? {}) as Record<string, unknown>;
+      if (Array.isArray(meta.garmentIds)) (meta.garmentIds as string[]).forEach(id => allGarmentIds.add(id));
+    }
+    const garments = allGarmentIds.size
+      ? await this.garmentRepo.find({where: {id: {inq: [...allGarmentIds]}} as object})
+      : [];
+    const garmentById = new Map(garments.map(g => [g.id, g]));
+
+    const orderItemIds = [...new Set(garments.map(g => g.orderItemId).filter(Boolean))];
+    const orderItems = orderItemIds.length
+      ? await this.orderItemRepo.find({where: {id: {inq: orderItemIds}} as object})
+      : [];
+    const orderItemById = new Map(orderItems.map(oi => [oi.id, oi]));
+
+    const itemIds = [...new Set(orderItems.map(oi => oi.itemId).filter(Boolean))];
+    const serviceIds = [...new Set(orderItems.map(oi => oi.serviceId).filter(Boolean))];
+    const [items, services] = await Promise.all([
+      itemIds.length ? this.itemRepo.find({where: {id: {inq: itemIds}} as object}) : Promise.resolve([]),
+      serviceIds.length ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as object}) : Promise.resolve([]),
+    ]);
+    const itemNameById = new Map(items.map(i => [i.id, i.name]));
+    const serviceNameById = new Map(services.map(s => [s.id, s.name]));
+
+    for (const pickup of reworkPickups) {
+      const approval = approvalById.get(pickup.reworkApprovalRequestId!);
+      if (!approval) continue;
+      const meta = (approval.metadata ?? {}) as Record<string, unknown>;
+      const garmentIds = Array.isArray(meta.garmentIds) ? (meta.garmentIds as string[]) : [];
+      result.set(pickup.id, {
+        orderNumber: orderById.get(pickup.reworkOfOrderId ?? '')?.orderNumber ?? null,
+        reason: typeof meta.reason === 'string' ? meta.reason : null,
+        requestReason: approval.requestReason ?? null,
+        garments: garmentIds.map(id => {
+          const garment = garmentById.get(id);
+          const orderItem = garment ? orderItemById.get(garment.orderItemId) : undefined;
+          return {
+            id,
+            garmentTagNumber: garment?.garmentTagNumber ?? null,
+            itemName: orderItem ? itemNameById.get(orderItem.itemId) ?? null : null,
+            serviceName: orderItem ? serviceNameById.get(orderItem.serviceId) ?? null : null,
+          };
+        }),
+      });
+    }
+    return result;
+  }
 
   // Batch-attaches each item's PickupRequest detail — bag(s), real
   // confirmed per-service counts, and any special instructions — so the
@@ -70,6 +168,8 @@ export class PickupHandoverController {
     const mediaUrlById = new Map(mediaRecords.map(m => [m.id, m.fileUrl]));
     const toUrls = (ids?: string[]) => (ids ?? []).map(id => mediaUrlById.get(id)).filter((url): url is string => Boolean(url));
 
+    const reworkContextByPickupId = await this._buildReworkContexts(pickups);
+
     return items.map(item => {
       const pickup = pickupById.get(item.pickupRequestId);
       return {
@@ -88,6 +188,11 @@ export class PickupHandoverController {
         remarks: pickup?.remarks ?? null,
         mediaIds: pickup?.mediaIds ?? null,
         mediaUrls: toUrls(pickup?.mediaIds),
+        // Present only for a pickup flagged isReworkPickup — the original
+        // item(s)/reason this rework is for, so the receiving screen can
+        // show it next to what's physically coming back.
+        isReworkPickup: pickup?.isReworkPickup ?? false,
+        reworkContext: pickup?.isReworkPickup ? reworkContextByPickupId.get(pickup.id) ?? null : null,
       };
     });
   }
@@ -144,6 +249,61 @@ export class PickupHandoverController {
     return {handover, items};
   }
 
+  /**
+   * A rework pickup's garment has just arrived — create the ₹0 rework order
+   * now, same as the in-store flow's immediate path
+   * (ApprovalService._applyPostDeliveryReprocess), just triggered from here
+   * instead of from approval time. Links the pickup and the original
+   * approval back to the new order atomically with the rest of the confirm
+   * action, rather than the racy two-step PATCH a normal order relies on.
+   * Returns null (and leaves everything else in the batch to proceed
+   * normally) if anything about the link looks stale — e.g. a second
+   * handover somehow already fulfilled it — rather than failing the whole
+   * batch over one bad pickup.
+   */
+  private async _createReworkOrderForPickup(
+    pickupRequest: PickupRequest,
+    performedBy: string,
+  ): Promise<{orderId: string; orderNumber: string} | null> {
+    if (!pickupRequest.reworkOfOrderId || !pickupRequest.reworkApprovalRequestId) return null;
+
+    const approval = await this.approvalRequestRepo.findOne({
+      where: {id: pickupRequest.reworkApprovalRequestId} as object,
+    });
+    if (!approval) return null;
+    const meta = (approval.metadata ?? {}) as Record<string, unknown>;
+    if (meta.reworkOrderId) return null; // already fulfilled — don't double-create
+    const garmentIds = Array.isArray(meta.garmentIds) ? (meta.garmentIds as string[]) : [];
+    if (!garmentIds.length) return null;
+
+    const result = await this.orderService.createReworkOrder({
+      originalOrderId: pickupRequest.reworkOfOrderId,
+      garmentIds,
+      createdBy: performedBy,
+      reason: typeof meta.reason === 'string' ? meta.reason : undefined,
+      remarks: approval.requestReason,
+    });
+
+    await this.orderRepo.updateById(result.order.id, {pickupSource: pickupRequest.source});
+
+    await this.approvalRequestRepo.updateById(approval.id, {
+      metadata: {...meta, reworkOrderId: result.order.id, reworkOrderNumber: result.order.orderNumber},
+    });
+
+    const {v4} = await import('uuid');
+    await this.approvalAuditLogRepo.create({
+      id: v4(),
+      approvalRequestId: approval.id,
+      eventType: 'reprocess_order_created',
+      remarks:
+        `Free rework order ${result.order.orderNumber} created with ` +
+        `${result.garmentsCreated} garment(s) after pickup ${pickupRequest.pickupNumber ?? pickupRequest.id} was received.`,
+      performedBy,
+    });
+
+    return {orderId: result.order.id, orderNumber: result.order.orderNumber};
+  }
+
   // ─── Receive the batch ────────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -166,10 +326,21 @@ export class PickupHandoverController {
     }
 
     const items = await this.handoverItemRepo.find({where: {pickupHandoverId: id} as object});
+    const reworkOrdersCreated: Array<{orderId: string; orderNumber: string}> = [];
     for (const item of items) {
       const pickupRequest = await this.pickupRequestRepo.findOne({where: {id: item.pickupRequestId}});
       if (!pickupRequest) continue;
-      await this.pickupRequestRepo.updateById(pickupRequest.id, {status: PickupRequestStatus.RECEIVED_AT_STORE});
+
+      let reworkOrder: {orderId: string; orderNumber: string} | null = null;
+      if (pickupRequest.isReworkPickup) {
+        reworkOrder = await this._createReworkOrderForPickup(pickupRequest, currentUser[securityId]);
+        if (reworkOrder) reworkOrdersCreated.push(reworkOrder);
+      }
+
+      await this.pickupRequestRepo.updateById(pickupRequest.id, {
+        status: PickupRequestStatus.RECEIVED_AT_STORE,
+        ...(reworkOrder ? {convertedOrderId: reworkOrder.orderId} : {}),
+      });
 
       // One bag per service now — release every bag this pickup actually
       // used (each actualItemsByService line's bagId), plus the legacy
@@ -195,6 +366,6 @@ export class PickupHandoverController {
       confirmedBy: currentUser[securityId],
     });
 
-    return {message: 'Pickup handover confirmed received.'};
+    return {message: 'Pickup handover confirmed received.', reworkOrdersCreated};
   }
 }

@@ -199,6 +199,11 @@ export class ApprovalController {
           ) || null,
         reprocessReason: metadata.reason ?? null,
         requestSource: metadata.source ?? null,
+        // Distinct from requestSource above (who raised it: customer vs
+        // store) — this is how the customer got in touch, and whether the
+        // garment is at the store yet. See reprocess.service.ts's
+        // ReprocessContactChannel.
+        contactChannel: metadata.contactChannel ?? null,
         reworkOrderId: metadata.reworkOrderId ?? null,
         reworkOrderNumber: metadata.reworkOrderNumber ?? null,
         media,

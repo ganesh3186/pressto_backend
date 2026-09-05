@@ -230,6 +230,10 @@ export class CustomerApprovalController {
       mediaIds: body.mediaIds,
       requestedBy: currentUser[securityId],
       source: 'customer',
+      // A customer raising this themselves is never standing in the store —
+      // always defer the rework order until a pickup actually brings the
+      // garment back, never the immediate in_store path.
+      contactChannel: 'other',
     });
   }
 

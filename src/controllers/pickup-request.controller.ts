@@ -11,7 +11,10 @@ import {RiderPincodeMappingWithRelations} from '../models/rider-pincode-mapping.
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {DeliveryType} from '../models/delivery-type.enum';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
+import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {
+  ApprovalRequestRepository,
   CustomerRepository,
   OrderRepository,
   PickupDeliverySlotRepository,
@@ -41,6 +44,9 @@ interface CreateBody {
     deliverySpeed?: DeliveryType;
   }>;
   remarks?: string;
+  isReworkPickup?: boolean;
+  reworkOfOrderId?: string;
+  reworkApprovalRequestId?: string;
 }
 
 interface UpdateBody {
@@ -74,6 +80,8 @@ export class PickupRequestController {
     private riderPincodeMappingRepository: RiderPincodeMappingRepository,
     @repository(OrderRepository)
     private orderRepository: OrderRepository,
+    @repository(ApprovalRequestRepository)
+    private approvalRequestRepository: ApprovalRequestRepository,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
     @inject('services.rider-assignment')
@@ -178,6 +186,15 @@ export class PickupRequestController {
                 },
               },
               remarks: {type: 'string'},
+              isReworkPickup: {
+                type: 'boolean',
+                description:
+                  'This pickup is to bring back a garment for a free rework, not a new paid ' +
+                  'order — requires reworkOfOrderId and reworkApprovalRequestId. Confirming ' +
+                  'this pickup creates the ₹0 rework order directly.',
+              },
+              reworkOfOrderId: {type: 'string', format: 'uuid'},
+              reworkApprovalRequestId: {type: 'string', format: 'uuid'},
             },
           },
         },
@@ -194,6 +211,30 @@ export class PickupRequestController {
     if (body.storeId) {
       const store = await this.storeRepository.findOne({where: {id: body.storeId}});
       if (!store) throw new HttpErrors.NotFound('Store not found.');
+    }
+    if (body.isReworkPickup) {
+      if (!body.reworkOfOrderId || !body.reworkApprovalRequestId) {
+        throw new HttpErrors.BadRequest(
+          'A rework pickup needs both reworkOfOrderId and reworkApprovalRequestId.',
+        );
+      }
+      const approval = await this.approvalRequestRepository.findOne({
+        where: {
+          id: body.reworkApprovalRequestId,
+          type: ApprovalRequestType.REPROCESS,
+          entityType: 'order',
+          entityId: body.reworkOfOrderId,
+        } as object,
+      });
+      if (!approval) {
+        throw new HttpErrors.NotFound('No matching reprocess request found for this order.');
+      }
+      if (approval.status !== ApprovalRequestStatus.APPROVED) {
+        throw new HttpErrors.BadRequest('This reprocess request has not been approved yet.');
+      }
+      if ((approval.metadata as Record<string, unknown> | undefined)?.reworkOrderId) {
+        throw new HttpErrors.Conflict('This reprocess request already has a rework order.');
+      }
     }
 
     const {slotId, ...rest} = body;
