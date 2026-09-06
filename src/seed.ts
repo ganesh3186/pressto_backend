@@ -240,6 +240,7 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   // On Account
   {permission: 'on_account:read',   description: 'Open the On Account screen'},
   {permission: 'on_account:update', description: 'Act on on-account orders'},
+  {permission: 'on_account:configure', description: 'Configure On Account invoice span defaults/overrides'},
   // Order status change (the "order status updation" action)
   {permission: 'order_status:update', description: 'Change an order\'s status'},
   // Approvals — split by audience (the two Approval-screen tabs)
@@ -395,6 +396,7 @@ const ROLES: RoleSeed[] = [
       cr('customer_recharge'),
       crud('wallet_configuration'),
       crud('gst_tax_configuration'),
+      ['on_account:configure'],
       ro('delivery_type_configuration'),
       ro('audit'),
       cr('file_upload'),

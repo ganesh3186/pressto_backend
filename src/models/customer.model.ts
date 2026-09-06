@@ -119,6 +119,18 @@ export class Customer extends Entity {
   })
   defaultDiscountValue?: number;
 
+  // On Account billing cycle override, in days — when set, wins over
+  // OnAccountConfiguration.defaultInvoiceSpanDays for this customer (see
+  // customer-billing.controller.ts's generateOnAccountInvoice). Null means
+  // "use the global default." Deliberately never exposed on Customer
+  // Master's own edit screen/endpoint — only written via the dedicated
+  // PATCH /customers/{id}/invoice-span, gated by on_account:configure.
+  @property({
+    type: 'number',
+    postgresql: {dataType: 'numeric'},
+  })
+  invoiceSpanDays?: number;
+
   @property({
     type: 'string',
     postgresql: {dataType: 'uuid'},
