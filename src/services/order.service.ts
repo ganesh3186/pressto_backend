@@ -2623,8 +2623,14 @@ export class OrderService {
     const orderIds = orders.map(o => o.id);
     const customerIds = [...new Set(orders.map(o => o.customerId))];
     const parentOrderIds = [...new Set(orders.map(o => (o as any).parentOrderId).filter(Boolean))];
+    // Only ever needed by a multi-store viewer (cluster/region/global scope)
+    // — the admin panel hides this column for a single-store-scoped user,
+    // where every row is trivially their own store — but resolving it is
+    // cheap enough (one batched query) to just always include rather than
+    // thread a "does the caller need this" flag through from the controller.
+    const storeIds = [...new Set(orders.map(o => (o as any).storeId).filter(Boolean))];
 
-    const [customers, paymentTxns, parentOrders, orderItems, labelAssignments] = await Promise.all([
+    const [customers, paymentTxns, parentOrders, orderItems, labelAssignments, stores] = await Promise.all([
       this.customerRepo.find({where: {id: {inq: customerIds}} as any}),
       this.paymentTransactionRepo.find({where: {orderId: {inq: orderIds}} as any}),
       parentOrderIds.length
@@ -2635,7 +2641,11 @@ export class OrderService {
         fields: {orderId: true, quantity: true, rejectedAtIntake: true} as any,
       }),
       this.orderLabelAssignmentRepo.find({where: {orderId: {inq: orderIds}, isDeleted: false} as any}),
+      storeIds.length
+        ? this.storeRepo.find({where: {id: {inq: storeIds}} as any, fields: {id: true, name: true, code: true} as any})
+        : Promise.resolve([]),
     ]);
+    const storeById = new Map(stores.map(s => [s.id, s]));
 
     const labelIds = [...new Set(labelAssignments.map(a => a.orderLabelId))];
     const labels = labelIds.length
@@ -2726,6 +2736,8 @@ export class OrderService {
         assignedRiderId: (order as any).assignedRiderId ?? null,
         assignedRiderName: (order as any).assignedRiderName ?? null,
         storeId: (order as any).storeId ?? null,
+        storeName: storeById.get((order as any).storeId)?.name ?? null,
+        storeCode: storeById.get((order as any).storeId)?.code ?? null,
         orderItemsCount: itemsCountByOrder.get(order.id) ?? 0,
         hasRejectedItems: hasRejectedItemsByOrder.has(order.id),
         subtotal: order.subtotal,
