@@ -6,6 +6,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {RiderAssignmentService} from '../services/rider-assignment.service';
+import {StoreScope, StoreScopeService} from '../services/store-scope.service';
 import {PickupRequest} from '../models';
 import {RiderPincodeMappingWithRelations} from '../models/rider-pincode-mapping.model';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
@@ -86,6 +87,8 @@ export class PickupRequestController {
     private dataSource: PresstoDataSource,
     @inject('services.rider-assignment')
     private riderAssignmentService: RiderAssignmentService,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
   ) {}
 
   // ─── Validation helpers ───────────────────────────────────────────────────
@@ -95,6 +98,18 @@ export class PickupRequestController {
     if (!allowed.includes(next)) {
       throw new HttpErrors.BadRequest(`Cannot move a pickup request from ${current} to ${next}.`);
     }
+  }
+
+  // Same IDOR guard Orders applies via StoreScopeService.assertOrderVisible
+  // — a scoped caller can't read/update/delete a pickup request outside
+  // their store(s) just by knowing its id. A not-yet-assigned pickup
+  // (storeId unset — see PickupRequest.storeId) stays visible to any
+  // scoped caller, matching find()'s leniency for the same reason.
+  private assertPickupScopeVisible(scope: StoreScope, storeId?: string | null): void {
+    if (scope.global) return;
+    if (!storeId) return;
+    if (scope.storeIds.includes(String(storeId))) return;
+    throw new HttpErrors.NotFound('Pickup request not found.');
   }
 
   private async assertRiderAssignable(riderId: string) {
@@ -288,10 +303,38 @@ export class PickupRequestController {
   @authorize({roles: ['super_admin'], permissions: ['pickup_request:read']})
   @get('/pickup-requests')
   @response(200, {description: 'Pickup requests'})
-  async find(@param.filter(PickupRequest) filter?: Filter<PickupRequest>): Promise<object[]> {
+  async find(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.filter(PickupRequest) filter?: Filter<PickupRequest>,
+    // Narrows the caller's token scope down to one store/cluster, same
+    // contract as OrderController.listOrders — see StoreScopeService.narrowStoreIds.
+    @param.query.string('storeId') storeIdFilter?: string,
+    @param.query.string('clusterId') clusterIdFilter?: string,
+  ): Promise<object[]> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
+      storeId: storeIdFilter,
+      clusterId: clusterIdFilter,
+    });
+
+    let scopeWhere: object = {};
+    if (Array.isArray(storeIds)) {
+      // A pickup request's storeId is unset until it's assigned to a
+      // rider (call-center intake often doesn't know the destination
+      // store yet — see PickupRequest.storeId). With no explicit
+      // store/cluster filter, a scoped caller's default view still
+      // includes those not-yet-assigned requests so nothing becomes
+      // invisible to everyone; a deliberately picked store/cluster
+      // filter is exact, no such leniency.
+      scopeWhere =
+        !storeIdFilter && !clusterIdFilter
+          ? {or: [{storeId: {inq: storeIds}}, {storeId: null}]}
+          : {storeId: {inq: storeIds}};
+    }
+
     const requests = await this.pickupRequestRepository.find({
       ...filter,
-      where: {...filter?.where, isDeleted: false},
+      where: {...filter?.where, ...scopeWhere, isDeleted: false},
       order: filter?.order ?? ['createdAt DESC'],
     });
     return this.enrichWithReworkOrderNumber(await this.enrichWithSuggestedRider(requests));
@@ -312,12 +355,17 @@ export class PickupRequestController {
     description: 'One pickup request',
     content: {'application/json': {schema: getModelSchemaRef(PickupRequest, {includeRelations: true})}},
   })
-  async findById(@param.path.string('id') id: string): Promise<PickupRequest> {
+  async findById(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<PickupRequest> {
     const pickupRequest = await this.pickupRequestRepository.findOne({
       where: {id, isDeleted: false},
       include: [{relation: 'assignedRider'}, {relation: 'customer'}, {relation: 'store'}],
     });
     if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
+    const scope = await this.storeScopeService.resolve(currentUser);
+    this.assertPickupScopeVisible(scope, pickupRequest.storeId);
     return pickupRequest;
   }
 
@@ -328,6 +376,7 @@ export class PickupRequestController {
   @patch('/pickup-requests/{id}')
   @response(200, {description: 'Pickup request updated'})
   async updateById(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
     @requestBody({
       content: {
@@ -356,6 +405,8 @@ export class PickupRequestController {
   ): Promise<object> {
     const existing = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false}});
     if (!existing) throw new HttpErrors.NotFound('Pickup request not found.');
+    const scope = await this.storeScopeService.resolve(currentUser);
+    this.assertPickupScopeVisible(scope, existing.storeId);
 
     const {status, convertedOrderId, ...rest} = body;
     if (status !== undefined && status !== existing.status) {
@@ -391,9 +442,14 @@ export class PickupRequestController {
   @authorize({roles: ['super_admin'], permissions: ['pickup_request:delete']})
   @del('/pickup-requests/{id}')
   @response(200, {description: 'Pickup request deleted'})
-  async deleteById(@param.path.string('id') id: string): Promise<object> {
+  async deleteById(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
     const existing = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false}});
     if (!existing) throw new HttpErrors.NotFound('Pickup request not found.');
+    const scope = await this.storeScopeService.resolve(currentUser);
+    this.assertPickupScopeVisible(scope, existing.storeId);
 
     const inFlight =
       existing.status !== PickupRequestStatus.REQUESTED &&
