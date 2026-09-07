@@ -639,6 +639,30 @@ export class OrderService {
     return {limit, used, remaining};
   }
 
+  // ─── Order numbering ────────────────────────────────────────────────────────
+  // Shared by every place a new order (or sub-order) gets an orderNumber —
+  // previously three separately-duplicated `ORD${count+1}` snippets. Format:
+  // `{store.storePrefix}-{MMYY}-{seq}`, seq zero-padded to 4 digits, counted
+  // per store and never reset (MMYY is a label reflecting creation time, not
+  // a reset boundary — mirrors the count()+1 idiom already used everywhere
+  // else in this codebase for numbered entities, e.g. pickupNumber/
+  // deliveryNumber, so this doesn't introduce a new race-condition risk).
+
+  private async resolveNextOrderNumber(storeId: string): Promise<string> {
+    const store = await this.storeRepo.findOne({where: {id: storeId, isDeleted: false} as object});
+    if (!store) throw new HttpErrors.NotFound('Store not found.');
+    if (!store.storePrefix) {
+      throw new HttpErrors.BadRequest(
+        'This store has no order number prefix set. Set one in Store Master before creating orders.',
+      );
+    }
+    const now = new Date();
+    const mmyy = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getFullYear()).slice(-2)}`;
+    const count = await this.orderRepo.count({storeId} as object);
+    const seq = String(count.count + 1).padStart(4, '0');
+    return `${store.storePrefix}-${mmyy}-${seq}`;
+  }
+
   // ─── Create Order ─────────────────────────────────────────────────────────
 
   async createOrder(input: CreateOrderInput, createdBy: string): Promise<object> {
@@ -736,8 +760,7 @@ export class OrderService {
 
     // ── Pricing ──
     const expressMultiplier = Math.max(1, Number(input.expressMultiplier ?? 1));
-    const count = await this.orderRepo.count();
-    const orderNumber = `ORD${String(count.count + 1).padStart(6, '0')}`;
+    const orderNumber = await this.resolveNextOrderNumber(input.storeId);
 
     const itemPricings: Array<{
       serviceId: string;
@@ -1445,8 +1468,7 @@ export class OrderService {
       throw new HttpErrors.BadRequest('The selected garments do not belong to this order.');
     }
 
-    const count = await this.orderRepo.count();
-    const orderNumber = `ORD${String(count.count + 1).padStart(6, '0')}`;
+    const orderNumber = await this.resolveNextOrderNumber(original.storeId);
     const now = new Date();
 
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED' as any});
@@ -3545,9 +3567,8 @@ export class OrderService {
       ? roundRupee(oldSubOrderSubtotal - subOrderDiscount + oldSubOrderTax)
       : subOrderTotal;
 
-    // Sub-order gets a normal sequential order number (same format as any other order)
-    const totalOrderCount = await this.orderRepo.count();
-    const subOrderNumber = `ORD${String(totalOrderCount.count + 1).padStart(6, '0')}`;
+    // Sub-order gets a normal order number, same store as the parent it split from
+    const subOrderNumber = await this.resolveNextOrderNumber(order.storeId);
 
     // Derive sub-order status from the earliest garment status in the split set
     const GARMENT_STATUS_PRIORITY: GarmentStatus[] = [
