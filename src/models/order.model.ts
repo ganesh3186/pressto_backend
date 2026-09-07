@@ -102,6 +102,15 @@ export class Order extends Entity {
   @property({type: 'number', default: 0, postgresql: {dataType: 'numeric'}})
   allocatedPayment?: number;
 
+  // Set true on the PARENT the moment its first child is split off — lets
+  // computeBalanceDue() know its raw PaymentTransaction rows are superseded
+  // and allocatedPayment is authoritative EVEN WHEN allocatedPayment is
+  // exactly 0 (100% of the pre-split payment went to a child). Distinct
+  // from allocatedPayment > 0, which was previously (wrongly) used as that
+  // same signal — see the split-payment double-count fix.
+  @property({type: 'boolean', default: false})
+  hasBeenSplit?: boolean;
+
   /**
    * Set on a free rework order: the delivered order whose items are being redone
    * because the customer reported a quality problem.

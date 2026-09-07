@@ -1836,7 +1836,15 @@ export class OrderService {
       (s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)),
       0,
     );
-    const collected = Number(order.allocatedPayment ?? 0) > 0 ? Number(order.allocatedPayment) : paid;
+    // Same formula as computeBalanceDue() — see the split-payment
+    // double-count fix; keyed off hasBeenSplit, not allocatedPayment > 0.
+    const isChildOrderForCollected = !!order.parentOrderId;
+    const allocPayForCollected = Number(order.allocatedPayment ?? 0);
+    const collected = isChildOrderForCollected
+      ? allocPayForCollected + paid
+      : order.hasBeenSplit
+        ? allocPayForCollected
+        : paid;
     if (roundRupee(totalAmount) < roundRupee(collected)) {
       throw new HttpErrors.Conflict(
         `New total ₹${roundRupee(totalAmount)} is below the ₹${roundRupee(collected)} already ` +
@@ -2141,7 +2149,16 @@ export class OrderService {
     // meant a fully-paid split fragment still read as owing its whole total.
     const payments = await this.paymentTransactionRepo.find({where: {orderId: params.orderId}});
     const paid = payments.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)), 0);
-    const collected = Number(order.allocatedPayment ?? 0) > 0 ? Number(order.allocatedPayment) : paid;
+    // Same formula as computeBalanceDue() — a CHILD's collected amount is
+    // its allocatedPayment PLUS any direct payments of its own; a split
+    // PARENT's is allocatedPayment alone (keyed off hasBeenSplit, not
+    // allocatedPayment > 0 — a split that sent 100% of the pre-split
+    // payment to a child leaves the parent's allocatedPayment at exactly
+    // 0, and `> 0` reading that as "not split" fell back to the stale raw
+    // transaction sum, letting an unpaid split parent pass this gate).
+    const isChildOrder = !!order.parentOrderId;
+    const allocPay = Number(order.allocatedPayment ?? 0);
+    const collected = isChildOrder ? allocPay + paid : order.hasBeenSplit ? allocPay : paid;
     const balanceDue = rupeeBalance(order.totalAmount, collected);
     const isOnAccountCustomer =
       handoverCustomer?.customerEntityType === 'business' || handoverCustomer?.isOnAccountEligible === true;
@@ -2728,9 +2745,15 @@ export class OrderService {
       const allocPay = Number(order.allocatedPayment ?? 0);
       const isChildOrder = !!(order as any).parentOrderId;
       // Child orders: allocated base + any new payments recorded directly on the child
-      // Split parent orders (allocPay > 0): use allocated share only (original txns are redistributed)
+      // Split parent orders (hasBeenSplit): use allocated share only (original txns are
+      // redistributed) — keyed off hasBeenSplit, not allocPay > 0, since a split that sent
+      // 100% of the pre-split payment to a child leaves the parent's allocPay at exactly 0
       // Regular orders: use transaction total
-      const totalCollected = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
+      const totalCollected = isChildOrder
+        ? allocPay + txnCollected
+        : (order as any).hasBeenSplit
+          ? allocPay
+          : txnCollected;
       const totalAmount = Number(order.totalAmount ?? 0);
       const balanceDue = rupeeBalance(totalAmount, totalCollected);
 
@@ -3026,9 +3049,17 @@ export class OrderService {
     const allocPay = Number(order.allocatedPayment ?? 0);
     const isChildOrder = !!order.parentOrderId;
     // Child: allocated base (transferred from parent) + any new direct payments
-    // Split parent (allocPay > 0): only the allocated share counts — original transactions were redistributed
+    // Split parent (hasBeenSplit): only the allocated share counts — original transactions
+    // were redistributed. Keyed off hasBeenSplit, not allocPay > 0 — a split that sent 100%
+    // of the pre-split payment to a child leaves the parent's allocPay at exactly 0, which
+    // `> 0` misread as "never split," falling back to the stale raw transaction sum and
+    // double-counting the same payment on both the parent and the child at once.
     // Regular order: transaction total
-    const totalCollected = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
+    const totalCollected = isChildOrder
+      ? allocPay + txnCollected
+      : order.hasBeenSplit
+        ? allocPay
+        : txnCollected;
     const totalAmount = Number(order.totalAmount ?? 0);
     const balanceDue = rupeeBalance(totalAmount, totalCollected);
 
@@ -3592,8 +3623,11 @@ export class OrderService {
     }, garments[0].status as GarmentStatus);
     const subOrderStatus = GARMENT_TO_ORDER_STATUS[earliestGarmentStatus] ?? OrderStatus.RECEIVED_AT_STORE;
 
-    // Payment allocation: give existing payment to whichever order delivers first
-    // (more advanced garment status = closer to delivery)
+    // Payment allocation: same delivery date -> keep it on the parent;
+    // different dates -> whichever order is actually due to deliver first
+    // gets it. (Previously keyed off garment status as a proxy for "which
+    // delivers first," which broke on an exact status tie between the two
+    // halves — see the split/allocatedPayment fix alongside this one.)
     const existingPayments = await this.paymentTransactionRepo.find({where: {orderId}});
     const txnPaid = existingPayments.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
     // Child orders carry no transaction records — their payment lives in allocatedPayment.
@@ -3602,32 +3636,31 @@ export class OrderService {
       ? Number(order.allocatedPayment ?? 0) + txnPaid
       : txnPaid;
 
-    // Find the earliest status among remaining (non-split) parent garments
-    const allParentGarments = await this.garmentRepo.find({
-      where: {orderItemId: {inq: parentOrderItems.map(oi => oi.id)}, isDeleted: false} as any,
-    });
-    const remainingGarments = allParentGarments.filter(g => !garmentIds.includes(g.id));
-    const parentEarliestStatus = remainingGarments.length
-      ? remainingGarments.reduce((min, g) => {
-          const minIdx = GARMENT_STATUS_PRIORITY.indexOf(min);
-          const gIdx = GARMENT_STATUS_PRIORITY.indexOf(g.status as GarmentStatus);
-          return gIdx !== -1 && (minIdx === -1 || gIdx < minIdx) ? g.status as GarmentStatus : min;
-        }, remainingGarments[0].status as GarmentStatus)
-      : earliestGarmentStatus;
+    const parentDeliveryDate = order.deliveryDate ? new Date(order.deliveryDate) : null;
+    const childDeliveryDate = deliveryDate ? new Date(deliveryDate) : null;
+    const sameDeliveryDay =
+      !!parentDeliveryDate &&
+      !!childDeliveryDate &&
+      parentDeliveryDate.toDateString() === childDeliveryDate.toDateString();
+    // Only a strictly earlier, KNOWN child delivery date routes the payment
+    // to the child — same day, parent-delivers-first, or either date
+    // missing all default to keeping the payment on the parent.
+    const childDeliversFirst =
+      !sameDeliveryDay &&
+      !!parentDeliveryDate &&
+      !!childDeliveryDate &&
+      childDeliveryDate < parentDeliveryDate;
 
-    const childStatusIdx = GARMENT_STATUS_PRIORITY.indexOf(earliestGarmentStatus);
-    const parentStatusIdx = GARMENT_STATUS_PRIORITY.indexOf(parentEarliestStatus);
-
-    // Higher index = more advanced pipeline stage = delivers sooner
     let allocatedPayment: number;
     let parentAllocatedPayment: number;
     const parentNewTotal = roundRupee(Number(order.totalAmount ?? 0) - oldSubOrderTotal);
-    if (childStatusIdx >= parentStatusIdx) {
+    if (childDeliversFirst) {
       // Child delivers first — give it full payment up to its total
       allocatedPayment = Math.min(totalPaid, subOrderTotal);
       parentAllocatedPayment = Math.max(0, totalPaid - allocatedPayment);
     } else {
-      // Parent delivers first — keep payment on parent up to its (new) total
+      // Same delivery date, or parent delivers first — keep payment on the
+      // parent up to its (new) total
       parentAllocatedPayment = Math.min(totalPaid, parentNewTotal);
       allocatedPayment = Math.max(0, totalPaid - parentAllocatedPayment);
     }
@@ -3726,6 +3759,7 @@ export class OrderService {
           taxAmount: parentNewTax,
           totalAmount: parentNewTotal,
           allocatedPayment: parentAllocatedPayment,
+          hasBeenSplit: true,
         },
         {transaction: tx} as any,
       );
@@ -3791,7 +3825,21 @@ export class OrderService {
     const txnCollected = existing.reduce((s, p) => s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)), 0);
     const isChildOrder = !!order.parentOrderId;
     const allocPay = Number(order.allocatedPayment ?? 0);
-    const alreadyPaid = isChildOrder ? allocPay + txnCollected : allocPay > 0 ? allocPay : txnCollected;
+    // A split PARENT's raw PaymentTransaction rows are superseded the
+    // moment its first child exists (that money was reallocated into
+    // allocatedPayment, possibly moving 100% of it to a child) — trusting
+    // `allocPay > 0` here used to double-count: when a split sent the
+    // ENTIRE pre-split payment to the child, the parent's own allocPay
+    // legitimately landed on exactly 0, `> 0` came back false, and this
+    // fell through to summing the still-there-but-stale txnCollected,
+    // showing the same payment as "collected" on both orders at once.
+    // `hasBeenSplit` is the real signal — set once, on split, never
+    // ambiguous with a genuinely-never-split order's untouched `0`.
+    const alreadyPaid = isChildOrder
+      ? allocPay + txnCollected
+      : order.hasBeenSplit
+        ? allocPay
+        : txnCollected;
     const due = rupeeBalance(order.totalAmount, alreadyPaid);
     return {due, alreadyPaid, isChildOrder, allocPay};
   }
@@ -3922,8 +3970,13 @@ export class OrderService {
       // amount to be collected again. Not needed for a child (its own
       // transaction rows are already summed directly, on top of
       // allocatedPayment) or a regular never-split order (no allocatedPayment
-      // in play).
-      if (!isChildOrder && allocPay > 0 && collectedTotal > 0) {
+      // in play). Keyed off hasBeenSplit, not allocPay > 0 — a split that
+      // sent 100% of the pre-split payment to a child leaves the parent's
+      // allocatedPayment at exactly 0, and a new payment collected on that
+      // parent afterward must still fold in, or it would vanish from every
+      // future balance-due check exactly like the double-count bug this
+      // mirrors on the read side.
+      if (!isChildOrder && order.hasBeenSplit && collectedTotal > 0) {
         await this.orderRepo.updateById(
           orderId,
           {allocatedPayment: parseFloat((allocPay + collectedTotal).toFixed(2))},
