@@ -8,10 +8,15 @@ import {Shift} from '../models/shift.model';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
+import {OrderStatus} from '../models/order-status.enum';
+import {SalesReturnStatus} from '../models/sales-return.model';
 import {
   EmployeeRepository,
+  GstTaxConfigurationRepository,
+  OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
+  SalesReturnRepository,
   ShiftRepository,
   StoreRepository,
   UsersRepository,
@@ -66,6 +71,9 @@ export class ShiftController {
     @repository(StoreRepository) private storeRepository: StoreRepository,
     @repository(UsersRepository) private usersRepository: UsersRepository,
     @repository(OrderRepository) private orderRepository: OrderRepository,
+    @repository(OrderItemRepository) private orderItemRepository: OrderItemRepository,
+    @repository(SalesReturnRepository) private salesReturnRepository: SalesReturnRepository,
+    @repository(GstTaxConfigurationRepository) private gstConfigRepository: GstTaxConfigurationRepository,
     @repository(PaymentTransactionRepository) private paymentTransactionRepository: PaymentTransactionRepository,
     @repository(WalletRechargeRequestRepository) private walletRechargeRequestRepository: WalletRechargeRequestRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
@@ -369,13 +377,24 @@ export class ShiftController {
   // per-shift confirmed setup.
   //
   // ppVoucher and Wallet Collections' own upi/card have no further
-  // PaymentMode source beyond what's summed here and stay operator-typed —
-  // same documented gap as the revenue-by-brand matrix.
+  // PaymentMode source beyond what's summed here and stay operator-typed.
   //
   // pettyCash is real too (see PettyCashService.computeWindowActivity) —
   // finance top-ups and resolved (approved/rejected) expenses within this
   // same [openedAt, windowEnd] window, for the closing form's
   // recvFromFinance/used/disapprovedAmt fields.
+  //
+  // revenue/salesReturn are real too, and are the one pair here NOT scoped
+  // by the same window basis: revenue is today's NEW tickets (orders
+  // created within the window at this store), while salesReturn is today's
+  // RETURN activity (SalesReturn rows approved within the window,
+  // regardless of which day the original order was placed) — two
+  // independent views, not a subtraction of one from the other. An
+  // approved sales return already permanently reduces its order's own
+  // subtotal/taxAmount/totalAmount (see SalesReturnController.approve()),
+  // so a same-shift return on a same-shift ticket is already netted into
+  // revenue automatically; subtracting salesReturn from it again would
+  // double-count. See resolveRevenue()/resolveSalesReturn() below.
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts/{id}/collected')
@@ -449,7 +468,124 @@ export class ShiftController {
 
     const pettyCash = await this.pettyCashService.computeWindowActivity(shift.storeId, shift.openedAt, windowEnd);
 
-    return {collections, walletCollections, cashReceived, bankingSupposed, pettyCash};
+    const [revenue, salesReturn] = await Promise.all([
+      this.resolveRevenue(shift.storeId, shift.openedAt, windowEnd),
+      this.resolveSalesReturn(shift.storeId, shift.openedAt, windowEnd),
+    ]);
+
+    return {collections, walletCollections, cashReceived, bankingSupposed, pettyCash, revenue, salesReturn};
+  }
+
+  // Today's NEW tickets — orders created within this shift's window at
+  // this store, summed using their CURRENT totals (already net of any
+  // approved sales return, since approve() mutates the order directly).
+  // Shape matches SHIFT_REVENUE_COLUMNS (one column today: 'pressto').
+  private async resolveRevenue(storeId: string, from: Date, to: Date): Promise<object> {
+    const orders = await this.orderRepository.find({
+      where: {
+        storeId,
+        createdAt: {between: [from, to]},
+        status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
+      } as object,
+      fields: {id: true, subtotal: true, discountAmount: true, taxAmount: true, totalAmount: true} as object,
+    });
+
+    const cell = {revenue: 0, discount: 0, taxes: 0, totalSales: 0, tickets: orders.length, items: 0, services: 0};
+    for (const order of orders) {
+      cell.revenue += Number(order.subtotal) || 0;
+      cell.discount += Number(order.discountAmount) || 0;
+      cell.taxes += Number(order.taxAmount) || 0;
+      cell.totalSales += Number(order.totalAmount) || 0;
+    }
+
+    if (orders.length) {
+      const items = await this.orderItemRepository.find({
+        where: {orderId: {inq: orders.map(o => o.id)}} as object,
+        fields: {quantity: true, additionalServiceIds: true} as object,
+      });
+      for (const item of items) {
+        const qty = Number(item.quantity) || 0;
+        cell.items += qty;
+        // One service-application per garment per service actually done —
+        // an item with an additional service on top of its primary one
+        // counts twice for that item's quantity (confirmed with the
+        // client: 2 shirts sent for one Clean service = 2 services).
+        cell.services += qty * (1 + (item.additionalServiceIds?.length ?? 0));
+      }
+    }
+
+    return {pressto: cell};
+  }
+
+  // Today's RETURN activity — SalesReturn rows approved within this
+  // shift's window, regardless of which day the original order was
+  // placed. Independent of resolveRevenue() above, not subtracted from it.
+  private async resolveSalesReturn(storeId: string, from: Date, to: Date): Promise<object> {
+    const emptyCell = {revenue: 0, discount: 0, taxes: 0, totalSales: 0, tickets: 0, items: 0, services: 0};
+
+    const returns = await this.salesReturnRepository.find({
+      where: {
+        status: SalesReturnStatus.APPROVED,
+        resolvedAt: {between: [from, to]},
+      } as object,
+    });
+    if (!returns.length) return {pressto: emptyCell};
+
+    // SalesReturn carries no storeId of its own — resolve it via the
+    // order it belongs to and filter down to this shift's store.
+    const orderIds = [...new Set(returns.map(r => r.orderId))];
+    const orders = await this.orderRepository.find({
+      where: {id: {inq: orderIds}} as object,
+      fields: {id: true, storeId: true} as object,
+    });
+    const storeIdByOrderId = new Map(orders.map(o => [o.id, o.storeId]));
+    const matched = returns.filter(r => storeIdByOrderId.get(r.orderId) === storeId);
+    if (!matched.length) return {pressto: emptyCell};
+
+    // Same GST-unwind formula SalesReturnController.approve() already uses
+    // — creditAmount is stored tax-inclusive, split back to revenue/taxes.
+    const gstConfig = await this.gstConfigRepository.findOne({
+      where: {isActive: true, isDeleted: false} as object,
+    });
+    const gstRate = gstConfig ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage) : 0;
+
+    const cell = {...emptyCell};
+    const ticketIds = new Set<string>();
+    // discount stays 0 — SalesReturn tracks no discount component at all,
+    // a known data gap, not a bug (flagged in the plan for this feature).
+    const quantityByOrderItemId = new Map<string, number>();
+    for (const salesReturn of matched) {
+      ticketIds.add(salesReturn.orderId);
+      const credit = Number(salesReturn.creditAmount) || 0;
+      const preTax = gstRate > 0 ? credit / (1 + gstRate / 100) : credit;
+      cell.revenue += preTax;
+      cell.taxes += credit - preTax;
+      cell.totalSales += credit;
+
+      for (const entry of (salesReturn.returnedItems ?? []) as Array<{orderItemId?: string; quantity?: number}>) {
+        if (!entry.orderItemId) continue;
+        const qty = Number(entry.quantity) || 0;
+        cell.items += qty;
+        quantityByOrderItemId.set(
+          entry.orderItemId,
+          (quantityByOrderItemId.get(entry.orderItemId) ?? 0) + qty,
+        );
+      }
+    }
+    cell.tickets = ticketIds.size;
+
+    if (quantityByOrderItemId.size) {
+      const orderItems = await this.orderItemRepository.find({
+        where: {id: {inq: [...quantityByOrderItemId.keys()]}} as object,
+        fields: {id: true, additionalServiceIds: true} as object,
+      });
+      const additionalCountById = new Map(orderItems.map(oi => [oi.id, oi.additionalServiceIds?.length ?? 0]));
+      for (const [orderItemId, qty] of quantityByOrderItemId) {
+        cell.services += qty * (1 + (additionalCountById.get(orderItemId) ?? 0));
+      }
+    }
+
+    return {pressto: cell};
   }
 
   // ─── Close ────────────────────────────────────────────────────────────────
