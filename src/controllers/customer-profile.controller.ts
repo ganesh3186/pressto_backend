@@ -524,6 +524,7 @@ export class CustomerProfileController {
       where: {
         isActive: true,
         isDeleted: false,
+        isAdminOnly: {neq: true},
         type: {inq: [PickupDeliverySlotType.PICKUP, PickupDeliverySlotType.BOTH]},
       } as object,
       order: ['sortOrder ASC', 'startTime ASC'],
@@ -640,7 +641,7 @@ export class CustomerProfileController {
     this.verifyOwnership(address.customerId, customer.id);
 
     const slot = await this.pickupSlotRepository.findOne({
-      where: {id: body.slotId, isActive: true, isDeleted: false} as object,
+      where: {id: body.slotId, isActive: true, isDeleted: false, isAdminOnly: {neq: true}} as object,
     });
     if (!slot) throw new HttpErrors.BadRequest('Pickup slot not found or inactive.');
 

@@ -42,6 +42,15 @@ export class PickupDeliverySlot extends Entity {
   @property({type: 'boolean', default: true})
   isActive?: boolean;
 
+  // When true, this slot is only offered in the admin panel's own pickup/
+  // delivery scheduling (Generate Request, Assign Rider, Dispatch, the
+  // order-details delivery dialog) — hidden from the rider app's
+  // GET /rider/pickup-slots and the customer app's
+  // GET /profile/customer/pickup-slots, and rejected if either tries to
+  // book it directly by id.
+  @property({type: 'boolean', default: false})
+  isAdminOnly?: boolean;
+
   @property({type: 'boolean', default: false})
   isDeleted?: boolean;
 
