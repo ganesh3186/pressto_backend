@@ -35,6 +35,7 @@ import { CouponService } from './services/coupon.service';
 import { CustomerPreferenceService } from './services/customer-preference.service';
 import { PettyCashService } from './services/petty-cash.service';
 import { RiderAssignmentService } from './services/rider-assignment.service';
+import { RazorpayService } from './services/razorpay.service';
 
 export { ApplicationConfig };
 
@@ -98,6 +99,7 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.customer-preference').toClass(CustomerPreferenceService);
     this.bind('services.petty-cash').toClass(PettyCashService);
     this.bind('services.rider-assignment').toClass(RiderAssignmentService);
+    this.bind('services.razorpay').toClass(RazorpayService);
   }
 
   protected configureFileUpload(destination?: string) {

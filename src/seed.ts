@@ -208,6 +208,9 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   // Customer Recharge
   {permission: 'customer_recharge:create', description: 'Recharge customer wallet'},
   {permission: 'customer_recharge:read',   description: 'View customer recharges'},
+  // Gateway Payment (PGLink / Razorpay)
+  {permission: 'gateway_payment:create', description: 'Create a Razorpay payment link'},
+  {permission: 'gateway_payment:read',   description: 'View gateway payment link status'},
   // Family Group
   {permission: 'family_group:create', description: 'Create a family group'},
   {permission: 'family_group:read',   description: 'View family groups'},
@@ -339,6 +342,7 @@ const ROLES: RoleSeed[] = [
       crud('customer_address'), crud('customer_phone'),
       cru('bag'),
       cr('customer_recharge'),
+      cr('gateway_payment'),
       cr('employee'),
       cr('file_upload'),
       ru('profile'),
@@ -359,6 +363,7 @@ const ROLES: RoleSeed[] = [
       ro('order'), ro('garment'), ro('customer'), ro('customer_address'), ro('customer_phone'),
       cru('approval'),
       ro('customer_recharge'),
+      ro('gateway_payment'),
       ro('employee'),
       ro('audit'),
       cr('file_upload'),
@@ -378,6 +383,7 @@ const ROLES: RoleSeed[] = [
         'store', 'price_list', 'additional_charge_master', 'delivery_type_configuration', 'bag']),
       cru('order'), cru('garment'), cru('customer'), cru('customer_address'), cru('customer_phone'),
       cr('approval'), cr('family_group'), cr('customer_recharge'),
+      cr('gateway_payment'),
       cr('file_upload'),
       ru('profile'),
       // operational: had order:read + order:update + approval:read
@@ -394,6 +400,7 @@ const ROLES: RoleSeed[] = [
       cru('order'),        // order:create records a payment, order:update is club-pay
       ro('customer'), ro('customer_address'), ro('customer_phone'),
       cr('customer_recharge'),
+      cr('gateway_payment'),
       crud('wallet_configuration'),
       crud('gst_tax_configuration'),
       ['on_account:configure'],
@@ -441,6 +448,7 @@ const ROLES: RoleSeed[] = [
         'store', 'price_list', 'additional_charge_master', 'delivery_type_configuration', 'bag']),
       cru('order'), cru('garment'), cru('customer'), cru('customer_address'), cru('customer_phone'),
       cr('approval'), cr('customer_recharge'),
+      cr('gateway_payment'),
       cr('file_upload'),
       ru('profile'),
       // operational: had order:read + order:update + approval:read
