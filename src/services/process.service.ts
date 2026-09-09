@@ -108,59 +108,6 @@ export class ProcessService {
     return rows;
   }
 
-  /**
-   * The (serviceId, processStepId, serviceSequence, stepSequence) rows a
-   * fresh process-log set for this garment's order item should contain —
-   * the step-generation core of initProcess(), factored out so
-   * completeAllProcesses() can reuse it to auto-initialise a garment whose
-   * process was never started, instead of failing (see that method).
-   */
-  private async buildInitialLogRows(
-    orderItem: OrderItem,
-  ): Promise<
-    Array<{
-      serviceId: string;
-      processStepId: string;
-      serviceSequence: number;
-      stepSequence: number;
-    }>
-  > {
-    // Build ordered service list: primary first, then additional in array order
-    const serviceIds: string[] = [
-      orderItem.serviceId,
-      ...(orderItem.additionalServiceIds ?? []),
-    ];
-
-    const rows: Array<{
-      serviceId: string;
-      processStepId: string;
-      serviceSequence: number;
-      stepSequence: number;
-    }> = [];
-
-    for (let svcIdx = 0; svcIdx < serviceIds.length; svcIdx++) {
-      const serviceId = serviceIds[svcIdx];
-      const serviceSequence = svcIdx + 1;
-
-      // Fetch steps for this service, ordered by sequence
-      const mappings = await this.spmRepo.find({
-        where: {serviceId, isActive: true, isDeleted: false} as any,
-        order: ['sequence ASC'],
-      });
-
-      for (const mapping of mappings) {
-        rows.push({
-          serviceId,
-          processStepId: mapping.processStepId,
-          serviceSequence,
-          stepSequence: mapping.sequence,
-        });
-      }
-    }
-
-    return rows;
-  }
-
   async initProcess(garmentId: string, _initiatedBy: string): Promise<object> {
     const {v4} = await import('uuid');
 
