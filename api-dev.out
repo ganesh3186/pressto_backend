@@ -1,0 +1,4 @@
+◇ injected env (14) from .env // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+◇ injected env (0) from .env // tip: ⌘ multiple files { path: ['.env.local', '.env'] }
+Server is running at http://127.0.0.1:3035
+Try http://127.0.0.1:3035/ping
