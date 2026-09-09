@@ -35,6 +35,33 @@ export class RiderController {
     private hasher: BcryptHasher,
   ) { }
 
+  private async riderSearchWhere(search?: string): Promise<object | undefined> {
+    const query = String(search ?? '').trim();
+    if (!query) return undefined;
+
+    const digits = query.replace(/\D/g, '');
+    const phoneQuery = digits.length >= 10 ? digits.slice(-10) : query;
+    const matchingUsers = await this.usersRepository.find({
+      where: {phone: {ilike: `%${phoneQuery}%`}} as object,
+      fields: {id: true},
+    });
+
+    return {
+      or: [
+        {riderCode: {ilike: `%${query}%`}},
+        {firstName: {ilike: `%${query}%`}},
+        {lastName: {ilike: `%${query}%`}},
+        {alternateNumber: {ilike: `%${phoneQuery}%`}},
+        ...(matchingUsers.length ? [{userId: {inq: matchingUsers.map(user => user.id)}}] : []),
+      ],
+    };
+  }
+
+  private combineRiderWhere(where?: object, searchWhere?: object): object {
+    const clauses = [{isDeleted: false}, ...(where ? [where] : []), ...(searchWhere ? [searchWhere] : [])];
+    return clauses.length === 1 ? clauses[0] : {and: clauses};
+  }
+
   /**
    * The `rider` role, creating it on first use if the seed has not run yet.
    * Self-healing so rider creation never depends on seed order; the role it
@@ -116,7 +143,11 @@ export class RiderController {
               lastName: { type: 'string' },
               phone: { type: 'string', description: 'Login identity — 10 digits, unique' },
               countryCode: { type: 'string', default: '+91' },
-              emailId: { type: 'string', format: 'email' },
+              emailId: {
+                type: 'string',
+                anyOf: [{format: 'email'}, {maxLength: 0}],
+                description: 'Optional; blank is accepted when no email is provided',
+              },
               alternateNumber: { type: 'string' },
               address: { type: 'string' },
               doorFloorFlat: { type: 'string' },
@@ -237,12 +268,14 @@ export class RiderController {
   @response(200, { description: 'Array of riders with their login account' })
   async find(
     @param.filter(Rider) filter?: Filter<Rider>,
+    @param.query.string('search') search?: string,
   ): Promise<Rider[]> {
     // Soft-deleted riders are never listed; the login account is included so the
     // UI has phone/email/name without a second call.
+    const searchWhere = await this.riderSearchWhere(search);
     return this.riderRepository.find({
       ...filter,
-      where: { ...filter?.where, isDeleted: false },
+      where: this.combineRiderWhere(filter?.where as object | undefined, searchWhere),
       include: [{ relation: 'user' }],
     });
   }
@@ -253,8 +286,10 @@ export class RiderController {
   @response(200, { description: 'Rider count' })
   async count(
     @param.query.object('where') where?: object,
+    @param.query.string('search') search?: string,
   ): Promise<{ count: number }> {
-    return this.riderRepository.count({ ...where, isDeleted: false } as object);
+    const searchWhere = await this.riderSearchWhere(search);
+    return this.riderRepository.count(this.combineRiderWhere(where, searchWhere));
   }
 
   @authenticate('jwt')
@@ -293,7 +328,11 @@ export class RiderController {
               lastName: { type: 'string' },
               phone: { type: 'string' },
               countryCode: { type: 'string' },
-              emailId: { type: 'string', format: 'email' },
+              emailId: {
+                type: 'string',
+                anyOf: [{format: 'email'}, {maxLength: 0}],
+                description: 'Optional; blank is accepted when no email is provided',
+              },
               alternateNumber: { type: 'string' },
               address: { type: 'string' },
               doorFloorFlat: { type: 'string' },
