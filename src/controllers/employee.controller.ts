@@ -13,7 +13,7 @@ import {
 } from '@loopback/rest';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
-import {Employee} from '../models';
+import {Employee, Users} from '../models';
 import {
   EmployeeRepository,
   RolesRepository,
@@ -204,11 +204,16 @@ export class EmployeeController {
     const hashedPassword = await this.hasher.hashPassword(body.password);
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    // Hoisted above the try — used again below, after the transaction has
+    // already committed (see the mediaService call), so they must survive
+    // past the try block's own scope.
+    let user: Users;
+    let employee: Employee;
     try {
       // Reuse the existing login when this person is already in the system —
       // their password is left alone, since changing it would lock them out of
       // the account they already use.
-      const user = existingUser
+      user = existingUser
         ? existingUser
         : await this.usersRepository.create(
             {
@@ -223,7 +228,7 @@ export class EmployeeController {
             {transaction: tx},
           );
 
-      const employee = await this.employeeRepository.create(
+      employee = await this.employeeRepository.create(
         {
           userId: user.id,
           employeeCode,
@@ -265,20 +270,24 @@ export class EmployeeController {
       }
 
       await tx.commit();
-
-      if (employee.mediaId) {
-        await this.mediaService.updateMediaUsedStatus([employee.mediaId], true);
-      }
-
-      return {
-        message: 'Employee created successfully',
-        employee: {...employee, user: {...user, password: undefined}},
-        assignedRoles: body.roleValues,
-      };
     } catch (error) {
       await tx.rollback();
       throw error;
     }
+
+    // Outside the transaction, same as updateById()'s equivalent call below —
+    // once tx.commit() succeeds there is no transaction left to roll back, so
+    // this must never sit inside the try/catch above (a throw here would
+    // otherwise attempt to roll back an already-committed transaction).
+    if (employee.mediaId) {
+      await this.mediaService.updateMediaUsedStatus([employee.mediaId], true);
+    }
+
+    return {
+      message: 'Employee created successfully',
+      employee: {...employee, user: {...user, password: undefined}},
+      assignedRoles: body.roleValues,
+    };
   }
 
   // A dual-linked login (employee + customer, see create()'s linkExistingAccount

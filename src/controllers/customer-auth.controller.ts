@@ -9,6 +9,7 @@ import {
   UserRolesRepository,
   UsersRepository,
 } from '../repositories';
+import {CouponService} from '../services/coupon.service';
 import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {JWTService} from '../services/jwt-service';
 import {SecurityDepositService} from '../services/security-deposit.service';
@@ -21,6 +22,8 @@ export class CustomerAuthController {
     private usersRepository: UsersRepository,
     @repository(CustomerRepository)
     private customerRepository: CustomerRepository,
+    @inject('services.coupon')
+    private couponService: CouponService,
     @repository(RolesRepository)
     private rolesRepository: RolesRepository,
     @repository(UserRolesRepository)
@@ -80,6 +83,10 @@ export class CustomerAuthController {
               phone: {type: 'string'},
               email: {type: 'string', format: 'email'},
               password: {type: 'string', minLength: 6},
+              referralCode: {
+                type: 'string',
+                description: 'An influencer-shared referral code, if this signup came from one — auto-applies that coupon to this customer\'s first order.',
+              },
             },
           },
         },
@@ -92,8 +99,19 @@ export class CustomerAuthController {
       phone: string;
       email?: string;
       password?: string;
+      referralCode?: string;
     },
   ): Promise<{message: string; username: string}> {
+    // Resolved before anything else is touched — an invalid referral code
+    // rejects registration outright with a clear reason, rather than
+    // silently registering the customer without it.
+    let referralCouponId: string | undefined;
+    if (body.referralCode?.trim()) {
+      const referralCoupon = await this.couponService.resolveReferralCoupon(body.referralCode);
+      if (!referralCoupon) throw new HttpErrors.BadRequest('Invalid referral code.');
+      referralCouponId = referralCoupon.id;
+    }
+
     // This endpoint is public and unauthenticated — there is no operator here
     // to show a "link to existing account?" confirmation like the admin panel
     // does. So a phone/email match is handled differently depending on what's
@@ -195,6 +213,7 @@ export class CustomerAuthController {
           firstName: body.firstName,
           lastName: body.lastName,
           ...(body.email && {email: body.email}),
+          ...(referralCouponId && {referredByCouponId: referralCouponId}),
         },
         {transaction: tx},
       );

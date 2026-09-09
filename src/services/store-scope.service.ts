@@ -5,9 +5,12 @@ import {UserProfile} from '@loopback/security';
 import {
   ClusterRepository,
   EmployeeRepository,
+  GarmentRepository,
+  OrderItemRepository,
   OrderRepository,
   RolesRepository,
   StoreRepository,
+  TransferRepository,
 } from '../repositories';
 
 /** Scope levels a role can declare (Roles.scope). super_admin ignores these. */
@@ -46,6 +49,9 @@ export class StoreScopeService {
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(RolesRepository) private rolesRepo: RolesRepository,
     @repository(ClusterRepository) private clusterRepo: ClusterRepository,
+    @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(TransferRepository) private transferRepo: TransferRepository,
+    @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
   ) {}
 
   /**
@@ -152,6 +158,11 @@ export class StoreScopeService {
    *
    * Reports an out-of-scope order as 404 rather than 403 (D4): a 403 would confirm
    * the order exists in another store.
+   *
+   * Also visible to a store that doesn't own the order but currently holds
+   * one of its garments via an active inter-store transfer (see
+   * isOrderGrantedViaTransfer) — additive, the home store never loses
+   * access.
    */
   async assertOrderVisible(orderId: string, currentUser: UserProfile): Promise<void> {
     const scope = await this.resolve(currentUser);
@@ -161,9 +172,130 @@ export class StoreScopeService {
       where: {id: orderId, isDeleted: false},
       fields: {id: true, storeId: true},
     });
-    if (!order || !this.allows(scope, order.storeId)) {
-      throw new HttpErrors.NotFound('Order not found.');
-    }
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (this.allows(scope, order.storeId)) return;
+    if (await this.isOrderGrantedViaTransfer(orderId, scope)) return;
+    throw new HttpErrors.NotFound('Order not found.');
+  }
+
+  /**
+   * True if this order has a garment currently granted to the caller's
+   * scope via an active inter-store transfer (Garment.activeTransferId ->
+   * Transfer.toStoreId). Targeted to one order — safe to call on every
+   * order-detail/action request, unlike transferGrantedOrderIds below
+   * which scans system-wide and is meant for list/filter call sites.
+   */
+  async isOrderGrantedViaTransfer(orderId: string, scope: StoreScope): Promise<boolean> {
+    if (scope.global) return true;
+
+    const orderItems = await this.orderItemRepo.find({
+      where: {orderId} as object,
+      fields: {id: true} as object,
+    });
+    if (!orderItems.length) return false;
+
+    const garments = await this.garmentRepo.find({
+      where: {
+        orderItemId: {inq: orderItems.map(oi => oi.id)},
+        activeTransferId: {neq: null as unknown as string},
+        isDeleted: false,
+      } as object,
+      fields: {activeTransferId: true} as object,
+    });
+    if (!garments.length) return false;
+
+    const transferIds = [...new Set(garments.map(g => g.activeTransferId).filter(Boolean))] as string[];
+    const grantingTransfer = await this.transferRepo.findOne({
+      where: {id: {inq: transferIds}, toStoreId: {inq: scope.storeIds}} as object,
+      fields: {id: true} as object,
+    });
+    return Boolean(grantingTransfer);
+  }
+
+  /**
+   * Every order id currently granted to the caller's scope via an active
+   * inter-store transfer — batch version for list/filter call sites
+   * (listOrders, garment/approval store-scope filters, sales-return's
+   * inline filter). Starts from Transfer (few transfers en route to any
+   * one store at a time) rather than scanning every granted garment
+   * system-wide.
+   *
+   * Takes a plain store id list rather than a StoreScope so it also works
+   * for a global caller who's manually narrowed to one store (e.g. an
+   * admin filtering the order list to a specific store) — that case still
+   * has a real, non-empty storeIds list even though scope.global is true.
+   */
+  async transferGrantedOrderIds(storeIds: string[]): Promise<string[]> {
+    if (!storeIds.length) return [];
+
+    const transfers = await this.transferRepo.find({
+      where: {toStoreId: {inq: storeIds}} as object,
+      fields: {id: true} as object,
+    });
+    if (!transfers.length) return [];
+
+    const garments = await this.garmentRepo.find({
+      where: {
+        activeTransferId: {inq: transfers.map(t => t.id)},
+        isDeleted: false,
+      } as object,
+      fields: {orderItemId: true} as object,
+    });
+    if (!garments.length) return [];
+
+    const orderItems = await this.orderItemRepo.find({
+      where: {id: {inq: [...new Set(garments.map(g => g.orderItemId))]}} as object,
+      fields: {orderId: true} as object,
+    });
+    return [...new Set(orderItems.map(oi => oi.orderId))];
+  }
+
+  /**
+   * Write guard for garment-actions.controller.ts — visibility (above) is
+   * additive/dual, but editing a garment stays exclusive to whichever
+   * store currently holds it. Once activeTransferId is set, only the
+   * transfer's toStoreId may act on it; the home store gets a clear
+   * rejection instead of silently succeeding on a garment that isn't
+   * physically in front of them. Unaffected when activeTransferId is
+   * unset — this pass does not add any new restriction to that case.
+   */
+  async assertGarmentEditable(garmentId: string, currentUser: UserProfile): Promise<void> {
+    const scope = await this.resolve(currentUser);
+    if (scope.global) return;
+
+    const garment = await this.garmentRepo.findOne({
+      where: {id: garmentId, isDeleted: false} as object,
+      fields: {id: true, activeTransferId: true} as object,
+    });
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    if (!garment.activeTransferId) return;
+
+    const transfer = await this.transferRepo.findOne({
+      where: {id: garment.activeTransferId} as object,
+      fields: {id: true, toStoreId: true} as object,
+    });
+    if (transfer && this.allows(scope, transfer.toStoreId)) return;
+
+    throw new HttpErrors.BadRequest('This garment is currently at a different store and cannot be edited here.');
+  }
+
+  /**
+   * Where a garment physically is right now: the transfer's toStoreId while
+   * activeTransferId is set (same resolution as assertGarmentEditable's
+   * write guard), otherwise its order's home store. Used by the garment
+   * scan/lookup surface so staff can see which store currently holds a
+   * scanned garment.
+   */
+  async resolveGarmentCurrentStoreId(
+    garment: {activeTransferId?: string | null},
+    homeStoreId: string | null,
+  ): Promise<string | null> {
+    if (!garment.activeTransferId) return homeStoreId;
+    const transfer = await this.transferRepo.findOne({
+      where: {id: garment.activeTransferId} as object,
+      fields: {id: true, toStoreId: true} as object,
+    });
+    return transfer?.toStoreId ?? homeStoreId;
   }
 
   /** True when the caller may act on / see the given store. */

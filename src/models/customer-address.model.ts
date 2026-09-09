@@ -33,8 +33,11 @@ export class CustomerAddress extends Entity {
   @property({type: 'string'})
   addressName?: string;
 
-  @property({type: 'string', required: true, postgresql: {dataType: 'text'}})
-  addressLine1: string;
+  // Only pincode below is required — an address the customer only
+  // half-remembers can still be saved and looked up by pincode; the other
+  // parts help narrow it down but never block the save.
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  addressLine1?: string;
 
   @property({type: 'string', postgresql: {dataType: 'text'}})
   addressLine2?: string;
@@ -48,11 +51,11 @@ export class CustomerAddress extends Entity {
   @property({type: 'string'})
   landmark?: string;
 
-  @property({type: 'string', required: true})
-  city: string;
+  @property({type: 'string'})
+  city?: string;
 
-  @property({type: 'string', required: true})
-  state: string;
+  @property({type: 'string'})
+  state?: string;
 
   @property({type: 'string'})
   country?: string;

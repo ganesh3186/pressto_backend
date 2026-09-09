@@ -17,6 +17,7 @@ import {
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
+  RefundDueRepository,
 } from '../repositories';
 import {ApprovalService} from '../services/approval.service';
 import {StoreScopeService} from '../services/store-scope.service';
@@ -32,6 +33,7 @@ export class ApprovalController {
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
+    @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -66,6 +68,14 @@ export class ApprovalController {
       return (payment as {orderId?: string})?.orderId ?? null;
     }
 
+    if (req.entityType === 'refund_due') {
+      const refundDue = await this.refundDueRepo.findOne({
+        where: {id: req.entityId},
+        fields: {id: true, orderId: true},
+      });
+      return refundDue?.orderId ?? null;
+    }
+
     return null;
   }
 
@@ -88,6 +98,12 @@ export class ApprovalController {
     const allowedOrderIds = new Set(
       orders.filter(o => this.storeScopeService.allows(scope, o.storeId)).map(o => String(o.id)),
     );
+    // Also allow orders reachable via an active inter-store transfer grant
+    // to this scope — additive, doesn't narrow anything the direct
+    // storeId check already allowed.
+    for (const id of await this.storeScopeService.transferGrantedOrderIds(scope.storeIds)) {
+      allowedOrderIds.add(String(id));
+    }
 
     return requests.filter((_, index) => {
       const orderId = orderIds[index];
@@ -183,8 +199,45 @@ export class ApprovalController {
           ) || null,
         reprocessReason: metadata.reason ?? null,
         requestSource: metadata.source ?? null,
+        // Distinct from requestSource above (who raised it: customer vs
+        // store) — this is how the customer got in touch, and whether the
+        // garment is at the store yet. See reprocess.service.ts's
+        // ReprocessContactChannel.
+        contactChannel: metadata.contactChannel ?? null,
         reworkOrderId: metadata.reworkOrderId ?? null,
         reworkOrderNumber: metadata.reworkOrderNumber ?? null,
+        media,
+      };
+    }
+
+    // Refund payouts hang off a RefundDue, not a garment or the order
+    // directly — a flat row (amount, method, source, order/customer) is all
+    // the Refund Payouts tab needs.
+    if (req.entityType === 'refund_due') {
+      const refundDue = await this.refundDueRepo.findOne({where: {id: req.entityId}});
+      const order = refundDue?.orderId
+        ? await this.orderRepo.findOne({where: {id: refundDue.orderId}})
+        : null;
+      const customer = refundDue?.customerId
+        ? await this.customerRepo.findOne({where: {id: refundDue.customerId}})
+        : null;
+      const meta = (req.metadata ?? {}) as {
+        method?: string;
+        bankDetails?: Record<string, unknown>;
+      };
+      return {
+        ...req,
+        refundDueId: refundDue?.id ?? null,
+        orderId: refundDue?.orderId ?? null,
+        orderNumber: order?.orderNumber ?? null,
+        customerId: refundDue?.customerId ?? null,
+        customerName: customer ? `${customer.firstName} ${customer.lastName}`.trim() : null,
+        amount: refundDue?.amount ?? null,
+        reason: refundDue?.reason ?? null,
+        sourceLabel: refundDue?.sourceLabel ?? null,
+        method: refundDue?.method ?? meta.method ?? null,
+        bankDetails: refundDue?.bankDetails ?? meta.bankDetails ?? null,
+        refundDueStatus: refundDue?.status ?? null,
         media,
       };
     }

@@ -16,6 +16,9 @@ export class OrderAdditionalCharge extends Entity {
   @property({type: 'number', required: true, postgresql: {dataType: 'numeric'}})
   amount: number;
 
+  @property({type: 'number', required: true, default: 1, postgresql: {dataType: 'integer'}})
+  quantity: number;
+
   @property({type: 'string'})
   remarks?: string;
 

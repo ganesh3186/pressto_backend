@@ -27,6 +27,33 @@ export class StoreController {
     public storeRepository: StoreRepository,
   ) {}
 
+  // Client-chosen (unlike `code`, which is server-generated), so it needs
+  // its own normalize/validate/duplicate-check pass — mirrors the existing
+  // duplicate-`name` check below, keyed on `storePrefix` instead.
+  // Returns: undefined = field absent from the payload, leave untouched;
+  // null = explicitly clearing it (empty string submitted); string = the
+  // normalized value to save.
+  private async normalizeAndValidateStorePrefix(
+    prefix: string | undefined,
+    excludeId?: string,
+  ): Promise<string | null | undefined> {
+    if (prefix === undefined) return undefined;
+    const trimmed = prefix.trim().toUpperCase();
+    if (!trimmed) return null;
+    if (!/^[A-Z0-9]{2,10}$/.test(trimmed)) {
+      throw new HttpErrors.BadRequest('Store prefix must be 2-10 letters/numbers.');
+    }
+    const duplicate = await this.storeRepository.findOne({
+      where: {
+        storePrefix: trimmed,
+        isDeleted: false,
+        ...(excludeId ? {id: {neq: excludeId}} : {}),
+      } as object,
+    });
+    if (duplicate) throw new HttpErrors.Conflict(`Store prefix "${trimmed}" is already in use.`);
+    return trimmed;
+  }
+
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['store:create']})
   @post('/stores')
@@ -56,6 +83,9 @@ export class StoreController {
     store.name = (store.name as string).trim();
     const duplicate = await this.storeRepository.findOne({where: {name: {ilike: store.name}, isDeleted: false}});
     if (duplicate) throw new HttpErrors.Conflict(`A store with name "${store.name}" already exists.`);
+    const normalizedPrefix = await this.normalizeAndValidateStorePrefix(store.storePrefix);
+    if (normalizedPrefix) store.storePrefix = normalizedPrefix;
+    else delete store.storePrefix;
     store.code = `STR${String(maxNum + 1).padStart(3, '0')}`;
     return this.storeRepository.create(store);
   }
@@ -153,6 +183,14 @@ export class StoreController {
       store.name = (store.name as string).trim();
       const duplicate = await this.storeRepository.findOne({where: {name: {ilike: store.name}, isDeleted: false, id: {neq: id}} as any});
       if (duplicate) throw new HttpErrors.Conflict(`A store with name "${store.name}" already exists.`);
+    }
+    if (store.storePrefix !== undefined) {
+      // May resolve to `null` (explicit clear) — cast past Partial<Store>'s
+      // `string`-only type, same as this codebase's other nullable-clear
+      // fields (e.g. Customer.invoiceSpanDays): `undefined` is stripped
+      // before reaching the DB, so only an explicit `null` actually clears.
+      (store as unknown as {storePrefix?: string | null}).storePrefix =
+        await this.normalizeAndValidateStorePrefix(store.storePrefix, id);
     }
     await this.storeRepository.updateById(id, store);
   }

@@ -35,6 +35,20 @@ export class PaymentTransaction extends Entity {
   @property({type: 'string', postgresql: {dataType: 'text'}})
   gatewayResponse?: string;
 
+  // Set only when a rider collected this payment at the customer's door
+  // (OrderService.addPayment's riderId param) — undefined for every other
+  // payment in the system (POS counter, online, etc.).
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  riderId?: string;
+
+  // 'with_rider' | 'submitted' | 'handed_over' — only meaningful when
+  // riderId is set, and only for CASH (wallet/UPI/card settle instantly,
+  // nothing physical to hand over). Bookkeeping only: never re-touches
+  // the order balance, which was already settled the instant this
+  // transaction was created.
+  @property({type: 'string'})
+  riderHandoverStatus?: string;
+
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 

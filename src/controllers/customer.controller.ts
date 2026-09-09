@@ -24,7 +24,11 @@ import {
   UsersRepository,
   WalletRepository,
 } from '../repositories';
+import { CustomerPreference } from '../models/customer-preference.model';
+import { CustomerPreferenceHistory } from '../models/customer-preference-history.model';
 import { BcryptHasher } from '../services/hash.password.bcrypt';
+import { CouponService } from '../services/coupon.service';
+import { CustomerPreferenceService } from '../services/customer-preference.service';
 import { SecurityDepositService } from '../services/security-deposit.service';
 import { WalletService } from '../services/wallet.service';
 import { PROTECTED_ROLES } from '../utils/role-guard';
@@ -59,6 +63,10 @@ export class CustomerController {
     private walletService: WalletService,
     @inject('services.security-deposit')
     private securityDepositService: SecurityDepositService,
+    @inject('services.customer-preference')
+    private preferenceService: CustomerPreferenceService,
+    @inject('services.coupon')
+    private couponService: CouponService,
   ) { }
 
   private async generateUniqueUsername(email: string | undefined, fullName: string): Promise<string> {
@@ -117,7 +125,7 @@ export class CustomerController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['firstName', 'lastName', 'countryCode', 'phone'],
+            required: ['firstName', 'countryCode', 'phone'],
             properties: {
               firstName: { type: 'string' },
               lastName: { type: 'string' },
@@ -142,6 +150,10 @@ export class CustomerController {
               notes: { type: 'string' },
               defaultDiscountType: { type: 'string' },
               defaultDiscountValue: { type: 'number' },
+              referralCode: {
+                type: 'string',
+                description: 'An influencer-shared referral code, if this customer mentioned one — auto-applies that coupon to their first order.',
+              },
               linkExistingAccount: {
                 type: 'boolean',
                 description:
@@ -156,7 +168,7 @@ export class CustomerController {
     })
     body: {
       firstName: string;
-      lastName: string;
+      lastName?: string;
       countryCode: string;
       phone: string;
       email?: string;
@@ -176,6 +188,7 @@ export class CustomerController {
       notes?: string;
       defaultDiscountType?: string;
       defaultDiscountValue?: number;
+      referralCode?: string;
       linkExistingAccount?: boolean;
     },
   ): Promise<object> {
@@ -225,6 +238,16 @@ export class CustomerController {
       }
     }
 
+    // Resolved before the transaction opens — an invalid referral code
+    // rejects the whole create call with a clear reason, rather than
+    // silently creating the customer without it.
+    let referralCouponId: string | undefined;
+    if (body.referralCode?.trim()) {
+      const referralCoupon = await this.couponService.resolveReferralCoupon(body.referralCode);
+      if (!referralCoupon) throw new HttpErrors.BadRequest('Invalid referral code.');
+      referralCouponId = referralCoupon.id;
+    }
+
     const customerRole = await this.resolveCustomerRole();
 
     const rawPassword = body.password ?? 'Pressto@1234';
@@ -239,8 +262,8 @@ export class CustomerController {
         ? existingUser
         : await this.usersRepository.create(
             {
-              fullName: `${body.firstName} ${body.lastName}`,
-              username: await this.generateUniqueUsername(body.email, `${body.firstName} ${body.lastName}`),
+              fullName: `${body.firstName} ${body.lastName && body.lastName}`,
+              username: await this.generateUniqueUsername(body.email, `${body.firstName} ${body.lastName && body.lastName}`),
               ...(body.email && { email: body.email }),
               countryCode: body.countryCode || '+91',
               phone: body.phone,
@@ -255,7 +278,7 @@ export class CustomerController {
           userId: user.id,
           customerCode,
           firstName: body.firstName,
-          lastName: body.lastName,
+          ...(body.lastName && {lastName: body.lastName}),
           ...(body.email && { email: body.email }),
           dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : undefined,
           customerEntityType: body.customerEntityType ?? 'individual',
@@ -270,6 +293,7 @@ export class CustomerController {
           notes: body.notes,
           defaultDiscountType: body.defaultDiscountType,
           defaultDiscountValue: body.defaultDiscountValue,
+          referredByCouponId: referralCouponId,
         },
         { transaction: tx },
       );
@@ -480,6 +504,30 @@ export class CustomerController {
   }
 
   @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['customer:read']})
+  @get('/customers/{id}/preferences')
+  @response(200, {
+    description: "A customer's stored preferences — read-only here, customers manage their own via /profile/customer/preferences",
+    content: {'application/json': {schema: getModelSchemaRef(CustomerPreference)}},
+  })
+  async getPreferences(@param.path.string('id') id: string): Promise<CustomerPreference> {
+    await this.customerRepository.findById(id);
+    return this.preferenceService.getOrCreate(id);
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['customer:read']})
+  @get('/customers/{id}/preferences/history')
+  @response(200, {
+    description: "Audit trail of every change to a customer's preferences, newest first",
+    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(CustomerPreferenceHistory)}}},
+  })
+  async getPreferencesHistory(@param.path.string('id') id: string): Promise<CustomerPreferenceHistory[]> {
+    await this.customerRepository.findById(id);
+    return this.preferenceService.getHistory(id);
+  }
+
+  @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['customer:update']})
   @patch('/customers/{id}')
   @response(200, { description: 'Customer updated' })
@@ -499,7 +547,10 @@ export class CustomerController {
               isActive: { type: 'boolean' },
               // customer fields
               firstName: { type: 'string' },
-              lastName: { type: 'string' },
+              lastName: { oneOf: [
+                {type: 'string'},
+                {type: 'null'},
+              ] },
               dateOfBirth: { type: 'string', format: 'date' },
               customerEntityType: { type: 'string', enum: ['individual', 'business'] },
               // customerTypeId: { type: 'string', format: 'uuid' },
@@ -529,7 +580,7 @@ export class CustomerController {
       phone?: string;
       isActive?: boolean;
       firstName?: string;
-      lastName?: string;
+      lastName?: string | null;
       dateOfBirth?: string;
       customerEntityType?: 'individual' | 'business';
       // customerTypeId?: string;

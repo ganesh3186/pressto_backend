@@ -7,6 +7,7 @@ import {ApprovalRequestRepository} from '../repositories/approval-request.reposi
 import {GarmentRepository} from '../repositories/garment.repository';
 import {GarmentStatusHistoryRepository} from '../repositories/garment-status-history.repository';
 import {GarmentProcessLogRepository} from '../repositories/garment-process-log.repository';
+import {GstTaxConfigurationRepository} from '../repositories/gst-tax-configuration.repository';
 import {ChallanRepository} from '../repositories/challan.repository';
 import {InvoiceRepository} from '../repositories/invoice.repository';
 import {ItemRepository} from '../repositories/item.repository';
@@ -18,6 +19,7 @@ import {PaymentTransactionRepository} from '../repositories/payment-transaction.
 import {ServiceRepository} from '../repositories/service.repository';
 import {WalletRepository} from '../repositories/wallet.repository';
 import {WalletTransactionRepository} from '../repositories/wallet-transaction.repository';
+import {RefundDueRepository} from '../repositories/refund-due.repository';
 import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
@@ -27,6 +29,11 @@ import {ProcessLogStatus} from '../models/process-log-status.enum';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
+import {RefundDue, RefundBankDetails} from '../models/refund-due.model';
+import {RefundDueStatus} from '../models/refund-due-status.enum';
+import {RefundReason} from '../models/refund-reason.enum';
+import {RefundMethod} from '../models/refund-method.enum';
+import {Order} from '../models/order.model';
 import {
   APPROVAL_ROLE_ROUTING,
   ApprovalRequest,
@@ -100,6 +107,11 @@ interface RevertSnapshot {
   challan?: {id: string; subtotal?: number; totalAmount?: number; items?: unknown[]};
   refundedToWallet?: number;
   chequePaymentTransactionId?: string;
+  // Set once a RefundDue is created for this request (Return Item /
+  // Upgrade-downgrade overpayment) — replaces the old `refundedToWallet`
+  // immediate-credit bookkeeping now that a payout is deferred behind its
+  // own approval instead of executing here.
+  refundDueId?: string;
 }
 
 @injectable({scope: BindingScope.TRANSIENT})
@@ -111,6 +123,7 @@ export class ApprovalService {
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
     @repository(GarmentProcessLogRepository) private processLogRepo: GarmentProcessLogRepository,
+    @repository(GstTaxConfigurationRepository) private gstConfigRepo: GstTaxConfigurationRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
@@ -122,6 +135,7 @@ export class ApprovalService {
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
+    @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
     @inject('services.audit') private auditService: AuditService,
     @inject('services.order') private orderService: OrderService,
   ) {}
@@ -167,6 +181,86 @@ export class ApprovalService {
     }
 
     return request;
+  }
+
+  // ─── Deferred refund payouts ──────────────────────────────────────────────
+  // "Customer is owed money" is split into two separate, human-gated steps
+  // per the client's requirement: nothing refunds automatically the instant
+  // an overpayment is detected. createRefundDue() just records that ₹X is
+  // owed and why (called from _applyReturnEffect, _applyUpgradeOnOrderItem,
+  // and sales-return.controller.ts's approve()). Staff then pick a payout
+  // method via selectPayoutMethod(), which raises a REFUND_PAYOUT approval —
+  // only once THAT is approved does _applyRefundPayout() below actually move
+  // the money.
+
+  async createRefundDue(params: {
+    orderId: string;
+    customerId: string;
+    amount: number;
+    reason: RefundReason;
+    sourceType: string;
+    sourceId: string;
+    sourceLabel?: string;
+  }): Promise<RefundDue> {
+    const {v4} = await import('uuid');
+    return this.refundDueRepo.create({
+      id: v4(),
+      orderId: params.orderId,
+      customerId: params.customerId,
+      amount: params.amount,
+      reason: params.reason,
+      sourceType: params.sourceType,
+      sourceId: params.sourceId,
+      sourceLabel: params.sourceLabel,
+      status: RefundDueStatus.PENDING,
+    });
+  }
+
+  async selectPayoutMethod(params: {
+    refundDueId: string;
+    method: RefundMethod;
+    bankDetails?: RefundBankDetails;
+    requestedBy: string;
+  }): Promise<RefundDue> {
+    const refundDue = await this.refundDueRepo.findById(params.refundDueId);
+    if (refundDue.status !== RefundDueStatus.PENDING) {
+      throw new HttpErrors.BadRequest(`Refund is already ${refundDue.status}.`);
+    }
+
+    if (params.method === RefundMethod.BANK_ACCOUNT) {
+      const b = params.bankDetails;
+      if (!b?.accountHolderName || !b?.bankName || !b?.accountNumber || !b?.ifscCode) {
+        throw new HttpErrors.BadRequest(
+          'Bank account refunds need accountHolderName, bankName, accountNumber, and ifscCode.',
+        );
+      }
+    }
+
+    const request = await this.createRequest({
+      type: ApprovalRequestType.REFUND_PAYOUT,
+      entityType: 'refund_due',
+      entityId: refundDue.id,
+      requestedBy: params.requestedBy,
+      metadata: {
+        method: params.method,
+        bankDetails: params.method === RefundMethod.BANK_ACCOUNT ? params.bankDetails : undefined,
+        amount: refundDue.amount,
+        orderId: refundDue.orderId,
+        customerId: refundDue.customerId,
+        reason: refundDue.reason,
+        sourceLabel: refundDue.sourceLabel,
+      },
+    });
+
+    await this.refundDueRepo.updateById(refundDue.id, {
+      status: RefundDueStatus.REQUESTED,
+      method: params.method,
+      bankDetails: params.method === RefundMethod.BANK_ACCOUNT ? params.bankDetails : undefined,
+      approvalRequestId: request.id,
+      updatedAt: new Date(),
+    });
+
+    return this.refundDueRepo.findById(refundDue.id);
   }
 
   async resolve(params: {
@@ -272,6 +366,13 @@ export class ApprovalService {
       return;
     }
 
+    // Refund payout approved: this is the moment the money actually moves —
+    // raised against the RefundDue row, never a garment.
+    if (request.entityType === 'refund_due' && request.type === ApprovalRequestType.REFUND_PAYOUT) {
+      await this._applyRefundPayout(request, performedBy);
+      return;
+    }
+
     if (request.entityType !== 'garment') return;
 
     const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
@@ -368,14 +469,22 @@ export class ApprovalService {
     // fully discounted) still closes out the order correctly.
     await this._maybeMarkOrderReturned(order.id, garment.garmentTagNumber, request.id, performedBy);
 
-    // Full value the customer is billed for this one piece = unit price + its
-    // share of the order's tax.
+    // Full value the customer is billed for this one piece = unit price
+    // (× this garment's own area, for a measurement item billed per square
+    // metre — same unitPrice × length × width rule order creation applies,
+    // see order.service.ts's perUnitTotalPrices) plus its share of the
+    // order's tax.
     const unitPrice = money(orderItem.unitPrice);
     if (unitPrice <= 0) return;
+    const item = await this.itemRepo.findOne({where: {id: orderItem.itemId}});
+    const area = Number(garment.length) * Number(garment.width);
+    const pieceBasePrice =
+      item?.isMeasurement && Number.isFinite(area) && area > 0 ? money(unitPrice * area) : unitPrice;
+    if (pieceBasePrice <= 0) return;
     const orderSubtotal = money(order.subtotal);
-    const share = orderSubtotal > 0 ? unitPrice / orderSubtotal : 0;
+    const share = orderSubtotal > 0 ? pieceBasePrice / orderSubtotal : 0;
     const taxShare = money(money(order.taxAmount) * share);
-    const pieceValue = money(unitPrice + taxShare);
+    const pieceValue = money(pieceBasePrice + taxShare);
 
     // The order/invoice/challan total drops by exactly what this piece was
     // billed for — a customer should never be left owing (or having paid) for
@@ -386,35 +495,11 @@ export class ApprovalService {
     //   unpaid/partial (collected ≤ new total) → balance due just shrinks
     const newOrderTotal = Math.max(0, roundRupee(money(order.totalAmount) - pieceValue));
 
-    // How much THIS order actually collected — split-aware, so the refund is
-    // scoped to this order alone. A split child keeps its money in
-    // allocatedPayment (no transaction rows); a split parent's transactions were
-    // superseded by its allocated share. Refund entries are excluded. Returning
-    // from a child therefore refunds from the child, never the parent.
-    const payments = await this.paymentRepo.find({where: {orderId: order.id}} as any);
-    const txnCollected = payments.reduce(
-      (s: number, p: any) => s + (p.transactionType === 'refund' ? 0 : money(p.amount)),
-      0,
-    );
-    const alreadyRefunded = payments.reduce(
-      (s: number, p: any) => s + (p.transactionType === 'refund' ? money(p.amount) : 0),
-      0,
-    );
-    const allocPay = money((order as any).allocatedPayment);
-    const isChild = !!(order as any).parentOrderId;
-    const collected = isChild
-      ? money(allocPay + txnCollected)
-      : allocPay > 0
-        ? allocPay
-        : txnCollected;
-
-    // Net of any earlier returns' refunds on this same order.
-    const netPaid = money(collected - alreadyRefunded);
-    // Only the excess over the NEW (already-reduced) total is refundable — not
-    // the piece's full value. A partially-paid order that still owes more than
-    // it's paid after the reduction owes nothing back; it just owes less.
-    const refundAmount = money(Math.max(0, netPaid - newOrderTotal));
-    const newBalanceDue = money(Math.max(0, newOrderTotal - netPaid));
+    // How much THIS order actually collected vs. its new (reduced) total —
+    // split-aware, so the refund is scoped to this order alone. A partially-
+    // paid order that still owes more than it's paid after the reduction owes
+    // nothing back; it just owes less.
+    const {refundAmount, newBalanceDue} = await this._computeOverpaymentRefund(order, newOrderTotal);
 
     // Reduce the order itself — subtotal/tax component-wise (for anything that
     // reads them individually), totalAmount derived directly from the
@@ -447,28 +532,21 @@ export class ApprovalService {
     }
 
     if (refundAmount > 0) {
-      // Money back to the customer's wallet.
-      await this._creditWallet(
-        order.customerId!,
-        refundAmount,
-        `Return refund — garment ${garment.garmentTagNumber} (order ${order.orderNumber})`,
-        order.id,
-      );
-      // A visible refund entry in the order's payment history (money out). It is
-      // NOT counted toward amount-collected, so re-deriving `collected` later
-      // (e.g. a second return on this order) still nets out correctly via
-      // alreadyRefunded above.
-      const {v4} = await import('uuid');
-      await this.paymentRepo.create({
-        id: v4(),
+      // No automatic refund — surface it as a RefundDue instead. Staff pick a
+      // payout method (wallet / bank account / cash) from the order's invoice
+      // dialogue; only once THAT gets its own approval does money move (see
+      // selectPayoutMethod/_applyRefundPayout).
+      const refundDue = await this.createRefundDue({
         orderId: order.id,
-        paymentMode: PaymentMode.WALLET,
-        transactionType: 'refund',
+        customerId: order.customerId!,
         amount: refundAmount,
-        paymentDate: new Date(),
-      } as any);
+        reason: RefundReason.RETURN_ITEM,
+        sourceType: 'garment',
+        sourceId: garment.id,
+        sourceLabel: `Garment ${garment.garmentTagNumber} returned`,
+      });
 
-      await this._mergeIntoSnapshot(request.id, {refundedToWallet: refundAmount});
+      await this._mergeIntoSnapshot(request.id, {refundDueId: refundDue.id});
     }
 
     await this.auditService.log({
@@ -481,12 +559,12 @@ export class ApprovalService {
         garmentStatus: 'returned_to_customer',
         orderTotal: newOrderTotal,
         balanceDue: newBalanceDue,
-        refundedToWallet: refundAmount,
+        refundDue: refundAmount,
       },
       remarks:
         `Garment ${garment.garmentTagNumber} returned via approval ${request.id} — ` +
         `order total reduced by ₹${pieceValue}` +
-        (refundAmount > 0 ? ` — ₹${refundAmount} refunded to wallet` : ''),
+        (refundAmount > 0 ? ` — ₹${refundAmount} owed back to customer, refund pending` : ''),
     });
   }
 
@@ -517,6 +595,152 @@ export class ApprovalService {
     });
   }
 
+  /**
+   * How much of what's already been collected on this order exceeds its NEW
+   * (already-reduced) total — the amount actually owed back to the customer.
+   * Split-order aware: a split child's money lives in allocatedPayment, a
+   * split parent's transactions were superseded by its allocated share, and
+   * refund PaymentTransactions never count as collected. Also nets out any
+   * RefundDue not yet paid out (pending or requested) — a payout being
+   * "owed" but not yet executed still has to count as accounted for, or a
+   * second return/downgrade on the same order before the first payout
+   * happens would double-refund the same money. Shared by _applyReturnEffect
+   * and the Upgrade/Downgrade overpayment check in _applyUpgradeOnOrderItem.
+   */
+  private async _computeOverpaymentRefund(
+    order: Order,
+    newOrderTotal: number,
+  ): Promise<{refundAmount: number; newBalanceDue: number}> {
+    const payments = await this.paymentRepo.find({where: {orderId: order.id}} as any);
+    const txnCollected = payments.reduce(
+      (s: number, p: any) => s + (p.transactionType === 'refund' ? 0 : money(p.amount)),
+      0,
+    );
+    const paidRefunds = payments.reduce(
+      (s: number, p: any) => s + (p.transactionType === 'refund' ? money(p.amount) : 0),
+      0,
+    );
+    const unpaidRefundDues = await this.refundDueRepo.find({
+      where: {orderId: order.id, status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED]}},
+    });
+    const unpaidRefundTotal = unpaidRefundDues.reduce((s, r) => s + money(r.amount), 0);
+    const alreadyAccountedFor = money(paidRefunds + unpaidRefundTotal);
+
+    const allocPay = money((order as any).allocatedPayment);
+    const isChild = !!(order as any).parentOrderId;
+    const collected = isChild
+      ? money(allocPay + txnCollected)
+      : allocPay > 0
+        ? allocPay
+        : txnCollected;
+
+    // Net of any earlier returns/downgrades on this same order, whether
+    // already paid out or still awaiting their own payout approval.
+    const netPaid = money(collected - alreadyAccountedFor);
+    // Only the excess over the NEW (already-reduced) total is refundable —
+    // not the full amount. A partially-paid order that still owes more than
+    // it's paid after the reduction owes nothing back; it just owes less.
+    const refundAmount = money(Math.max(0, netPaid - newOrderTotal));
+    const newBalanceDue = money(Math.max(0, newOrderTotal - netPaid));
+    return {refundAmount, newBalanceDue};
+  }
+
+  /**
+   * Actually moves the money for a refund, by method. Shared by the
+   * deferred RefundDue payout path below (_applyRefundPayout, gated behind
+   * its own REFUND_PAYOUT approval — Return Item and Upgrade/Downgrade) and
+   * Sales Return's approve(), which executes immediately using the method
+   * chosen at credit-note creation time instead of going through a second
+   * approval.
+   */
+  async executeRefundPayout(params: {
+    customerId: string;
+    orderId: string;
+    amount: number;
+    method: string;
+    bankDetails?: RefundBankDetails;
+    remarks: string;
+  }): Promise<void> {
+    const {v4} = await import('uuid');
+    const amount = money(params.amount);
+
+    if (params.method === RefundMethod.WALLET) {
+      await this._creditWallet(params.customerId, amount, params.remarks, params.orderId);
+      await this.paymentRepo.create({
+        id: v4(),
+        orderId: params.orderId,
+        paymentMode: PaymentMode.WALLET,
+        transactionType: 'refund',
+        amount,
+        paymentDate: new Date(),
+      });
+    } else if (params.method === RefundMethod.BANK_ACCOUNT) {
+      await this.paymentRepo.create({
+        id: v4(),
+        orderId: params.orderId,
+        paymentMode: PaymentMode.BANK_TRANSFER,
+        transactionType: 'refund',
+        amount,
+        transactionReference: params.bankDetails
+          ? `${params.bankDetails.bankName} •••${String(params.bankDetails.accountNumber).slice(-4)}`
+          : undefined,
+        gatewayResponse: params.bankDetails ? JSON.stringify(params.bankDetails) : undefined,
+        paymentDate: new Date(),
+      });
+    } else {
+      // 'cash' (or a missing method, which should never happen —
+      // both callers always set one before this can run).
+      await this.paymentRepo.create({
+        id: v4(),
+        orderId: params.orderId,
+        paymentMode: PaymentMode.CASH,
+        transactionType: 'refund',
+        amount,
+        paymentDate: new Date(),
+      });
+    }
+  }
+
+  /**
+   * A REFUND_PAYOUT approval was granted — the moment the money actually
+   * moves. Raised against a RefundDue row (never a garment), method + bank
+   * details already chosen at selectPayoutMethod() time.
+   */
+  private async _applyRefundPayout(request: ApprovalRequest, performedBy: string): Promise<void> {
+    const refundDue = await this.refundDueRepo.findOne({where: {id: request.entityId}});
+    if (!refundDue || refundDue.status === RefundDueStatus.PAID) return;
+
+    const method = refundDue.method as RefundMethod | undefined;
+    const amount = money(refundDue.amount);
+
+    await this.executeRefundPayout({
+      customerId: refundDue.customerId,
+      orderId: refundDue.orderId,
+      amount,
+      method: method ?? RefundMethod.CASH,
+      bankDetails: refundDue.bankDetails,
+      remarks: `Refund payout — ${refundDue.sourceLabel ?? refundDue.reason} (approval ${request.id})`,
+    });
+
+    await this.refundDueRepo.updateById(refundDue.id, {
+      status: RefundDueStatus.PAID,
+      resolvedAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await this._mergeIntoSnapshot(request.id, {refundDueId: refundDue.id});
+
+    await this.auditService.log({
+      entityType: 'refund_due',
+      entityId: refundDue.id,
+      actionType: 'refund_paid_out',
+      performedBy,
+      before: {status: RefundDueStatus.REQUESTED},
+      after: {status: RefundDueStatus.PAID, method, amount},
+      remarks: `₹${amount} refunded via ${method} — approval ${request.id}`,
+    });
+  }
+
   // ─── Reprocess: reset process logs + return garment to in_process ──────────
 
   /**
@@ -539,6 +763,26 @@ export class ApprovalService {
       throw new HttpErrors.BadRequest(
         'This reprocess request does not name any garments, so no rework order can be raised.',
       );
+    }
+
+    // The garment is only physically at the store right now for an in-store
+    // request. Anything else (phone/whatsapp/other) means the customer still
+    // has it — approving just records the decision; the ₹0 rework order gets
+    // created later, once a linked pickup actually brings it back (see the
+    // pickup-handover confirm flow, which calls createReworkOrder directly).
+    const contactChannel = typeof metadata.contactChannel === 'string' ? metadata.contactChannel : 'in_store';
+    if (contactChannel !== 'in_store') {
+      const {v4} = await import('uuid');
+      await this.approvalAuditLogRepo.create({
+        id: v4(),
+        approvalRequestId: request.id,
+        eventType: 'reprocess_approved_awaiting_pickup',
+        remarks:
+          `Reprocess approved (${contactChannel}) — no order created yet, ` +
+          `awaiting a pickup to bring the garment(s) back.`,
+        performedBy,
+      });
+      return;
     }
 
     const result = await this.orderService.createReworkOrder({
@@ -633,6 +877,20 @@ export class ApprovalService {
       return;
     }
 
+    // Refund payout rejected: nothing was ever paid out (the method choice
+    // alone doesn't move money — see selectPayoutMethod/_applyRefundPayout),
+    // so just reopen the RefundDue for staff to pick a different method.
+    if (request.entityType === 'refund_due' && request.type === ApprovalRequestType.REFUND_PAYOUT) {
+      await this.refundDueRepo.updateById(request.entityId, {
+        status: RefundDueStatus.PENDING,
+        method: null,
+        bankDetails: null,
+        approvalRequestId: null,
+        updatedAt: new Date(),
+      } as unknown as Partial<RefundDue>);
+      return;
+    }
+
     if (request.entityType !== 'garment') return;
 
     // Declined + return: the customer wants the piece back unprocessed. Same
@@ -724,7 +982,27 @@ export class ApprovalService {
     const deliveryMultiplier = 1 + (Number(order.deliveryTypePercentage) || 0) / 100;
     const newBasePrice = pricing.basePrice;
     const newUnitPrice = parseFloat((pricing.resolvedPrice * deliveryMultiplier).toFixed(2));
-    const newTotalPrice = parseFloat((newUnitPrice * orderItem.quantity).toFixed(2));
+    // A measurement item (curtain/carpet) is billed per square metre, and
+    // its garments can each carry a different area — quantity × unit price
+    // alone understates/overstates the real total unless every garment
+    // happens to share the same area. Sum each garment's own area instead,
+    // same rule order creation applies (order.service.ts's
+    // perUnitTotalPrices) — a plain piece-priced item still reduces to
+    // unitPrice × quantity, since totalArea has no meaning for it.
+    const item = await this.itemRepo.findOne({where: {id: orderItem.itemId}});
+    let newTotalPrice: number;
+    if (item?.isMeasurement) {
+      const garments = await this.garmentRepo.find({
+        where: {orderItemId, isDeleted: false} as object,
+      });
+      const totalArea = garments.reduce(
+        (sum, g) => sum + (Number(g.length) || 0) * (Number(g.width) || 0),
+        0,
+      );
+      newTotalPrice = parseFloat((newUnitPrice * totalArea).toFixed(2));
+    } else {
+      newTotalPrice = parseFloat((newUnitPrice * orderItem.quantity).toFixed(2));
+    }
 
     const oldTotalPrice = money(orderItem.totalPrice);
     const priceDiff = newTotalPrice - oldTotalPrice;
@@ -739,10 +1017,26 @@ export class ApprovalService {
 
     // Adjust order totals
     if (order && priceDiff !== 0) {
+      const oldOrderTotal = money(order.totalAmount);
+      const newSubtotal = money(money(order.subtotal) + priceDiff);
+      // Recompute tax fresh from the current GST config against the new
+      // subtotal, rather than carrying the old (now stale) taxAmount
+      // forward unchanged — an un-recomputed taxAmount silently corrupts
+      // any later credit note's own "effective tax rate" derivation
+      // (sales-return.controller.ts's create()), over- or under-crediting
+      // the customer on a subsequent return.
+      const gstConfig = await this.gstConfigRepo.findOne({where: {isActive: true, isDeleted: false}});
+      const gstRate = gstConfig ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage) : 0;
+      const taxableAmount = money(newSubtotal - money(order.discountAmount));
+      const newTaxAmount = gstRate > 0 ? money((taxableAmount * gstRate) / 100) : 0;
+      // Final total is a whole rupee; subtotal/tax keep decimals.
+      const newOrderTotal = Math.max(0, Math.round(taxableAmount + newTaxAmount));
+      const totalDiff = newOrderTotal - oldOrderTotal;
+
       await this.orderRepo.updateById(order.id, {
-        subtotal: money(money(order.subtotal) + priceDiff),
-        // Final total is a whole rupee; subtotal keeps decimals.
-        totalAmount: Math.round(money(order.totalAmount) + priceDiff),
+        subtotal: newSubtotal,
+        taxAmount: newTaxAmount,
+        totalAmount: newOrderTotal,
         updatedAt: new Date(),
       });
 
@@ -750,10 +1044,13 @@ export class ApprovalService {
       if (invoice) {
         await this.invoiceRepo.updateById(invoice.id, {
           subtotal: money(money(invoice.subtotal) + priceDiff),
-          totalAmount: Math.round(money(invoice.totalAmount) + priceDiff),
+          // Mirrors the order's own freshly-recomputed total directly,
+          // rather than independently diffing invoice.totalAmount — keeps
+          // the two from ever drifting apart from separate rounding.
+          totalAmount: newOrderTotal,
           // An upgrade raises the bill, so the balance rises with it. Never let
           // it go negative if a downgrade ever produces a negative diff.
-          balanceDue: Math.max(0, Math.round(money(invoice.balanceDue) + priceDiff)),
+          balanceDue: Math.max(0, Math.round(money(invoice.balanceDue) + totalDiff)),
           updatedAt: new Date(),
         } as any);
       }
@@ -773,10 +1070,31 @@ export class ApprovalService {
 
         await this.challanRepo.updateById(challan.id, {
           subtotal: money(money(challan.subtotal) + priceDiff),
-          totalAmount: Math.round(money(challan.totalAmount) + priceDiff),
+          totalAmount: newOrderTotal,
           items,
           updatedAt: new Date(),
         } as any);
+      }
+
+      // Price dropped — if the customer already paid more than the new,
+      // lower total, that excess is now owed back. Same "no automatic
+      // refund" pipeline as Return Item: just record it here; staff pick a
+      // payout method from the invoice dialogue and it moves only once that
+      // gets its own approval (see selectPayoutMethod/_applyRefundPayout).
+      if (priceDiff < 0) {
+        const {refundAmount} = await this._computeOverpaymentRefund(order, newOrderTotal);
+        if (refundAmount > 0) {
+          const refundDue = await this.createRefundDue({
+            orderId: order.id,
+            customerId: order.customerId!,
+            amount: refundAmount,
+            reason: RefundReason.DOWNGRADE,
+            sourceType: 'order_item',
+            sourceId: orderItemId,
+            sourceLabel: `Service change on order ${order.orderNumber}`,
+          });
+          await this._mergeIntoSnapshot(request.id, {refundDueId: refundDue.id});
+        }
       }
     }
 
@@ -850,6 +1168,24 @@ export class ApprovalService {
       notes.push(
         `₹${snapshot.refundedToWallet} was refunded to the customer's wallet on return and has NOT been clawed back. Reconcile manually.`,
       );
+    }
+
+    // Reverting an approved refund payout: the money (if any) already moved —
+    // same "never claw back" stance as the wallet-refund note above. Left as
+    // PAID deliberately: _applyRefundPayout() guards on this exact status, so
+    // if this reverted request is somehow approved again it becomes a no-op
+    // instead of paying out a second time.
+    if (
+      previousStatus === ApprovalRequestStatus.APPROVED &&
+      request.entityType === 'refund_due' &&
+      request.type === ApprovalRequestType.REFUND_PAYOUT
+    ) {
+      const refundDue = await this.refundDueRepo.findOne({where: {id: request.entityId}});
+      if (refundDue?.status === RefundDueStatus.PAID) {
+        notes.push(
+          `This refund had already been paid out via ${refundDue.method ?? 'the chosen method'} and has NOT been clawed back. Re-approving this reverted request will have no further effect — correct the payout manually if it was made in error.`,
+        );
+      }
     }
 
     if (request.type === ApprovalRequestType.REPROCESS) {
@@ -1057,7 +1393,23 @@ export class ApprovalService {
         newUnitPrice = currentUnitPrice;
       }
     }
-    const newTotal = parseFloat((newUnitPrice * quantity).toFixed(2));
+    // Same area-aware total as _applyUpgradeOnOrderItem, which this quote
+    // must match exactly — a measurement item's garments can each carry a
+    // different area, so quantity × unit price alone doesn't reflect what
+    // approving would actually bill.
+    let newTotal: number;
+    if (item?.isMeasurement && orderItem) {
+      const garments = await this.garmentRepo.find({
+        where: {orderItemId: orderItem.id, isDeleted: false} as object,
+      });
+      const totalArea = garments.reduce(
+        (sum, g) => sum + (Number(g.length) || 0) * (Number(g.width) || 0),
+        0,
+      );
+      newTotal = parseFloat((newUnitPrice * totalArea).toFixed(2));
+    } else {
+      newTotal = parseFloat((newUnitPrice * quantity).toFixed(2));
+    }
 
     const isPending = request.status === ApprovalRequestStatus.PENDING;
 

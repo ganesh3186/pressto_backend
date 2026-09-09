@@ -27,6 +27,15 @@ export class CustomerDiscountGroupController {
     public customerDiscountGroupRepository: CustomerDiscountGroupRepository,
   ) {}
 
+  private assertValidDiscount(discountPercentage?: number, maxDiscountAmount?: number) {
+    if (discountPercentage !== undefined && (discountPercentage <= 0 || discountPercentage > 100)) {
+      throw new HttpErrors.BadRequest('Discount percentage must be greater than 0 and at most 100.');
+    }
+    if (maxDiscountAmount !== undefined && maxDiscountAmount !== null && maxDiscountAmount <= 0) {
+      throw new HttpErrors.BadRequest('Max discount amount must be greater than 0 when given.');
+    }
+  }
+
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['customer_discount_group:create']})
   @post('/customer-discount-groups')
@@ -56,6 +65,7 @@ export class CustomerDiscountGroupController {
     customerDiscountGroup.name = (customerDiscountGroup.name as string).trim();
     const duplicate = await this.customerDiscountGroupRepository.findOne({where: {name: {ilike: customerDiscountGroup.name}, isDeleted: false}});
     if (duplicate) throw new HttpErrors.Conflict(`A customer discount group with name "${customerDiscountGroup.name}" already exists.`);
+    this.assertValidDiscount(customerDiscountGroup.discountPercentage, customerDiscountGroup.maxDiscountAmount);
     customerDiscountGroup.code = `CDG${String(maxNum + 1).padStart(3, '0')}`;
     return this.customerDiscountGroupRepository.create(customerDiscountGroup);
   }
@@ -150,6 +160,7 @@ export class CustomerDiscountGroupController {
       const duplicate = await this.customerDiscountGroupRepository.findOne({where: {name: {ilike: customerDiscountGroup.name}, isDeleted: false, id: {neq: id}} as any});
       if (duplicate) throw new HttpErrors.Conflict(`A customer discount group with name "${customerDiscountGroup.name}" already exists.`);
     }
+    this.assertValidDiscount(customerDiscountGroup.discountPercentage, customerDiscountGroup.maxDiscountAmount);
     await this.customerDiscountGroupRepository.updateById(id, customerDiscountGroup);
   }
 

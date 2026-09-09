@@ -1,7 +1,7 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
-import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
+import {get, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {PresstoDataSource} from '../datasources';
 import {authorize} from '../authorization';
@@ -11,6 +11,7 @@ import {
   CustomerRepository,
   InvoiceOrderLinkRepository,
   InvoiceRepository,
+  OnAccountConfigurationRepository,
   OrderRepository,
   PaymentTransactionRepository,
   WalletRepository,
@@ -30,8 +31,71 @@ export class CustomerBillingController {
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(InvoiceOrderLinkRepository) private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
+    @repository(OnAccountConfigurationRepository) private onAccountConfigRepo: OnAccountConfigurationRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
+
+  /**
+   * A customer's own invoiceSpanDays wins when set; otherwise the global
+   * OnAccountConfiguration default; otherwise a hardcoded 30 for the edge
+   * case the config singleton was never created yet.
+   */
+  private async resolveInvoiceSpanDays(customerInvoiceSpanDays?: number): Promise<number> {
+    if (customerInvoiceSpanDays != null) return Number(customerInvoiceSpanDays);
+    const config = await this.onAccountConfigRepo.findOne({where: {isDeleted: false}});
+    return config ? Number(config.defaultInvoiceSpanDays) : 30;
+  }
+
+  // ─── Invoice span (billing cycle) — per-customer override ─────────────────
+  // The only write path for Customer.invoiceSpanDays — deliberately kept out
+  // of the general customer-update endpoint/Customer Master screen.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['on_account:configure']})
+  @patch('/customers/{id}/invoice-span')
+  @response(200, {description: 'Customer on-account invoice span override set/cleared'})
+  async setInvoiceSpan(
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            properties: {
+              invoiceSpanDays: {
+                type: 'number',
+                nullable: true,
+                description: 'Null clears the override — falls back to the global default.',
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {invoiceSpanDays?: number | null},
+  ): Promise<object> {
+    const customer = await this.customerRepo.findOne({where: {id, isDeleted: false}});
+    if (!customer) throw new HttpErrors.NotFound('Customer not found.');
+    if (customer.customerEntityType !== 'business' && !customer.isOnAccountEligible) {
+      throw new HttpErrors.BadRequest('Invoice span only applies to on-account eligible customers.');
+    }
+    if (body.invoiceSpanDays != null && Number(body.invoiceSpanDays) <= 0) {
+      throw new HttpErrors.BadRequest('invoiceSpanDays must be a positive number of days.');
+    }
+
+    // undefined properties are dropped before reaching the DB layer — pass
+    // null explicitly (not undefined) so clearing the override actually
+    // writes NULL instead of silently leaving the old value in place.
+    await this.customerRepo.updateById(id, {
+      invoiceSpanDays: body.invoiceSpanDays ?? null,
+    } as unknown as Partial<typeof customer>);
+
+    return {
+      message: body.invoiceSpanDays != null ? 'Invoice span override set.' : 'Invoice span override cleared.',
+      customerId: id,
+      invoiceSpanDays: body.invoiceSpanDays ?? null,
+    };
+  }
 
   // ─── Pending Invoices (Club & Pay list) ───────────────────────────────────
 
@@ -347,6 +411,8 @@ export class CustomerBillingController {
     const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
     const count = await this.invoiceRepo.count();
     const invoiceNumber = `INV-${ym}-${String(count.count + 1).padStart(5, '0')}`;
+    const invoiceSpanDays = await this.resolveInvoiceSpanDays(customer.invoiceSpanDays);
+    const dueDate = new Date(now.getTime() + invoiceSpanDays * 24 * 60 * 60 * 1000);
 
     const {v4} = await import('uuid');
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED'} as any);
@@ -363,6 +429,7 @@ export class CustomerBillingController {
           amountReceived: 0,
           balanceDue: Math.round(combinedTotal),
           status: InvoiceStatus.ISSUED,
+          dueDate,
         } as Partial<Invoice>,
         {transaction: tx},
       );

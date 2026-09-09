@@ -94,7 +94,7 @@ export class CustomerOrderController {
     const customer = await this.resolveCustomer(currentUser);
 
     const orders = await this.orderRepo.find({
-      where: {customerId: customer.id, isDeleted: false},
+      where: {customerId: customer.id, isDeleted: false, status: {neq: OrderStatus.DRAFT}} as any,
       fields: {id: true, status: true, totalAmount: true} as any,
     });
 
@@ -134,6 +134,7 @@ export class CustomerOrderController {
     const customer = await this.resolveCustomer(currentUser);
 
     // customerId is forced from the JWT — a client cannot widen the scope.
+    // Drafts are never customer-visible — they're not really "theirs" yet.
     return this.orderService.listOrders({
       customerId: customer.id,
       search,
@@ -142,6 +143,7 @@ export class CustomerOrderController {
       dateTo,
       limit,
       skip,
+      excludeStatuses: [OrderStatus.DRAFT],
     });
   }
 

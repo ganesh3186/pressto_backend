@@ -3,7 +3,7 @@ import {ContactRelationship} from './contact-relationship.enum';
 import {CustomerContact} from './customer-contact.model';
 import {Order} from './order.model';
 
-// Who physically collected the order at the counter.
+// Who physically received the order — at the counter, or at the door.
 export enum HandoverCollectorType {
   // The customer themselves.
   SELF = 'self',
@@ -11,19 +11,29 @@ export enum HandoverCollectorType {
   CONTACT = 'contact',
   // A member of the customer's family group (customer_family_group_member).
   FAMILY_MEMBER = 'family_member',
-  // An ad-hoc person, captured by name/phone on the spot.
+  // An ad-hoc person, captured by name/phone on the spot (e.g. a neighbour).
   OTHER = 'other',
+  // Rider delivery only — left with a security guard, no name captured.
+  // Requires photoMediaId instead of a name.
+  GUARD = 'guard',
+  // Rider delivery only — nobody available, left at the door unattended.
+  // Requires photoMediaId instead of a name.
+  AT_DOOR = 'at_door',
 }
 
 /**
- * In-store handover record — a dispatch document for the counter-pickup case
- * (no rider). One row per completed handover of an order.
+ * Handover record — who received the order, whichever channel it went out
+ * on: counter pickup (no rider) or a rider's doorstep delivery. One row per
+ * completed handover of an order.
  *
  * Collector identity is stored two ways on purpose:
  *   • customerContactId links to the saved contact when there is one, and
  *   • collectorName/Phone/Relationship are ALWAYS a point-in-time snapshot,
  * so the record still reads correctly years later even if the contact is later
  * edited or deleted.
+ *
+ * GUARD/AT_DOOR skip collectorName entirely (auto-filled with a fixed label)
+ * in favour of photoMediaId — there's no person to name in either case.
  */
 @model({
   settings: {
@@ -74,10 +84,16 @@ export class OrderHandover extends Entity {
   })
   collectorRelationship?: ContactRelationship;
 
+  // Required (validated in the controller/service, not the DB) when
+  // collectorType is guard or at_door — the proof-of-delivery photo taking
+  // the place of a captured name in those two cases.
+  @property({type: 'string'})
+  photoMediaId?: string;
+
   @property({type: 'string', postgresql: {dataType: 'text'}})
   remarks?: string;
 
-  // Staff member who handed the order over (users.id).
+  // Staff member or rider who handed the order over (users.id).
   @property({type: 'string', required: true, postgresql: {dataType: 'uuid'}})
   handedOverBy: string;
 

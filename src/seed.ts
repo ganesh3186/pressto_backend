@@ -115,6 +115,16 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'employee:read',   description: 'View employees'},
   {permission: 'employee:update', description: 'Update an employee'},
   {permission: 'employee:delete', description: 'Delete an employee'},
+  // Rider
+  {permission: 'rider:create', description: 'Create a rider'},
+  {permission: 'rider:read',   description: 'View riders'},
+  {permission: 'rider:update', description: 'Update a rider'},
+  {permission: 'rider:delete', description: 'Delete a rider'},
+  // Rider roster
+  {permission: 'rider_roster:create', description: 'Create a rider roster entry'},
+  {permission: 'rider_roster:read',   description: 'View rider roster'},
+  {permission: 'rider_roster:update', description: 'Update a rider roster entry'},
+  {permission: 'rider_roster:delete', description: 'Delete a rider roster entry'},
   // Role
   {permission: 'role:create', description: 'Create a role'},
   {permission: 'role:read',   description: 'View roles'},
@@ -230,6 +240,7 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   // On Account
   {permission: 'on_account:read',   description: 'Open the On Account screen'},
   {permission: 'on_account:update', description: 'Act on on-account orders'},
+  {permission: 'on_account:configure', description: 'Configure On Account invoice span defaults/overrides'},
   // Order status change (the "order status updation" action)
   {permission: 'order_status:update', description: 'Change an order\'s status'},
   // Approvals — split by audience (the two Approval-screen tabs)
@@ -385,6 +396,7 @@ const ROLES: RoleSeed[] = [
       cr('customer_recharge'),
       crud('wallet_configuration'),
       crud('gst_tax_configuration'),
+      ['on_account:configure'],
       ro('delivery_type_configuration'),
       ro('audit'),
       cr('file_upload'),
@@ -405,6 +417,16 @@ const ROLES: RoleSeed[] = [
       ro('order'),
       cr('file_upload'),
     ),
+  },
+  {
+    value: 'rider',
+    label: 'Rider',
+    description: 'Rider app account — signs in by phone + OTP. No admin access.',
+    isLocked: true,
+    // No admin-panel login; the rider authenticates on the rider app instead.
+    loginAccess: false,
+    // Rider-app permissions are defined when that app is built; nothing yet.
+    permissions: [],
   },
 
   // ── Example roles (editable) ───────────────────────────────────────────

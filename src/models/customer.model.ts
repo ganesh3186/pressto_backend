@@ -40,8 +40,8 @@ export class Customer extends Entity {
   @property({type: 'string', required: true})
   firstName: string;
 
-  @property({type: 'string', required: true})
-  lastName: string;
+  @property({type: 'string', required: false})
+  lastName?: string;
 
   @property({type: 'string'})
   email?: string;
@@ -96,6 +96,20 @@ export class Customer extends Entity {
   @property({type: 'number', default: 0})
   loyaltyPoints?: number;
 
+  // Set once at registration — either the public self-registration endpoint
+  // (CustomerAuthController.register) or the admin panel's create-customer
+  // flow (CustomerController.create) — when a valid referral coupon code
+  // was supplied. Never changed afterward. Plain uuid, not @belongsTo, same
+  // convention as customerGroupId above. Drives the one-time referral
+  // discount auto-applied to this customer's first order (see
+  // OrderService.createOrder); the coupon's own maxUsesPerCustomer still
+  // enforces the one-time-only rule, same as any other coupon.
+  @property({
+    type: 'string',
+    postgresql: {dataType: 'uuid'},
+  })
+  referredByCouponId?: string;
+
   @property({type: 'string'})
   defaultDiscountType?: string;
 
@@ -104,6 +118,18 @@ export class Customer extends Entity {
     postgresql: {dataType: 'decimal'},
   })
   defaultDiscountValue?: number;
+
+  // On Account billing cycle override, in days — when set, wins over
+  // OnAccountConfiguration.defaultInvoiceSpanDays for this customer (see
+  // customer-billing.controller.ts's generateOnAccountInvoice). Null means
+  // "use the global default." Deliberately never exposed on Customer
+  // Master's own edit screen/endpoint — only written via the dedicated
+  // PATCH /customers/{id}/invoice-span, gated by on_account:configure.
+  @property({
+    type: 'number',
+    postgresql: {dataType: 'numeric'},
+  })
+  invoiceSpanDays?: number;
 
   @property({
     type: 'string',

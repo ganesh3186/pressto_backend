@@ -17,6 +17,25 @@ import {ApprovalService} from './approval.service';
 /** Who started the request — the same flow serves both. */
 export type ReprocessSource = 'customer' | 'store';
 
+/**
+ * How the customer got in touch, and — critically — whether the garment is
+ * physically at the store yet. 'in_store' is the only value where it is:
+ * approving the request immediately creates the ₹0 rework order, exactly as
+ * before this field existed. Every other value means the piece is still at
+ * the customer's home — approving just records the decision, and the rework
+ * order only gets created later, once a linked pickup actually brings the
+ * garment back (see ApprovalService._applyPostDeliveryReprocess and the
+ * pickup-handover confirm flow).
+ *
+ * Named "contactChannel," not "requestSource" — that name is already taken
+ * by the `source` field above (who raised it: customer vs store), and
+ * `approval.controller.ts`'s enrichRequest() already exposes `source` as
+ * `requestSource` in the API response. Also deliberately not called
+ * anything with "reprocess" in it — the pickup domain already uses that
+ * word for an unrelated concept (retrying a failed pickup attempt).
+ */
+export type ReprocessContactChannel = 'in_store' | 'phone' | 'whatsapp' | 'other';
+
 export interface RaiseReprocessInput {
   orderId: string;
   /**
@@ -29,6 +48,8 @@ export interface RaiseReprocessInput {
   mediaIds?: string[];
   requestedBy: string;
   source: ReprocessSource;
+  /** Defaults to 'in_store' — see ReprocessContactChannel above. */
+  contactChannel?: ReprocessContactChannel;
 }
 
 /**
@@ -90,6 +111,7 @@ export class ReprocessService {
         reason: input.reason,
         garmentIds,
         source: input.source,
+        contactChannel: input.contactChannel ?? 'in_store',
         originalOrderNumber: order.orderNumber,
       },
     });

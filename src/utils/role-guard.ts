@@ -21,7 +21,7 @@ export function assertNoProtectedRoles(roleValues: string[] | undefined): void {
 
 // Customer-app-only roles. They carry no admin-panel permissions, so they must
 // never be picked as "the" role for a staff login session.
-export const NON_STAFF_ROLES = ['client', 'customer'];
+export const NON_STAFF_ROLES = ['client', 'customer', 'rider'];
 
 // A user linked as both employee and customer (see EmployeeController.create /
 // CustomerController.create's linkExistingAccount flow) holds both roles on

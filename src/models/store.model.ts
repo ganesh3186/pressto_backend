@@ -12,6 +12,10 @@ import {Cluster} from './cluster.model';
         keys: ['code'],
         options: {unique: true},
       },
+      uniqueStorePrefix: {
+        keys: ['storePrefix'],
+        options: {unique: true},
+      },
     },
   },
 })
@@ -32,6 +36,14 @@ export class Store extends Entity {
 
   @property({type: 'string', required: true})
   code: string;
+
+  // Client-chosen, distinct from `code` above (which is server-generated,
+  // internal, and never surfaced in the Store Master UI). This is what
+  // gets embedded in new order numbers (`{storePrefix}-{MMYY}-{seq}`) —
+  // nullable because existing stores start without one; order creation is
+  // blocked at that store until an admin sets it.
+  @property({type: 'string'})
+  storePrefix?: string;
 
   @property({type: 'string', required: true})
   storeType: string;

@@ -80,6 +80,12 @@ export class Invoice extends Entity {
   @property({type: 'date'})
   printedAt?: Date;
 
+  // On Account only — generatedAt + the customer's effective invoice span at
+  // the time this was created (see customer-billing.controller.ts's
+  // generateOnAccountInvoice). Null for a regular per-order invoice.
+  @property({type: 'date'})
+  dueDate?: Date;
+
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 

@@ -1,6 +1,6 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {
   del,
   get,
@@ -14,27 +14,44 @@ import {
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
+import {PresstoDataSource} from '../datasources';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {ContactRelationship} from '../models/contact-relationship.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
+import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
+import {BagStatus} from '../models/bag-status.enum';
+import {DeliveryStatus} from '../models/delivery-status.enum';
+import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.enum';
 import {
+  BagRepository,
+  CustomerAddressRepository,
+  CustomerRepository,
+  DeliveryCustodyEventRepository,
+  DeliveryOrderRepository,
+  DeliveryRepository,
   OrderLabelAssignmentRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
+  RiderRepository,
+  StoreRepository,
 } from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
+import {OrderDeliveryMethod} from '../models/order-delivery-method.enum';
 import {
   REPROCESS_REASON_LABELS,
   ReprocessReason,
   reprocessWindowDays,
 } from '../models/reprocess-reason.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
-import {ReprocessService} from '../services/reprocess.service';
+import {ReprocessContactChannel, ReprocessService} from '../services/reprocess.service';
 import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {CustomerAddressService} from '../services/customer-address.service';
+import {RiderAssignmentService} from '../services/rider-assignment.service';
+import {PickupDeliverySlotRepository} from '../repositories/pickup-delivery-slot.repository';
 
 const PAYMENT_ITEM_SCHEMA = {
   type: 'object' as const,
@@ -44,6 +61,43 @@ const PAYMENT_ITEM_SCHEMA = {
     amount: {type: 'number' as const, minimum: 0.01},
     transactionReference: {type: 'string' as const},
     gatewayResponse: {type: 'string' as const},
+  },
+};
+
+const ADDITIONAL_CHARGE_SELECTION_SCHEMA = {
+  oneOf: [
+    {type: 'string' as const, format: 'uuid'},
+    {
+      type: 'object' as const,
+      required: ['additionalChargeId', 'quantity'],
+      properties: {
+        additionalChargeId: {type: 'string' as const, format: 'uuid'},
+        quantity: {type: 'integer' as const, minimum: 1},
+      },
+    },
+  ],
+};
+
+const ORDER_UNIT_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    brandId: {type: 'string' as const, format: 'uuid'},
+    colorId: {type: 'string' as const, format: 'uuid'},
+    length: {type: 'number' as const, minimum: 0},
+    width: {type: 'number' as const, minimum: 0},
+    additionalServiceIds: {
+      type: 'array' as const,
+      items: {type: 'string' as const, format: 'uuid'},
+    },
+    additionalChargeIds: {
+      type: 'array' as const,
+      items: ADDITIONAL_CHARGE_SELECTION_SCHEMA,
+    },
+    instructions: {type: 'string' as const},
+    qrPrintCount: {type: 'integer' as const, minimum: 1},
+    rejectedAtIntake: {type: 'boolean' as const},
+    rejectionReason: {type: 'string' as const},
+    rejectionRemarks: {type: 'string' as const},
   },
 };
 
@@ -57,8 +111,13 @@ const ORDER_ITEM_SCHEMA = {
     specialInstructions: {type: 'string' as const},
     specialInstructionMediaIds: {type: 'array' as const, items: {type: 'string' as const}},
     remarks: {type: 'string' as const},
-    additionalChargeIds: {type: 'array' as const, items: {type: 'string' as const, format: 'uuid'}},
+    additionalChargeIds: {type: 'array' as const, items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
     additionalServiceIds: {type: 'array' as const, items: {type: 'string' as const, format: 'uuid'}, description: 'Additional services selected for this item'},
+    units: {
+      type: 'array' as const,
+      items: ORDER_UNIT_SCHEMA,
+      description: 'Per-garment inspection, additional-service and additional-charge selections.',
+    },
   },
 };
 
@@ -78,6 +137,30 @@ export class OrderController {
     private reprocessService: ReprocessService,
     @inject('services.approval')
     private approvalService: ApprovalService,
+    @repository(RiderRepository)
+    private riderRepository: RiderRepository,
+    @repository(CustomerAddressRepository)
+    private customerAddressRepository: CustomerAddressRepository,
+    @inject('services.customer-address')
+    private customerAddressService: CustomerAddressService,
+    @repository(PickupDeliverySlotRepository)
+    private pickupDeliverySlotRepository: PickupDeliverySlotRepository,
+    @repository(BagRepository)
+    private bagRepository: BagRepository,
+    @repository(StoreRepository)
+    private storeRepository: StoreRepository,
+    @repository(CustomerRepository)
+    private customerRepository: CustomerRepository,
+    @repository(DeliveryRepository)
+    private deliveryRepository: DeliveryRepository,
+    @repository(DeliveryOrderRepository)
+    private deliveryOrderRepository: DeliveryOrderRepository,
+    @repository(DeliveryCustodyEventRepository)
+    private deliveryCustodyEventRepository: DeliveryCustodyEventRepository,
+    @inject('datasources.pressto')
+    private dataSource: PresstoDataSource,
+    @inject('services.rider-assignment')
+    private riderAssignmentService: RiderAssignmentService,
   ) {}
 
   // Cheque/PDC legs never got a PaymentTransaction (see order.service.ts's
@@ -139,7 +222,7 @@ export class OrderController {
               specialInstructions: {type: 'string'},
               specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
               remarks: {type: 'string'},
-              additionalChargeIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              additionalChargeIds: {type: 'array', items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
               orderLabelIds: {type: 'array', items: {type: 'string', format: 'uuid'}, description: 'Order-level labels/tags'},
               items: {type: 'array', minItems: 1, items: ORDER_ITEM_SCHEMA},
               payments: {
@@ -196,12 +279,26 @@ export class OrderController {
     // StoreScopeService.narrowStoreIds.
     @param.query.string('storeId') storeIdFilter?: string,
     @param.query.string('clusterId') clusterIdFilter?: string,
+    // Manage Order sets this — that screen is order administration for the
+    // order's own store only, not a workflow surface for a garment merely
+    // visiting via transfer (that's what Inspection/Processing use this
+    // same endpoint for, and they must keep seeing those). Every other
+    // caller is unaffected: omitting it keeps today's additive behavior.
+    @param.query.boolean('homeStoreOnly') homeStoreOnly?: boolean,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
       storeId: storeIdFilter,
       clusterId: clusterIdFilter,
     });
+    // Also surface orders reachable via an active inter-store transfer
+    // grant to whichever stores this request is scoped to — additive,
+    // widens the storeId filter rather than narrowing it. Skipped when the
+    // caller explicitly asked for home-store-only (see homeStoreOnly above).
+    const transferGrantedOrderIds =
+      Array.isArray(storeIds) && !homeStoreOnly
+        ? await this.storeScopeService.transferGrantedOrderIds(storeIds)
+        : undefined;
     return this.orderService.listOrders({
       search,
       dateFrom,
@@ -215,6 +312,7 @@ export class OrderController {
       limit,
       skip,
       storeIds,
+      transferGrantedOrderIds,
     });
   }
 
@@ -268,6 +366,30 @@ export class OrderController {
                   'Replaces the order\'s labels wholesale. Omit to leave labels ' +
                   'untouched; send [] to clear all of them.',
               },
+              assignedRiderId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'Rider assigned for home delivery of this order.',
+              },
+              deliveryMethod: {type: 'string', enum: Object.values(OrderDeliveryMethod)},
+              deliverySlot: {type: 'string'},
+              deliverySlotId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'Resolved into a frozen deliverySlot text snapshot on save.',
+              },
+              deliveryAddressId: {
+                type: 'string',
+                format: 'uuid',
+                description: "Resolved into a frozen deliveryAddress text snapshot on save.",
+              },
+              deliveryAddress: {
+                type: 'string',
+                description:
+                  'Raw display text, for callers with no addressId to resolve. Prefer ' +
+                  'deliveryAddressId when one is available — sending this alone clears ' +
+                  'deliveryAddressId rather than leaving it pointing at a stale address.',
+              },
             },
           },
         },
@@ -279,6 +401,12 @@ export class OrderController {
       specialInstructionMediaIds?: string[];
       remarks?: string;
       orderLabelIds?: string[];
+      assignedRiderId?: string;
+      deliveryMethod?: OrderDeliveryMethod;
+      deliverySlot?: string;
+      deliverySlotId?: string;
+      deliveryAddressId?: string;
+      deliveryAddress?: string;
     },
   ): Promise<object> {
     const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
@@ -291,7 +419,41 @@ export class OrderController {
       throw new HttpErrors.BadRequest('Cannot update a delivered, cancelled, or returned order.');
     }
 
-    const {orderLabelIds, ...orderFields} = body;
+    const {orderLabelIds, assignedRiderId, deliveryAddressId, deliverySlotId, ...orderFields} = body;
+
+    if (assignedRiderId !== undefined) {
+      const rider = await this.riderRepository.findOne({where: {id: assignedRiderId, isDeleted: false}});
+      if (!rider) throw new HttpErrors.BadRequest('Assigned rider not found.');
+      if (!rider.isActive) throw new HttpErrors.BadRequest('Assigned rider is inactive.');
+      Object.assign(orderFields, {
+        assignedRiderId,
+        assignedRiderName: `${rider.firstName} ${rider.lastName}`,
+      });
+    }
+
+    if (deliveryAddressId !== undefined) {
+      const address = await this.customerAddressRepository.findOne({
+        where: {id: deliveryAddressId, isDeleted: false} as object,
+      });
+      if (!address) throw new HttpErrors.BadRequest('Delivery address not found.');
+      Object.assign(orderFields, {
+        deliveryAddressId,
+        deliveryAddress: this.customerAddressService.toDisplaySnapshot(address),
+      });
+    } else if (body.deliveryAddress !== undefined) {
+      // Raw text with no addressId to resolve — clear the FK rather than
+      // silently leaving it pointing at whatever address it last referenced.
+      Object.assign(orderFields, {deliveryAddressId: null});
+    }
+
+    if (deliverySlotId !== undefined) {
+      const slot = await this.pickupDeliverySlotRepository.findOne({
+        where: {id: deliverySlotId, isDeleted: false} as object,
+      });
+      if (!slot) throw new HttpErrors.BadRequest('Delivery slot not found.');
+      Object.assign(orderFields, {deliverySlotId, deliverySlot: slot.label});
+    }
+
     if (Object.keys(orderFields).length > 0) {
       await this.orderRepository.updateById(id, orderFields);
     }
@@ -306,6 +468,248 @@ export class OrderController {
     }
 
     return {message: 'Order updated.'};
+  }
+
+  // ─── Bulk delivery assignment (Manual Assign — delivery leg) ──────────────
+  // Assigns one rider + slot/date to several orders at once. Does not touch
+  // order.status — dispatch stays a separate, explicit POST /orders/{id}/status
+  // call, so this never invents a parallel status machine alongside the real
+  // READY → OUT_FOR_DELIVERY → DELIVERED transitions.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @post('/orders/delivery-assignment')
+  @response(200, {description: 'Orders assigned to a rider for delivery'})
+  async assignDelivery(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['orderIds', 'riderId', 'deliverySlot', 'deliveryDate'],
+            properties: {
+              orderIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
+              riderId: {type: 'string', format: 'uuid'},
+              deliverySlot: {type: 'string'},
+              deliverySlotId: {
+                type: 'string',
+                format: 'uuid',
+                description: 'If given, overrides deliverySlot with this slot\'s label.',
+              },
+              deliveryDate: {type: 'string', format: 'date-time'},
+              remarks: {type: 'string'},
+              bagId: {
+                type: 'string',
+                format: 'uuid',
+                description:
+                  'Optional. When given, also creates a Delivery (bag-custody run the rider app can see) — see DeliveryController/RiderDeliveryController. Omit to keep the plain per-order assignment behavior (e.g. Manual Assign).',
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {
+      orderIds: string[];
+      riderId: string;
+      deliverySlot: string;
+      deliverySlotId?: string;
+      deliveryDate: string;
+      remarks?: string;
+      bagId?: string;
+    },
+  ): Promise<object> {
+    const rider = await this.riderRepository.findOne({where: {id: body.riderId, isDeleted: false}});
+    if (!rider) throw new HttpErrors.NotFound('Rider not found.');
+    if (!rider.isActive) throw new HttpErrors.BadRequest('This rider is inactive.');
+    // Roster is the only availability gate now — a rider with other active
+    // pickups/deliveries is assignable without limit; only their roster for
+    // this specific delivery's own scheduled window (not "right now") blocks
+    // it. deliveryDate is already a precise date-time, so that's the
+    // fallback instant when no deliverySlotId is given.
+    const slotWindow = await this.riderAssignmentService.resolveSlotWindow(
+      body.deliveryDate,
+      body.deliverySlotId,
+      new Date(body.deliveryDate).getTime(),
+    );
+    await this.riderAssignmentService.assertRiderRostered(body.riderId, slotWindow);
+
+    const orders = await this.orderRepository.find({
+      where: {id: {inq: body.orderIds}, isDeleted: false} as object,
+    });
+    if (orders.length !== body.orderIds.length) {
+      throw new HttpErrors.NotFound('One or more orders were not found.');
+    }
+    const notDeliverable = orders.filter(
+      o => o.status !== OrderStatus.READY && o.status !== OrderStatus.PARTIALLY_DISPATCHED,
+    );
+    if (notDeliverable.length) {
+      throw new HttpErrors.BadRequest(
+        `Order(s) with status ${notDeliverable.map(o => o.status).join(', ')} are not ready for delivery assignment.`,
+      );
+    }
+    // Prevents accidentally batching cross-store orders into one rider run —
+    // Rider has no storeId relation today, so this is the closest available check.
+    const storeIds = new Set(orders.map(o => o.storeId));
+    if (storeIds.size > 1) {
+      throw new HttpErrors.BadRequest('All orders in one assignment must belong to the same store.');
+    }
+    // A garment can visit other stores for processing via interstore
+    // transfer, but dispatch to the customer only happens from home —
+    // block it if anything is still away.
+    await this.orderService.assertGarmentsHomeForDispatch(body.orderIds);
+
+    // Only riders mapped to an order's delivery pincode may be assigned to
+    // it — Order itself has no pincode column, so resolve it via each
+    // order's CustomerAddress. Orders with no resolvable pincode (no
+    // deliveryAddressId, or address not found) skip the check rather than
+    // being blocked by a data-quality gap unrelated to this feature.
+    const addressIds = [
+      ...new Set(orders.map(o => o.deliveryAddressId).filter((id): id is string => Boolean(id))),
+    ];
+    if (addressIds.length) {
+      const addresses = await this.customerAddressRepository.find({
+        where: {id: {inq: addressIds}} as object,
+      });
+      const pincodeByAddressId = new Map(addresses.map(a => [a.id, a.pincode]));
+      for (const order of orders) {
+        const pincode = order.deliveryAddressId ? pincodeByAddressId.get(order.deliveryAddressId) : undefined;
+        await this.riderAssignmentService.assertRiderCoversPincode(body.riderId, pincode);
+      }
+    }
+
+    let deliverySlot = body.deliverySlot;
+    if (body.deliverySlotId !== undefined) {
+      const slot = await this.pickupDeliverySlotRepository.findOne({
+        where: {id: body.deliverySlotId, isDeleted: false} as object,
+      });
+      if (!slot) throw new HttpErrors.BadRequest('Delivery slot not found.');
+      deliverySlot = slot.label;
+    }
+
+    // bagId is optional — Manual Assign calls this endpoint without one and
+    // must keep working exactly as before (plain per-order assignment, no
+    // Delivery created). Only Dispatch's newer bag-aware flow supplies it.
+    let bag = null;
+    if (body.bagId !== undefined) {
+      bag = await this.bagRepository.findOne({where: {id: body.bagId, isDeleted: false}});
+      if (!bag) throw new HttpErrors.NotFound('Bag not found.');
+      if (!bag.isActive) throw new HttpErrors.BadRequest('This bag is inactive.');
+      if (bag.status !== BagStatus.AVAILABLE) {
+        throw new HttpErrors.Conflict(
+          `Bag ${bag.bagNumber} is already ${bag.status === BagStatus.FULL ? 'full' : 'in use'}.`,
+        );
+      }
+    }
+
+    const {v4} = await import('uuid');
+    const assignedRiderName = `${rider.firstName} ${rider.lastName}`;
+    const deliveryDate = new Date(body.deliveryDate);
+
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      for (const order of orders) {
+        await this.orderRepository.updateById(
+          order.id,
+          {
+            deliveryMethod: OrderDeliveryMethod.HOME_DELIVERY,
+            assignedRiderId: body.riderId,
+            assignedRiderName,
+            deliverySlot,
+            ...(body.deliverySlotId !== undefined ? {deliverySlotId: body.deliverySlotId} : {}),
+            deliveryDate,
+            ...(body.remarks ? {remarks: body.remarks} : {}),
+          },
+          {transaction: tx},
+        );
+      }
+
+      // A Delivery (the rider-app-visible run) is created on every
+      // assignment, not just when a bag is supplied — the rider app reads
+      // from this table, not Order.assignedRiderId directly, so without it
+      // the rider would never see the delivery at all. bagId only adds
+      // custody-bag tracking on top when one happens to be given.
+      const store = await this.storeRepository.findOne({where: {id: orders[0].storeId}});
+      const customers = await this.customerRepository.find({
+        where: {id: {inq: [...new Set(orders.map(o => o.customerId))]}} as object,
+      });
+      const customerById = new Map(customers.map(c => [c.id, c]));
+
+      const now = new Date();
+      const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const seq = (await this.deliveryRepository.count()).count + 1;
+      const deliveryNumber = `DL-${store?.code ?? 'ST'}-${ddMM}-${seq}`;
+
+      const delivery = await this.deliveryRepository.create(
+        {
+          id: v4(),
+          deliveryNumber,
+          status: DeliveryStatus.ASSIGNED,
+          storeId: orders[0].storeId,
+          riderId: body.riderId,
+          riderName: assignedRiderName,
+          ...(bag ? {bagId: bag.id} : {}),
+          deliverySlot,
+          deliverySlotId: body.deliverySlotId,
+          deliveryDate,
+          orderCount: orders.length,
+          assignedAt: now,
+          assignedBy: currentUser[securityId],
+          remarks: body.remarks,
+        },
+        {transaction: tx},
+      );
+
+      for (const order of orders) {
+        const customer = customerById.get(order.customerId);
+        const {due} = await this.orderService.computeBalanceDue(order);
+        await this.deliveryOrderRepository.create(
+          {
+            id: v4(),
+            deliveryId: delivery.id,
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
+            balanceDueAtAssignment: due,
+          },
+          {transaction: tx},
+        );
+      }
+
+      await this.deliveryCustodyEventRepository.create(
+        {
+          id: v4(),
+          deliveryId: delivery.id,
+          eventType: DeliveryCustodyEventType.ASSIGNED,
+          performedBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
+
+      if (bag) {
+        // Bag capacity here is "one bag, one rider run" — unlike Transfer,
+        // where maxCapacity gates individual garments, a delivery bag just
+        // needs to be locked to this run; no per-garment count exists at
+        // this layer to check against. FULL is never set here — only a
+        // future per-garment accounting pass would have grounds to.
+        await this.bagRepository.updateById(
+          bag.id,
+          {status: BagStatus.IN_USE, currentDeliveryId: delivery.id, currentStoreId: orders[0].storeId},
+          {transaction: tx},
+        );
+      }
+
+      await tx.commit();
+      return {
+        message: 'Orders assigned for delivery.',
+        assignedCount: orders.length,
+        delivery,
+      };
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
   }
 
   // ─── Change Status ────────────────────────────────────────────────────────
@@ -343,6 +747,59 @@ export class OrderController {
     return response;
   }
 
+  // ─── Delivery Return (failed/undeliverable attempt) ────────────────────────
+  // Distinct from OrderStatus.RETURNED — that's the sales-return/refund
+  // flow, a permanent terminal state excluded from active-order queries.
+  // This is the opposite: a rider couldn't complete the customer delivery
+  // and brought the order back to the store, so it just reverts to READY
+  // with the delivery assignment cleared, ready to be redispatched like
+  // any other ready order. Always reverts to READY, never back to
+  // PARTIALLY_DISPATCHED — Order.status is single-valued, so once it moved
+  // to OUT_FOR_DELIVERY there's no cheap way to recover which state it came
+  // from. A rare edge case (a split order whose remainder fails delivery),
+  // not handled specially this pass.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
+  @post('/orders/{id}/delivery-return')
+  @response(200, {description: 'Delivery attempt reverted — order back to ready for redispatch'})
+  async deliveryReturn(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['remarks'],
+            properties: {
+              remarks: {
+                type: 'string',
+                description: 'Why the delivery attempt failed / the order came back to the store.',
+              },
+              reasons: {
+                type: 'array',
+                description: 'Optional structured reasons, alongside remarks — see DeliveryFailureReason.',
+                items: {type: 'string', enum: Object.values(DeliveryFailureReason)},
+              },
+              otherReason: {type: 'string', description: 'Required when reasons includes "other".'},
+            },
+          },
+        },
+      },
+    })
+    body: {remarks: string; reasons?: DeliveryFailureReason[]; otherReason?: string},
+  ): Promise<object> {
+    const updated = await this.orderService.returnDeliveryToStore({
+      orderId: id,
+      remarks: body.remarks,
+      reasons: body.reasons,
+      otherReason: body.otherReason,
+      changedBy: currentUser[securityId],
+    });
+    return {message: 'Delivery returned to store. Order is ready for redispatch.', order: updated};
+  }
+
   // ─── Edit Order Items ─────────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -372,7 +829,7 @@ export class OrderController {
                     itemId: {type: 'string', format: 'uuid'},
                     quantity: {type: 'number', minimum: 1},
                     additionalServiceIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
-                    additionalChargeIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+                    additionalChargeIds: {type: 'array', items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
                     specialInstructions: {type: 'string'},
                     specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
                     remarks: {type: 'string'},
@@ -390,7 +847,7 @@ export class OrderController {
         itemId: string;
         quantity: number;
         additionalServiceIds?: string[];
-        additionalChargeIds?: string[];
+        additionalChargeIds?: Array<string | {additionalChargeId: string; quantity: number}>;
         specialInstructions?: string;
         specialInstructionMediaIds?: string[];
         remarks?: string;
@@ -443,6 +900,14 @@ export class OrderController {
                 items: {type: 'string', format: 'uuid'},
                 description: 'Pieces to redo. Omit to send the whole order.',
               },
+              contactChannel: {
+                type: 'string',
+                enum: ['in_store', 'phone', 'whatsapp', 'other'],
+                description:
+                  'How the customer got in touch. "in_store" (default) creates the ₹0 rework ' +
+                  'order the moment this is approved, same as always. Anything else defers ' +
+                  'that until a linked pickup actually brings the garment back.',
+              },
             },
           },
         },
@@ -453,6 +918,7 @@ export class OrderController {
       remarks?: string;
       mediaIds?: string[];
       garmentIds?: string[];
+      contactChannel?: ReprocessContactChannel;
     },
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser);
@@ -464,6 +930,7 @@ export class OrderController {
       mediaIds: body.mediaIds,
       requestedBy: currentUser[securityId],
       source: 'store',
+      contactChannel: body.contactChannel,
     });
   }
 
@@ -684,6 +1151,47 @@ export class OrderController {
     return {paymentTransactions, totalCollected, balanceDue, totalAmount: order.totalAmount};
   }
 
+  // ─── Correct a Payment's Mode (finance) ────────────────────────────────────
+  // "The cashier recorded UPI but it was actually cash" — relabels an
+  // already-recorded payment. Distinct permission from order:create (which
+  // records a new payment) so it can be granted to finance on its own.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['payment:update']})
+  @patch('/orders/{id}/payments/{paymentId}')
+  @response(200, {description: "Payment's mode corrected"})
+  async correctPaymentMode(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @param.path.string('paymentId') paymentId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['paymentMode', 'reason'],
+            properties: {
+              paymentMode: {type: 'string', enum: Object.values(PaymentMode)},
+              reason: {type: 'string', description: 'Required — why this payment is being corrected.'},
+            },
+          },
+        },
+      },
+    })
+    body: {paymentMode: PaymentMode; reason: string},
+  ): Promise<object> {
+    const userLabel = currentUser as {name?: string; email?: string};
+    const performedByLabel = userLabel.name ?? userLabel.email ?? currentUser[securityId];
+    const payment = await this.orderService.correctPaymentMode(
+      id,
+      paymentId,
+      body.paymentMode,
+      performedByLabel,
+      body.reason,
+    );
+    return {message: 'Payment mode corrected.', payment};
+  }
+
   // ─── Status History ───────────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -696,6 +1204,20 @@ export class OrderController {
       order: ['changedAt DESC'],
     });
     return {history};
+  }
+
+  // ─── Activity Log ───────────────────────────────────────────────────────
+  // Unified timeline for Order Summary — every action across the order and
+  // its garments (status changes, processing, approvals, sales returns,
+  // transfers, delivery, handover, the originating pickup), merged and
+  // sorted. See OrderService.getActivityLog for the source-by-source detail.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
+  @get('/orders/{id}/activity-log')
+  @response(200, {description: 'Unified activity log for an order and its garments'})
+  async activityLog(@param.path.string('id') id: string): Promise<object> {
+    return this.orderService.getActivityLog(id);
   }
 
   // ─── Soft Delete ──────────────────────────────────────────────────────────

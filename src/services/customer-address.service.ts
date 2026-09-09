@@ -45,6 +45,28 @@ export class CustomerAddressService {
     await this.addressRepository.updateById(id, data);
   }
 
+  /**
+   * Joins an address's fields into the frozen display-text snapshot used by
+   * Order.deliveryAddress and PickupRequest.address (when resolved from a
+   * saved addressId) — one place for the join order/formatting, reused
+   * everywhere an address gets snapshotted at write time.
+   */
+  toDisplaySnapshot(address: CustomerAddress): string {
+    return [
+      address.addressLine1,
+      address.addressLine2,
+      address.doorFloorFlat,
+      address.societyName,
+      address.landmark,
+      address.city,
+      address.state,
+      address.country,
+      address.pincode,
+    ]
+      .filter(Boolean)
+      .join(', ');
+  }
+
   async delete(id: string): Promise<void> {
     const address = await this.addressRepository.findById(id);
     if (address.isDefault) {
