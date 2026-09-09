@@ -45,6 +45,7 @@ import {
   SalesReturnRepository,
   ServiceRepository,
   UsersRepository,
+  GarmentAdditionalChargeRepository,
   GarmentAdditionalServiceRepository,
   GarmentDamageImageRepository,
   GarmentDamageRepository,
@@ -98,6 +99,13 @@ export interface UnitDamageMarkInput {
   mediaIds?: string[];   // already-uploaded Media record IDs
 }
 
+export interface AdditionalChargeInput {
+  additionalChargeId: string;
+  quantity: number;
+}
+
+type AdditionalChargeSelection = string | AdditionalChargeInput;
+
 export interface UnitInspectionInput {
   brandId?: string;
   colorId?: string;
@@ -105,7 +113,7 @@ export interface UnitInspectionInput {
   // (Item.isMeasurement), e.g. curtains billed per square metre (length × width).
   length?: number;
   width?: number;
-  additionalChargeIds?: string[];   // add-ons + requirements for this specific unit
+  additionalChargeIds?: AdditionalChargeSelection[];   // add-ons + requirements for this specific unit
   additionalServiceIds?: string[];  // Service-catalog add-ons for this specific unit (e.g. hand-wash) — overrides the item's line-level additionalServiceIds when present
   stainMarks?: UnitStainMarkInput[];
   damageMarks?: UnitDamageMarkInput[];
@@ -126,7 +134,7 @@ export interface CreateOrderItemInput {
   specialInstructions?: string;
   specialInstructionMediaIds?: string[];
   remarks?: string;
-  additionalChargeIds?: string[];   // line-level charges (billing)
+  additionalChargeIds?: AdditionalChargeSelection[];   // line-level charges (billing)
   additionalServiceIds?: string[];  // additional services selected for this item
   units?: UnitInspectionInput[];    // per-garment inspection data (length must match quantity)
 }
@@ -138,7 +146,7 @@ export interface CreateOrderInput {
   items: CreateOrderItemInput[];
   isDraft?: boolean;
   deliveryType?: DeliveryType;      // standard | express | lightning
-  additionalChargeIds?: string[];
+  additionalChargeIds?: AdditionalChargeSelection[];
   customerContactId?: string;       // person who came on behalf of customer
   familyGroupMemberId?: string;     // alternative to customerContactId — a family-group member instead
   specialInstructions?: string;
@@ -211,6 +219,7 @@ export class OrderService {
     @repository(ServiceItemMappingRepository) private serviceItemMappingRepo: ServiceItemMappingRepository,
     @repository(AdditionalChargeMasterRepository) private additionalChargeRepo: AdditionalChargeMasterRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(GarmentAdditionalChargeRepository) private garmentAdditionalChargeRepo: GarmentAdditionalChargeRepository,
     @repository(GarmentAdditionalServiceRepository) private garmentAdditionalServiceRepo: GarmentAdditionalServiceRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
     @repository(GarmentStainRepository) private garmentStainRepo: GarmentStainRepository,
@@ -314,6 +323,28 @@ export class OrderService {
     for (const {serviceId, amount} of services) {
       await this.garmentAdditionalServiceRepo.create(
         {id: v4(), garmentId, serviceId, amount},
+        tx ? {transaction: tx} : undefined,
+      );
+    }
+  }
+
+  private async createUnitAdditionalCharges(
+    garmentId: string,
+    orderItem: {
+      pendingUnitAdditionalCharges?: Array<Array<{
+        additionalChargeId: string;
+        quantity: number;
+        amount: number;
+      }>>;
+    },
+    unitIndex: number,
+    v4: () => string,
+    tx?: any,
+  ): Promise<void> {
+    const charges = orderItem.pendingUnitAdditionalCharges?.[unitIndex] ?? [];
+    for (const {additionalChargeId, quantity, amount} of charges) {
+      await this.garmentAdditionalChargeRepo.create(
+        {id: v4(), garmentId, additionalChargeId, quantity, amount},
         tx ? {transaction: tx} : undefined,
       );
     }
@@ -435,6 +466,33 @@ export class OrderService {
     return percentage !== null
       ? parseFloat((defaultAmount * (1 + percentage / 100)).toFixed(2))
       : defaultAmount;
+  }
+
+  private normalizeAdditionalCharges(
+    selections: AdditionalChargeSelection[] = [],
+  ): AdditionalChargeInput[] {
+    const quantities = new Map<string, number>();
+
+    for (const selection of selections) {
+      const additionalChargeId =
+        typeof selection === 'string' ? selection : selection?.additionalChargeId;
+      const quantity = typeof selection === 'string' ? 1 : Number(selection?.quantity);
+
+      if (!additionalChargeId) {
+        throw new HttpErrors.BadRequest('Each additional charge needs an additionalChargeId.');
+      }
+      if (!Number.isInteger(quantity) || quantity < 1) {
+        throw new HttpErrors.BadRequest(
+          `Additional-charge quantity must be a positive integer (additionalChargeId: ${additionalChargeId}).`,
+        );
+      }
+      quantities.set(additionalChargeId, (quantities.get(additionalChargeId) ?? 0) + quantity);
+    }
+
+    return [...quantities].map(([additionalChargeId, quantity]) => ({
+      additionalChargeId,
+      quantity,
+    }));
   }
 
   /**
@@ -776,14 +834,16 @@ export class OrderService {
       specialInstructions?: string;
       specialInstructionMediaIds?: string[];
       remarks?: string;
-      additionalChargeIds?: string[];
+      additionalChargeIds?: AdditionalChargeSelection[];
       additionalServiceIds?: string[];
       additionalChargesTotal: number;
+      additionalChargeDetails: Array<{additionalChargeId: string; quantity: number; amount: number}>;
       rejectedAtIntake?: boolean;
       rejectionReason?: string;
       rejectionRemarks?: string;
       units?: UnitInspectionInput[];
       pendingUnitAdditionalServices?: Array<Array<{serviceId: string; amount: number}>>;
+      pendingUnitAdditionalCharges?: Array<Array<{additionalChargeId: string; quantity: number; amount: number}>>;
     }> = [];
 
     // Reject-at-intake splits a line: units the counter declined become a
@@ -920,16 +980,52 @@ export class OrderService {
         ? null
         : (pricing.estimatedDurationInDays ?? 0) + additionalServicesDays || null;
 
+      // When any unit sends its own charge selection, those garment-wise
+      // selections are authoritative for this line. Otherwise retain the
+      // legacy line-level selection behavior.
+      const hasUnitAdditionalCharges = !rejected && units.some(
+        unit => unit?.additionalChargeIds !== undefined,
+      );
+      const unitAdditionalChargeSelections = Array.from(
+        {length: item.quantity},
+        (_, i) => this.normalizeAdditionalCharges(units[i]?.additionalChargeIds),
+      );
+      const billingChargeSelections = hasUnitAdditionalCharges
+        ? this.normalizeAdditionalCharges(unitAdditionalChargeSelections.flat())
+        : this.normalizeAdditionalCharges(item.additionalChargeIds);
+
       let additionalChargesTotal = 0;
+      const additionalChargeDetails: Array<{
+        additionalChargeId: string;
+        quantity: number;
+        amount: number;
+      }> = [];
+      const additionalChargeUnitAmounts = new Map<string, number>();
       if (!rejected) {
-        for (const chargeId of item.additionalChargeIds ?? []) {
+        for (const {additionalChargeId: chargeId, quantity} of billingChargeSelections) {
           const charge = await this.additionalChargeRepo.findById(chargeId);
-          additionalChargesTotal += this.applyAdditionalChargeUplift(
+          const unitAmount = this.applyAdditionalChargeUplift(
             Number(charge.defaultAmount),
             additionalChargePercentage,
           );
+          const amount = parseFloat((unitAmount * quantity).toFixed(2));
+          additionalChargeUnitAmounts.set(chargeId, unitAmount);
+          additionalChargesTotal += amount;
+          additionalChargeDetails.push({additionalChargeId: chargeId, quantity, amount});
         }
       }
+
+      const pendingUnitAdditionalCharges = hasUnitAdditionalCharges
+        ? unitAdditionalChargeSelections.map(selections =>
+            selections.map(({additionalChargeId, quantity}) => ({
+              additionalChargeId,
+              quantity,
+              amount: parseFloat(
+                ((additionalChargeUnitAmounts.get(additionalChargeId) ?? 0) * quantity).toFixed(2),
+              ),
+            })),
+          )
+        : Array.from({length: item.quantity}, () => []);
 
       // Bridges to garment-creation time (see OrderItem.pendingUnitAdditionalServices) —
       // one entry per unit, each the resolved {serviceId, amount} pairs for that unit.
@@ -947,7 +1043,9 @@ export class OrderService {
         totalPrice,
         estimatedDurationInDays,
         additionalChargesTotal,
+        additionalChargeDetails,
         pendingUnitAdditionalServices,
+        pendingUnitAdditionalCharges,
       });
     }
 
@@ -975,16 +1073,17 @@ export class OrderService {
       deliveryDate = requested;
     }
 
-    const orderChargeDetails: Array<{id: string; amount: number}> = [];
+    const orderChargeDetails: Array<{id: string; amount: number; quantity: number}> = [];
     let orderChargesTotal = 0;
-    for (const chargeId of input.additionalChargeIds ?? []) {
+    for (const {additionalChargeId: chargeId, quantity} of this.normalizeAdditionalCharges(input.additionalChargeIds)) {
       const charge = await this.additionalChargeRepo.findById(chargeId);
-      const amount = this.applyAdditionalChargeUplift(
+      const unitAmount = this.applyAdditionalChargeUplift(
         Number(charge.defaultAmount),
         additionalChargePercentage,
       );
+      const amount = parseFloat((unitAmount * quantity).toFixed(2));
       orderChargesTotal += amount;
-      orderChargeDetails.push({id: chargeId, amount});
+      orderChargeDetails.push({id: chargeId, amount, quantity});
     }
 
     const itemsSubtotal = parseFloat(
@@ -1188,6 +1287,7 @@ export class OrderService {
             remarks: item.remarks,
             additionalServiceIds: item.additionalServiceIds,
             pendingUnitAdditionalServices: item.pendingUnitAdditionalServices,
+            pendingUnitAdditionalCharges: item.pendingUnitAdditionalCharges,
             rejectedAtIntake: item.rejectedAtIntake ?? false,
             rejectionReason: item.rejectionReason,
             rejectionRemarks: item.rejectionRemarks,
@@ -1197,14 +1297,9 @@ export class OrderService {
 
         // Rejected lines carry no charges (they were stripped during the split).
         if (!item.rejectedAtIntake) {
-          for (const chargeId of item.additionalChargeIds ?? []) {
-            const charge = await this.additionalChargeRepo.findById(chargeId);
-            const amount = this.applyAdditionalChargeUplift(
-              Number(charge.defaultAmount),
-              additionalChargePercentage,
-            );
+          for (const {additionalChargeId: chargeId, quantity, amount} of item.additionalChargeDetails) {
             await this.orderItemChargeRepo.create(
-              {orderItemId: orderItem.id, additionalChargeId: chargeId, amount},
+              {orderItemId: orderItem.id, additionalChargeId: chargeId, amount, quantity},
               {transaction: tx},
             );
           }
@@ -1214,9 +1309,9 @@ export class OrderService {
       }
 
       // Order-level charges
-      for (const {id: chargeId, amount} of orderChargeDetails) {
+      for (const {id: chargeId, amount, quantity} of orderChargeDetails) {
         await this.orderChargeRepo.create(
-          {orderId: order.id, additionalChargeId: chargeId, amount},
+          {orderId: order.id, additionalChargeId: chargeId, amount, quantity},
           {transaction: tx},
         );
       }
@@ -1287,6 +1382,7 @@ export class OrderService {
               await this.saveGarmentInspection(garment.id, unitInspection, tx, v4);
             }
             await this.createUnitAdditionalServices(garment.id, orderItem, unitIdx, v4, tx);
+            await this.createUnitAdditionalCharges(garment.id, orderItem, unitIdx, v4, tx);
 
             createdGarments.push(garment);
           }
@@ -1583,7 +1679,7 @@ export class OrderService {
       itemId: string;
       quantity: number;
       additionalServiceIds?: string[];
-      additionalChargeIds?: string[];
+      additionalChargeIds?: AdditionalChargeSelection[];
       specialInstructions?: string;
       specialInstructionMediaIds?: string[];
       remarks?: string;
@@ -1682,14 +1778,15 @@ export class OrderService {
         // Item-level charges are replaced wholesale — simpler than diffing, and
         // they are always sent together with the line.
         await this.orderItemChargeRepo.deleteAll({orderItemId} as any, {transaction: tx});
-        for (const chargeId of desired.additionalChargeIds ?? []) {
+        for (const {additionalChargeId: chargeId, quantity} of this.normalizeAdditionalCharges(desired.additionalChargeIds)) {
           const charge = await this.additionalChargeRepo.findById(chargeId);
-          const amount = this.applyAdditionalChargeUplift(
+          const unitAmount = this.applyAdditionalChargeUplift(
             Number(charge.defaultAmount),
             additionalChargePercentage,
           );
+          const amount = parseFloat((unitAmount * quantity).toFixed(2));
           await this.orderItemChargeRepo.create(
-            {orderItemId, additionalChargeId: chargeId, amount},
+            {orderItemId, additionalChargeId: chargeId, amount, quantity},
             {transaction: tx},
           );
         }
@@ -2551,6 +2648,7 @@ export class OrderService {
         // multiple calls (e.g. quantity increased later), so it isn't
         // always the same as the loop-local index i.
         await this.createUnitAdditionalServices(garment.id, item, existing.count + i, v4);
+        await this.createUnitAdditionalCharges(garment.id, item, existing.count + i, v4);
 
         created.push(garment);
       }
@@ -2885,7 +2983,7 @@ export class OrderService {
 
     // ── Garment stage histories ───────────────────────────────────────────────
     const garmentIds = garments.map(g => g.id);
-    const [garmentHistories, pendingApprovals] = await Promise.all([
+    const [garmentHistories, pendingApprovals, garmentAdditionalServices, garmentAdditionalCharges] = await Promise.all([
       garmentIds.length
         ? this.garmentStatusHistoryRepo.find({
             where: {garmentId: {inq: garmentIds}} as any,
@@ -2902,6 +3000,16 @@ export class OrderService {
               entityId: {inq: garmentIds},
               status: ApprovalRequestStatus.PENDING,
             } as any,
+          })
+        : Promise.resolve([]),
+      garmentIds.length
+        ? this.garmentAdditionalServiceRepo.find({
+            where: {garmentId: {inq: garmentIds}, isDeleted: false} as any,
+          })
+        : Promise.resolve([]),
+      garmentIds.length
+        ? this.garmentAdditionalChargeRepo.find({
+            where: {garmentId: {inq: garmentIds}, isDeleted: false} as any,
           })
         : Promise.resolve([]),
     ]);
@@ -2930,7 +3038,7 @@ export class OrderService {
     // frozen amount only) — join against the master for a display name,
     // mirroring serviceMap's role for additionalServices below.
     const chargeMasterIds = [
-      ...new Set([...orderCharges, ...itemCharges].map(c => c.additionalChargeId)),
+      ...new Set([...orderCharges, ...itemCharges, ...garmentAdditionalCharges].map(c => c.additionalChargeId)),
     ];
     const chargeMasters = chargeMasterIds.length
       ? await this.additionalChargeRepo.find({where: {id: {inq: chargeMasterIds}}})
@@ -2945,7 +3053,16 @@ export class OrderService {
     const namedOrderCharges = orderCharges.map(withChargeName);
 
     // ── Build lookup maps ─────────────────────────────────────────────────────
-    const serviceMap = new Map(services.map(s => [s.id, s]));
+    const garmentAdditionalServiceIds = [
+      ...new Set(garmentAdditionalServices.map(s => s.serviceId)),
+    ];
+    const missingGarmentServices = garmentAdditionalServiceIds.filter(
+      id => !services.some(service => service.id === id),
+    );
+    const garmentServiceMasters = missingGarmentServices.length
+      ? await this.serviceRepo.find({where: {id: {inq: missingGarmentServices}} as any})
+      : [];
+    const serviceMap = new Map([...services, ...garmentServiceMasters].map(s => [s.id, s]));
     const itemMap = new Map(items.map(i => [i.id, i]));
     const garmentsByItem = new Map<string, typeof garments[0][]>();
     for (const g of garments) {
@@ -2965,6 +3082,36 @@ export class OrderService {
       const list = chargesByItem.get(c.orderItemId) ?? [];
       list.push(c);
       chargesByItem.set(c.orderItemId, list);
+    }
+    const servicesByGarment = new Map<string, Array<{
+      serviceId: string;
+      name: string | null;
+      amount: number;
+    }>>();
+    for (const service of garmentAdditionalServices) {
+      const list = servicesByGarment.get(service.garmentId) ?? [];
+      list.push({
+        serviceId: service.serviceId,
+        name: serviceMap.get(service.serviceId)?.name ?? null,
+        amount: Number(service.amount),
+      });
+      servicesByGarment.set(service.garmentId, list);
+    }
+    const chargesByGarment = new Map<string, Array<{
+      additionalChargeId: string;
+      name: string | null;
+      quantity: number;
+      amount: number;
+    }>>();
+    for (const charge of garmentAdditionalCharges.map(withChargeName)) {
+      const list = chargesByGarment.get(charge.garmentId) ?? [];
+      list.push({
+        additionalChargeId: charge.additionalChargeId,
+        name: charge.name,
+        quantity: Number(charge.quantity ?? 1),
+        amount: Number(charge.amount),
+      });
+      chargesByGarment.set(charge.garmentId, list);
     }
 
     // ── Stage status helper ───────────────────────────────────────────────────
@@ -3016,7 +3163,19 @@ export class OrderService {
         id,
         name: serviceMap.get(id)?.name ?? null,
       })),
+      // Same shape accepted by create/update order, so an edit form can bind
+      // the saved item-level selections without transforming junction rows.
+      additionalChargeIds: (chargesByItem.get(oi.id) ?? []).map(charge => ({
+        additionalChargeId: charge.additionalChargeId,
+        quantity: Number(charge.quantity ?? 1),
+      })),
       additionalCharges: chargesByItem.get(oi.id) ?? [],
+      units: (garmentsByItem.get(oi.id) ?? []).map(g => ({
+        garmentId: g.id,
+        garmentTagNumber: g.garmentTagNumber,
+        additionalServices: servicesByGarment.get(g.id) ?? [],
+        additionalCharges: chargesByGarment.get(g.id) ?? [],
+      })),
       garments: (garmentsByItem.get(oi.id) ?? []).map(g => ({
         id: g.id,
         orderItemId: g.orderItemId,
@@ -3031,6 +3190,8 @@ export class OrderService {
         width: g.width,
         customerRemarks: g.customerRemarks,
         inspectionRemarks: g.inspectionRemarks,
+        additionalServices: servicesByGarment.get(g.id) ?? [],
+        additionalCharges: chargesByGarment.get(g.id) ?? [],
         isTagPrinted: g.isTagPrinted ?? false,
         unprocessedHandlingMode: g.unprocessedHandlingMode ?? null,
         stages: resolveStages(g.id),

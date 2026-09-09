@@ -36,6 +36,8 @@
     "migrate:pressto-masters": "node scripts/migrate-pressto-masters.cjs",
     "preseed:pressto": "npm run build",
     "seed:pressto": "node ./dist/seed-pressto",
+    "preseed:store-prefix": "npm run build",
+    "seed:store-prefix": "node ./dist/seed-store-prefix",
     "preopenapi-spec": "npm run build",
     "openapi-spec": "node ./dist/openapi-spec",
     "prestart": "npm run rebuild",

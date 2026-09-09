@@ -64,6 +64,43 @@ const PAYMENT_ITEM_SCHEMA = {
   },
 };
 
+const ADDITIONAL_CHARGE_SELECTION_SCHEMA = {
+  oneOf: [
+    {type: 'string' as const, format: 'uuid'},
+    {
+      type: 'object' as const,
+      required: ['additionalChargeId', 'quantity'],
+      properties: {
+        additionalChargeId: {type: 'string' as const, format: 'uuid'},
+        quantity: {type: 'integer' as const, minimum: 1},
+      },
+    },
+  ],
+};
+
+const ORDER_UNIT_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    brandId: {type: 'string' as const, format: 'uuid'},
+    colorId: {type: 'string' as const, format: 'uuid'},
+    length: {type: 'number' as const, minimum: 0},
+    width: {type: 'number' as const, minimum: 0},
+    additionalServiceIds: {
+      type: 'array' as const,
+      items: {type: 'string' as const, format: 'uuid'},
+    },
+    additionalChargeIds: {
+      type: 'array' as const,
+      items: ADDITIONAL_CHARGE_SELECTION_SCHEMA,
+    },
+    instructions: {type: 'string' as const},
+    qrPrintCount: {type: 'integer' as const, minimum: 1},
+    rejectedAtIntake: {type: 'boolean' as const},
+    rejectionReason: {type: 'string' as const},
+    rejectionRemarks: {type: 'string' as const},
+  },
+};
+
 const ORDER_ITEM_SCHEMA = {
   type: 'object' as const,
   required: ['serviceId', 'itemId', 'quantity'],
@@ -74,8 +111,13 @@ const ORDER_ITEM_SCHEMA = {
     specialInstructions: {type: 'string' as const},
     specialInstructionMediaIds: {type: 'array' as const, items: {type: 'string' as const}},
     remarks: {type: 'string' as const},
-    additionalChargeIds: {type: 'array' as const, items: {type: 'string' as const, format: 'uuid'}},
+    additionalChargeIds: {type: 'array' as const, items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
     additionalServiceIds: {type: 'array' as const, items: {type: 'string' as const, format: 'uuid'}, description: 'Additional services selected for this item'},
+    units: {
+      type: 'array' as const,
+      items: ORDER_UNIT_SCHEMA,
+      description: 'Per-garment inspection, additional-service and additional-charge selections.',
+    },
   },
 };
 
@@ -180,7 +222,7 @@ export class OrderController {
               specialInstructions: {type: 'string'},
               specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
               remarks: {type: 'string'},
-              additionalChargeIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              additionalChargeIds: {type: 'array', items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
               orderLabelIds: {type: 'array', items: {type: 'string', format: 'uuid'}, description: 'Order-level labels/tags'},
               items: {type: 'array', minItems: 1, items: ORDER_ITEM_SCHEMA},
               payments: {
@@ -787,7 +829,7 @@ export class OrderController {
                     itemId: {type: 'string', format: 'uuid'},
                     quantity: {type: 'number', minimum: 1},
                     additionalServiceIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
-                    additionalChargeIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+                    additionalChargeIds: {type: 'array', items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
                     specialInstructions: {type: 'string'},
                     specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
                     remarks: {type: 'string'},
@@ -805,7 +847,7 @@ export class OrderController {
         itemId: string;
         quantity: number;
         additionalServiceIds?: string[];
-        additionalChargeIds?: string[];
+        additionalChargeIds?: Array<string | {additionalChargeId: string; quantity: number}>;
         specialInstructions?: string;
         specialInstructionMediaIds?: string[];
         remarks?: string;

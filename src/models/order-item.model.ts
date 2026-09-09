@@ -79,6 +79,19 @@ export class OrderItem extends Entity {
   })
   pendingUnitAdditionalServices?: Array<Array<{serviceId: string; amount: number}>>;
 
+  // Quantity-aware additional charges selected for each individual garment.
+  // Persisted onto GarmentAdditionalCharge when that garment is created.
+  @property({
+    type: 'array',
+    itemType: 'object',
+    postgresql: {dataType: 'jsonb'},
+  })
+  pendingUnitAdditionalCharges?: Array<Array<{
+    additionalChargeId: string;
+    quantity: number;
+    amount: number;
+  }>>;
+
   // Reject-at-intake: the customer brought this piece but it was declined at the
   // counter — recorded so the order shows it came in, priced at ₹0, and never
   // given a garment or put through processing. No approval flow.

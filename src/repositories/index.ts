@@ -82,6 +82,7 @@ export * from './garment-damage-image.repository';
 export * from './garment-stain.repository';
 export * from './garment-stain-image.repository';
 export * from './garment-additional-service.repository';
+export * from './garment-additional-charge.repository';
 export * from './garment-image.repository';
 export * from './garment-status-history.repository';
 export * from './payment-transaction.repository';
