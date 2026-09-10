@@ -56,6 +56,137 @@ export class ReportsController {
     return {report};
   }
 
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['report_pending_payments:read']})
+  @get('/reports/pending-payments')
+  @response(200, {description: 'Pending Payments report — orders still owing money'})
+  async pendingPayments(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+    @param.query.string('paymentStatus') paymentStatus?: string,
+    @param.query.string('deliveryStatus') deliveryStatus?: string,
+    @param.query.string('customerLabelId') customerLabelId?: string,
+    @param.query.boolean('includePmu') includePmu?: boolean,
+    @param.query.boolean('includeP2d') includeP2d?: boolean,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+  ): Promise<object> {
+    const {from, to} = resolveWindow(dateFrom, dateTo);
+    const report = await this.reportsService.buildPendingPayments({
+      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      from,
+      to,
+      paymentStatus: paymentStatus || 'pending',
+      deliveryStatus: deliveryStatus || 'all',
+      customerLabelId,
+      includePmu,
+      includeP2d,
+      limit: clampLimit(limit),
+      skip: clampSkip(skip),
+    });
+    return {report};
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['report_pending_tickets:read']})
+  @get('/reports/pending-tickets')
+  @response(200, {description: 'Pending Tickets report — orders not yet delivered'})
+  async pendingTickets(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+    @param.query.boolean('includePmu') includePmu?: boolean,
+    @param.query.boolean('includeP2d') includeP2d?: boolean,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+  ): Promise<object> {
+    const {from, to} = resolveWindow(dateFrom, dateTo);
+    const report = await this.reportsService.buildPendingTickets({
+      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      from,
+      to,
+      includePmu,
+      includeP2d,
+      limit: clampLimit(limit),
+      skip: clampSkip(skip),
+    });
+    return {report};
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['report_on_account_billing:read']})
+  @get('/reports/on-account-billing')
+  @response(200, {description: 'On Account Billing report — orders billed on account'})
+  async onAccountBilling(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+    @param.query.string('deliveryStatus') deliveryStatus?: string,
+    @param.query.string('paymentStatus') paymentStatus?: string,
+    @param.query.string('customerName') customerName?: string,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+  ): Promise<object> {
+    const {from, to} = resolveWindow(dateFrom, dateTo);
+    const report = await this.reportsService.buildOnAccountBilling({
+      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      from,
+      to,
+      deliveryStatus: deliveryStatus || 'all',
+      paymentStatus: paymentStatus || 'all',
+      customerName,
+      limit: clampLimit(limit),
+      skip: clampSkip(skip),
+    });
+    return {report};
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['report_consolidated_daily_sales:read']})
+  @get('/reports/consolidated-daily-sales')
+  @response(200, {description: 'Consolidated Daily Sales — closing collections per store per day'})
+  async consolidatedDailySales(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+  ): Promise<object> {
+    const {from, to} = resolveWindow(dateFrom, dateTo);
+    const report = await this.reportsService.buildConsolidatedDailySales({
+      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      from,
+      to,
+    });
+    return {report};
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['report_petty_cash_expense:read']})
+  @get('/reports/petty-cash-expense')
+  @response(200, {description: 'Petty Cash Expense report — register entries for the window'})
+  async pettyCashExpense(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+  ): Promise<object> {
+    const {from, to} = resolveWindow(dateFrom, dateTo);
+    const report = await this.reportsService.buildPettyCashExpense({
+      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      from,
+      to,
+      limit: clampLimit(limit),
+      skip: clampSkip(skip),
+    });
+    return {report};
+  }
+
   /**
    * Narrow the caller's scope to the requested store.
    *
@@ -77,6 +208,11 @@ export class ReportsController {
     }
     return storeIds;
   }
+}
+
+function clampSkip(skip?: number): number {
+  const value = Number(skip);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
 function clampLimit(limit?: number): number {
