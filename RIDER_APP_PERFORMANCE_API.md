@@ -123,8 +123,8 @@ endpoints above this is a single day, not a range — built for a home-screen
   authors — `receivedAt` is set by the destination store, not the rider).
   `completed` = `received`/`discrepancy`/`resolved`; `pending` =
   `rider_assigned`/`in_transit`.
-- `handoverOrdersCount` — `PickupHandover` (garment) batches this rider
-  submitted that day, by `submittedAt`. Submission is a one-shot event, so
-  there's no pending/completed split — same as `pickupHandoversSubmitted`
-  in Work Summary above.
-- `handoverCashCount` — same, for `RiderCashHandover` batches.
+- `handoverOrdersCount` — total pickup orders inside the rider's
+  `PickupHandover` batches submitted that day, by `submittedAt`.
+- `handoverCashCount` — total cash transactions inside the rider's
+  `RiderCashHandover` batches submitted that day. These are item counts;
+  the Work Summary fields above intentionally count submitted batches.

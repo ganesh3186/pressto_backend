@@ -269,11 +269,11 @@ export class RiderPerformanceController {
       }),
       this.pickupHandoverRepository.find({
         where: {riderId: rider.id, isDeleted: false, submittedAt: {between: [day, dayEnd]}} as object,
-        fields: {id: true} as object,
+        fields: {itemCount: true} as object,
       }),
       this.riderCashHandoverRepository.find({
         where: {riderId: rider.id, isDeleted: false, submittedAt: {between: [day, dayEnd]}} as object,
-        fields: {id: true} as object,
+        fields: {itemCount: true} as object,
       }),
     ]);
 
@@ -306,8 +306,10 @@ export class RiderPerformanceController {
         .length,
       pendingStoreTransfersCount: transfers.filter(t => TRANSFER_PENDING.includes(t.status as TransferStatus))
         .length,
-      handoverOrdersCount: pickupHandovers.length,
-      handoverCashCount: cashHandovers.length,
+      // Each header is a batch that can contain several orders/cash
+      // transactions. Dashboard tiles show handed-over items, not batches.
+      handoverOrdersCount: pickupHandovers.reduce((count, handover) => count + (Number(handover.itemCount) || 0), 0),
+      handoverCashCount: cashHandovers.reduce((count, handover) => count + (Number(handover.itemCount) || 0), 0),
     };
   }
 }
