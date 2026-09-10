@@ -253,6 +253,7 @@ export class CustomerController {
     const rawPassword = body.password ?? 'Pressto@1234';
     const hashedPassword = await this.hasher.hashPassword(rawPassword);
     const customerCode = await this.generateCustomerCode();
+    const fullName = [body.firstName, body.lastName].filter(Boolean).join(' ').trim();
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
@@ -262,8 +263,8 @@ export class CustomerController {
         ? existingUser
         : await this.usersRepository.create(
             {
-              fullName: `${body.firstName} ${body.lastName && body.lastName}`,
-              username: await this.generateUniqueUsername(body.email, `${body.firstName} ${body.lastName && body.lastName}`),
+              fullName,
+              username: await this.generateUniqueUsername(body.email, fullName),
               ...(body.email && { email: body.email }),
               countryCode: body.countryCode || '+91',
               phone: body.phone,
