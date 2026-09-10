@@ -90,6 +90,11 @@ const PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'cluster:read',   description: 'View clusters'},
   {permission: 'cluster:update', description: 'Update a cluster'},
   {permission: 'cluster:delete', description: 'Delete a cluster'},
+  // Warehouse
+  {permission: 'warehouse:create', description: 'Create a warehouse'},
+  {permission: 'warehouse:read',   description: 'View warehouses'},
+  {permission: 'warehouse:update', description: 'Update a warehouse'},
+  {permission: 'warehouse:delete', description: 'Delete a warehouse'},
   // GST Tax Configuration
   {permission: 'gst_tax_configuration:create', description: 'Create GST tax config'},
   {permission: 'gst_tax_configuration:read',   description: 'View GST tax config'},

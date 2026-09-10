@@ -143,3 +143,4 @@ export * from './refund-reason.enum';
 export * from './refund-due-status.enum';
 export * from './refund-method.enum';
 export * from './refund-due.model';
+export * from './warehouse.model';
