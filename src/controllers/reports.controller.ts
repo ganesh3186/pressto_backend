@@ -1,5 +1,7 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
+import {repository} from '@loopback/repository';
+import {StoreRepository} from '../repositories';
 import {get, HttpErrors, param, response} from '@loopback/rest';
 import {UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
@@ -29,6 +31,7 @@ export class ReportsController {
   constructor(
     @inject('services.reports') private reportsService: ReportsService,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @repository(StoreRepository) private storeRepo: StoreRepository,
   ) {}
 
   @authenticate('jwt')
@@ -156,8 +159,11 @@ export class ReportsController {
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
+    // "Consolidated" means across every store the caller can see, so
+    // unlike the per-store reports this one does not force a storeId —
+    // omitting it is the normal case, not an error.
     const report = await this.reportsService.buildConsolidatedDailySales({
-      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      storeIds: await this.resolveStoreIdsAllowingAll(currentUser, storeId),
       from,
       to,
     });
@@ -195,6 +201,26 @@ export class ReportsController {
    * and the totals are meant to reconcile against one till), so make the
    * client pick one rather than silently blending every store together.
    */
+  /**
+   * Same narrowing, but a global caller who named no store gets every
+   * active store rather than a 400. Only for genuinely cross-store
+   * reports; the per-store ones keep requiring an explicit choice.
+   */
+  private async resolveStoreIdsAllowingAll(
+    currentUser: UserProfile,
+    storeId?: string,
+  ): Promise<string[]> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
+    if (storeIds !== null) return storeIds;
+
+    const stores = await this.storeRepo.find({
+      where: {isDeleted: false} as object,
+      fields: {id: true} as object,
+    });
+    return stores.map(s => String(s.id));
+  }
+
   private async resolveStoreIds(
     currentUser: UserProfile,
     storeId?: string,
@@ -238,7 +264,12 @@ function resolveWindow(dateFrom?: string, dateTo?: string): {from: Date; to: Dat
     throw new HttpErrors.BadRequest('dateFrom is not a valid date.');
   }
 
-  const to = endOfDay(parseLocal(dateTo));
+  // A bare YYYY-MM-DD means the whole of that day, so it is pushed to
+  // 23:59:59.999. A value that already carries a time (the datetime-local
+  // filters on the ticket reports) is honoured as given — extending it to
+  // midnight would silently widen a range the user deliberately narrowed.
+  const parsedTo = parseLocal(dateTo);
+  const to = CALENDAR_DATE.test(dateTo) ? endOfDay(parsedTo) : parsedTo;
   if (Number.isNaN(to.getTime())) {
     throw new HttpErrors.BadRequest('dateTo is not a valid date.');
   }

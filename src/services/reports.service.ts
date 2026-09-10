@@ -431,12 +431,15 @@ export class ReportsService {
     if (!orders.length) return emptyPaged();
 
     const orderIds = orders.map(o => o.id);
-    const [collected, deliveryStatuses, storeCtx, customerCtx] = await Promise.all([
-      this.buildCollectedByOrder(orderIds),
-      this.buildDeliveryStatusByOrder(orderIds),
-      this.buildStoreContext(storeIds),
-      this.buildCustomerContext([...new Set(orders.map(o => String(o.customerId)))]),
-    ]);
+    const [collected, deliveryStatuses, deliveredAt, itemCounts, storeCtx, customerCtx] =
+      await Promise.all([
+        this.buildCollectedByOrder(orderIds),
+        this.buildDeliveryStatusByOrder(orderIds),
+        this.buildDeliveredAtByOrder(orderIds),
+        this.buildItemCountByOrder(orderIds),
+        this.buildStoreContext(storeIds),
+        this.buildCustomerContext([...new Set(orders.map(o => String(o.customerId)))]),
+      ]);
 
     const needle = (params.customerName ?? '').trim().toLowerCase();
 
@@ -484,9 +487,16 @@ export class ReportsService {
         customerCode: customer?.code ?? '—',
         customerName: customer?.name ?? '—',
         ticketNo: e.order.orderNumber ?? '—',
+        itemCount: itemCounts.get(String(e.order.id)) ?? 0,
+        receptionDate: e.order.createdAt ?? null,
+        estDeliveryDate: e.order.deliveryDate ?? null,
+        // Actual hand-over, as opposed to the estimate above; null until
+        // the order has genuinely been delivered.
+        actDeliveryDate: deliveredAt.get(String(e.order.id)) ?? null,
         orderDate: e.order.createdAt ?? null,
         deliveryStatus: e.delivery || '—',
         paymentStatus: e.status,
+        amount: e.total,
         totalAmount: e.total,
         collected: e.paid,
         balanceDue: e.balanceDue,
@@ -773,6 +783,23 @@ export class ReportsService {
     const byOrder = new Map<string, string>();
     for (const row of rows) {
       if (row.orderId) byOrder.set(String(row.orderId), String(row.status ?? ''));
+    }
+    return byOrder;
+  }
+
+  /**
+   * When each order actually reached the customer — the "Act Delivery
+   * Date" column, as distinct from the estimated date on the order.
+   */
+  private async buildDeliveredAtByOrder(orderIds: string[]) {
+    if (!orderIds.length) return new Map<string, Date | null>();
+    const rows = await this.deliveryOrderRepo.find({
+      where: {orderId: {inq: orderIds}} as object,
+      fields: {orderId: true, arrivedAt: true} as object,
+    });
+    const byOrder = new Map<string, Date | null>();
+    for (const row of rows) {
+      if (row.orderId) byOrder.set(String(row.orderId), row.arrivedAt ?? null);
     }
     return byOrder;
   }
