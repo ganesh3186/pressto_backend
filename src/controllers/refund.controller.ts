@@ -1,7 +1,14 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
-import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
+import {
+  get,
+  HttpErrors,
+  param,
+  post,
+  requestBody,
+  response,
+} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {RefundBankDetails} from '../models/refund-due.model';
@@ -19,7 +26,8 @@ import {StoreScopeService} from '../services/store-scope.service';
 export class RefundController {
   constructor(
     @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
-    @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
     @inject('services.approval') private approvalService: ApprovalService,
   ) {}
 
@@ -54,7 +62,9 @@ export class RefundController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:update']})
   @post('/refunds-due/{id}/select-method')
-  @response(200, {description: 'Payout method selected — refund payout approval raised'})
+  @response(200, {
+    description: 'Payout method selected — refund payout approval raised',
+  })
   async selectMethod(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
