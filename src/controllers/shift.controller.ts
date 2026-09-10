@@ -16,6 +16,7 @@ import {
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
+  PettyCashFinanceEntryRepository,
   SalesReturnRepository,
   ShiftRepository,
   StoreRepository,
@@ -37,6 +38,14 @@ interface OpeningBalancesInput {
 }
 
 const OPENING_CATEGORY_KEYS = ['cashInTill', 'banking', 'pettyCash', 'prepaidVouchers'] as const;
+const CASH_DENOMINATIONS = new Set(['2000', '500', '200', '100', '50', '20', '10', '5', '2', '1']);
+const CLOSING_DENOMINATION_FIELDS = new Set([
+  'banking.deposited',
+  'pettyCash.actualBalance',
+  'cardPgSettlement.actualSettlement',
+  'actualCashInTill.actual',
+  'actualCashInTill.currClosureBanking',
+]);
 
 // Every field the closing form accepts — operator-typed, per confirmed
 // scope (no auto "expected cash" computation this pass; see
@@ -61,6 +70,7 @@ interface ClosingFormInput {
   actualCashInTill: {actual: number; cumulativeDiff?: number; currClosureBanking?: number};
   revenue: object;
   salesReturn: object;
+  denominations?: Record<string, Record<string, number>>;
   remarks: string;
 }
 
@@ -76,6 +86,7 @@ export class ShiftController {
     @repository(GstTaxConfigurationRepository) private gstConfigRepository: GstTaxConfigurationRepository,
     @repository(PaymentTransactionRepository) private paymentTransactionRepository: PaymentTransactionRepository,
     @repository(WalletRechargeRequestRepository) private walletRechargeRequestRepository: WalletRechargeRequestRepository,
+    @repository(PettyCashFinanceEntryRepository) private pettyCashFinanceRepository: PettyCashFinanceEntryRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
     @inject('services.petty-cash') private pettyCashService: PettyCashService,
   ) {}
@@ -133,17 +144,26 @@ export class ShiftController {
     });
     const pettyCash = await this.pettyCashService.computeBalance(storeId);
     if (!lastClosed) {
-      return {cashInTill: 2000, banking: 0, pettyCash, prepaidVouchers: 0};
+      return {cashInTill: 0, banking: 0, pettyCash, prepaidVouchers: 0};
     }
-    const closing = (lastClosed.closing ?? {}) as Record<string, {actual?: number; inSafe?: number; actualBalance?: number; actualVoucher?: number; currSupCashInTill?: number}>;
+    const closing = (lastClosed.closing ?? {}) as Record<string, {actual?: number; supposed?: number; deposited?: number; inSafe?: number; actualBalance?: number; actualVoucher?: number; currSupCashInTill?: number; currClosureBanking?: number}>;
     const opening = (lastClosed.opening ?? {}) as Record<string, {actual?: number}>;
     return {
-      cashInTill:
-        closing.actualCashInTill?.actual ??
-        closing.register?.currSupCashInTill ??
-        opening.cashInTill?.actual ??
+      cashInTill: Math.max(
         0,
-      banking: closing.banking?.inSafe ?? opening.banking?.actual ?? 0,
+        Number(
+          closing.actualCashInTill?.actual ??
+            closing.register?.currSupCashInTill ??
+            opening.cashInTill?.actual ??
+            0,
+        ) - Number(closing.actualCashInTill?.currClosureBanking ?? 0),
+      ),
+      banking:
+        Math.max(
+          0,
+          Number(closing.banking?.supposed ?? closing.banking?.inSafe ?? opening.banking?.actual ?? 0) -
+            Number(closing.banking?.deposited ?? 0),
+        ) + Number(closing.actualCashInTill?.currClosureBanking ?? 0),
       pettyCash,
       prepaidVouchers:
         closing.ppVoucher?.actualVoucher ??
@@ -196,9 +216,7 @@ export class ShiftController {
     const ppVoucherDifference = Number(input.ppVoucher.actualVoucher || 0) - Number(input.ppVoucher.currSupVoucher || 0);
 
     const currSupCashInTill =
-      Number(input.register.prevSupCashInTill || 0) +
-      Number(input.register.cashReceived || 0) -
-      Number(input.register.reimbursement || 0);
+      Number(input.register.prevActCashInTill || 0) + Number(input.register.cashReceived || 0);
 
     const actualCashInTillDifference = Number(input.actualCashInTill.actual || 0) - currSupCashInTill;
 
@@ -214,8 +232,24 @@ export class ShiftController {
       actualCashInTill: {...input.actualCashInTill, difference: actualCashInTillDifference},
       revenue: input.revenue,
       salesReturn: input.salesReturn,
+      denominations: input.denominations ?? {},
       remarks: input.remarks,
     };
+  }
+
+  private sanitizeDenominations(input: ClosingFormInput): Record<string, Record<string, number>> {
+    const result: Record<string, Record<string, number>> = {};
+    for (const [field, rawCounts] of Object.entries(input.denominations ?? {})) {
+      if (!CLOSING_DENOMINATION_FIELDS.has(field) || !rawCounts || typeof rawCounts !== 'object') continue;
+      const counts: Record<string, number> = {};
+      for (const [denomination, rawCount] of Object.entries(rawCounts)) {
+        const count = Number(rawCount);
+        if (!CASH_DENOMINATIONS.has(denomination) || !Number.isInteger(count) || count <= 0) continue;
+        counts[denomination] = count;
+      }
+      if (Object.keys(counts).length) result[field] = counts;
+    }
+    return result;
   }
 
   // ─── Open ─────────────────────────────────────────────────────────────────
@@ -296,6 +330,26 @@ export class ShiftController {
       openingUserName: caller.userName,
       opening: {...opening, remarks: body.remarks.trim()},
     });
+
+    // Petty cash is ledger-backed. When the opening count introduces new
+    // physical cash above the existing ledger balance, record only that
+    // difference as a Finance top-up. Merely confirming the carried balance
+    // creates no entry, so repeated shift openings cannot double-count it.
+    const openingPettyCashActual = opening.pettyCash.actual;
+    const pettyCashTopUp = Math.max(0, openingPettyCashActual - supposed.pettyCash);
+    if (pettyCashTopUp > 0) {
+      await this.pettyCashFinanceRepository.create({
+        id: v4(),
+        storeId: caller.storeId,
+        storeCode: caller.storeCode,
+        storeName: caller.storeName,
+        amount: pettyCashTopUp,
+        remarks: `Added during shift ${openingNo} opening: ${body.remarks.trim()}`,
+        createdBy: caller.userId,
+        createdByName: caller.userName,
+        createdAt: now,
+      });
+    }
 
     return {message: `Shift ${openingNo} opened.`, shift};
   }
@@ -458,13 +512,13 @@ export class ShiftController {
       if (bucket) walletCollections[bucket] += Number(r.amount) || 0;
     }
 
-    // All physical cash handled this shift, from either source — the same
-    // total both feeds Register's "cash received" and raises what's
-    // supposed to be bankable.
-    const cashReceived = collections.cash + walletCollections.cash;
-    const openingBankingActual =
-      Number((shift.opening as {banking?: {actual?: number}} | undefined)?.banking?.actual) || 0;
-    const bankingSupposed = openingBankingActual + cashReceived;
+    // Register cash is order-payment cash only. Wallet recharge collections
+    // remain visible in their own section and do not inflate the till register.
+    const cashReceived = collections.cash;
+    const openingBanking = (shift.opening as
+      | {banking?: {supposed?: number; actual?: number}}
+      | undefined)?.banking;
+    const bankingSupposed = Number(openingBanking?.supposed ?? openingBanking?.actual) || 0;
 
     const pettyCash = await this.pettyCashService.computeWindowActivity(shift.storeId, shift.openedAt, windowEnd);
 
@@ -616,7 +670,11 @@ export class ShiftController {
     const employee = await this.employeeRepository.findOne({where: {userId, isDeleted: false} as object});
     const closingUserName = employee ? `${employee.firstName} ${employee.lastName}` : shift.userName;
 
-    const closing = this.recalcClosingDerived({...body, remarks: body.remarks.trim()});
+    const closing = this.recalcClosingDerived({
+      ...body,
+      denominations: this.sanitizeDenominations(body),
+      remarks: body.remarks.trim(),
+    });
     const now = new Date();
 
     await this.shiftRepository.updateById(id, {
