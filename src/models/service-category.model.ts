@@ -46,6 +46,11 @@ export class ServiceCategory extends Entity {
   description?: string;
 
   @property({
+    type: 'number',
+  })
+  newservicetat?: number;
+
+  @property({
     type: 'boolean',
     default: true,
   })
