@@ -3484,6 +3484,15 @@ export class OrderService {
         })
       : [];
 
+    // The first status row is written by createOrder with the receiving
+    // cashier's user id. Resolve it once so historical taffeta labels retain
+    // the correct "REC. BY" name instead of depending on the current session.
+    const createdById = statusHistory[0]?.changedBy;
+    const createdByUser = createdById
+      ? await this.userRepo.findById(createdById).catch(() => null)
+      : null;
+    const createdByName = createdByUser?.fullName || createdByUser?.username || null;
+
     const orderItemIds = orderItems.map(i => i.id);
     const additionalSvcIds = orderItems.flatMap(
       i => (i.additionalServiceIds as string[] | null) ?? [],
@@ -3840,6 +3849,8 @@ export class OrderService {
     return {
       order: {
         ...order,
+        createdByName,
+        receivedByName: createdByName,
         orderLabels: orderLabels.map(l => ({
           id: l.id,
           name: l.name,
