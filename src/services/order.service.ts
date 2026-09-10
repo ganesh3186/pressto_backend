@@ -650,12 +650,15 @@ export class OrderService {
       rejectionReason: oi.rejectionReason ?? null,
     }));
 
-    const subtotal = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0);
-    const gstRate = 0.09; // 9% CGST + 9% SGST
-    const cgst = parseFloat((subtotal * gstRate).toFixed(2));
-    const sgst = parseFloat((subtotal * gstRate).toFixed(2));
+    // The order totals were already priced with per-garment additional
+    // services/charges and order-level charges. Re-summing only OrderItem
+    // totalPrice here drops those junction-backed amounts from the challan.
+    const subtotal = Number(order.subtotal) || 0;
+    const taxAmount = Number(order.taxAmount) || 0;
+    const cgst = parseFloat((taxAmount / 2).toFixed(2));
+    const sgst = parseFloat((taxAmount - cgst).toFixed(2));
     const discount = Number(order.discountAmount) || 0;
-    const totalAmount = Math.round(subtotal - discount + cgst + sgst);
+    const totalAmount = Math.round(Number(order.totalAmount) || subtotal - discount + taxAmount);
 
     const totalCount = await this.challanRepo.count();
     const challanNumber = `CHL-${String(totalCount.count + 1).padStart(6, '0')}`;
