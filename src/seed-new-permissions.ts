@@ -121,6 +121,28 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
   {permission: 'rider:read',   description: 'View riders'},
   {permission: 'rider:update', description: 'Update a rider'},
   {permission: 'rider:delete', description: 'Delete a rider'},
+  // Store dashboard (see DashboardController) — a read-only aggregate of
+  // figures each role can already reach on its own screens (orders,
+  // transfers, petty cash, deliveries), so it is granted to everyone who
+  // works a store counter rather than gated to managers. Read-only: there
+  // is no dashboard:write, the screen never writes anything.
+  {permission: 'dashboard:read', description: 'View the store dashboard summary'},
+  // Reports (see ReportsController) — one permission PER report rather
+  // than a single blanket report:read, so a role can be granted the
+  // payment report without also seeing on-account billing or pending
+  // payments. The role-permission matrix groups by the segment before
+  // the colon, so each of these renders as its own toggle when a role is
+  // built. Read-only: reports never write.
+  //
+  // Only mode-of-payment has an endpoint so far; the rest are seeded now
+  // so the permissions exist to assign as each report is moved
+  // server-side, and so the matrix shows the whole set at once.
+  {permission: 'report_mode_of_payment:read', description: 'View the Mode Of Payment report'},
+  {permission: 'report_consolidated_daily_sales:read', description: 'View the Consolidated Daily Sales report'},
+  {permission: 'report_on_account_billing:read', description: 'View the On Account Billing report'},
+  {permission: 'report_pending_payments:read', description: 'View the Pending Payments report'},
+  {permission: 'report_pending_tickets:read', description: 'View the Pending Tickets report'},
+  {permission: 'report_petty_cash_expense:read', description: 'View the Petty Cash Expense report'},
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -164,6 +186,14 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // Coupon: full control — a marketing/ops lever managers own outright,
       // same posture as Pickup/Delivery Slot master.
       'coupon:create', 'coupon:read', 'coupon:update', 'coupon:delete',
+      // Store dashboard: the landing screen for anyone working a store.
+      'dashboard:read',
+      // Reports: a manager owns their store's numbers outright, so the
+      // full set. Individual reports can still be revoked per role in the
+      // role-permission matrix.
+      'report_mode_of_payment:read', 'report_consolidated_daily_sales:read',
+      'report_on_account_billing:read', 'report_pending_payments:read',
+      'report_pending_tickets:read', 'report_petty_cash_expense:read',
     ],
   },
   {
@@ -196,6 +226,12 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // Petty Cash: logs and can delete their own pending expenses;
       // approval and finance top-ups stay out of reach.
       'petty_cash:read', 'petty_cash_register:create', 'petty_cash_register:delete',
+      // Store dashboard: the landing screen for anyone working a store.
+      'dashboard:read',
+      // Reports: the two the front desk actually works from — what is
+      // still owed and what is still in the plant. The money-reconciliation
+      // reports stay with manager/finance.
+      'report_pending_payments:read', 'report_pending_tickets:read',
     ],
   },
   {
@@ -208,11 +244,22 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'coupon:read',
       // Petty Cash: same front-desk expense-logging as store_exec.
       'petty_cash:read', 'petty_cash_register:create', 'petty_cash_register:delete',
+      // Store dashboard: the landing screen for anyone working a store.
+      'dashboard:read',
     ],
   },
   {
     roleValue: 'asm',
-    permissions: ['customer_address:read', 'customer_phone:read', 'coupon:read', 'petty_cash:read'],
+    permissions: [
+      'customer_address:read', 'customer_phone:read', 'coupon:read', 'petty_cash:read',
+      // Store dashboard: an ASM oversees stores, so the summary is the
+      // main thing they open — read-only, same as everything else here.
+      'dashboard:read',
+      // Reports: oversight role, so the full read-only set.
+      'report_mode_of_payment:read', 'report_consolidated_daily_sales:read',
+      'report_on_account_billing:read', 'report_pending_payments:read',
+      'report_pending_tickets:read', 'report_petty_cash_expense:read',
+    ],
   },
   {
     roleValue: 'finance',
@@ -230,6 +277,11 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // Petty Cash: the one role that funds a store's float — HQ-level,
       // not a store day-to-day action, same posture as customer_recharge.
       'petty_cash:read', 'petty_cash_finance:create',
+      // Reports: the money-reconciliation set. No pending-tickets — what
+      // is still in the plant is an operations question, not a finance one.
+      'report_mode_of_payment:read', 'report_consolidated_daily_sales:read',
+      'report_on_account_billing:read', 'report_pending_payments:read',
+      'report_petty_cash_expense:read',
     ],
   },
 ];
