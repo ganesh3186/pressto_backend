@@ -99,6 +99,9 @@ interface RevertSnapshot {
     serviceId: string;
     quantity: number;
     basePrice?: number;
+    priceSource?: string;
+    appliedPercentage?: number;
+    resolvedPrice?: number;
     unitPrice?: number;
     totalPrice?: number;
   };
@@ -112,6 +115,12 @@ interface RevertSnapshot {
   // immediate-credit bookkeeping now that a payout is deferred behind its
   // own approval instead of executing here.
   refundDueId?: string;
+  // An upgrade for one garment may split it away from a multi-quantity line.
+  // These IDs let revert() restore the original relationship and remove only
+  // the line created by that approval.
+  splitOrderItemId?: string;
+  garmentOrderItemId?: string;
+  splitGarmentId?: string;
 }
 
 @injectable({scope: BindingScope.TRANSIENT})
@@ -386,7 +395,7 @@ export class ApprovalService {
 
     // Upgrade approved: swap serviceId on the orderItem and recalculate price
     if (request.type === ApprovalRequestType.UPGRADE_SERVICE) {
-      await this._applyUpgradeOnOrderItem(garment.orderItemId, request, performedBy);
+      await this._applyUpgradeOnOrderItem(garment.orderItemId, request, performedBy, garment.id);
     }
 
     // Item damaged approved: no further status change — the garment stays
@@ -959,6 +968,7 @@ export class ApprovalService {
     orderItemId: string,
     request: ApprovalRequest,
     performedBy: string,
+    garmentId: string,
   ): Promise<void> {
     const toServiceId = request.metadata?.toServiceId as string | undefined;
     if (!toServiceId) return;
@@ -991,29 +1001,66 @@ export class ApprovalService {
     // unitPrice × quantity, since totalArea has no meaning for it.
     const item = await this.itemRepo.findOne({where: {id: orderItem.itemId}});
     let newTotalPrice: number;
+    let oldAffectedPrice: number;
     if (item?.isMeasurement) {
-      const garments = await this.garmentRepo.find({
-        where: {orderItemId, isDeleted: false} as object,
-      });
-      const totalArea = garments.reduce(
-        (sum, g) => sum + (Number(g.length) || 0) * (Number(g.width) || 0),
-        0,
-      );
-      newTotalPrice = parseFloat((newUnitPrice * totalArea).toFixed(2));
+      const targetGarment = await this.garmentRepo.findOne({where: {id: garmentId, isDeleted: false}});
+      const affectedArea =
+        (Number(targetGarment?.length) || 0) * (Number(targetGarment?.width) || 0);
+      newTotalPrice = parseFloat((newUnitPrice * affectedArea).toFixed(2));
+      oldAffectedPrice = parseFloat((money(orderItem.unitPrice) * affectedArea).toFixed(2));
     } else {
-      newTotalPrice = parseFloat((newUnitPrice * orderItem.quantity).toFixed(2));
+      newTotalPrice = newUnitPrice;
+      oldAffectedPrice = money(orderItem.unitPrice);
     }
 
     const oldTotalPrice = money(orderItem.totalPrice);
-    const priceDiff = newTotalPrice - oldTotalPrice;
+    const priceDiff = newTotalPrice - oldAffectedPrice;
+    let upgradedOrderItemId = orderItemId;
 
-    await this.orderItemRepo.updateById(orderItemId, {
-      serviceId: toServiceId,
-      basePrice: newBasePrice,
-      unitPrice: newUnitPrice,
-      totalPrice: newTotalPrice,
-      updatedAt: new Date(),
-    });
+    if (Number(orderItem.quantity) > 1) {
+      // A line represents all identical quantities, while an approval targets
+      // one physical garment. Split that garment onto its own line so the
+      // other quantities keep their original service and price. Spread the
+      // complete model first so no optional/module-owned field is discarded.
+      const {v4} = await import('uuid');
+      upgradedOrderItemId = v4();
+      const sourceFields = orderItem.toJSON() as Record<string, unknown>;
+      await this.orderItemRepo.updateById(orderItemId, {
+        quantity: Number(orderItem.quantity) - 1,
+        totalPrice: parseFloat((oldTotalPrice - oldAffectedPrice).toFixed(2)),
+        updatedAt: new Date(),
+      });
+      await this.orderItemRepo.create({
+        ...sourceFields,
+        id: upgradedOrderItemId,
+        quantity: 1,
+        serviceId: toServiceId,
+        basePrice: newBasePrice,
+        resolvedPrice: pricing.resolvedPrice,
+        unitPrice: newUnitPrice,
+        totalPrice: newTotalPrice,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any);
+      await this.garmentRepo.updateById(garmentId, {
+        orderItemId: upgradedOrderItemId,
+        updatedAt: new Date(),
+      });
+      await this._mergeIntoSnapshot(request.id, {
+        splitOrderItemId: upgradedOrderItemId,
+        garmentOrderItemId: orderItemId,
+        splitGarmentId: garmentId,
+      });
+    } else {
+      await this.orderItemRepo.updateById(orderItemId, {
+        serviceId: toServiceId,
+        basePrice: newBasePrice,
+        resolvedPrice: pricing.resolvedPrice,
+        unitPrice: newUnitPrice,
+        totalPrice: newTotalPrice,
+        updatedAt: new Date(),
+      });
+    }
 
     // Adjust order totals
     if (order && priceDiff !== 0) {
@@ -1042,6 +1089,33 @@ export class ApprovalService {
 
       const invoice = await this.invoiceRepo.findOne({where: {orderId: order.id}} as any);
       if (invoice) {
+        const items = [...(invoice.items ?? [])] as any[];
+        const invoiceItemIdx = items.findIndex(i => i.orderItemId === orderItemId);
+        if (invoiceItemIdx !== -1) {
+          const sourceItem = items[invoiceItemIdx];
+          if (Number(orderItem.quantity) > 1) {
+            items[invoiceItemIdx] = {
+              ...sourceItem,
+              quantity: Number(orderItem.quantity) - 1,
+              totalPrice: parseFloat((money(sourceItem.totalPrice) - oldAffectedPrice).toFixed(2)),
+            };
+            items.splice(invoiceItemIdx + 1, 0, {
+              ...sourceItem,
+              orderItemId: upgradedOrderItemId,
+              quantity: 1,
+              serviceId: toServiceId,
+              unitPrice: newUnitPrice,
+              totalPrice: newTotalPrice,
+            });
+          } else {
+            items[invoiceItemIdx] = {
+              ...sourceItem,
+              serviceId: toServiceId,
+              unitPrice: newUnitPrice,
+              totalPrice: newTotalPrice,
+            };
+          }
+        }
         await this.invoiceRepo.updateById(invoice.id, {
           subtotal: money(money(invoice.subtotal) + priceDiff),
           // Mirrors the order's own freshly-recomputed total directly,
@@ -1051,6 +1125,7 @@ export class ApprovalService {
           // An upgrade raises the bill, so the balance rises with it. Never let
           // it go negative if a downgrade ever produces a negative diff.
           balanceDue: Math.max(0, Math.round(money(invoice.balanceDue) + totalDiff)),
+          items,
           updatedAt: new Date(),
         } as any);
       }
@@ -1060,12 +1135,29 @@ export class ApprovalService {
         const items = [...(challan.items ?? [])] as any[];
         const challanItemIdx = items.findIndex(i => i.orderItemId === orderItemId);
         if (challanItemIdx !== -1) {
-          items[challanItemIdx] = {
-            ...items[challanItemIdx],
-            serviceId: toServiceId,
-            unitPrice: newUnitPrice,
-            totalPrice: newTotalPrice,
-          };
+          const sourceItem = items[challanItemIdx];
+          if (Number(orderItem.quantity) > 1) {
+            items[challanItemIdx] = {
+              ...sourceItem,
+              quantity: Number(orderItem.quantity) - 1,
+              totalPrice: parseFloat((money(sourceItem.totalPrice) - oldAffectedPrice).toFixed(2)),
+            };
+            items.splice(challanItemIdx + 1, 0, {
+              ...sourceItem,
+              orderItemId: upgradedOrderItemId,
+              quantity: 1,
+              serviceId: toServiceId,
+              unitPrice: newUnitPrice,
+              totalPrice: newTotalPrice,
+            });
+          } else {
+            items[challanItemIdx] = {
+              ...sourceItem,
+              serviceId: toServiceId,
+              unitPrice: newUnitPrice,
+              totalPrice: newTotalPrice,
+            };
+          }
         }
 
         await this.challanRepo.updateById(challan.id, {
@@ -1100,7 +1192,7 @@ export class ApprovalService {
 
     await this.auditService.log({
       entityType: 'order_item',
-      entityId: orderItemId,
+      entityId: upgradedOrderItemId,
       actionType: 'service_upgrade',
       performedBy,
       before: {serviceId: orderItem.serviceId, unitPrice: orderItem.unitPrice, totalPrice: oldTotalPrice},
@@ -1268,6 +1360,9 @@ export class ApprovalService {
       serviceId: orderItem.serviceId,
       quantity: orderItem.quantity,
       basePrice: orderItem.basePrice,
+      priceSource: orderItem.priceSource,
+      appliedPercentage: orderItem.appliedPercentage,
+      resolvedPrice: orderItem.resolvedPrice,
       unitPrice: orderItem.unitPrice,
       totalPrice: orderItem.totalPrice,
     };
@@ -1310,6 +1405,16 @@ export class ApprovalService {
   /** Put every photographed row back the way it was. */
   private async _restoreSnapshot(snapshot: RevertSnapshot): Promise<void> {
     const now = new Date();
+
+    if (snapshot.splitGarmentId && snapshot.garmentOrderItemId) {
+      await this.garmentRepo.updateById(snapshot.splitGarmentId, {
+        orderItemId: snapshot.garmentOrderItemId,
+        updatedAt: now,
+      });
+    }
+    if (snapshot.splitOrderItemId) {
+      await this.orderItemRepo.deleteById(snapshot.splitOrderItemId);
+    }
 
     if (snapshot.orderItem) {
       const {id, ...fields} = snapshot.orderItem;
@@ -1373,9 +1478,11 @@ export class ApprovalService {
     ]);
 
     // Quote the proposed service.
-    const quantity = Number(orderItem?.quantity) || 0;
+    // This approval is garment-scoped even when its source order line groups
+    // several identical pieces. Quote only the selected physical garment.
+    const quantity = garment ? 1 : 0;
     const currentUnitPrice = Number(orderItem?.unitPrice) || 0;
-    const currentTotal = Number(orderItem?.totalPrice) || 0;
+    let currentTotal = currentUnitPrice;
 
     let newUnitPrice = currentUnitPrice;
     if (order && orderItem && toServiceId) {
@@ -1399,14 +1506,9 @@ export class ApprovalService {
     // approving would actually bill.
     let newTotal: number;
     if (item?.isMeasurement && orderItem) {
-      const garments = await this.garmentRepo.find({
-        where: {orderItemId: orderItem.id, isDeleted: false} as object,
-      });
-      const totalArea = garments.reduce(
-        (sum, g) => sum + (Number(g.length) || 0) * (Number(g.width) || 0),
-        0,
-      );
-      newTotal = parseFloat((newUnitPrice * totalArea).toFixed(2));
+      const area = (Number(garment?.length) || 0) * (Number(garment?.width) || 0);
+      currentTotal = parseFloat((currentUnitPrice * area).toFixed(2));
+      newTotal = parseFloat((newUnitPrice * area).toFixed(2));
     } else {
       newTotal = parseFloat((newUnitPrice * quantity).toFixed(2));
     }
