@@ -198,7 +198,7 @@ export class CustomerController {
     // super_admin account, and it must never happen silently: the caller has
     // to resend with linkExistingAccount: true after being shown who they'd
     // be linking to. The existing login's own identity fields are left as-is.
-    const orConditions: object[] = [{ phone: body.phone }];
+    const orConditions: object[] = [{and: [{phone: body.phone}, {countryCode: body.countryCode || '+91'}]}];
     if (body.email) orConditions.push({ email: body.email });
     const existingUser = await this.usersRepository.findOne({
       where: { or: orConditions },
@@ -630,9 +630,17 @@ export class CustomerController {
 
     // Create() checks phone/email uniqueness up front; edits must too, or a
     // typo silently gives two different logins the same phone/email.
-    if (userFields.phone || userFields.email) {
+    if (userFields.phone || userFields.countryCode || userFields.email) {
       const orConditions: object[] = [];
-      if (userFields.phone) orConditions.push({ phone: userFields.phone });
+      if (userFields.phone || userFields.countryCode) {
+        const currentUser = await this.usersRepository.findById(customer.userId);
+        orConditions.push({
+          and: [
+            {phone: (userFields.phone as string | undefined) ?? currentUser.phone},
+            {countryCode: (userFields.countryCode as string | undefined) ?? currentUser.countryCode},
+          ],
+        });
+      }
       if (userFields.email) orConditions.push({ email: userFields.email });
       const collision = await this.usersRepository.findOne({
         where: { and: [{ or: orConditions }, { id: { neq: customer.userId } }] },

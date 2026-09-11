@@ -3164,14 +3164,39 @@ export class OrderService {
 
     // Scopes the list to a single customer (used by the customer-facing APIs).
     if (params.customerId) baseConditions.push({customerId: params.customerId});
-    if (params.status) baseConditions.push({status: params.status});
+    if (params.status === 'pending') {
+      baseConditions.push({status: {nin: ['draft', 'delivered', 'cancelled', 'returned']}});
+    } else if (params.status === 'approval') {
+      baseConditions.push({status: 'confirmed'});
+    } else if (params.status === 'inspection') {
+      baseConditions.push({status: {inq: ['received_at_store', 'in_inspection']}});
+    } else if (params.status === 'processing') {
+      baseConditions.push({
+        status: {
+          inq: [
+            'in_process',
+            'quality_check',
+            'ready',
+            'partially_dispatched',
+            'out_for_delivery',
+            'on_hold',
+          ],
+        },
+      });
+    } else if (params.status) baseConditions.push({status: params.status});
     if (params.excludeStatuses?.length)
       baseConditions.push({status: {nin: params.excludeStatuses}});
     if (params.orderType) baseConditions.push({orderType: params.orderType});
     if (params.dateFrom || params.dateTo) {
       const range: Record<string, string> = {};
       if (params.dateFrom) range.gte = params.dateFrom;
-      if (params.dateTo) range.lte = params.dateTo;
+      if (params.dateTo) {
+        // Date filters represent whole local calendar days. A bare YYYY-MM-DD
+        // otherwise compares at midnight and excludes nearly the entire end day.
+        range.lte = /^\d{4}-\d{2}-\d{2}$/.test(params.dateTo)
+          ? new Date(`${params.dateTo}T23:59:59.999`).toISOString()
+          : params.dateTo;
+      }
       baseConditions.push({createdAt: range});
     }
 

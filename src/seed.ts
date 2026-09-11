@@ -675,6 +675,7 @@ async function seedMasters(app: presstoBackendApplication) {
     { table: 'service_process_mapping', repoClass: Repos.ServiceProcessMappingRepository },
     { table: 'additional_charge_master', repoClass: Repos.AdditionalChargeMasterRepository },
     { table: 'customer_type_master', repoClass: Repos.CustomerTypeMasterRepository },
+    { table: 'country_code', repoClass: Repos.CountryCodeRepository },
     { table: 'gst_tax_configuration', repoClass: Repos.GstTaxConfigurationRepository },
     { table: 'delivery_type_configuration', repoClass: Repos.DeliveryTypeConfigurationRepository },
     { table: 'wallet_configuration', repoClass: Repos.WalletConfigurationRepository },

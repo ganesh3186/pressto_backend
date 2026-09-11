@@ -57,6 +57,7 @@ export * from './user-roles.repository';
 export * from './users.repository';
 export * from './service-category.repository';
 export * from './customer-type-master.repository';
+export * from './country-code.repository';
 export * from './customer.repository';
 export * from './wallet.repository';
 export * from './wallet-transaction.repository';

@@ -33,6 +33,7 @@ export * from './stain.controller';
 export * from './store-price-override.controller';
 export * from './store-service-mapping.controller';
 export * from './customer-type-master.controller';
+export * from './country-code.controller';
 export * from './customer.controller';
 export * from './customer-auth.controller';
 export * from './customer-address.controller';

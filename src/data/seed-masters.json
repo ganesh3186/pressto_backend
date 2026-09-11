@@ -13399,5 +13399,19 @@
       "updatedat": "2026-06-29 04:22:46.522+00",
       "deletedat": null
     }
+  ],
+  "country_code": [
+    {"id":"91000000-0000-4000-8000-000000000001","countryName":"India","isoCode":"IN","dialCode":"+91","displayOrder":1,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000002","countryName":"United States","isoCode":"US","dialCode":"+1","displayOrder":10,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000003","countryName":"United Kingdom","isoCode":"GB","dialCode":"+44","displayOrder":20,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000004","countryName":"United Arab Emirates","isoCode":"AE","dialCode":"+971","displayOrder":30,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000005","countryName":"Singapore","isoCode":"SG","dialCode":"+65","displayOrder":40,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000006","countryName":"Australia","isoCode":"AU","dialCode":"+61","displayOrder":50,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000007","countryName":"Canada","isoCode":"CA","dialCode":"+1","displayOrder":60,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000008","countryName":"Germany","isoCode":"DE","dialCode":"+49","displayOrder":70,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000009","countryName":"France","isoCode":"FR","dialCode":"+33","displayOrder":80,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000010","countryName":"Malaysia","isoCode":"MY","dialCode":"+60","displayOrder":90,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000011","countryName":"Sri Lanka","isoCode":"LK","dialCode":"+94","displayOrder":100,"isActive":true,"isDeleted":false},
+    {"id":"91000000-0000-4000-8000-000000000012","countryName":"New Zealand","isoCode":"NZ","dialCode":"+64","displayOrder":110,"isActive":true,"isDeleted":false}
   ]
 }

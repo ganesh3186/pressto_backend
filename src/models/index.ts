@@ -78,6 +78,7 @@ export * from './user-roles.model';
 export * from './users.model';
 export * from './service-category.model';
 export * from './customer-type-master.model';
+export * from './country-code.model';
 export * from './customer.model';
 export * from './wallet.model';
 export * from './wallet-transaction.model';

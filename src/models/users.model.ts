@@ -18,8 +18,8 @@ import {Media} from './media.model';
         keys: { email: 1 },
         options: { unique: true },
       },
-      uniquePhone: {
-        keys: { phone: 1 },
+      uniqueCountryCodePhone: {
+        keys: { countryCode: 1, phone: 1 },
         options: { unique: true },
       },
     },
