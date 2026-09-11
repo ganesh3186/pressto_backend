@@ -288,8 +288,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
 
 export async function seedNewPermissions() {
   const app = new presstoBackendApplication();
+  // Boot repository bindings without starting the REST listener. The seed is
+  // intended to run alongside the deployed API, which already owns port 3000.
   await app.boot();
-  await app.start();
 
   const permRepo = await app.getRepository(PermissionsRepository);
   const roleRepo = await app.getRepository(RolesRepository);
