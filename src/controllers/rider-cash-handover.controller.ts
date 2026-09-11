@@ -8,9 +8,11 @@ import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum
 import {RiderCashHandoverTargetType} from '../models/rider-cash-handover-target-type.enum';
 import {
   PaymentTransactionRepository,
+  OrderRepository,
   RiderCashHandoverItemRepository,
   RiderCashHandoverRepository,
   RiderRepository,
+  StoreRepository,
   UsersRepository,
 } from '../repositories';
 
@@ -23,11 +25,70 @@ import {
 export class RiderCashHandoverController {
   constructor(
     @repository(PaymentTransactionRepository) private paymentTransactionRepo: PaymentTransactionRepository,
+    @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(RiderCashHandoverRepository) private handoverRepo: RiderCashHandoverRepository,
     @repository(RiderCashHandoverItemRepository) private handoverItemRepo: RiderCashHandoverItemRepository,
     @repository(RiderRepository) private riderRepo: RiderRepository,
+    @repository(StoreRepository) private storeRepo: StoreRepository,
     @repository(UsersRepository) private usersRepo: UsersRepository,
   ) {}
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['rider_cash_handover:read']})
+  @get('/rider-cash-handovers')
+  @response(200, {description: 'Store-targeted rider cash handover batches'})
+  async find(@param.query.string('status') status?: RiderCashHandoverStatus): Promise<object> {
+    const requestedStatus = status ?? RiderCashHandoverStatus.PENDING;
+    if (!Object.values(RiderCashHandoverStatus).includes(requestedStatus)) {
+      throw new HttpErrors.BadRequest('Status must be pending or confirmed.');
+    }
+
+    const handovers = await this.handoverRepo.find({
+      where: {
+        and: [
+          {isDeleted: false},
+          {status: requestedStatus},
+          {
+            or: [
+              {handoverToType: RiderCashHandoverTargetType.STORE},
+              // Rows created before target selection existed were store-bound.
+              {handoverToType: {eq: null}},
+            ],
+          },
+        ],
+      } as object,
+      order: [requestedStatus === RiderCashHandoverStatus.CONFIRMED ? 'confirmedAt DESC' : 'submittedAt DESC'],
+    });
+    const handoverIds = handovers.map(h => h.id);
+    const items = handoverIds.length
+      ? await this.handoverItemRepo.find({where: {riderCashHandoverId: {inq: handoverIds}} as object})
+      : [];
+    const itemsByHandover = new Map<string, typeof items>();
+    for (const item of items) {
+      const own = itemsByHandover.get(item.riderCashHandoverId) ?? [];
+      own.push(item);
+      itemsByHandover.set(item.riderCashHandoverId, own);
+    }
+
+    const confirmerIds = [...new Set(handovers.map(h => h.confirmedBy).filter((id): id is string => Boolean(id)))];
+    const confirmers = confirmerIds.length
+      ? await this.usersRepo.find({
+          where: {id: {inq: confirmerIds}} as object,
+          fields: {id: true, fullName: true} as object,
+        })
+      : [];
+    const confirmerNameById = new Map(confirmers.map(user => [user.id, user.fullName]));
+
+    return {
+      handovers: handovers.map(handover => ({
+        ...handover,
+        confirmedByName: handover.confirmedBy
+          ? confirmerNameById.get(handover.confirmedBy) ?? 'Admin user'
+          : null,
+        items: itemsByHandover.get(handover.id) ?? [],
+      })),
+    };
+  }
 
   // ─── Per-rider pending summary ───────────────────────────────────────────
   // Scoped to riders with ANY cash still outside the store's hands
@@ -47,26 +108,52 @@ export class RiderCashHandoverController {
 
     const riderIds = [...new Set(transactions.map(t => (t as unknown as {riderId: string}).riderId))];
     const riders = await this.riderRepo.find({where: {id: {inq: riderIds}} as object});
+    const orderIds = [...new Set(transactions.map(t => t.orderId))];
+    const orders = await this.orderRepo.find({
+      where: {id: {inq: orderIds}} as object,
+      fields: {id: true, storeId: true} as object,
+    });
+    const orderStoreById = new Map(orders.map(order => [order.id, order.storeId]));
+    const storeIds = [...new Set(orders.map(order => order.storeId).filter(Boolean))];
+    const stores = storeIds.length
+      ? await this.storeRepo.find({where: {id: {inq: storeIds}} as object, fields: {id: true, name: true} as object})
+      : [];
+    const storeNameById = new Map(stores.map(store => [store.id, store.name]));
     const userIds = riders.map(r => r.userId);
     const users = userIds.length
       ? await this.usersRepo.find({where: {id: {inq: userIds}} as object, fields: {id: true, phone: true} as object})
       : [];
     const userById = new Map(users.map(u => [u.id, u]));
 
-    const summary = riders.map(rider => {
-      const own = transactions.filter(t => (t as unknown as {riderId: string}).riderId === rider.id);
+    const summary = riders.flatMap(rider => {
+      const riderTransactions = transactions.filter(t => (t as unknown as {riderId: string}).riderId === rider.id);
+      const byStore = new Map<string, typeof transactions>();
+      for (const transaction of riderTransactions) {
+        const storeId = orderStoreById.get(transaction.orderId) ?? '';
+        const own = byStore.get(storeId) ?? [];
+        own.push(transaction);
+        byStore.set(storeId, own);
+      }
+      return [...byStore.entries()].map(([storeId, own]) => {
       const pendingAmount = own.reduce((s, t) => s + Number(t.amount), 0);
       const hasSubmitted = own.some(t => (t as unknown as {riderHandoverStatus: string}).riderHandoverStatus === 'submitted');
       return {
-        id: rider.id,
+        id: `${rider.id}:${storeId || 'unassigned'}`,
         riderId: rider.id,
         riderCode: rider.riderCode,
         firstName: rider.firstName,
         lastName: rider.lastName,
         mobile: userById.get(rider.userId)?.phone ?? '',
         pendingAmount,
+        storeId,
+        storeName: storeNameById.get(storeId) ?? 'Unassigned store',
+        orderDate: own.reduce<Date | undefined>((latest, transaction) => {
+          const value = transaction.paymentDate ?? transaction.createdAt;
+          return !latest || (value && new Date(value) > new Date(latest)) ? value : latest;
+        }, undefined),
         status: hasSubmitted ? 'Partially Received' : 'Pending',
       };
+      });
     });
 
     return {summary};
