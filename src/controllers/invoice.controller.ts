@@ -297,11 +297,14 @@ export class InvoiceController {
       rejectionReason: oi.rejectionReason ?? null,
     }));
 
-    const subtotal = items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0);
+    const subtotal = parseFloat(
+      items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0).toFixed(2),
+    );
     const gstRate = 0.09;
-    const cgst = parseFloat((subtotal * gstRate).toFixed(2));
-    const sgst = parseFloat((subtotal * gstRate).toFixed(2));
-    const discount = Number(order.discountAmount) || 0;
+    const discount = Math.min(Number(order.discountAmount) || 0, subtotal);
+    const taxableSubtotal = Math.max(0, subtotal - discount);
+    const cgst = parseFloat((taxableSubtotal * gstRate).toFixed(2));
+    const sgst = parseFloat((taxableSubtotal * gstRate).toFixed(2));
     // Final total is a whole rupee (≥ .5 rounds up); components keep decimals.
     const totalAmount = Math.round(subtotal - discount + cgst + sgst);
 

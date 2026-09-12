@@ -85,6 +85,37 @@ function money(value: unknown): number {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
+export function calculateMeasurementPieceBasePrice(
+  unitPrice: unknown,
+  length: unknown,
+  width: unknown,
+  isMeasurement: boolean,
+): number {
+  const price = money(unitPrice);
+  const area = Number(length) * Number(width);
+  return isMeasurement && Number.isFinite(area) && area > 0 ? money(price * area) : price;
+}
+
+export function calculateReturnedPieceValue(
+  pieceBasePrice: unknown,
+  orderSubtotal: unknown,
+  orderDiscount: unknown,
+  orderTaxAmount: unknown,
+): number {
+  const piece = money(pieceBasePrice);
+  const subtotal = money(orderSubtotal);
+  const discount = Math.min(Math.max(0, money(orderDiscount)), subtotal);
+  const taxableAmount = Math.max(0, money(subtotal - discount));
+  if (piece <= 0 || subtotal <= 0) return 0;
+
+  const discountedPiece = money((piece * taxableAmount) / subtotal);
+  const taxShare =
+    taxableAmount > 0
+      ? money((money(orderTaxAmount) * discountedPiece) / taxableAmount)
+      : 0;
+  return money(discountedPiece + taxShare);
+}
+
 // The final order/invoice/challan total is always a whole rupee — mirrors
 // order.service.ts's roundRupee (not exported from there, so duplicated here
 // rather than coupling the two services over a one-line utility).
@@ -268,6 +299,8 @@ export class ApprovalService {
     requestedBy: string;
   }): Promise<RefundDue> {
     const refundDue = await this.refundDueRepo.findById(params.refundDueId);
+    await this.reconcileRefundDueAmount(refundDue.id);
+    const reconciledRefundDue = await this.refundDueRepo.findById(refundDue.id);
     if (refundDue.status !== RefundDueStatus.PENDING) {
       throw new HttpErrors.BadRequest(`Refund is already ${refundDue.status}.`);
     }
@@ -297,7 +330,7 @@ export class ApprovalService {
           params.method === RefundMethod.BANK_ACCOUNT
             ? params.bankDetails
             : undefined,
-        amount: refundDue.amount,
+        amount: reconciledRefundDue.amount,
         orderId: refundDue.orderId,
         customerId: refundDue.customerId,
         reason: refundDue.reason,
@@ -317,6 +350,47 @@ export class ApprovalService {
     });
 
     return this.refundDueRepo.findById(refundDue.id);
+  }
+
+  async reconcileRefundDueAmount(refundDueId: string): Promise<number> {
+    const refundDue = await this.refundDueRepo.findById(refundDueId);
+    if (refundDue.status === RefundDueStatus.PAID) {
+      return money(refundDue.amount);
+    }
+
+    const order = await this.orderRepo.findById(refundDue.orderId);
+    const payments = await this.paymentRepo.find({where: {orderId: refundDue.orderId}} as any);
+    const collected = payments.reduce(
+      (sum: number, payment: any) =>
+        sum + (payment.transactionType === 'refund' ? 0 : money(payment.amount)),
+      0,
+    );
+    const paidRefunds = payments.reduce(
+      (sum: number, payment: any) =>
+        sum + (payment.transactionType === 'refund' ? money(payment.amount) : 0),
+      0,
+    );
+    const otherUnpaidRefunds = await this.refundDueRepo.find({
+      where: {
+        orderId: refundDue.orderId,
+        id: {neq: refundDue.id},
+        status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED]},
+      },
+    });
+    const otherRefundTotal = otherUnpaidRefunds.reduce(
+      (sum, refund) => sum + money(refund.amount),
+      0,
+    );
+    const amount = money(
+      Math.max(0, collected - paidRefunds - otherRefundTotal - money(order.totalAmount)),
+    );
+    if (amount !== money(refundDue.amount)) {
+      await this.refundDueRepo.updateById(refundDue.id, {
+        amount,
+        updatedAt: new Date(),
+      });
+    }
+    return amount;
   }
 
   async resolve(params: {
@@ -580,16 +654,30 @@ export class ApprovalService {
     const unitPrice = money(orderItem.unitPrice);
     if (unitPrice <= 0) return;
     const item = await this.itemRepo.findOne({where: {id: orderItem.itemId}});
-    const area = Number(garment.length) * Number(garment.width);
-    const pieceBasePrice =
-      item?.isMeasurement && Number.isFinite(area) && area > 0
-        ? money(unitPrice * area)
-        : unitPrice;
+    const pieceBasePrice = calculateMeasurementPieceBasePrice(
+      unitPrice,
+      garment.length,
+      garment.width,
+      Boolean(item?.isMeasurement),
+    );
     if (pieceBasePrice <= 0) return;
+    const pieceValue = calculateReturnedPieceValue(
+      pieceBasePrice,
+      order.subtotal,
+      order.discountAmount,
+      order.taxAmount,
+    );
     const orderSubtotal = money(order.subtotal);
-    const share = orderSubtotal > 0 ? pieceBasePrice / orderSubtotal : 0;
-    const taxShare = money(money(order.taxAmount) * share);
-    const pieceValue = money(pieceBasePrice + taxShare);
+    const taxableAmount = Math.max(
+      0,
+      orderSubtotal -
+        Math.min(Math.max(0, money(order.discountAmount)), orderSubtotal),
+    );
+    const discountedPiece =
+      orderSubtotal > 0
+        ? money((pieceBasePrice * taxableAmount) / orderSubtotal)
+        : 0;
+    const taxShare = money(pieceValue - discountedPiece);
 
     // The order/invoice/challan total drops by exactly what this piece was
     // billed for — a customer should never be left owing (or having paid) for
@@ -617,7 +705,7 @@ export class ApprovalService {
     // already-rounded order.totalAmount rather than reconstructed from the
     // reduced components, so it can't drift from independent rounding.
     await this.orderRepo.updateById(order.id, {
-      subtotal: money(orderSubtotal - unitPrice),
+      subtotal: money(orderSubtotal - pieceBasePrice),
       taxAmount: money(money(order.taxAmount) - taxShare),
       totalAmount: newOrderTotal,
       updatedAt: new Date(),
@@ -628,7 +716,7 @@ export class ApprovalService {
     } as any);
     if (invoice) {
       await this.invoiceRepo.updateById(invoice.id, {
-        subtotal: money(money(invoice.subtotal) - unitPrice),
+        subtotal: money(money(invoice.subtotal) - pieceBasePrice),
         totalAmount: newOrderTotal,
         balanceDue: newBalanceDue,
         updatedAt: new Date(),
@@ -640,7 +728,7 @@ export class ApprovalService {
     } as any);
     if (challan) {
       await this.challanRepo.updateById(challan.id, {
-        subtotal: money(money(challan.subtotal) - unitPrice),
+        subtotal: money(money(challan.subtotal) - pieceBasePrice),
         totalAmount: newOrderTotal,
         updatedAt: new Date(),
       } as any);
@@ -858,8 +946,11 @@ export class ApprovalService {
     });
     if (!refundDue || refundDue.status === RefundDueStatus.PAID) return;
 
-    const method = refundDue.method as RefundMethod | undefined;
-    const amount = money(refundDue.amount);
+    await this.reconcileRefundDueAmount(refundDue.id);
+    const reconciledRefundDue = await this.refundDueRepo.findById(refundDue.id);
+
+    const method = reconciledRefundDue.method as RefundMethod | undefined;
+    const amount = money(reconciledRefundDue.amount);
 
     await this.executeRefundPayout({
       customerId: refundDue.customerId,
