@@ -35,6 +35,7 @@ import {StoreScopeService} from '../services/store-scope.service';
 
 interface ReconciliationRowInput {
   actual: number;
+  denominations?: Record<string, number>;
 }
 
 interface OpeningBalancesInput {
@@ -394,7 +395,13 @@ export class ShiftController {
                     {
                       type: 'object',
                       required: ['actual'],
-                      properties: {actual: {type: 'number'}},
+                      properties: {
+                        actual: {type: 'number'},
+                        denominations: {
+                          type: 'object',
+                          additionalProperties: {type: 'number', minimum: 0},
+                        },
+                      },
                     },
                   ]),
                 ),
@@ -449,6 +456,9 @@ export class ShiftController {
         supposed: supposedValue,
         actual,
         difference: actual - supposedValue,
+        ...(body.openingBalances?.[key]?.denominations
+          ? {denominations: body.openingBalances[key].denominations}
+          : {}),
       };
     }
 
