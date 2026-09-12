@@ -3,14 +3,21 @@ import {GatewayPaymentLinkStatus} from './gateway-payment-link-status.enum';
 import {GatewayPaymentReferenceType} from './gateway-payment-reference-type.enum';
 
 /**
- * One row per Razorpay payment link created from any of the "PGLink"
- * entry points (order payment, wallet top-up, security deposit top-up —
- * see GatewayPaymentReferenceType). Created in `created` status when the
- * link is generated; RazorpayService.handlePaymentLinkPaid() (called from
- * the signature-verified webhook, never from the client) flips it to
- * `paid` and applies the underlying payment via whichever existing
- * service already owns that flow (OrderService.addPayment,
- * WalletService.confirmRecharge, SecurityDepositService.confirmTopup).
+ * One row per Razorpay order created from any of the "PGLink" entry
+ * points (order payment, wallet top-up, security deposit top-up — see
+ * GatewayPaymentReferenceType), backing an inline Razorpay Checkout
+ * popup (not a shareable payment link — no separate URL/short_url is
+ * ever generated). Created in `created` status when the order is
+ * created; flipped to `paid` either by RazorpayService.verifyAndApply-
+ * Payment() (the frontend's Checkout `handler` callback, signature-
+ * verified) or by RazorpayService.handlePaymentCaptured() (the
+ * signature-verified `payment.captured` webhook, a fallback for when the
+ * browser never gets to call the handler — e.g. a UPI intent completes
+ * after the popup was dismissed). Either path applies the underlying
+ * payment via whichever existing service already owns that flow
+ * (OrderService.addPayment, WalletService.confirmRecharge,
+ * SecurityDepositService.confirmTopup) and is idempotent against the
+ * other one also firing.
  */
 @model({
   settings: {
@@ -22,10 +29,7 @@ export class GatewayPaymentLink extends Entity {
   id: string;
 
   @property({type: 'string', required: true})
-  razorpayLinkId: string;
-
-  @property({type: 'string', required: true})
-  razorpayShortUrl: string;
+  razorpayOrderId: string;
 
   @property({type: 'number', required: true, postgresql: {dataType: 'numeric'}})
   amount: number;

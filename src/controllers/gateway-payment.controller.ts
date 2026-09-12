@@ -31,12 +31,16 @@ export class GatewayPaymentController {
   // Admin-panel-only surface (POS, wallet/security-deposit top-up) — every
   // caller is already an authenticated staff member acting on behalf of a
   // customer, not the customer themselves, so a single authenticated gate
-  // is enough here. Nothing is actually credited until the signature-
-  // verified webhook fires — creating a spurious link isn't a money risk.
+  // is enough here. Nothing is actually credited until a signature-
+  // verified confirmation (verify() or the webhook) fires — creating a
+  // spurious order isn't a money risk. `razorpayKeyId` rides along on the
+  // response so the frontend has what it needs to open the inline
+  // Checkout popup without a separate config round-trip — it's Razorpay's
+  // publishable key, not the secret.
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['gateway_payment:create']})
   @post('/payments/gateway-links')
-  @response(200, {description: 'Gateway payment link created'})
+  @response(200, {description: 'Gateway payment order created'})
   async create(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @requestBody({
@@ -59,8 +63,8 @@ export class GatewayPaymentController {
       },
     })
     body: CreateGatewayLinkBody,
-  ): Promise<GatewayPaymentLink> {
-    return this.razorpayService.createPaymentLink({
+  ): Promise<object> {
+    const link = await this.razorpayService.createOrder({
       referenceType: body.referenceType,
       referenceId: body.referenceId,
       amount: body.amount,
@@ -72,9 +76,41 @@ export class GatewayPaymentController {
       },
       createdBy: currentUser[securityId],
     });
+    return {...(link.toJSON() as object), razorpayKeyId: process.env.RAZORPAY_KEY_ID};
   }
 
-  // ─── Status check (frontend polling) ───────────────────────────────────────
+  // ─── Verify (Checkout popup's `handler` callback) ──────────────────────────
+  // Called by the frontend the instant Razorpay's own popup reports
+  // success — the primary confirmation path. Same auth as create(); the
+  // actual trust boundary is the per-payment signature checked inside
+  // verifyAndApplyPayment(), not this endpoint's authorization.
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['gateway_payment:create']})
+  @post('/payments/gateway-links/{id}/verify')
+  @response(200, {description: 'Gateway payment verified and applied'})
+  async verify(
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['razorpayOrderId', 'razorpayPaymentId', 'razorpaySignature'],
+            properties: {
+              razorpayOrderId: {type: 'string'},
+              razorpayPaymentId: {type: 'string'},
+              razorpaySignature: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string},
+  ): Promise<GatewayPaymentLink> {
+    return this.razorpayService.verifyAndApplyPayment({id, ...body});
+  }
+
+  // ─── Status check ───────────────────────────────────────────────────────────
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['gateway_payment:read']})
   @get('/payments/gateway-links/{id}')
@@ -91,7 +127,10 @@ export class GatewayPaymentController {
   // computed over the RAW body (x-parser: 'text' below deliberately skips
   // LB4's usual JSON parsing so the exact bytes Razorpay signed are what
   // gets hashed — parsing first and re-stringifying can reorder/reformat
-  // the JSON and silently break the signature check).
+  // the JSON and silently break the signature check). Fallback path only
+  // — the frontend's own verify() call after the Checkout popup succeeds
+  // is what normally applies the payment; this catches the case where
+  // that never happens (closed tab, a UPI intent that completes later).
   @post('/webhooks/razorpay')
   @response(200, {description: 'Webhook acknowledged'})
   async webhook(
@@ -105,12 +144,11 @@ export class GatewayPaymentController {
     }
 
     const payload = JSON.parse(rawBody);
-    if (payload?.event === 'payment_link.paid') {
-      const entity = payload?.payload?.payment_link?.entity;
+    if (payload?.event === 'payment.captured') {
       const paymentEntity = payload?.payload?.payment?.entity;
-      if (entity?.id && paymentEntity?.id) {
-        await this.razorpayService.handlePaymentLinkPaid({
-          razorpayLinkId: entity.id,
+      if (paymentEntity?.order_id && paymentEntity?.id) {
+        await this.razorpayService.handlePaymentCaptured({
+          razorpayOrderId: paymentEntity.order_id,
           razorpayPaymentId: paymentEntity.id,
           rawPayload: payload,
         });
@@ -119,7 +157,7 @@ export class GatewayPaymentController {
 
     // Always 200 once the signature checks out — Razorpay retries on
     // anything else, and a genuine application failure is already
-    // recorded on the link itself (see handlePaymentLinkPaid) rather than
+    // recorded on the link itself (see handlePaymentCaptured) rather than
     // something a retry would fix.
     return {received: true};
   }
