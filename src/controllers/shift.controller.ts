@@ -43,7 +43,7 @@ const OPENING_CATEGORY_KEYS = ['cashInTill', 'banking', 'pettyCash', 'prepaidVou
 // SHIFT_MANAGEMENT_API.md for why: no brand-tagging or payment-bucket
 // mapping exists yet to compute these from real orders/payments).
 interface ClosingFormInput {
-  collections: {cash: number; card: number; cheque: number; pgLink: number; ppVoucher: number; wallet: number};
+  collections: {cash: number; card: number; cheque: number; pgLink: number; upi: number; ppVoucher: number; wallet: number};
   walletCollections: {cash: number; card: number; upi: number};
   banking: {supposed: number; deposited: number; inSafe: number};
   prepaidV: {supposed: number; sentToAc: number; inSafe: number};
@@ -167,6 +167,7 @@ export class ShiftController {
       Number(input.collections.card || 0) +
       Number(input.collections.cheque || 0) +
       Number(input.collections.pgLink || 0) +
+      Number(input.collections.upi || 0) +
       Number(input.collections.ppVoucher || 0) +
       Number(input.collections.wallet || 0);
 
@@ -404,7 +405,7 @@ export class ShiftController {
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
 
     const windowEnd = shift.closedAt ?? new Date();
-    const collections = {cash: 0, card: 0, cheque: 0, pgLink: 0, wallet: 0};
+    const collections = {cash: 0, card: 0, cheque: 0, pgLink: 0, upi: 0, wallet: 0};
 
     const orders = await this.orderRepository.find({
       where: {storeId: shift.storeId} as object,
@@ -421,12 +422,15 @@ export class ShiftController {
         } as object,
       });
 
-      const bucketOf: Record<string, 'cash' | 'card' | 'cheque' | 'pgLink' | 'wallet' | null> = {
+      // pgLink is real PGLink (Razorpay gateway) payments only — UPI
+      // collected directly (staff-side UPI app/QR, no gateway) gets its
+      // own bucket instead of being lumped in with it.
+      const bucketOf: Record<string, 'cash' | 'card' | 'cheque' | 'pgLink' | 'upi' | 'wallet' | null> = {
         [PaymentMode.CASH]: 'cash',
         [PaymentMode.CARD]: 'card',
         [PaymentMode.CHEQUE]: 'cheque',
         [PaymentMode.PDC]: 'cheque',
-        [PaymentMode.UPI]: 'pgLink',
+        [PaymentMode.UPI]: 'upi',
         [PaymentMode.NET_BANKING]: 'pgLink',
         [PaymentMode.BANK_TRANSFER]: 'pgLink',
         [PaymentMode.GATEWAY]: 'pgLink',
