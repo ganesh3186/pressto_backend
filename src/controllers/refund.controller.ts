@@ -53,8 +53,10 @@ export class RefundController {
 
     await Promise.all(
       refundsDue
-        .filter((refund) => refund.status !== 'paid')
-        .map((refund) => this.approvalService.reconcileRefundDueAmount(refund.id)),
+        .filter(refund => refund.status !== 'paid')
+        .map(refund =>
+          this.approvalService.reconcileRefundDueAmount(refund.id),
+        ),
     );
     const reconciledRefundsDue = await this.refundDueRepo.find({
       where: {orderId},

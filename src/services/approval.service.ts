@@ -93,7 +93,9 @@ export function calculateMeasurementPieceBasePrice(
 ): number {
   const price = money(unitPrice);
   const area = Number(length) * Number(width);
-  return isMeasurement && Number.isFinite(area) && area > 0 ? money(price * area) : price;
+  return isMeasurement && Number.isFinite(area) && area > 0
+    ? money(price * area)
+    : price;
 }
 
 export function calculateReturnedPieceValue(
@@ -359,15 +361,19 @@ export class ApprovalService {
     }
 
     const order = await this.orderRepo.findById(refundDue.orderId);
-    const payments = await this.paymentRepo.find({where: {orderId: refundDue.orderId}} as any);
+    const payments = await this.paymentRepo.find({
+      where: {orderId: refundDue.orderId},
+    } as any);
     const collected = payments.reduce(
       (sum: number, payment: any) =>
-        sum + (payment.transactionType === 'refund' ? 0 : money(payment.amount)),
+        sum +
+        (payment.transactionType === 'refund' ? 0 : money(payment.amount)),
       0,
     );
     const paidRefunds = payments.reduce(
       (sum: number, payment: any) =>
-        sum + (payment.transactionType === 'refund' ? money(payment.amount) : 0),
+        sum +
+        (payment.transactionType === 'refund' ? money(payment.amount) : 0),
       0,
     );
     const otherUnpaidRefunds = await this.refundDueRepo.find({
@@ -382,7 +388,10 @@ export class ApprovalService {
       0,
     );
     const amount = money(
-      Math.max(0, collected - paidRefunds - otherRefundTotal - money(order.totalAmount)),
+      Math.max(
+        0,
+        collected - paidRefunds - otherRefundTotal - money(order.totalAmount),
+      ),
     );
     if (amount !== money(refundDue.amount)) {
       await this.refundDueRepo.updateById(refundDue.id, {
