@@ -806,8 +806,11 @@ export class ShiftController {
     const approvedReturns = await this.salesReturnRepository.find({
       where: {status: SalesReturnStatus.APPROVED} as object,
     });
-    const returns = approvedReturns.filter((salesReturn) => {
-      const resolvedAt = salesReturn.resolvedAt || salesReturn.updatedAt || salesReturn.createdAt;
+    const returns = approvedReturns.filter(salesReturn => {
+      const resolvedAt =
+        salesReturn.resolvedAt ||
+        salesReturn.updatedAt ||
+        salesReturn.createdAt;
       if (!resolvedAt) return false;
       const resolvedTime = new Date(resolvedAt).getTime();
       return (
