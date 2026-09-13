@@ -41,6 +41,11 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
     permission: 'customer_address:delete',
     description: 'Delete a customer address',
   },
+  // Family Group (see AdminFamilyGroupController)
+  {
+    permission: 'family_group:delete',
+    description: 'Delete a family group or remove a family member',
+  },
   // Customer Phone (see CustomerPhoneController)
   {
     permission: 'customer_phone:create',
@@ -280,6 +285,7 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'customer_address:read',
       'customer_address:update',
       'customer_address:delete',
+      'family_group:delete',
       'customer_phone:create',
       'customer_phone:read',
       'customer_phone:update',
