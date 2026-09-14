@@ -629,7 +629,7 @@ export class OrderService {
       } as any,
       ...txOpt,
     } as any);
-    if (existing) return existing;
+    if (existing) return this.syncChallanTotalsForOrder(orderId, existing, tx);
 
     const order = await this.orderRepo.findOne(
       {where: {id: orderId, isDeleted: false}},
@@ -681,6 +681,99 @@ export class OrderService {
       } as Partial<Challan>,
       txOpt,
     );
+  }
+
+  /**
+   * Keep the mutable service-order challan aligned with the order totals.
+   * Returns, upgrades and other approved changes update the Order first; this
+   * also repairs older challans whose discount/tax snapshot became stale.
+   */
+  async syncChallanTotalsForOrder(
+    orderId: string,
+    existingChallan?: Challan,
+    tx?: unknown,
+  ): Promise<Challan> {
+    const txOpt = tx ? {transaction: tx} : undefined;
+    const [order, challan] = await Promise.all([
+      this.orderRepo.findOne(
+        {where: {id: orderId, isDeleted: false}},
+        txOpt,
+      ),
+      existingChallan
+        ? Promise.resolve(existingChallan)
+        : this.challanRepo.findOne(
+            {where: {orderId}, order: ['createdAt DESC']} as any,
+            txOpt,
+          ),
+    ]);
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (!challan) {
+      throw new HttpErrors.NotFound('No challan found for this order.');
+    }
+
+    const subtotal = parseFloat(Number(order.subtotal ?? 0).toFixed(2));
+    let discount = parseFloat(Number(order.discountAmount ?? 0).toFixed(2));
+    let taxAmount = parseFloat(Number(order.taxAmount ?? 0).toFixed(2));
+    let totalAmount = roundRupee(order.totalAmount);
+
+    // A standing customer/group discount is percentage/fixed against the
+    // current subtotal. Older return flows reduced the subtotal but left the
+    // original rupee discount on Order, so copying it merely reproduced the
+    // bad challan value. Coupon discounts are intentionally left untouched:
+    // their eligible subtotal can differ from the whole order subtotal.
+    if (!order.appliedCouponId && !order.couponCode) {
+      const customer = await this.customerRepo.findById(order.customerId);
+      const recalculated = await this.resolveCustomerAutoDiscount(
+        subtotal,
+        customer,
+      );
+      discount = recalculated.discountAmount;
+
+      const gstConfig = await this.gstConfigRepo.findOne({
+        where: {isActive: true, isDeleted: false},
+      });
+      const gstRate = gstConfig
+        ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
+        : 0;
+      const taxableAmount = parseFloat((subtotal - discount).toFixed(2));
+      taxAmount =
+        gstRate > 0
+          ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2))
+          : 0;
+      totalAmount = roundRupee(taxableAmount + taxAmount);
+
+      const orderTotalsChanged =
+        Number(order.discountAmount ?? 0) !== discount ||
+        Number(order.taxAmount ?? 0) !== taxAmount ||
+        Number(order.totalAmount ?? 0) !== totalAmount;
+      if (orderTotalsChanged) {
+        await this.orderRepo.updateById(
+          order.id,
+          {
+            discountAmount: discount,
+            discountType: recalculated.discountType,
+            taxAmount,
+            totalAmount,
+            updatedAt: new Date(),
+          },
+          txOpt,
+        );
+      }
+    }
+
+    const cgst = parseFloat((taxAmount / 2).toFixed(2));
+    const sgst = parseFloat((taxAmount - cgst).toFixed(2));
+    const patch: Partial<Challan> = {subtotal, discount, cgst, sgst, totalAmount};
+
+    const changed = Object.entries(patch).some(
+      ([key, value]) => Number((challan as any)[key] ?? 0) !== Number(value),
+    );
+    if (changed) {
+      patch.updatedAt = new Date();
+      await this.challanRepo.updateById(challan.id, patch, txOpt);
+      Object.assign(challan, patch);
+    }
+    return challan;
   }
 
   private applyCustomerDiscount(

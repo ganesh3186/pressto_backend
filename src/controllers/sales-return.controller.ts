@@ -53,10 +53,12 @@ function roundRupee(value: unknown): number {
 export function calculateSalesReturnCreditAmount(
   preTaxAmount: unknown,
   gstRate: unknown,
-  orderPaid: boolean,
+  _orderPaid = true,
 ): number {
   const amount = money(preTaxAmount);
-  if (!orderPaid) return amount;
+  // A return always removes the returned item's GST-inclusive value from the
+  // order. Payment state only decides whether that reduction becomes a cash
+  // refund or lowers the outstanding balance; it must not change item tax.
   return money(amount * (1 + (Number(gstRate) || 0) / 100));
 }
 
@@ -358,24 +360,26 @@ export class SalesReturnController {
     // every credit note's own GST gross-up, over- or under-crediting the
     // customer. OrderService.splitOrder() still does this the old,
     // stale-prone way — flagging for a follow-up, not fixed here.
-    const returnedItems = (body.returnedItems ?? []).map(item => ({
-      ...item,
-      amount: calculateDiscountedSalesReturnAmount(
-        item.amount,
-        order.subtotal,
-        order.discountAmount,
-      ),
-    }));
+    const returnedItems = (body.returnedItems ?? []).map(item => {
+      const originalAmount = money(item.amount);
+      return {
+        ...item,
+        originalAmount,
+        amount: calculateDiscountedSalesReturnAmount(
+          originalAmount,
+          order.subtotal,
+          order.discountAmount,
+        ),
+      };
+    });
     const preTaxCreditAmount = returnedItems.reduce(
       (sum, item) => sum + (Number(item.amount) || 0),
       0,
     );
     const gstRate = await this._resolveGstRate();
-    const orderPaid = await this._isOrderPaid(order);
     const creditAmount = calculateSalesReturnCreditAmount(
       preTaxCreditAmount,
       gstRate,
-      orderPaid,
     );
 
     // Refund method is picked here, up front, rather than at approval time
@@ -629,32 +633,72 @@ export class SalesReturnController {
         0,
       ),
     );
-    const includesTax = creditAmount > preTaxCreditAmount;
-    const newSubtotal = money(money(order.subtotal) - preTaxCreditAmount);
+    const rawReturnedAmount = money(
+      (record.returnedItems ?? []).reduce(
+        (sum, item) =>
+          sum +
+          (Number((item as {originalAmount?: unknown}).originalAmount) ||
+            Number((item as {amount?: unknown}).amount) ||
+            0),
+        0,
+      ),
+    );
+    const returnedDiscount = money(
+      Math.max(0, rawReturnedAmount - preTaxCreditAmount),
+    );
+    const newSubtotal = money(money(order.subtotal) - rawReturnedAmount);
+    const newDiscount = money(
+      Math.max(0, money(order.discountAmount) - returnedDiscount),
+    );
     // Recompute tax fresh from the new subtotal rather than leaving
     // order.taxAmount stale — a stale taxAmount would corrupt a *later*
     // credit note on this same order the same way this one was corrupted
     // by an earlier Upgrade (see approval.service.ts's
     // _applyUpgradeOnOrderItem, fixed the same way).
-    const newTaxableAmount = money(newSubtotal - money(order.discountAmount));
-    const newTaxAmount = includesTax
-      ? gstRate > 0
-        ? money((newTaxableAmount * gstRate) / 100)
-        : 0
-      : money(order.taxAmount);
+    const newTaxableAmount = money(newSubtotal - newDiscount);
+    const newTaxAmount =
+      gstRate > 0 ? money((newTaxableAmount * gstRate) / 100) : 0;
 
     await this.orderRepo.updateById(record.orderId, {
       subtotal: newSubtotal,
+      discountAmount: newDiscount,
       taxAmount: newTaxAmount,
       totalAmount: newOrderTotal,
       updatedAt: new Date(),
     } as any);
 
+    // Make the returned lines visible to every invoice/challan renderer. The
+    // documents identify returned pieces from garment status, so adjusting
+    // only the money would leave those items looking active on printouts.
+    for (const line of (record.returnedItems ?? []) as Array<{
+      orderItemId?: string;
+      quantity?: number;
+    }>) {
+      if (!line.orderItemId) continue;
+      const garments = await this.garmentRepo.find({
+        where: {
+          orderItemId: line.orderItemId,
+          status: {neq: GarmentStatus.RETURNED_TO_CUSTOMER},
+          isDeleted: false,
+        } as object,
+        order: ['createdAt ASC'],
+      });
+      const quantity = Math.max(0, Number(line.quantity) || 0);
+      for (const garment of garments.slice(0, quantity)) {
+        await this.garmentRepo.updateById(garment.id, {
+          status: GarmentStatus.RETURNED_TO_CUSTOMER,
+        });
+      }
+    }
+
     if (record.invoiceId) {
       const invoice = await this.invoiceRepo.findById(record.invoiceId);
       if (invoice) {
         await this.invoiceRepo.updateById(invoice.id, {
-          subtotal: money(money(invoice.subtotal) - preTaxCreditAmount),
+          subtotal: newSubtotal,
+          discount: newDiscount,
+          cgst: money(newTaxAmount / 2),
+          sgst: money(newTaxAmount - money(newTaxAmount / 2)),
           totalAmount: newOrderTotal,
           balanceDue: newBalanceDue,
           updatedAt: new Date(),
@@ -669,7 +713,10 @@ export class SalesReturnController {
     if (challan) {
       await this.challanRepo.updateById(challan.id, {
         totalAmount: newOrderTotal,
-        subtotal: money(money(challan.subtotal) - preTaxCreditAmount),
+        subtotal: newSubtotal,
+        discount: newDiscount,
+        cgst: money(newTaxAmount / 2),
+        sgst: money(newTaxAmount - money(newTaxAmount / 2)),
         updatedAt: new Date(),
       } as any);
     }

@@ -66,7 +66,8 @@ export class ChallanController {
     } as any);
 
     if (!challan) throw new HttpErrors.NotFound('No challan found for this order.');
-    return {challan};
+    const syncedChallan = await this.orderService.syncChallanTotalsForOrder(orderId, challan);
+    return {challan: syncedChallan};
   }
 
   // ─── Mark Printed ─────────────────────────────────────────────────────────

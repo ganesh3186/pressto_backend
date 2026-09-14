@@ -348,7 +348,8 @@ export class CustomerOrderController {
 
     const challan = await this.challanRepo.findOne({where: {orderId} as any});
     if (!challan) throw new HttpErrors.NotFound('No challan generated for this order yet.');
-    return {challan};
+    const syncedChallan = await this.orderService.syncChallanTotalsForOrder(orderId, challan);
+    return {challan: syncedChallan};
   }
 
   // ─── Wallet: transactions (paginated) ──────────────────────────────────────
