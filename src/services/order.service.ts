@@ -712,18 +712,90 @@ export class OrderService {
     }
 
     const orderItems = await this.orderItemRepo.find({where: {orderId}}, txOpt);
-    const items = orderItems.map(oi => ({
-      orderItemId: oi.id,
-      serviceId: oi.serviceId,
-      itemId: oi.itemId,
-      quantity: Number(oi.quantity) || 0,
-      unitPrice: Number(oi.unitPrice) || 0,
-      totalPrice: Number(oi.totalPrice) || 0,
-      additionalServiceIds: oi.additionalServiceIds ?? [],
-      rejectedAtIntake: oi.rejectedAtIntake ?? false,
-      rejectionReason: oi.rejectionReason ?? null,
-    }));
-    const subtotal = parseFloat(Number(order.subtotal ?? 0).toFixed(2));
+    const orderItemIds = orderItems.map(item => item.id);
+    const [orderGarments, itemCharges, orderCharges] = await Promise.all([
+      orderItemIds.length
+        ? this.garmentRepo.find(
+            {where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any},
+            txOpt,
+          )
+        : Promise.resolve([]),
+      orderItemIds.length
+        ? this.orderItemChargeRepo.find(
+            {where: {orderItemId: {inq: orderItemIds}} as any},
+            txOpt,
+          )
+        : Promise.resolve([]),
+      this.orderChargeRepo.find({where: {orderId}}, txOpt),
+    ]);
+    const garmentsByItem = new Map<string, typeof orderGarments>();
+    for (const garment of orderGarments) {
+      const list = garmentsByItem.get(garment.orderItemId) ?? [];
+      list.push(garment);
+      garmentsByItem.set(garment.orderItemId, list);
+    }
+    const hasReturnedGarments = orderGarments.some(
+      garment => garment.status === GarmentStatus.RETURNED_TO_CUSTOMER,
+    );
+    const items = orderItems
+      .map(oi => {
+        const garments = garmentsByItem.get(oi.id) ?? [];
+        const activeQuantity = garments.length
+          ? garments.filter(
+              garment =>
+                garment.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+            ).length
+          : Number(oi.quantity) || 0;
+        const storedQuantity = Number(oi.quantity) || 0;
+        const totalPrice =
+          storedQuantity > 0
+            ? parseFloat(
+                (
+                  (Number(oi.totalPrice) || 0) *
+                  (activeQuantity / storedQuantity)
+                ).toFixed(2),
+              )
+            : 0;
+        return {
+          orderItemId: oi.id,
+          serviceId: oi.serviceId,
+          itemId: oi.itemId,
+          quantity: activeQuantity,
+          unitPrice: Number(oi.unitPrice) || 0,
+          totalPrice,
+          additionalServiceIds: oi.additionalServiceIds ?? [],
+          rejectedAtIntake: oi.rejectedAtIntake ?? false,
+          rejectionReason: oi.rejectionReason ?? null,
+        };
+      })
+      .filter(item => item.quantity > 0 || item.rejectedAtIntake);
+    let subtotal = parseFloat(Number(order.subtotal ?? 0).toFixed(2));
+    if (hasReturnedGarments) {
+      const activeItemsTotal = items.reduce(
+        (sum, item) => sum + item.totalPrice,
+        0,
+      );
+      const activeItemChargesTotal = itemCharges.reduce((sum, charge) => {
+        const orderItem = orderItems.find(item => item.id === charge.orderItemId);
+        if (!orderItem) return sum;
+        const storedQuantity = Number(orderItem.quantity) || 0;
+        const activeQuantity =
+          items.find(item => item.orderItemId === orderItem.id)?.quantity ?? 0;
+        return (
+          sum +
+          (storedQuantity > 0
+            ? Number(charge.amount ?? 0) * (activeQuantity / storedQuantity)
+            : 0)
+        );
+      }, 0);
+      subtotal = parseFloat(
+        (
+          activeItemsTotal +
+          activeItemChargesTotal +
+          orderCharges.reduce((sum, charge) => sum + Number(charge.amount ?? 0), 0)
+        ).toFixed(2),
+      );
+    }
     let discount = parseFloat(Number(order.discountAmount ?? 0).toFixed(2));
     let taxAmount = parseFloat(Number(order.taxAmount ?? 0).toFixed(2));
     let totalAmount = roundRupee(order.totalAmount);
@@ -769,6 +841,7 @@ export class OrderService {
         await this.orderRepo.updateById(
           order.id,
           {
+            subtotal,
             discountAmount: discount,
             discountType: recalculated.discountType,
             taxAmount,
@@ -778,6 +851,32 @@ export class OrderService {
           txOpt,
         );
       }
+    }
+
+    if (
+      hasReturnedGarments &&
+      (order.appliedCouponId ||
+        order.couponCode ||
+        order.parentOrderId ||
+        order.hasBeenSplit)
+    ) {
+      const gstConfig = await this.gstConfigRepo.findOne({
+        where: {isActive: true, isDeleted: false},
+      });
+      const gstRate = gstConfig
+        ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
+        : 0;
+      const taxableAmount = parseFloat((subtotal - discount).toFixed(2));
+      taxAmount =
+        gstRate > 0
+          ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2))
+          : 0;
+      totalAmount = roundRupee(taxableAmount + taxAmount);
+      await this.orderRepo.updateById(
+        order.id,
+        {subtotal, taxAmount, totalAmount, updatedAt: new Date()},
+        txOpt,
+      );
     }
 
     const cgst = parseFloat((taxAmount / 2).toFixed(2));
@@ -4472,15 +4571,17 @@ export class OrderService {
     if (garments.length !== garmentIds.length) {
       throw new HttpErrors.BadRequest('One or more garments not found.');
     }
-    // Reject only garments that are already dispatched or delivered
+    // Terminal garments have already left this order financially and must
+    // never be allocated into a child a second time.
     const nonSplittable = garments.filter(
       g =>
         g.status === GarmentStatus.OUT_FOR_DELIVERY ||
-        g.status === GarmentStatus.DELIVERED,
+        g.status === GarmentStatus.DELIVERED ||
+        g.status === GarmentStatus.RETURNED_TO_CUSTOMER,
     );
     if (nonSplittable.length) {
       throw new HttpErrors.BadRequest(
-        `Cannot split garments already dispatched or delivered: ${nonSplittable.map(g => g.garmentTagNumber).join(', ')}`,
+        `Cannot split garments already dispatched, delivered or returned: ${nonSplittable.map(g => g.garmentTagNumber).join(', ')}`,
       );
     }
 
