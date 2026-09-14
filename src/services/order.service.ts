@@ -629,7 +629,7 @@ export class OrderService {
       } as any,
       ...txOpt,
     } as any);
-    if (existing) return existing;
+    if (existing) return this.syncChallanTotalsForOrder(orderId, existing, tx);
 
     const order = await this.orderRepo.findOne(
       {where: {id: orderId, isDeleted: false}},
@@ -681,6 +681,227 @@ export class OrderService {
       } as Partial<Challan>,
       txOpt,
     );
+  }
+
+  /**
+   * Keep the mutable service-order challan aligned with the order totals.
+   * Returns, upgrades and other approved changes update the Order first; this
+   * also repairs older challans whose discount/tax snapshot became stale.
+   */
+  async syncChallanTotalsForOrder(
+    orderId: string,
+    existingChallan?: Challan,
+    tx?: unknown,
+  ): Promise<Challan> {
+    const txOpt = tx ? {transaction: tx} : undefined;
+    const [order, challan] = await Promise.all([
+      this.orderRepo.findOne(
+        {where: {id: orderId, isDeleted: false}},
+        txOpt,
+      ),
+      existingChallan
+        ? Promise.resolve(existingChallan)
+        : this.challanRepo.findOne(
+            {where: {orderId}, order: ['createdAt DESC']} as any,
+            txOpt,
+          ),
+    ]);
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (!challan) {
+      throw new HttpErrors.NotFound('No challan found for this order.');
+    }
+
+    const orderItems = await this.orderItemRepo.find({where: {orderId}}, txOpt);
+    const orderItemIds = orderItems.map(item => item.id);
+    const [orderGarments, itemCharges, orderCharges] = await Promise.all([
+      orderItemIds.length
+        ? this.garmentRepo.find(
+            {where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any},
+            txOpt,
+          )
+        : Promise.resolve([]),
+      orderItemIds.length
+        ? this.orderItemChargeRepo.find(
+            {where: {orderItemId: {inq: orderItemIds}} as any},
+            txOpt,
+          )
+        : Promise.resolve([]),
+      this.orderChargeRepo.find({where: {orderId}}, txOpt),
+    ]);
+    const garmentsByItem = new Map<string, typeof orderGarments>();
+    for (const garment of orderGarments) {
+      const list = garmentsByItem.get(garment.orderItemId) ?? [];
+      list.push(garment);
+      garmentsByItem.set(garment.orderItemId, list);
+    }
+    const hasReturnedGarments = orderGarments.some(
+      garment => garment.status === GarmentStatus.RETURNED_TO_CUSTOMER,
+    );
+    const items = orderItems
+      .map(oi => {
+        const garments = garmentsByItem.get(oi.id) ?? [];
+        const activeQuantity = garments.length
+          ? garments.filter(
+              garment =>
+                garment.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+            ).length
+          : Number(oi.quantity) || 0;
+        const storedQuantity = Number(oi.quantity) || 0;
+        const totalPrice =
+          storedQuantity > 0
+            ? parseFloat(
+                (
+                  (Number(oi.totalPrice) || 0) *
+                  (activeQuantity / storedQuantity)
+                ).toFixed(2),
+              )
+            : 0;
+        return {
+          orderItemId: oi.id,
+          serviceId: oi.serviceId,
+          itemId: oi.itemId,
+          quantity: activeQuantity,
+          unitPrice: Number(oi.unitPrice) || 0,
+          totalPrice,
+          additionalServiceIds: oi.additionalServiceIds ?? [],
+          rejectedAtIntake: oi.rejectedAtIntake ?? false,
+          rejectionReason: oi.rejectionReason ?? null,
+        };
+      })
+      .filter(item => item.quantity > 0 || item.rejectedAtIntake);
+    let subtotal = parseFloat(Number(order.subtotal ?? 0).toFixed(2));
+    if (hasReturnedGarments) {
+      const activeItemsTotal = items.reduce(
+        (sum, item) => sum + item.totalPrice,
+        0,
+      );
+      const activeItemChargesTotal = itemCharges.reduce((sum, charge) => {
+        const orderItem = orderItems.find(item => item.id === charge.orderItemId);
+        if (!orderItem) return sum;
+        const storedQuantity = Number(orderItem.quantity) || 0;
+        const activeQuantity =
+          items.find(item => item.orderItemId === orderItem.id)?.quantity ?? 0;
+        return (
+          sum +
+          (storedQuantity > 0
+            ? Number(charge.amount ?? 0) * (activeQuantity / storedQuantity)
+            : 0)
+        );
+      }, 0);
+      subtotal = parseFloat(
+        (
+          activeItemsTotal +
+          activeItemChargesTotal +
+          orderCharges.reduce((sum, charge) => sum + Number(charge.amount ?? 0), 0)
+        ).toFixed(2),
+      );
+    }
+    let discount = parseFloat(Number(order.discountAmount ?? 0).toFixed(2));
+    let taxAmount = parseFloat(Number(order.taxAmount ?? 0).toFixed(2));
+    let totalAmount = roundRupee(order.totalAmount);
+
+    // A standing customer/group discount is percentage/fixed against the
+    // current subtotal. Older return flows reduced the subtotal but left the
+    // original rupee discount on Order, so copying it merely reproduced the
+    // bad challan value. Coupon discounts are intentionally left untouched
+    // because their eligible subtotal can differ from the whole order subtotal.
+    // Split orders keep their allocated share of the original discount; applying
+    // a fresh fixed discount independently to parent and child would duplicate it.
+    if (
+      !order.appliedCouponId &&
+      !order.couponCode &&
+      !order.parentOrderId &&
+      !order.hasBeenSplit
+    ) {
+      const customer = await this.customerRepo.findById(order.customerId);
+      const recalculated = await this.resolveCustomerAutoDiscount(
+        subtotal,
+        customer,
+      );
+      discount = recalculated.discountAmount;
+
+      const gstConfig = await this.gstConfigRepo.findOne({
+        where: {isActive: true, isDeleted: false},
+      });
+      const gstRate = gstConfig
+        ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
+        : 0;
+      const taxableAmount = parseFloat((subtotal - discount).toFixed(2));
+      taxAmount =
+        gstRate > 0
+          ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2))
+          : 0;
+      totalAmount = roundRupee(taxableAmount + taxAmount);
+
+      const orderTotalsChanged =
+        Number(order.discountAmount ?? 0) !== discount ||
+        Number(order.taxAmount ?? 0) !== taxAmount ||
+        Number(order.totalAmount ?? 0) !== totalAmount;
+      if (orderTotalsChanged) {
+        await this.orderRepo.updateById(
+          order.id,
+          {
+            subtotal,
+            discountAmount: discount,
+            discountType: recalculated.discountType,
+            taxAmount,
+            totalAmount,
+            updatedAt: new Date(),
+          },
+          txOpt,
+        );
+      }
+    }
+
+    if (
+      hasReturnedGarments &&
+      (order.appliedCouponId ||
+        order.couponCode ||
+        order.parentOrderId ||
+        order.hasBeenSplit)
+    ) {
+      const gstConfig = await this.gstConfigRepo.findOne({
+        where: {isActive: true, isDeleted: false},
+      });
+      const gstRate = gstConfig
+        ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
+        : 0;
+      const taxableAmount = parseFloat((subtotal - discount).toFixed(2));
+      taxAmount =
+        gstRate > 0
+          ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2))
+          : 0;
+      totalAmount = roundRupee(taxableAmount + taxAmount);
+      await this.orderRepo.updateById(
+        order.id,
+        {subtotal, taxAmount, totalAmount, updatedAt: new Date()},
+        txOpt,
+      );
+    }
+
+    const cgst = parseFloat((taxAmount / 2).toFixed(2));
+    const sgst = parseFloat((taxAmount - cgst).toFixed(2));
+    const patch: Partial<Challan> = {
+      items,
+      subtotal,
+      discount,
+      cgst,
+      sgst,
+      totalAmount,
+    };
+
+    const changed = Object.entries(patch).some(
+      ([key, value]) =>
+        key === 'items'
+          ? JSON.stringify(challan.items ?? []) !== JSON.stringify(value)
+          : Number((challan as any)[key] ?? 0) !== Number(value),
+    );
+    if (changed) {
+      patch.updatedAt = new Date();
+      await this.challanRepo.updateById(challan.id, patch, txOpt);
+      Object.assign(challan, patch);
+    }
+    return challan;
   }
 
   private applyCustomerDiscount(
@@ -4350,15 +4571,17 @@ export class OrderService {
     if (garments.length !== garmentIds.length) {
       throw new HttpErrors.BadRequest('One or more garments not found.');
     }
-    // Reject only garments that are already dispatched or delivered
+    // Terminal garments have already left this order financially and must
+    // never be allocated into a child a second time.
     const nonSplittable = garments.filter(
       g =>
         g.status === GarmentStatus.OUT_FOR_DELIVERY ||
-        g.status === GarmentStatus.DELIVERED,
+        g.status === GarmentStatus.DELIVERED ||
+        g.status === GarmentStatus.RETURNED_TO_CUSTOMER,
     );
     if (nonSplittable.length) {
       throw new HttpErrors.BadRequest(
-        `Cannot split garments already dispatched or delivered: ${nonSplittable.map(g => g.garmentTagNumber).join(', ')}`,
+        `Cannot split garments already dispatched, delivered or returned: ${nonSplittable.map(g => g.garmentTagNumber).join(', ')}`,
       );
     }
 
@@ -4381,6 +4604,31 @@ export class OrderService {
       garmentsByItem.set(g.orderItemId, list);
     }
     const parentItemMap = new Map(parentOrderItems.map(oi => [oi.id, oi]));
+    const selectedGarmentIds = garments.map(g => g.id);
+    const [garmentServices, garmentCharges, catalogItems] = await Promise.all([
+      this.garmentAdditionalServiceRepo.find({
+        where: {garmentId: {inq: selectedGarmentIds}, isDeleted: false} as any,
+      }),
+      this.garmentAdditionalChargeRepo.find({
+        where: {garmentId: {inq: selectedGarmentIds}, isDeleted: false} as any,
+      }),
+      this.itemRepo.find({
+        where: {id: {inq: [...new Set(parentOrderItems.map(oi => oi.itemId))]}} as any,
+      }),
+    ]);
+    const catalogItemMap = new Map(catalogItems.map(item => [item.id, item]));
+    const servicesByGarment = new Map<string, typeof garmentServices>();
+    const chargesByGarment = new Map<string, typeof garmentCharges>();
+    for (const row of garmentServices) {
+      const list = servicesByGarment.get(row.garmentId) ?? [];
+      list.push(row);
+      servicesByGarment.set(row.garmentId, list);
+    }
+    for (const row of garmentCharges) {
+      const list = chargesByGarment.get(row.garmentId) ?? [];
+      list.push(row);
+      chargesByGarment.set(row.garmentId, list);
+    }
 
     // Sub-order delivery tier: a NEW tier can be chosen at split time (e.g. split
     // an express garment out of a standard order). Otherwise inherit the parent's.
@@ -4424,11 +4672,61 @@ export class OrderService {
     // Discount/tax are split proportionally by the parent's original item share.
     let oldSubOrderSubtotal = 0;
     let subOrderSubtotal = 0;
+    const oldItemTotals = new Map<string, number>();
+    const newItemTotals = new Map<string, number>();
+    const movedChargesByItem = new Map<
+      string,
+      Map<string, {amount: number; quantity: number}>
+    >();
     for (const [itemId, itemGarments] of garmentsByItem) {
       const oi = parentItemMap.get(itemId)!;
-      oldSubOrderSubtotal += Number(oi.unitPrice ?? 0) * itemGarments.length;
-      subOrderSubtotal += subUnitPriceFor(oi) * itemGarments.length;
+      const oldMultiplier =
+        Number(oi.resolvedPrice) > 0
+          ? Number(oi.unitPrice ?? 0) / Number(oi.resolvedPrice)
+          : 1;
+      let oldItemTotal = 0;
+      let newItemTotal = 0;
+      const itemCharges = new Map<string, {amount: number; quantity: number}>();
+      for (const garment of itemGarments) {
+        const area = catalogItemMap.get(oi.itemId)?.isMeasurement
+          ? Math.max(0, Number(garment.length) * Number(garment.width))
+          : 1;
+        const oldBase = Number(oi.unitPrice ?? 0) * area;
+        const newBase = subUnitPriceFor(oi) * area;
+        const storedAdditionalServices = servicesByGarment.get(garment.id) ?? [];
+        const oldServices = storedAdditionalServices.reduce(
+          (sum, service) => sum + Number(service.amount ?? 0) * oldMultiplier * area,
+          0,
+        );
+        const newServices = storedAdditionalServices.reduce(
+          (sum, service) => sum + Number(service.amount ?? 0) * subDeliveryMultiplier * area,
+          0,
+        );
+        oldItemTotal += oldBase + oldServices;
+        newItemTotal += newBase + newServices;
+        for (const charge of chargesByGarment.get(garment.id) ?? []) {
+          const current = itemCharges.get(charge.additionalChargeId) ?? {
+            amount: 0,
+            quantity: 0,
+          };
+          current.amount += Number(charge.amount ?? 0);
+          current.quantity += Number(charge.quantity ?? 0);
+          itemCharges.set(charge.additionalChargeId, current);
+        }
+      }
+      oldItemTotal = parseFloat(oldItemTotal.toFixed(2));
+      newItemTotal = parseFloat(newItemTotal.toFixed(2));
+      const movedChargeTotal = [...itemCharges.values()].reduce(
+        (sum, charge) => sum + charge.amount,
+        0,
+      );
+      oldItemTotals.set(itemId, oldItemTotal);
+      newItemTotals.set(itemId, newItemTotal);
+      movedChargesByItem.set(itemId, itemCharges);
+      oldSubOrderSubtotal += oldItemTotal + movedChargeTotal;
+      subOrderSubtotal += newItemTotal + movedChargeTotal;
     }
+    oldSubOrderSubtotal = parseFloat(oldSubOrderSubtotal.toFixed(2));
     subOrderSubtotal = parseFloat(subOrderSubtotal.toFixed(2));
     const originalSubtotal = Number(order.subtotal ?? 0) || 1;
     const ratio = oldSubOrderSubtotal / originalSubtotal;
@@ -4526,7 +4824,9 @@ export class OrderService {
     // New direct payments (if any) are in txnPaid. Both must be included.
     const totalPaid = order.parentOrderId
       ? Number(order.allocatedPayment ?? 0) + txnPaid
-      : txnPaid;
+      : order.hasBeenSplit
+        ? Number(order.allocatedPayment ?? 0)
+        : txnPaid;
 
     const parentDeliveryDate = order.deliveryDate
       ? new Date(order.deliveryDate)
@@ -4585,6 +4885,8 @@ export class OrderService {
           subtotal: subOrderSubtotal,
           discountAmount: subOrderDiscount,
           discountType: order.discountType,
+          appliedCouponId: order.appliedCouponId,
+          couponCode: order.couponCode,
           taxAmount: subOrderTax,
           totalAmount: subOrderTotal,
           allocatedPayment,
@@ -4598,7 +4900,7 @@ export class OrderService {
         const oi = parentItemMap.get(itemId)!;
         const qty = itemGarments.length;
         const newUnitPrice = subUnitPriceFor(oi);
-        const subItemTotal = parseFloat((newUnitPrice * qty).toFixed(2));
+        const subItemTotal = newItemTotals.get(itemId) ?? 0;
 
         const subOrderItem = await this.orderItemRepo.create(
           {
@@ -4618,6 +4920,19 @@ export class OrderService {
         );
         createdSubItems.push(subOrderItem);
 
+        for (const [additionalChargeId, charge] of
+          movedChargesByItem.get(itemId) ?? []) {
+          await this.orderItemChargeRepo.create(
+            {
+              orderItemId: subOrderItem.id,
+              additionalChargeId,
+              amount: parseFloat(charge.amount.toFixed(2)),
+              quantity: charge.quantity,
+            },
+            {transaction: tx},
+          );
+        }
+
         for (const garment of itemGarments) {
           // Re-parent to sub-order item; garment status stays as-is
           await this.garmentRepo.updateById(
@@ -4636,13 +4951,39 @@ export class OrderService {
           await this.orderItemRepo.deleteById(oi.id, {transaction: tx} as any);
         } else {
           const newTotal = parseFloat(
-            (Number(oi.unitPrice ?? 0) * newQty).toFixed(2),
+            (Number(oi.totalPrice ?? 0) - (oldItemTotals.get(itemId) ?? 0)).toFixed(2),
           );
           await this.orderItemRepo.updateById(
             oi.id,
             {quantity: newQty, totalPrice: newTotal},
             {transaction: tx} as any,
           );
+        }
+
+        const parentCharges = await this.orderItemChargeRepo.find(
+          {where: {orderItemId: itemId}},
+          {transaction: tx},
+        );
+        const movedCharges = movedChargesByItem.get(itemId) ?? new Map();
+        for (const parentCharge of parentCharges) {
+          const moved = movedCharges.get(parentCharge.additionalChargeId);
+          if (!moved) continue;
+          const remainingAmount = parseFloat(
+            (Number(parentCharge.amount ?? 0) - moved.amount).toFixed(2),
+          );
+          const remainingQuantity =
+            Number(parentCharge.quantity ?? 0) - moved.quantity;
+          if (remainingAmount <= 0 || remainingQuantity <= 0) {
+            await this.orderItemChargeRepo.deleteById(parentCharge.id, {
+              transaction: tx,
+            } as any);
+          } else {
+            await this.orderItemChargeRepo.updateById(
+              parentCharge.id,
+              {amount: remainingAmount, quantity: remainingQuantity},
+              {transaction: tx},
+            );
+          }
         }
       }
 
@@ -4693,6 +5034,15 @@ export class OrderService {
         },
         {transaction: tx},
       );
+
+      const parentChallan = await this.challanRepo.findOne(
+        {where: {orderId}, order: ['createdAt DESC']} as any,
+        {transaction: tx},
+      );
+      if (parentChallan) {
+        await this.syncChallanTotalsForOrder(orderId, parentChallan, tx);
+      }
+      await this.generateChallanForOrder(subOrder.id, createdBy, tx);
 
       await tx.commit();
 

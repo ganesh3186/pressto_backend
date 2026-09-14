@@ -65,8 +65,15 @@ export class ChallanController {
       order: ['createdAt DESC'],
     } as any);
 
-    if (!challan) throw new HttpErrors.NotFound('No challan found for this order.');
-    return {challan};
+    if (!challan) {
+      const generated = await this.orderService.generateChallanForOrder(
+        orderId,
+        currentUser![securityId],
+      );
+      return {challan: generated};
+    }
+    const syncedChallan = await this.orderService.syncChallanTotalsForOrder(orderId, challan);
+    return {challan: syncedChallan};
   }
 
   // ─── Mark Printed ─────────────────────────────────────────────────────────

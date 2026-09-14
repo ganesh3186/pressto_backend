@@ -1,7 +1,14 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
-import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
+import {
+  get,
+  HttpErrors,
+  param,
+  post,
+  requestBody,
+  response,
+} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {Shift} from '../models/shift.model';
@@ -28,6 +35,7 @@ import {StoreScopeService} from '../services/store-scope.service';
 
 interface ReconciliationRowInput {
   actual: number;
+  denominations?: Record<string, number>;
 }
 
 interface OpeningBalancesInput {
@@ -37,8 +45,24 @@ interface OpeningBalancesInput {
   prepaidVouchers: ReconciliationRowInput;
 }
 
-const OPENING_CATEGORY_KEYS = ['cashInTill', 'banking', 'pettyCash', 'prepaidVouchers'] as const;
-const CASH_DENOMINATIONS = new Set(['2000', '500', '200', '100', '50', '20', '10', '5', '2', '1']);
+const OPENING_CATEGORY_KEYS = [
+  'cashInTill',
+  'banking',
+  'pettyCash',
+  'prepaidVouchers',
+] as const;
+const CASH_DENOMINATIONS = new Set([
+  '2000',
+  '500',
+  '200',
+  '100',
+  '50',
+  '20',
+  '10',
+  '5',
+  '2',
+  '1',
+]);
 const CLOSING_DENOMINATION_FIELDS = new Set([
   'banking.deposited',
   'pettyCash.actualBalance',
@@ -52,8 +76,20 @@ const CLOSING_DENOMINATION_FIELDS = new Set([
 // SHIFT_MANAGEMENT_API.md for why: no brand-tagging or payment-bucket
 // mapping exists yet to compute these from real orders/payments).
 interface ClosingFormInput {
-  collections: {cash: number; card: number; cheque: number; pgLink: number; ppVoucher: number; wallet: number};
-  walletCollections: {cash: number; card: number; upi: number};
+  collections: {
+    cash: number;
+    card: number;
+    cheque: number;
+    pgLink: number;
+    ppVoucher: number;
+    wallet: number;
+  };
+  walletCollections: {
+    cash: number;
+    card: number;
+    upi: number;
+    netBanking: number;
+  };
   banking: {supposed: number; deposited: number; inSafe: number};
   prepaidV: {supposed: number; sentToAc: number; inSafe: number};
   pettyCash: {
@@ -65,9 +101,22 @@ interface ClosingFormInput {
     cumulativeDiff?: number;
   };
   cardPgSettlement: {actualSettlement: number; difference?: number};
-  ppVoucher: {currSupVoucher: number; actualVoucher: number; cumulativeDiff?: number};
-  register: {prevSupCashInTill: number; prevActCashInTill: number; cashReceived: number; reimbursement: number};
-  actualCashInTill: {actual: number; cumulativeDiff?: number; currClosureBanking?: number};
+  ppVoucher: {
+    currSupVoucher: number;
+    actualVoucher: number;
+    cumulativeDiff?: number;
+  };
+  register: {
+    prevSupCashInTill: number;
+    prevActCashInTill: number;
+    cashReceived: number;
+    reimbursement: number;
+  };
+  actualCashInTill: {
+    actual: number;
+    cumulativeDiff?: number;
+    currClosureBanking?: number;
+  };
   revenue: object;
   salesReturn: object;
   denominations?: Record<string, Record<string, number>>;
@@ -77,17 +126,25 @@ interface ClosingFormInput {
 export class ShiftController {
   constructor(
     @repository(ShiftRepository) private shiftRepository: ShiftRepository,
-    @repository(EmployeeRepository) private employeeRepository: EmployeeRepository,
+    @repository(EmployeeRepository)
+    private employeeRepository: EmployeeRepository,
     @repository(StoreRepository) private storeRepository: StoreRepository,
     @repository(UsersRepository) private usersRepository: UsersRepository,
     @repository(OrderRepository) private orderRepository: OrderRepository,
-    @repository(OrderItemRepository) private orderItemRepository: OrderItemRepository,
-    @repository(SalesReturnRepository) private salesReturnRepository: SalesReturnRepository,
-    @repository(GstTaxConfigurationRepository) private gstConfigRepository: GstTaxConfigurationRepository,
-    @repository(PaymentTransactionRepository) private paymentTransactionRepository: PaymentTransactionRepository,
-    @repository(WalletRechargeRequestRepository) private walletRechargeRequestRepository: WalletRechargeRequestRepository,
-    @repository(PettyCashFinanceEntryRepository) private pettyCashFinanceRepository: PettyCashFinanceEntryRepository,
-    @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @repository(OrderItemRepository)
+    private orderItemRepository: OrderItemRepository,
+    @repository(SalesReturnRepository)
+    private salesReturnRepository: SalesReturnRepository,
+    @repository(GstTaxConfigurationRepository)
+    private gstConfigRepository: GstTaxConfigurationRepository,
+    @repository(PaymentTransactionRepository)
+    private paymentTransactionRepository: PaymentTransactionRepository,
+    @repository(WalletRechargeRequestRepository)
+    private walletRechargeRequestRepository: WalletRechargeRequestRepository,
+    @repository(PettyCashFinanceEntryRepository)
+    private pettyCashFinanceRepository: PettyCashFinanceEntryRepository,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
     @inject('services.petty-cash') private pettyCashService: PettyCashService,
   ) {}
 
@@ -101,7 +158,10 @@ export class ShiftController {
    * row, or one with no storeId) falls through to requestedStoreId, which
    * is the one and only place a client-supplied store is trusted.
    */
-  private async resolveCallerStore(currentUser: UserProfile, requestedStoreId?: string) {
+  private async resolveCallerStore(
+    currentUser: UserProfile,
+    requestedStoreId?: string,
+  ) {
     const userId = currentUser[securityId];
     const employee = await this.employeeRepository.findOne({
       where: {userId, isDeleted: false} as object,
@@ -109,7 +169,9 @@ export class ShiftController {
 
     const storeId = employee?.storeId ?? requestedStoreId;
     if (!storeId) {
-      throw new HttpErrors.BadRequest('Select a store — your account is not linked to one.');
+      throw new HttpErrors.BadRequest(
+        'Select a store — your account is not linked to one.',
+      );
     }
 
     const store = await this.storeRepository.findOne({where: {id: storeId}});
@@ -117,11 +179,19 @@ export class ShiftController {
 
     let userName = employee ? `${employee.firstName} ${employee.lastName}` : '';
     if (!userName) {
-      const account = await this.usersRepository.findOne({where: {id: userId} as object});
+      const account = await this.usersRepository.findOne({
+        where: {id: userId} as object,
+      });
       userName = account?.fullName ?? 'User';
     }
 
-    return {userId, userName, storeId, storeCode: store.code, storeName: store.name};
+    return {
+      userId,
+      userName,
+      storeId,
+      storeCode: store.code,
+      storeName: store.name,
+    };
   }
 
   /**
@@ -146,8 +216,23 @@ export class ShiftController {
     if (!lastClosed) {
       return {cashInTill: 0, banking: 0, pettyCash, prepaidVouchers: 0};
     }
-    const closing = (lastClosed.closing ?? {}) as Record<string, {actual?: number; supposed?: number; deposited?: number; inSafe?: number; actualBalance?: number; actualVoucher?: number; currSupCashInTill?: number; currClosureBanking?: number}>;
-    const opening = (lastClosed.opening ?? {}) as Record<string, {actual?: number}>;
+    const closing = (lastClosed.closing ?? {}) as Record<
+      string,
+      {
+        actual?: number;
+        supposed?: number;
+        deposited?: number;
+        inSafe?: number;
+        actualBalance?: number;
+        actualVoucher?: number;
+        currSupCashInTill?: number;
+        currClosureBanking?: number;
+      }
+    >;
+    const opening = (lastClosed.opening ?? {}) as Record<
+      string,
+      {actual?: number}
+    >;
     return {
       cashInTill: Math.max(
         0,
@@ -161,8 +246,12 @@ export class ShiftController {
       banking:
         Math.max(
           0,
-          Number(closing.banking?.supposed ?? closing.banking?.inSafe ?? opening.banking?.actual ?? 0) -
-            Number(closing.banking?.deposited ?? 0),
+          Number(
+            closing.banking?.supposed ??
+              closing.banking?.inSafe ??
+              opening.banking?.actual ??
+              0,
+          ) - Number(closing.banking?.deposited ?? 0),
         ) + Number(closing.actualCashInTill?.currClosureBanking ?? 0),
       pettyCash,
       prepaidVouchers:
@@ -193,10 +282,13 @@ export class ShiftController {
     const walletTotal =
       Number(input.walletCollections.cash || 0) +
       Number(input.walletCollections.card || 0) +
-      Number(input.walletCollections.upi || 0);
+      Number(input.walletCollections.upi || 0) +
+      Number(input.walletCollections.netBanking || 0);
 
     const bankingCumulativeDiff =
-      Number(input.banking.deposited || 0) + Number(input.banking.inSafe || 0) - Number(input.banking.supposed || 0);
+      Number(input.banking.deposited || 0) +
+      Number(input.banking.inSafe || 0) -
+      Number(input.banking.supposed || 0);
 
     // used = total submitted this shift (reserved the moment it was
     // claimed, per PettyCashService.computeBalance's deduct-on-submit
@@ -211,25 +303,38 @@ export class ShiftController {
       Number(input.pettyCash.recvFromFinance || 0) -
       Number(input.pettyCash.used || 0) +
       Number(input.pettyCash.disapprovedAmt || 0);
-    const pettyDifference = Number(input.pettyCash.actualBalance || 0) - pettyBalance;
+    const pettyDifference =
+      Number(input.pettyCash.actualBalance || 0) - pettyBalance;
 
-    const ppVoucherDifference = Number(input.ppVoucher.actualVoucher || 0) - Number(input.ppVoucher.currSupVoucher || 0);
+    const ppVoucherDifference =
+      Number(input.ppVoucher.actualVoucher || 0) -
+      Number(input.ppVoucher.currSupVoucher || 0);
 
     const currSupCashInTill =
-      Number(input.register.prevActCashInTill || 0) + Number(input.register.cashReceived || 0);
+      Number(input.register.prevActCashInTill || 0) +
+      Number(input.register.cashReceived || 0) -
+      Number(input.register.reimbursement || 0);
 
-    const actualCashInTillDifference = Number(input.actualCashInTill.actual || 0) - currSupCashInTill;
+    const actualCashInTillDifference =
+      Number(input.actualCashInTill.actual || 0) - currSupCashInTill;
 
     return {
       collections: {...input.collections, total: collectionsTotal},
       walletCollections: {...input.walletCollections, total: walletTotal},
       banking: {...input.banking, cumulativeDiff: bankingCumulativeDiff},
       prepaidV: input.prepaidV,
-      pettyCash: {...input.pettyCash, balance: pettyBalance, difference: pettyDifference},
+      pettyCash: {
+        ...input.pettyCash,
+        balance: pettyBalance,
+        difference: pettyDifference,
+      },
       cardPgSettlement: input.cardPgSettlement,
       ppVoucher: {...input.ppVoucher, difference: ppVoucherDifference},
       register: {...input.register, currSupCashInTill},
-      actualCashInTill: {...input.actualCashInTill, difference: actualCashInTillDifference},
+      actualCashInTill: {
+        ...input.actualCashInTill,
+        difference: actualCashInTillDifference,
+      },
       revenue: input.revenue,
       salesReturn: input.salesReturn,
       denominations: input.denominations ?? {},
@@ -237,14 +342,28 @@ export class ShiftController {
     };
   }
 
-  private sanitizeDenominations(input: ClosingFormInput): Record<string, Record<string, number>> {
+  private sanitizeDenominations(
+    input: ClosingFormInput,
+  ): Record<string, Record<string, number>> {
     const result: Record<string, Record<string, number>> = {};
-    for (const [field, rawCounts] of Object.entries(input.denominations ?? {})) {
-      if (!CLOSING_DENOMINATION_FIELDS.has(field) || !rawCounts || typeof rawCounts !== 'object') continue;
+    for (const [field, rawCounts] of Object.entries(
+      input.denominations ?? {},
+    )) {
+      if (
+        !CLOSING_DENOMINATION_FIELDS.has(field) ||
+        !rawCounts ||
+        typeof rawCounts !== 'object'
+      )
+        continue;
       const counts: Record<string, number> = {};
       for (const [denomination, rawCount] of Object.entries(rawCounts)) {
         const count = Number(rawCount);
-        if (!CASH_DENOMINATIONS.has(denomination) || !Number.isInteger(count) || count <= 0) continue;
+        if (
+          !CASH_DENOMINATIONS.has(denomination) ||
+          !Number.isInteger(count) ||
+          count <= 0
+        )
+          continue;
         counts[denomination] = count;
       }
       if (Object.keys(counts).length) result[field] = counts;
@@ -273,7 +392,17 @@ export class ShiftController {
                 properties: Object.fromEntries(
                   OPENING_CATEGORY_KEYS.map(key => [
                     key,
-                    {type: 'object', required: ['actual'], properties: {actual: {type: 'number'}}},
+                    {
+                      type: 'object',
+                      required: ['actual'],
+                      properties: {
+                        actual: {type: 'number'},
+                        denominations: {
+                          type: 'object',
+                          additionalProperties: {type: 'number', minimum: 0},
+                        },
+                      },
+                    },
                   ]),
                 ),
               },
@@ -281,14 +410,19 @@ export class ShiftController {
               storeId: {
                 type: 'string',
                 format: 'uuid',
-                description: 'Required only for a caller with no fixed Employee.storeId (manager, super_admin).',
+                description:
+                  'Required only for a caller with no fixed Employee.storeId (manager, super_admin).',
               },
             },
           },
         },
       },
     })
-    body: {openingBalances: OpeningBalancesInput; remarks: string; storeId?: string},
+    body: {
+      openingBalances: OpeningBalancesInput;
+      remarks: string;
+      storeId?: string;
+    },
   ): Promise<object> {
     if (!body.remarks?.trim()) {
       throw new HttpErrors.BadRequest('Remarks are required to open a shift.');
@@ -297,21 +431,40 @@ export class ShiftController {
     const caller = await this.resolveCallerStore(currentUser, body.storeId);
 
     const existingOpen = await this.shiftRepository.findOne({
-      where: {userId: caller.userId, storeId: caller.storeId, status: ShiftStatus.OPEN} as object,
+      where: {
+        userId: caller.userId,
+        storeId: caller.storeId,
+        status: ShiftStatus.OPEN,
+      } as object,
     });
     if (existingOpen) {
-      throw new HttpErrors.Conflict('A shift is already open for this user at this store.');
+      throw new HttpErrors.Conflict(
+        'A shift is already open for this user at this store.',
+      );
     }
 
     const supposed = await this.resolveSupposedOpeningValues(caller.storeId);
-    const opening: Record<string, {supposed: number; actual: number; difference: number}> = {};
+    const opening: Record<
+      string,
+      {supposed: number; actual: number; difference: number}
+    > = {};
     for (const key of OPENING_CATEGORY_KEYS) {
       const supposedValue = supposed[key];
-      const actual = Number(body.openingBalances?.[key]?.actual ?? supposedValue) || 0;
-      opening[key] = {supposed: supposedValue, actual, difference: actual - supposedValue};
+      const actual =
+        Number(body.openingBalances?.[key]?.actual ?? supposedValue) || 0;
+      opening[key] = {
+        supposed: supposedValue,
+        actual,
+        difference: actual - supposedValue,
+        ...(body.openingBalances?.[key]?.denominations
+          ? {denominations: body.openingBalances[key].denominations}
+          : {}),
+      };
     }
 
-    const count = await this.shiftRepository.count({storeId: caller.storeId} as object);
+    const count = await this.shiftRepository.count({
+      storeId: caller.storeId,
+    } as object);
     const openingNo = count.count + 1;
 
     const {v4} = await import('uuid');
@@ -336,7 +489,10 @@ export class ShiftController {
     // difference as a Finance top-up. Merely confirming the carried balance
     // creates no entry, so repeated shift openings cannot double-count it.
     const openingPettyCashActual = opening.pettyCash.actual;
-    const pettyCashTopUp = Math.max(0, openingPettyCashActual - supposed.pettyCash);
+    const pettyCashTopUp = Math.max(
+      0,
+      openingPettyCashActual - supposed.pettyCash,
+    );
     if (pettyCashTopUp > 0) {
       await this.pettyCashFinanceRepository.create({
         id: v4(),
@@ -375,7 +531,11 @@ export class ShiftController {
       throw error;
     }
     const shift = await this.shiftRepository.findOne({
-      where: {userId: caller.userId, storeId: caller.storeId, status: ShiftStatus.OPEN} as object,
+      where: {
+        userId: caller.userId,
+        storeId: caller.storeId,
+        status: ShiftStatus.OPEN,
+      } as object,
     });
     return {shift: shift ?? null};
   }
@@ -392,7 +552,10 @@ export class ShiftController {
     @param.query.string('status') status?: ShiftStatus,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
-    const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
+    const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(
+      scope,
+      {storeId},
+    );
 
     const and: object[] = [];
     if (status) and.push({status});
@@ -452,30 +615,42 @@ export class ShiftController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts/{id}/collected')
-  @response(200, {description: 'Real collections during this shift, bucketed for the closing form'})
+  @response(200, {
+    description:
+      'Real collections during this shift, bucketed for the closing form',
+  })
   async collected(@param.path.string('id') id: string): Promise<object> {
     const shift = await this.shiftRepository.findById(id);
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
 
     const windowEnd = shift.closedAt ?? new Date();
     const collections = {cash: 0, card: 0, cheque: 0, pgLink: 0, wallet: 0};
+    let cashReimbursement = 0;
 
     const orders = await this.orderRepository.find({
       where: {storeId: shift.storeId} as object,
-      fields: {id: true} as object,
+      fields: {id: true, status: true} as object,
     });
-    const orderIds = orders.map(o => o.id);
+    const orderIds = orders
+      .filter(
+        order =>
+          order.status !== OrderStatus.DRAFT &&
+          order.status !== OrderStatus.CANCELLED,
+      )
+      .map(o => o.id);
     if (orderIds.length) {
       const transactions = await this.paymentTransactionRepository.find({
         where: {
           orderId: {inq: orderIds},
           riderId: null,
-          transactionType: {neq: 'refund'},
           paymentDate: {between: [shift.openedAt, windowEnd]},
         } as object,
       });
 
-      const bucketOf: Record<string, 'cash' | 'card' | 'cheque' | 'pgLink' | 'wallet' | null> = {
+      const bucketOf: Record<
+        string,
+        'cash' | 'card' | 'cheque' | 'pgLink' | 'wallet' | null
+      > = {
         [PaymentMode.CASH]: 'cash',
         [PaymentMode.CARD]: 'card',
         [PaymentMode.CHEQUE]: 'cheque',
@@ -488,10 +663,20 @@ export class ShiftController {
         [PaymentMode.PAY_LATER]: null,
         [PaymentMode.ON_ACCOUNT]: null,
       };
-      for (const t of transactions) {
+      for (const t of transactions.filter(
+        t => t.transactionType !== 'refund',
+      )) {
         const bucket = bucketOf[t.paymentMode];
         if (bucket) collections[bucket] += Number(t.amount) || 0;
       }
+
+      cashReimbursement = transactions
+        .filter(
+          t =>
+            t.transactionType === 'refund' &&
+            t.paymentMode === PaymentMode.CASH,
+        )
+        .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
     }
 
     const recharges = await this.walletRechargeRequestRepository.find({
@@ -501,11 +686,15 @@ export class ShiftController {
         createdAt: {between: [shift.openedAt, windowEnd]},
       } as object,
     });
-    const walletCollections = {cash: 0, card: 0, upi: 0};
-    const rechargeBucketOf: Record<string, 'cash' | 'card' | 'upi' | null> = {
+    const walletCollections = {cash: 0, card: 0, upi: 0, netBanking: 0};
+    const rechargeBucketOf: Record<
+      string,
+      'cash' | 'card' | 'upi' | 'netBanking' | null
+    > = {
       [PaymentMode.CASH]: 'cash',
       [PaymentMode.CARD]: 'card',
       [PaymentMode.UPI]: 'upi',
+      [PaymentMode.NET_BANKING]: 'netBanking',
     };
     for (const r of recharges) {
       const bucket = rechargeBucketOf[r.paymentMode];
@@ -515,36 +704,71 @@ export class ShiftController {
     // Register cash is order-payment cash only. Wallet recharge collections
     // remain visible in their own section and do not inflate the till register.
     const cashReceived = collections.cash;
-    const openingBanking = (shift.opening as
-      | {banking?: {supposed?: number; actual?: number}}
-      | undefined)?.banking;
-    const bankingSupposed = Number(openingBanking?.supposed ?? openingBanking?.actual) || 0;
+    const openingBanking = (
+      shift.opening as
+        | {banking?: {supposed?: number; actual?: number}}
+        | undefined
+    )?.banking;
+    const bankingSupposed =
+      Number(openingBanking?.supposed ?? openingBanking?.actual) || 0;
 
-    const pettyCash = await this.pettyCashService.computeWindowActivity(shift.storeId, shift.openedAt, windowEnd);
+    const pettyCash = await this.pettyCashService.computeWindowActivity(
+      shift.storeId,
+      shift.openedAt,
+      windowEnd,
+    );
 
     const [revenue, salesReturn] = await Promise.all([
       this.resolveRevenue(shift.storeId, shift.openedAt, windowEnd),
       this.resolveSalesReturn(shift.storeId, shift.openedAt, windowEnd),
     ]);
 
-    return {collections, walletCollections, cashReceived, bankingSupposed, pettyCash, revenue, salesReturn};
+    return {
+      collections,
+      walletCollections,
+      cashReceived,
+      // Cash refunds are shown separately and reduce the expected cash in till.
+      reimbursement: cashReimbursement,
+      bankingSupposed,
+      pettyCash,
+      revenue,
+      salesReturn,
+    };
   }
 
   // Today's NEW tickets — orders created within this shift's window at
   // this store, summed using their CURRENT totals (already net of any
   // approved sales return, since approve() mutates the order directly).
   // Shape matches SHIFT_REVENUE_COLUMNS (one column today: 'pressto').
-  private async resolveRevenue(storeId: string, from: Date, to: Date): Promise<object> {
+  private async resolveRevenue(
+    storeId: string,
+    from: Date,
+    to: Date,
+  ): Promise<object> {
     const orders = await this.orderRepository.find({
       where: {
         storeId,
         createdAt: {between: [from, to]},
         status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
       } as object,
-      fields: {id: true, subtotal: true, discountAmount: true, taxAmount: true, totalAmount: true} as object,
+      fields: {
+        id: true,
+        subtotal: true,
+        discountAmount: true,
+        taxAmount: true,
+        totalAmount: true,
+      } as object,
     });
 
-    const cell = {revenue: 0, discount: 0, taxes: 0, totalSales: 0, tickets: orders.length, items: 0, services: 0};
+    const cell = {
+      revenue: 0,
+      discount: 0,
+      taxes: 0,
+      totalSales: 0,
+      tickets: orders.length,
+      items: 0,
+      services: 0,
+    };
     for (const order of orders) {
       cell.revenue += Number(order.subtotal) || 0;
       cell.discount += Number(order.discountAmount) || 0;
@@ -574,14 +798,36 @@ export class ShiftController {
   // Today's RETURN activity — SalesReturn rows approved within this
   // shift's window, regardless of which day the original order was
   // placed. Independent of resolveRevenue() above, not subtracted from it.
-  private async resolveSalesReturn(storeId: string, from: Date, to: Date): Promise<object> {
-    const emptyCell = {revenue: 0, discount: 0, taxes: 0, totalSales: 0, tickets: 0, items: 0, services: 0};
+  private async resolveSalesReturn(
+    storeId: string,
+    from: Date,
+    to: Date,
+  ): Promise<object> {
+    const emptyCell = {
+      revenue: 0,
+      discount: 0,
+      taxes: 0,
+      totalSales: 0,
+      tickets: 0,
+      items: 0,
+      services: 0,
+    };
 
-    const returns = await this.salesReturnRepository.find({
-      where: {
-        status: SalesReturnStatus.APPROVED,
-        resolvedAt: {between: [from, to]},
-      } as object,
+    const approvedReturns = await this.salesReturnRepository.find({
+      where: {status: SalesReturnStatus.APPROVED} as object,
+    });
+    const returns = approvedReturns.filter(salesReturn => {
+      const resolvedAt =
+        salesReturn.resolvedAt ||
+        salesReturn.updatedAt ||
+        salesReturn.createdAt;
+      if (!resolvedAt) return false;
+      const resolvedTime = new Date(resolvedAt).getTime();
+      return (
+        Number.isFinite(resolvedTime) &&
+        resolvedTime >= from.getTime() &&
+        resolvedTime <= to.getTime()
+      );
     });
     if (!returns.length) return {pressto: emptyCell};
 
@@ -593,7 +839,9 @@ export class ShiftController {
       fields: {id: true, storeId: true} as object,
     });
     const storeIdByOrderId = new Map(orders.map(o => [o.id, o.storeId]));
-    const matched = returns.filter(r => storeIdByOrderId.get(r.orderId) === storeId);
+    const matched = returns.filter(
+      r => storeIdByOrderId.get(r.orderId) === storeId,
+    );
     if (!matched.length) return {pressto: emptyCell};
 
     // Same GST-unwind formula SalesReturnController.approve() already uses
@@ -601,7 +849,9 @@ export class ShiftController {
     const gstConfig = await this.gstConfigRepository.findOne({
       where: {isActive: true, isDeleted: false} as object,
     });
-    const gstRate = gstConfig ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage) : 0;
+    const gstRate = gstConfig
+      ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
+      : 0;
 
     const cell = {...emptyCell};
     const ticketIds = new Set<string>();
@@ -616,7 +866,10 @@ export class ShiftController {
       cell.taxes += credit - preTax;
       cell.totalSales += credit;
 
-      for (const entry of (salesReturn.returnedItems ?? []) as Array<{orderItemId?: string; quantity?: number}>) {
+      for (const entry of (salesReturn.returnedItems ?? []) as Array<{
+        orderItemId?: string;
+        quantity?: number;
+      }>) {
         if (!entry.orderItemId) continue;
         const qty = Number(entry.quantity) || 0;
         cell.items += qty;
@@ -633,9 +886,12 @@ export class ShiftController {
         where: {id: {inq: [...quantityByOrderItemId.keys()]}} as object,
         fields: {id: true, additionalServiceIds: true} as object,
       });
-      const additionalCountById = new Map(orderItems.map(oi => [oi.id, oi.additionalServiceIds?.length ?? 0]));
+      const additionalCountById = new Map(
+        orderItems.map(oi => [oi.id, oi.additionalServiceIds?.length ?? 0]),
+      );
       for (const [orderItemId, qty] of quantityByOrderItemId) {
-        cell.services += qty * (1 + (additionalCountById.get(orderItemId) ?? 0));
+        cell.services +=
+          qty * (1 + (additionalCountById.get(orderItemId) ?? 0));
       }
     }
 
@@ -661,20 +917,44 @@ export class ShiftController {
       throw new HttpErrors.BadRequest('This shift is already closed.');
     }
     if (shift.userId !== userId) {
-      throw new HttpErrors.Forbidden('Only the user who opened this shift can close it.');
+      throw new HttpErrors.Forbidden(
+        'Only the user who opened this shift can close it.',
+      );
     }
-    if (!body.remarks?.trim()) {
+    const normalizedRemarks = String(body.remarks || '')
+      .trim()
+      .replace(/^(start(?:\s+shift)?)(?:\s+\1)+/i, '$1');
+    if (!normalizedRemarks) {
       throw new HttpErrors.BadRequest('Remarks are required to close a shift.');
     }
 
-    const employee = await this.employeeRepository.findOne({where: {userId, isDeleted: false} as object});
-    const closingUserName = employee ? `${employee.firstName} ${employee.lastName}` : shift.userName;
+    const employee = await this.employeeRepository.findOne({
+      where: {userId, isDeleted: false} as object,
+    });
+    const closingUserName = employee
+      ? `${employee.firstName} ${employee.lastName}`
+      : shift.userName;
 
     const closing = this.recalcClosingDerived({
       ...body,
       denominations: this.sanitizeDenominations(body),
-      remarks: body.remarks.trim(),
+      remarks: normalizedRemarks,
     });
+    const closingRecord = closing as {
+      pettyCash?: {difference?: number};
+      actualCashInTill?: {difference?: number};
+      ppVoucher?: {difference?: number};
+    };
+    const reconciliationDifferences = [
+      ['Petty Cash', closingRecord.pettyCash?.difference],
+      ['Actual Cash in Till', closingRecord.actualCashInTill?.difference],
+      ['Prepaid Vouchers', closingRecord.ppVoucher?.difference],
+    ].filter(([, difference]) => Math.abs(Number(difference) || 0) > 0.005);
+    if (reconciliationDifferences.length) {
+      throw new HttpErrors.BadRequest(
+        `${reconciliationDifferences.map(([label]) => label).join(', ')} difference must be zero before closing.`,
+      );
+    }
     const now = new Date();
 
     await this.shiftRepository.updateById(id, {

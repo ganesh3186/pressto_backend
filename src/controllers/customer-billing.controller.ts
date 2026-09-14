@@ -156,6 +156,7 @@ export class CustomerBillingController {
             properties: {
               amount: {type: 'number'},
               paymentMode: {type: 'string'},
+              orderIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
               referenceNumber: {type: 'string'},
               remarks: {type: 'string'},
             },
@@ -163,7 +164,7 @@ export class CustomerBillingController {
         },
       },
     })
-    body: {amount: number; paymentMode: string; referenceNumber?: string; remarks?: string},
+    body: {amount: number; paymentMode: string; orderIds?: string[]; referenceNumber?: string; remarks?: string},
   ): Promise<object> {
     const customer = await this.customerRepo.findOne({where: {id: customerId, isDeleted: false}});
     if (!customer) throw new HttpErrors.NotFound('Customer not found.');
@@ -172,16 +173,36 @@ export class CustomerBillingController {
     const orderIds = orders.map(o => o.id);
     if (!orderIds.length) throw new HttpErrors.BadRequest('Customer has no orders.');
 
+    const requestedOrderIds = [...new Set(body.orderIds ?? [])];
+    const customerOrderIds = new Set(orderIds);
+    if (requestedOrderIds.some(id => !customerOrderIds.has(id))) {
+      throw new HttpErrors.BadRequest('One or more selected orders do not belong to this customer.');
+    }
+    const payableOrderIds = requestedOrderIds.length ? requestedOrderIds : orderIds;
+
     const invoices = await this.invoiceRepo.find({
-      where: {orderId: {inq: orderIds}} as any,
+      where: {orderId: {inq: payableOrderIds}} as any,
       order: ['createdAt ASC'],
     });
 
-    const pending = invoices.filter(inv => (inv.balanceDue ?? 0) > 0);
+    const priority = new Map(payableOrderIds.map((id, index) => [id, index]));
+    const pending = invoices
+      .filter(inv => (inv.balanceDue ?? 0) > 0)
+      .sort((a, b) =>
+        (priority.get(a.orderId) ?? Number.MAX_SAFE_INTEGER) -
+        (priority.get(b.orderId) ?? Number.MAX_SAFE_INTEGER),
+      );
     if (!pending.length) throw new HttpErrors.BadRequest('No pending balance found for this customer.');
 
+    const paymentAmount = money(body.amount);
+    const selectedBalance = money(pending.reduce((sum, inv) => sum + money(inv.balanceDue), 0));
+    if (paymentAmount <= 0) throw new HttpErrors.BadRequest('Payment amount must be greater than zero.');
+    if (paymentAmount > selectedBalance) {
+      throw new HttpErrors.BadRequest('Payment amount cannot exceed the selected orders balance.');
+    }
+
     const {v4} = await import('uuid');
-    let remaining = Number(body.amount);
+    let remaining = paymentAmount;
     const allocations: Array<{invoiceId: string; invoiceNumber: string; orderId: string; allocated: number}> = [];
 
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED'} as any);
@@ -241,7 +262,7 @@ export class CustomerBillingController {
 
     return {
       message: 'Club & Pay applied.',
-      totalPaid: parseFloat(body.amount.toFixed(2)),
+      totalPaid: money(allocations.reduce((sum, row) => sum + row.allocated, 0)),
       unallocated: remaining,
       allocations,
     };

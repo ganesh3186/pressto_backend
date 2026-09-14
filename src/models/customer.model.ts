@@ -1,8 +1,15 @@
-import {Entity, belongsTo, hasMany, model, property} from '@loopback/repository';
+import {
+  Entity,
+  belongsTo,
+  hasMany,
+  model,
+  property,
+} from '@loopback/repository';
 import {Users} from './users.model';
 import {CustomerLabel} from './customer-label.model';
 import {CustomerLabelAssignment} from './customer-label-assignment.model';
 import {PaymentMode} from './payment-mode.enum';
+import {CustomerPersona} from './customer-persona.enum';
 
 @model({
   settings: {
@@ -140,6 +147,14 @@ export class Customer extends Entity {
   @property({type: 'number'})
   sensitivityScore?: number;
 
+  @property({
+    type: 'string',
+    jsonSchema: {
+      enum: Object.values(CustomerPersona),
+    },
+  })
+  persona?: CustomerPersona;
+
   @property({type: 'string', postgresql: {dataType: 'text'}})
   notes?: string;
 
@@ -173,7 +188,9 @@ export class Customer extends Entity {
   })
   customerLabelId?: string;
 
-  @hasMany(() => CustomerLabel, {through: {model: () => CustomerLabelAssignment}})
+  @hasMany(() => CustomerLabel, {
+    through: {model: () => CustomerLabelAssignment},
+  })
   customerLabels: CustomerLabel[];
 
   constructor(data?: Partial<Customer>) {

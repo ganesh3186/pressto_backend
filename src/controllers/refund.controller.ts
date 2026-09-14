@@ -51,7 +51,19 @@ export class RefundController {
       order: ['createdAt DESC'],
     });
 
-    return {refundsDue};
+    await Promise.all(
+      refundsDue
+        .filter(refund => refund.status !== 'paid')
+        .map(refund =>
+          this.approvalService.reconcileRefundDueAmount(refund.id),
+        ),
+    );
+    const reconciledRefundsDue = await this.refundDueRepo.find({
+      where: {orderId},
+      order: ['createdAt DESC'],
+    });
+
+    return {refundsDue: reconciledRefundsDue};
   }
 
   // ─── Pick a payout method ──────────────────────────────────────────────────

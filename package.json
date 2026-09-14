@@ -29,6 +29,7 @@
     "docker:run": "docker run -p 3000:3000 -d Pressto-backend",
     "premigrate": "npm run build",
     "migrate": "node ./dist/migrate",
+    "migrate:customer-persona": "node scripts/add-customer-persona-column.cjs",
     "preseed": "npm run build",
     "seed": "node ./dist/seed",
     "preseed:new-permissions": "npm run build",

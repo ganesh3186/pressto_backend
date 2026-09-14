@@ -80,6 +80,7 @@ export * from './service-category.model';
 export * from './customer-type-master.model';
 export * from './country-code.model';
 export * from './customer.model';
+export * from './customer-persona.enum';
 export * from './wallet.model';
 export * from './wallet-transaction.model';
 export * from './customer-security-deposit.model';
