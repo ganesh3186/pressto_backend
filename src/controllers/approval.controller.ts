@@ -255,6 +255,10 @@ export class ApprovalController {
       orderItem?.orderId ? this.orderRepo.findOne({where: {id: orderItem.orderId}}) : Promise.resolve(null),
       orderItem?.itemId ? this.itemRepo.findOne({where: {id: orderItem.itemId}}) : Promise.resolve(null),
     ]);
+    const returnCalculation =
+      req.type === ApprovalRequestType.RETURN_ITEM
+        ? await this.approvalService.calculateGarmentReturnAmount(garment.id)
+        : null;
 
     return {
       ...req,
@@ -263,6 +267,8 @@ export class ApprovalController {
       itemName: item?.name ?? null,
       orderNumber: (order as any)?.orderNumber ?? null,
       orderId: orderItem?.orderId ?? null,
+      returnCalculation,
+      returnAmount: returnCalculation?.returnAmount ?? null,
       media,
     };
   }

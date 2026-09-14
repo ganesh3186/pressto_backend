@@ -5,6 +5,8 @@ import {ApprovalActionRepository} from '../repositories/approval-action.reposito
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
 import {GarmentRepository} from '../repositories/garment.repository';
+import {GarmentAdditionalChargeRepository} from '../repositories/garment-additional-charge.repository';
+import {GarmentAdditionalServiceRepository} from '../repositories/garment-additional-service.repository';
 import {GarmentStatusHistoryRepository} from '../repositories/garment-status-history.repository';
 import {GarmentProcessLogRepository} from '../repositories/garment-process-log.repository';
 import {GstTaxConfigurationRepository} from '../repositories/gst-tax-configuration.repository';
@@ -13,6 +15,7 @@ import {InvoiceRepository} from '../repositories/invoice.repository';
 import {ItemRepository} from '../repositories/item.repository';
 import {MediaRepository} from '../repositories/media.repository';
 import {OrderItemRepository} from '../repositories/order-item.repository';
+import {OrderItemAdditionalChargeRepository} from '../repositories/order-item-additional-charge.repository';
 import {OrderRepository} from '../repositories/order.repository';
 import {OrderStatusHistoryRepository} from '../repositories/order-status-history.repository';
 import {PaymentTransactionRepository} from '../repositories/payment-transaction.repository';
@@ -118,6 +121,48 @@ export function calculateReturnedPieceValue(
   return money(discountedPiece + taxShare);
 }
 
+export function calculateReturnedPieceSubtotal(
+  pieceBasePrice: unknown,
+  additionalServiceAmounts: unknown[],
+  additionalChargeAmounts: unknown[],
+  deliveryTypePercentage: unknown,
+  measurementArea = 1,
+): number {
+  const deliveryMultiplier = 1 + money(deliveryTypePercentage) / 100;
+  const services = additionalServiceAmounts.reduce<number>(
+    (sum, amount) => sum + money(amount),
+    0,
+  );
+  const charges = additionalChargeAmounts.reduce<number>(
+    (sum, amount) => sum + money(amount),
+    0,
+  );
+  return money(
+    money(pieceBasePrice) + services * deliveryMultiplier * measurementArea + charges,
+  );
+}
+
+export function calculateRemainingOrderTotals(
+  remainingSubtotalValue: unknown,
+  discountRateValue: unknown,
+  gstRateValue: unknown,
+): {subtotal: number; discount: number; tax: number; total: number} {
+  const subtotal = money(Math.max(0, Number(remainingSubtotalValue) || 0));
+  const discountRate = Math.min(
+    1,
+    Math.max(0, Number(discountRateValue) || 0),
+  );
+  const gstRate = Math.max(0, Number(gstRateValue) || 0);
+  const discount = money(subtotal * discountRate);
+  const tax = money((subtotal - discount) * gstRate);
+  return {
+    subtotal,
+    discount,
+    tax,
+    total: roundRupee(subtotal - discount + tax),
+  };
+}
+
 // The final order/invoice/challan total is always a whole rupee — mirrors
 // order.service.ts's roundRupee (not exported from there, so duplicated here
 // rather than coupling the two services over a one-line utility).
@@ -189,6 +234,10 @@ export class ApprovalService {
     @repository(ApprovalAuditLogRepository)
     private approvalAuditLogRepo: ApprovalAuditLogRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(GarmentAdditionalChargeRepository)
+    private garmentAdditionalChargeRepo: GarmentAdditionalChargeRepository,
+    @repository(GarmentAdditionalServiceRepository)
+    private garmentAdditionalServiceRepo: GarmentAdditionalServiceRepository,
     @repository(GarmentStatusHistoryRepository)
     private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
     @repository(GarmentProcessLogRepository)
@@ -200,6 +249,8 @@ export class ApprovalService {
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(MediaRepository) private mediaRepo: MediaRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
+    @repository(OrderItemAdditionalChargeRepository)
+    private orderItemAdditionalChargeRepo: OrderItemAdditionalChargeRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(OrderStatusHistoryRepository)
     private orderStatusHistoryRepo: OrderStatusHistoryRepository,
@@ -213,6 +264,121 @@ export class ApprovalService {
     @inject('services.audit') private auditService: AuditService,
     @inject('services.order') private orderService: OrderService,
   ) {}
+
+  async calculateGarmentReturnAmount(garmentId: string): Promise<{
+    itemPrice: number;
+    additionalServiceCharge: number;
+    addOnCharge: number;
+    discount: number;
+    gst: number;
+    returnAmount: number;
+    orderPaid: boolean;
+  }> {
+    const garment = await this.garmentRepo.findById(garmentId);
+    const orderItem = await this.orderItemRepo.findById(garment.orderItemId);
+    const order = await this.orderRepo.findById(orderItem.orderId);
+    const item = await this.itemRepo.findById(orderItem.itemId);
+    const siblingGarments = await this.garmentRepo.find({
+      where: {orderItemId: orderItem.id, isDeleted: false},
+    });
+    const siblingGarmentIds = siblingGarments.map(row => row.id);
+    const isMeasurement = Boolean(item.isMeasurement);
+    const itemPrice = calculateMeasurementPieceBasePrice(
+      orderItem.unitPrice,
+      garment.length,
+      garment.width,
+      isMeasurement,
+    );
+    const [services, allGarmentCharges, legacyCharges, payments] =
+      await Promise.all([
+        this.garmentAdditionalServiceRepo.find({
+          where: {garmentId, isDeleted: false},
+        }),
+        siblingGarmentIds.length
+          ? this.garmentAdditionalChargeRepo.find({
+              where: {
+                garmentId: {inq: siblingGarmentIds},
+                isDeleted: false,
+              } as object,
+            })
+          : Promise.resolve([]),
+        this.orderItemAdditionalChargeRepo.find({
+          where: {orderItemId: orderItem.id},
+        }),
+        this.paymentRepo.find({where: {orderId: order.id}}),
+      ]);
+    const area = isMeasurement
+      ? Math.max(0, Number(garment.length) * Number(garment.width))
+      : 1;
+    const serviceBase = services.reduce(
+      (sum, service) => sum + money(service.amount),
+      0,
+    );
+    const additionalServiceCharge = money(
+      serviceBase *
+        (1 + money(order.deliveryTypePercentage) / 100) *
+        area,
+    );
+    const garmentCharges = allGarmentCharges.filter(
+      charge => charge.garmentId === garmentId,
+    );
+    // If any piece on this line has explicit garment-level allocations, those
+    // allocations are authoritative. Falling back per garment gave an
+    // uncharged sibling half of the aggregate row (₹200 / 2 = ₹100).
+    const chargeRows = allGarmentCharges.length
+      ? garmentCharges.map(charge => charge.amount)
+      : legacyCharges.map(
+          charge =>
+            money(charge.amount) /
+            Math.max(1, Number(orderItem.quantity) || 1),
+        );
+    const addOnCharge = money(
+      chargeRows.reduce((sum, amount) => sum + money(amount), 0),
+    );
+    const pieceSubtotal = money(
+      itemPrice + additionalServiceCharge + addOnCharge,
+    );
+    const subtotal = money(order.subtotal);
+    const orderDiscount = Math.min(
+      Math.max(0, money(order.discountAmount)),
+      subtotal,
+    );
+    const discount =
+      subtotal > 0 ? money((pieceSubtotal * orderDiscount) / subtotal) : 0;
+    const discountedAmount = money(Math.max(0, pieceSubtotal - discount));
+    const taxableOrderAmount = money(Math.max(0, subtotal - orderDiscount));
+    const gst =
+      taxableOrderAmount > 0
+        ? money(
+            (money(order.taxAmount) * discountedAmount) / taxableOrderAmount,
+          )
+        : 0;
+    const transactionCollected = payments.reduce(
+      (sum, payment) =>
+        sum +
+        (payment.transactionType === 'refund' ? 0 : money(payment.amount)),
+      0,
+    );
+    const allocatedPayment = money(
+      (order as Order & {allocatedPayment?: number}).allocatedPayment,
+    );
+    const collected = (order as Order & {parentOrderId?: string}).parentOrderId
+      ? money(allocatedPayment + transactionCollected)
+      : allocatedPayment > 0
+        ? allocatedPayment
+        : transactionCollected;
+    const orderPaid = collected >= money(order.totalAmount);
+
+    return {
+      itemPrice,
+      additionalServiceCharge,
+      addOnCharge,
+      discount,
+      gst: orderPaid ? gst : 0,
+      returnAmount: money(discountedAmount + (orderPaid ? gst : 0)),
+      orderPaid,
+    };
+  }
 
   async createRequest(params: {
     type: ApprovalRequestType;
@@ -663,30 +829,95 @@ export class ApprovalService {
     const unitPrice = money(orderItem.unitPrice);
     if (unitPrice <= 0) return;
     const item = await this.itemRepo.findOne({where: {id: orderItem.itemId}});
+    const isMeasurement = Boolean(item?.isMeasurement);
     const pieceBasePrice = calculateMeasurementPieceBasePrice(
       unitPrice,
       garment.length,
       garment.width,
-      Boolean(item?.isMeasurement),
+      isMeasurement,
     );
-    if (pieceBasePrice <= 0) return;
-    const pieceValue = calculateReturnedPieceValue(
+    const [additionalServices, garmentAdditionalCharges, orderItemAdditionalCharges] =
+      await Promise.all([
+      this.garmentAdditionalServiceRepo.find({
+        where: {garmentId: garment.id, isDeleted: false},
+      }),
+      this.garmentAdditionalChargeRepo.find({
+        where: {garmentId: garment.id, isDeleted: false},
+      }),
+      this.orderItemAdditionalChargeRepo.find({
+        where: {orderItemId: orderItem.id},
+      }),
+    ]);
+    // New orders preserve unit-specific charges on the garment. Older/legacy
+    // orders only have an aggregate charge on the order item, so allocate that
+    // amount evenly across the line quantity. Never add both representations.
+    const additionalChargeAmounts = garmentAdditionalCharges.length
+      ? garmentAdditionalCharges.map(charge => charge.amount)
+      : orderItemAdditionalCharges.map(
+          charge => money(charge.amount) / Math.max(1, Number(orderItem.quantity) || 1),
+        );
+    const area = isMeasurement
+      ? Math.max(0, Number(garment.length) * Number(garment.width))
+      : 1;
+    const pieceSubtotal = calculateReturnedPieceSubtotal(
       pieceBasePrice,
-      order.subtotal,
-      order.discountAmount,
-      order.taxAmount,
+      additionalServices.map(service => service.amount),
+      additionalChargeAmounts,
+      order.deliveryTypePercentage,
+      area,
     );
+    if (pieceSubtotal <= 0) return;
+    // Use the same calculation returned by the request/list APIs so the
+    // preview and the amount applied at approval cannot drift apart.
+    const returnCalculation = await this.calculateGarmentReturnAmount(
+      garment.id,
+    );
+    const pieceValue = returnCalculation.returnAmount;
     const orderSubtotal = money(order.subtotal);
-    const taxableAmount = Math.max(
-      0,
-      orderSubtotal -
-        Math.min(Math.max(0, money(order.discountAmount)), orderSubtotal),
-    );
-    const discountedPiece =
+    // Rebuild the remaining subtotal from the garments that are still
+    // billable. Subtracting from Order.subtotal is unsafe for older orders
+    // where a piece-level add-on was also persisted as an order-level charge
+    // (the screenshot case left an unexplained ₹100 behind).
+    const orderItems = await this.orderItemRepo.find({where: {orderId: order.id}});
+    const orderItemIds = orderItems.map(row => row.id);
+    const remainingGarments = orderItemIds.length
+      ? await this.garmentRepo.find({
+          where: {
+            orderItemId: {inq: orderItemIds},
+            status: {neq: GarmentStatus.RETURNED_TO_CUSTOMER},
+            isDeleted: false,
+          } as object,
+        })
+      : [];
+    let newSubtotal = 0;
+    for (const remainingGarment of remainingGarments) {
+      const calculation = await this.calculateGarmentReturnAmount(
+        remainingGarment.id,
+      );
+      newSubtotal = money(
+        newSubtotal +
+          calculation.itemPrice +
+          calculation.additionalServiceCharge +
+          calculation.addOnCharge,
+      );
+    }
+    const discountRate =
       orderSubtotal > 0
-        ? money((pieceBasePrice * taxableAmount) / orderSubtotal)
+        ? Math.min(1, Math.max(0, money(order.discountAmount) / orderSubtotal))
         : 0;
-    const taxShare = money(pieceValue - discountedPiece);
+    const originalTaxable = money(
+      Math.max(0, orderSubtotal - money(order.discountAmount)),
+    );
+    const taxRate =
+      originalTaxable > 0 ? money(order.taxAmount) / originalTaxable : 0;
+    const remainingTotals = calculateRemainingOrderTotals(
+      newSubtotal,
+      discountRate,
+      taxRate,
+    );
+    newSubtotal = remainingTotals.subtotal;
+    const newDiscount = remainingTotals.discount;
+    const newTaxAmount = remainingTotals.tax;
 
     // The order/invoice/challan total drops by exactly what this piece was
     // billed for — a customer should never be left owing (or having paid) for
@@ -695,10 +926,7 @@ export class ApprovalService {
     // been collected — never a manual choice, and never left unadjusted:
     //   prepaid (collected > new total)  → refund the difference
     //   unpaid/partial (collected ≤ new total) → balance due just shrinks
-    const newOrderTotal = Math.max(
-      0,
-      roundRupee(money(order.totalAmount) - pieceValue),
-    );
+    const newOrderTotal = remainingTotals.total;
 
     // How much THIS order actually collected vs. its new (reduced) total —
     // split-aware, so the refund is scoped to this order alone. A partially-
@@ -714,8 +942,9 @@ export class ApprovalService {
     // already-rounded order.totalAmount rather than reconstructed from the
     // reduced components, so it can't drift from independent rounding.
     await this.orderRepo.updateById(order.id, {
-      subtotal: money(orderSubtotal - pieceBasePrice),
-      taxAmount: money(money(order.taxAmount) - taxShare),
+      subtotal: newSubtotal,
+      discountAmount: newDiscount,
+      taxAmount: newTaxAmount,
       totalAmount: newOrderTotal,
       updatedAt: new Date(),
     } as any);
@@ -725,7 +954,10 @@ export class ApprovalService {
     } as any);
     if (invoice) {
       await this.invoiceRepo.updateById(invoice.id, {
-        subtotal: money(money(invoice.subtotal) - pieceBasePrice),
+        subtotal: newSubtotal,
+        discount: newDiscount,
+        cgst: money(newTaxAmount / 2),
+        sgst: money(newTaxAmount - money(newTaxAmount / 2)),
         totalAmount: newOrderTotal,
         balanceDue: newBalanceDue,
         updatedAt: new Date(),
@@ -737,7 +969,10 @@ export class ApprovalService {
     } as any);
     if (challan) {
       await this.challanRepo.updateById(challan.id, {
-        subtotal: money(money(challan.subtotal) - pieceBasePrice),
+        subtotal: newSubtotal,
+        discount: newDiscount,
+        cgst: money(newTaxAmount / 2),
+        sgst: money(newTaxAmount - money(newTaxAmount / 2)),
         totalAmount: newOrderTotal,
         updatedAt: new Date(),
       } as any);

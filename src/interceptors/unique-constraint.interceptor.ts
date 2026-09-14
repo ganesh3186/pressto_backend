@@ -15,13 +15,16 @@ export class UniqueConstraintInterceptor implements Provider<Interceptor> {
     return this.intercept.bind(this);
   }
 
-  intercept(
+  async intercept(
     context: InvocationContext,
     next: () => ValueOrPromise<InvocationResult>
-  ): ValueOrPromise<InvocationResult> {
+  ): Promise<InvocationResult> {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return next().catch((error: any) => {
+    try {
+      // Controller methods may return either a value or a Promise.
+      return await next();
+    } catch (error: any) {
 
       if (error?.code === '23505') {
 
@@ -45,6 +48,6 @@ export class UniqueConstraintInterceptor implements Provider<Interceptor> {
       }
 
       throw error;
-    });
+    }
   }
 }
