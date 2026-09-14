@@ -347,7 +347,13 @@ export class CustomerOrderController {
     await this.resolveOwnedOrder(orderId, customer.id);
 
     const challan = await this.challanRepo.findOne({where: {orderId} as any});
-    if (!challan) throw new HttpErrors.NotFound('No challan generated for this order yet.');
+    if (!challan) {
+      const generated = await this.orderService.generateChallanForOrder(
+        orderId,
+        currentUser[securityId],
+      );
+      return {challan: generated};
+    }
     const syncedChallan = await this.orderService.syncChallanTotalsForOrder(orderId, challan);
     return {challan: syncedChallan};
   }
