@@ -15,7 +15,7 @@ import * as Repos from './repositories';
  */
 // dist/data/*.json, copied there by the build's copy-assets step — see the
 // matching note in seed.ts.
-const SEED_FILE = path.join(__dirname, '../data/seed-masters-pressto.json');
+const SEED_FILE = path.join(__dirname, 'data/seed-masters-pressto.json');
 
 // (table key in the JSON, repository) in dependency order.
 const TABLES: {table: string; repoClass: unknown}[] = [
