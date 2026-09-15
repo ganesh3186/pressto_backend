@@ -13,7 +13,9 @@ import * as Repos from './repositories';
  * by id only if not already present, so it is safe to re-run. Tables are seeded in
  * FK order (region → cluster → store; category → item; service).
  */
-const SEED_FILE = path.join(__dirname, '../src/data/seed-masters-pressto.json');
+// dist/data/*.json, copied there by the build's copy-assets step — see the
+// matching note in seed.ts.
+const SEED_FILE = path.join(__dirname, '../data/seed-masters-pressto.json');
 
 // (table key in the JSON, repository) in dependency order.
 const TABLES: {table: string; repoClass: unknown}[] = [
