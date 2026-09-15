@@ -642,7 +642,12 @@ export async function seed() {
 }
 
 async function seedMasters(app: presstoBackendApplication) {
-  const seedFile = path.join(__dirname, '../src/data/seed-masters.json');
+  // dist/data/*.json, copied there by the build's copy-assets step — NOT
+  // src/data, which only exists in a dev checkout. A dist-only deployment
+  // (no src/ shipped, see pressto_backend's DEPLOY.md) would otherwise
+  // silently skip seeding: existsSync below just returns false rather
+  // than throwing, which is how this went unnoticed for a while.
+  const seedFile = path.join(__dirname, '../data/seed-masters.json');
   if (!fs.existsSync(seedFile)) {
     console.log('No master seed file found at', seedFile);
     return;
