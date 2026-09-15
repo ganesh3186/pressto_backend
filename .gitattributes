@@ -1,0 +1,5 @@
+# Shell scripts must keep LF endings regardless of the checking-out OS —
+# a CRLF shebang line (`#!/usr/bin/env bash\r`) fails on Linux, which is
+# exactly where setup.sh is meant to run after being cloned/copied from a
+# Windows dev machine.
+*.sh text eol=lf
