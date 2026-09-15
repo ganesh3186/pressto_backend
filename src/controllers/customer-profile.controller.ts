@@ -1,6 +1,6 @@
-import {authenticate, AuthenticationBindings} from '@loopback/authentication';
-import {inject} from '@loopback/core';
-import {IsolationLevel, repository} from '@loopback/repository';
+import { authenticate, AuthenticationBindings } from '@loopback/authentication';
+import { inject } from '@loopback/core';
+import { IsolationLevel, repository } from '@loopback/repository';
 import {
   del,
   get,
@@ -12,8 +12,8 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
-import {securityId, UserProfile} from '@loopback/security';
-import {PresstoDataSource} from '../datasources';
+import { securityId, UserProfile } from '@loopback/security';
+import { PresstoDataSource } from '../datasources';
 import {
   ColourBleedingChoice,
   ContactRelationship,
@@ -27,26 +27,28 @@ import {
   PickupDeliverySlotType,
   PickupHandoverBy,
   PickupRequest,
+  ServiceCategory,
   UpgradeServiceChoice,
 } from '../models';
-import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
-import {PickupRequestSource} from '../models/pickup-request-source.enum';
+import { PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus } from '../models/pickup-request-status.enum';
+import { PickupRequestSource } from '../models/pickup-request-source.enum';
 import {
   CustomerRepository,
   CustomerSecurityDepositRepository,
   ItemCategoryRepository,
   PickupDeliverySlotRepository,
   PickupRequestRepository,
+  ServiceCategoryRepository,
   UsersRepository,
   WalletRepository,
   WalletTransactionRepository,
 } from '../repositories';
-import {CouponService, EligibleCouponDisplay} from '../services/coupon.service';
-import {CustomerAddressService} from '../services/customer-address.service';
-import {CustomerContactService} from '../services/customer-contact.service';
-import {CustomerPhoneService} from '../services/customer-phone.service';
-import {CustomerPreferenceChanges, CustomerPreferenceService} from '../services/customer-preference.service';
-import {filterSlotsForDate} from '../utils/pickup-slot-availability';
+import { CouponService, EligibleCouponDisplay } from '../services/coupon.service';
+import { CustomerAddressService } from '../services/customer-address.service';
+import { CustomerContactService } from '../services/customer-contact.service';
+import { CustomerPhoneService } from '../services/customer-phone.service';
+import { CustomerPreferenceChanges, CustomerPreferenceService } from '../services/customer-preference.service';
+import { filterSlotsForDate } from '../utils/pickup-slot-availability';
 
 export class CustomerProfileController {
   constructor(
@@ -78,11 +80,13 @@ export class CustomerProfileController {
     private preferenceService: CustomerPreferenceService,
     @inject('services.coupon')
     private couponService: CouponService,
-  ) {}
+    @repository(ServiceCategoryRepository)
+    private serviceCategoryRepository: ServiceCategoryRepository
+  ) { }
 
   private async resolveCustomer(userId: string): Promise<Customer> {
     const customer = await this.customerRepository.findOne({
-      where: {userId, isDeleted: false},
+      where: { userId, isDeleted: false },
     });
     if (!customer) {
       throw new HttpErrors.NotFound('Customer profile not found for this user.');
@@ -100,20 +104,20 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @get('/profile/customer')
-  @response(200, {description: 'Customer profile'})
+  @response(200, { description: 'Customer profile' })
   async getProfile(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
     const userId = currentUser[securityId];
 
     const customer = await this.customerRepository.findOne({
-      where: {userId, isDeleted: false},
+      where: { userId, isDeleted: false },
       include: [
         {
           relation: 'user',
           scope: {
-            fields: {id: true, fullName: true, email: true, countryCode: true, phone: true, username: true, isActive: true},
-            include: [{relation: 'roles'}],
+            fields: { id: true, fullName: true, email: true, countryCode: true, phone: true, username: true, isActive: true },
+            include: [{ relation: 'roles' }],
           },
         },
       ],
@@ -122,16 +126,16 @@ export class CustomerProfileController {
     if (!customer) throw new HttpErrors.NotFound('Customer profile not found.');
 
     const [wallet, securityDeposit] = await Promise.all([
-      this.walletRepository.findOne({where: {customerId: customer.id}}),
-      this.securityDepositRepository.findOne({where: {customerId: customer.id}}),
+      this.walletRepository.findOne({ where: { customerId: customer.id } }),
+      this.securityDepositRepository.findOne({ where: { customerId: customer.id } }),
     ]);
 
-    return {...customer, wallet, securityDeposit};
+    return { ...customer, wallet, securityDeposit };
   }
 
   @authenticate('jwt')
   @patch('/profile/customer')
-  @response(204, {description: 'Customer profile updated'})
+  @response(204, { description: 'Customer profile updated' })
   async updateProfile(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @requestBody({
@@ -141,15 +145,15 @@ export class CustomerProfileController {
             type: 'object',
             properties: {
               // user-level — only what the customer owns
-              email: {type: 'string', format: 'email'},
-              countryCode: {type: 'string'},
-              phone: {type: 'string'},
+              email: { type: 'string', format: 'email' },
+              countryCode: { type: 'string' },
+              phone: { type: 'string' },
               // customer-level — personal info only, no admin fields
-              firstName: {type: 'string'},
-              lastName: {type: 'string'},
-              dateOfBirth: {type: 'string', format: 'date'},
-              gstNumber: {type: 'string'},
-              companyName: {type: 'string'},
+              firstName: { type: 'string' },
+              lastName: { type: 'string' },
+              dateOfBirth: { type: 'string', format: 'date' },
+              gstNumber: { type: 'string' },
+              companyName: { type: 'string' },
               // excluded: customerTypeId, customerGroupId, loyaltyPoints,
               //           defaultDiscountType, defaultDiscountValue,
               //           preferredStoreId, sensitivityScore, notes (all admin-only)
@@ -172,7 +176,7 @@ export class CustomerProfileController {
     const userId = currentUser[securityId];
     const customer = await this.resolveCustomer(userId);
 
-    const {email, countryCode, phone, firstName, lastName, dateOfBirth, ...customerRest} = body;
+    const { email, countryCode, phone, firstName, lastName, dateOfBirth, ...customerRest } = body;
 
     const userFields: Record<string, unknown> = {};
     if (email !== undefined) userFields.email = email;
@@ -184,7 +188,7 @@ export class CustomerProfileController {
       userFields.fullName = `${newFirst} ${newLast}`;
     }
 
-    const customerFields: Record<string, unknown> = {...customerRest};
+    const customerFields: Record<string, unknown> = { ...customerRest };
     if (firstName !== undefined) customerFields.firstName = firstName;
     if (lastName !== undefined) customerFields.lastName = lastName;
     if (dateOfBirth !== undefined) customerFields.dateOfBirth = new Date(dateOfBirth);
@@ -192,10 +196,10 @@ export class CustomerProfileController {
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
       if (Object.keys(userFields).length > 0) {
-        await this.usersRepository.updateById(userId, userFields, {transaction: tx});
+        await this.usersRepository.updateById(userId, userFields, { transaction: tx });
       }
       if (Object.keys(customerFields).length > 0) {
-        await this.customerRepository.updateById(customer.id, customerFields, {transaction: tx});
+        await this.customerRepository.updateById(customer.id, customerFields, { transaction: tx });
       }
       await tx.commit();
     } catch (error) {
@@ -208,36 +212,36 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @get('/profile/customer/wallet')
-  @response(200, {description: 'Wallet balance and recent transactions'})
+  @response(200, { description: 'Wallet balance and recent transactions' })
   async getWallet(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
     const customer = await this.resolveCustomer(currentUser[securityId]);
 
-    const wallet = await this.walletRepository.findOne({where: {customerId: customer.id}});
+    const wallet = await this.walletRepository.findOne({ where: { customerId: customer.id } });
     if (!wallet) throw new HttpErrors.NotFound('Wallet not found.');
 
     const recentTransactions = await this.walletTransactionRepository.find({
-      where: {walletId: wallet.id, isDeleted: false},
+      where: { walletId: wallet.id, isDeleted: false },
       order: ['transactionDate DESC'],
       limit: 20,
     });
 
-    return {wallet, recentTransactions};
+    return { wallet, recentTransactions };
   }
 
   // ─── Security Deposit ─────────────────────────────────────────────────────────
 
   @authenticate('jwt')
   @get('/profile/customer/security-deposit')
-  @response(200, {description: 'Security deposit info'})
+  @response(200, { description: 'Security deposit info' })
   async getSecurityDeposit(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
     const customer = await this.resolveCustomer(currentUser[securityId]);
 
     const deposit = await this.securityDepositRepository.findOne({
-      where: {customerId: customer.id},
+      where: { customerId: customer.id },
     });
     if (!deposit) throw new HttpErrors.NotFound('Security deposit record not found.');
 
@@ -248,7 +252,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @get('/profile/customer/addresses')
-  @response(200, {description: 'Customer addresses', content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(CustomerAddress)}}}})
+  @response(200, { description: 'Customer addresses', content: { 'application/json': { schema: { type: 'array', items: getModelSchemaRef(CustomerAddress) } } } })
   async getAddresses(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<CustomerAddress[]> {
@@ -258,7 +262,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @post('/profile/customer/addresses')
-  @response(200, {description: 'Address added', content: {'application/json': {schema: getModelSchemaRef(CustomerAddress)}}})
+  @response(200, { description: 'Address added', content: { 'application/json': { schema: getModelSchemaRef(CustomerAddress) } } })
   async addAddress(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @requestBody({
@@ -268,20 +272,20 @@ export class CustomerProfileController {
             type: 'object',
             required: ['addressLine1', 'city', 'state', 'pincode'],
             properties: {
-              addressType: {type: 'string'},
-              addressName: {type: 'string', description: "e.g. Father's home, 2nd office"},
-              addressLine1: {type: 'string'},
-              addressLine2: {type: 'string'},
-              doorFloorFlat: {type: 'string', description: 'Door/floor/flat number'},
-              societyName: {type: 'string'},
-              landmark: {type: 'string'},
-              city: {type: 'string'},
-              state: {type: 'string'},
-              country: {type: 'string'},
-              pincode: {type: 'string'},
-              latitude: {type: 'number'},
-              longitude: {type: 'number'},
-              isDefault: {type: 'boolean'},
+              addressType: { type: 'string' },
+              addressName: { type: 'string', description: "e.g. Father's home, 2nd office" },
+              addressLine1: { type: 'string' },
+              addressLine2: { type: 'string' },
+              doorFloorFlat: { type: 'string', description: 'Door/floor/flat number' },
+              societyName: { type: 'string' },
+              landmark: { type: 'string' },
+              city: { type: 'string' },
+              state: { type: 'string' },
+              country: { type: 'string' },
+              pincode: { type: 'string' },
+              latitude: { type: 'number' },
+              longitude: { type: 'number' },
+              isDefault: { type: 'boolean' },
             },
           },
         },
@@ -295,7 +299,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @patch('/profile/customer/addresses/{id}')
-  @response(204, {description: 'Address updated'})
+  @response(204, { description: 'Address updated' })
   async updateAddress(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -305,20 +309,20 @@ export class CustomerProfileController {
           schema: {
             type: 'object',
             properties: {
-              addressType: {type: 'string'},
-              addressName: {type: 'string', description: "e.g. Father's home, 2nd office"},
-              addressLine1: {type: 'string'},
-              addressLine2: {type: 'string'},
-              doorFloorFlat: {type: 'string', description: 'Door/floor/flat number'},
-              societyName: {type: 'string'},
-              landmark: {type: 'string'},
-              city: {type: 'string'},
-              state: {type: 'string'},
-              country: {type: 'string'},
-              pincode: {type: 'string'},
-              latitude: {type: 'number'},
-              longitude: {type: 'number'},
-              isDefault: {type: 'boolean'},
+              addressType: { type: 'string' },
+              addressName: { type: 'string', description: "e.g. Father's home, 2nd office" },
+              addressLine1: { type: 'string' },
+              addressLine2: { type: 'string' },
+              doorFloorFlat: { type: 'string', description: 'Door/floor/flat number' },
+              societyName: { type: 'string' },
+              landmark: { type: 'string' },
+              city: { type: 'string' },
+              state: { type: 'string' },
+              country: { type: 'string' },
+              pincode: { type: 'string' },
+              latitude: { type: 'number' },
+              longitude: { type: 'number' },
+              isDefault: { type: 'boolean' },
             },
           },
         },
@@ -334,7 +338,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @del('/profile/customer/addresses/{id}')
-  @response(204, {description: 'Address deleted'})
+  @response(204, { description: 'Address deleted' })
   async deleteAddress(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -349,7 +353,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @get('/profile/customer/contacts')
-  @response(200, {description: 'Customer contacts', content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(CustomerContact)}}}})
+  @response(200, { description: 'Customer contacts', content: { 'application/json': { schema: { type: 'array', items: getModelSchemaRef(CustomerContact) } } } })
   async getContacts(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<CustomerContact[]> {
@@ -359,7 +363,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @post('/profile/customer/contacts')
-  @response(200, {description: 'Contact added', content: {'application/json': {schema: getModelSchemaRef(CustomerContact)}}})
+  @response(200, { description: 'Contact added', content: { 'application/json': { schema: getModelSchemaRef(CustomerContact) } } })
   async addContact(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @requestBody({
@@ -369,17 +373,17 @@ export class CustomerProfileController {
             type: 'object',
             required: ['name', 'phone', 'relationship'],
             properties: {
-              name: {type: 'string'},
-              phone: {type: 'string'},
-              email: {type: 'string', format: 'email'},
-              relationship: {type: 'string', enum: Object.values(ContactRelationship)},
-              isPrimary: {type: 'boolean'},
+              name: { type: 'string' },
+              phone: { type: 'string' },
+              email: { type: 'string', format: 'email' },
+              relationship: { type: 'string', enum: Object.values(ContactRelationship) },
+              isPrimary: { type: 'boolean' },
             },
           },
         },
       },
     })
-    body: {name: string; phone: string; relationship: ContactRelationship; email?: string; isPrimary?: boolean},
+    body: { name: string; phone: string; relationship: ContactRelationship; email?: string; isPrimary?: boolean },
   ): Promise<CustomerContact> {
     const customer = await this.resolveCustomer(currentUser[securityId]);
     return this.contactService.create(customer.id, body);
@@ -387,7 +391,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @patch('/profile/customer/contacts/{id}')
-  @response(204, {description: 'Contact updated'})
+  @response(204, { description: 'Contact updated' })
   async updateContact(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -397,11 +401,11 @@ export class CustomerProfileController {
           schema: {
             type: 'object',
             properties: {
-              name: {type: 'string'},
-              phone: {type: 'string'},
-              email: {type: 'string', format: 'email'},
-              relationship: {type: 'string', enum: Object.values(ContactRelationship)},
-              isPrimary: {type: 'boolean'},
+              name: { type: 'string' },
+              phone: { type: 'string' },
+              email: { type: 'string', format: 'email' },
+              relationship: { type: 'string', enum: Object.values(ContactRelationship) },
+              isPrimary: { type: 'boolean' },
             },
           },
         },
@@ -417,7 +421,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @del('/profile/customer/contacts/{id}')
-  @response(204, {description: 'Contact deleted'})
+  @response(204, { description: 'Contact deleted' })
   async deleteContact(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -432,7 +436,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @get('/profile/customer/phones')
-  @response(200, {description: 'Customer alternate phones', content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(CustomerPhone)}}}})
+  @response(200, { description: 'Customer alternate phones', content: { 'application/json': { schema: { type: 'array', items: getModelSchemaRef(CustomerPhone) } } } })
   async getPhones(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<CustomerPhone[]> {
@@ -442,7 +446,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @post('/profile/customer/phones')
-  @response(200, {description: 'Phone added', content: {'application/json': {schema: getModelSchemaRef(CustomerPhone)}}})
+  @response(200, { description: 'Phone added', content: { 'application/json': { schema: getModelSchemaRef(CustomerPhone) } } })
   async addPhone(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @requestBody({
@@ -452,16 +456,16 @@ export class CustomerProfileController {
             type: 'object',
             required: ['countryCode', 'phone'],
             properties: {
-              countryCode: {type: 'string', default: '+91'},
-              phone: {type: 'string'},
-              isPrimary: {type: 'boolean'},
-              isWhatsappNumber: {type: 'boolean'},
+              countryCode: { type: 'string', default: '+91' },
+              phone: { type: 'string' },
+              isPrimary: { type: 'boolean' },
+              isWhatsappNumber: { type: 'boolean' },
             },
           },
         },
       },
     })
-    body: {countryCode: string; phone: string; isPrimary?: boolean; isWhatsappNumber?: boolean},
+    body: { countryCode: string; phone: string; isPrimary?: boolean; isWhatsappNumber?: boolean },
   ): Promise<CustomerPhone> {
     const customer = await this.resolveCustomer(currentUser[securityId]);
     return this.phoneService.create(customer.id, body);
@@ -469,7 +473,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @patch('/profile/customer/phones/{id}')
-  @response(204, {description: 'Phone updated'})
+  @response(204, { description: 'Phone updated' })
   async updatePhone(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -479,10 +483,10 @@ export class CustomerProfileController {
           schema: {
             type: 'object',
             properties: {
-              countryCode: {type: 'string'},
-              phone: {type: 'string'},
-              isPrimary: {type: 'boolean'},
-              isWhatsappNumber: {type: 'boolean'},
+              countryCode: { type: 'string' },
+              phone: { type: 'string' },
+              isPrimary: { type: 'boolean' },
+              isWhatsappNumber: { type: 'boolean' },
             },
           },
         },
@@ -498,7 +502,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @del('/profile/customer/phones/{id}')
-  @response(204, {description: 'Phone deleted'})
+  @response(204, { description: 'Phone deleted' })
   async deletePhone(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -515,7 +519,7 @@ export class CustomerProfileController {
   @get('/profile/customer/pickup-slots')
   @response(200, {
     description: 'Active pickup slots — pass date to hide slots less than 90 minutes out when date is today',
-    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(PickupDeliverySlot)}}},
+    content: { 'application/json': { schema: { type: 'array', items: getModelSchemaRef(PickupDeliverySlot) } } },
   })
   async getPickupSlots(
     @param.query.string('date') date?: string,
@@ -524,8 +528,8 @@ export class CustomerProfileController {
       where: {
         isActive: true,
         isDeleted: false,
-        isAdminOnly: {neq: true},
-        type: {inq: [PickupDeliverySlotType.PICKUP, PickupDeliverySlotType.BOTH]},
+        isAdminOnly: { neq: true },
+        type: { inq: [PickupDeliverySlotType.PICKUP, PickupDeliverySlotType.BOTH] },
       } as object,
       order: ['sortOrder ASC', 'startTime ASC'],
     });
@@ -536,11 +540,24 @@ export class CustomerProfileController {
   @get('/profile/customer/item-categories')
   @response(200, {
     description: 'Active item categories, for a per-category pickup estimate (e.g. clothes vs curtains)',
-    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(ItemCategory)}}},
+    content: { 'application/json': { schema: { type: 'array', items: getModelSchemaRef(ItemCategory) } } },
   })
   async getItemCategories(): Promise<ItemCategory[]> {
     return this.itemCategoryRepository.find({
-      where: {isActive: true, isDeleted: false} as object,
+      where: { isActive: true, isDeleted: false } as object,
+      order: ['sequence ASC', 'name ASC'],
+    });
+  }
+
+  @authenticate('jwt')
+  @get('/profile/customer/service-categories')
+  @response(200, {
+    description: 'Active Service categories, for a per-category pickup estimate (e.g. clothes vs curtains)',
+    content: { 'application/json': { schema: { type: 'array', items: getModelSchemaRef(ItemCategory) } } },
+  })
+  async getServiceCategories(): Promise<ServiceCategory[]> {
+    return this.serviceCategoryRepository.find({
+      where: { isActive: true, isDeleted: false } as object,
       order: ['sequence ASC', 'name ASC'],
     });
   }
@@ -549,27 +566,27 @@ export class CustomerProfileController {
   @get('/profile/customer/pickup-requests')
   @response(200, {
     description: "Caller's own pickup requests",
-    content: {'application/json': {schema: {type: 'array', items: getModelSchemaRef(PickupRequest)}}},
+    content: { 'application/json': { schema: { type: 'array', items: getModelSchemaRef(PickupRequest) } } },
   })
   async getPickupRequests(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<PickupRequest[]> {
     const customer = await this.resolveCustomer(currentUser[securityId]);
     return this.pickupRequestRepository.find({
-      where: {customerId: customer.id, isDeleted: false} as object,
+      where: { customerId: customer.id, isDeleted: false } as object,
       order: ['createdAt DESC'],
     });
   }
 
   @authenticate('jwt')
   @get('/profile/customer/pickup-requests/{id}')
-  @response(200, {description: 'Pickup request detail'})
+  @response(200, { description: 'Pickup request detail' })
   async getPickupRequestById(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<PickupRequest> {
     const customer = await this.resolveCustomer(currentUser[securityId]);
-    const pickupRequest = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false} as object});
+    const pickupRequest = await this.pickupRequestRepository.findOne({ where: { id, isDeleted: false } as object });
     if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
     this.verifyOwnership(pickupRequest.customerId ?? '', customer.id);
     return pickupRequest;
@@ -577,7 +594,7 @@ export class CustomerProfileController {
 
   @authenticate('jwt')
   @post('/profile/customer/pickup-requests')
-  @response(200, {description: 'Pickup request created'})
+  @response(200, { description: 'Pickup request created' })
   async createPickupRequest(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @requestBody({
@@ -587,23 +604,23 @@ export class CustomerProfileController {
             type: 'object',
             required: ['addressId', 'slotId', 'requestedDate', 'handoverBy'],
             properties: {
-              addressId: {type: 'string', format: 'uuid'},
-              slotId: {type: 'string', format: 'uuid'},
-              requestedDate: {type: 'string', format: 'date'},
-              handoverBy: {type: 'string', enum: Object.values(PickupHandoverBy)},
+              addressId: { type: 'string', format: 'uuid' },
+              slotId: { type: 'string', format: 'uuid' },
+              requestedDate: { type: 'string', format: 'date' },
+              handoverBy: { type: 'string', enum: Object.values(PickupHandoverBy) },
               handoverPersonName: {
                 type: 'string',
                 description: 'Required unless handoverBy is "self".',
               },
-              itemCountEstimate: {type: 'number'},
+              itemCountEstimate: { type: 'number' },
               itemCategoryEstimate: {
                 type: 'array',
                 items: {
                   type: 'object',
                   required: ['itemCategoryId', 'quantity'],
                   properties: {
-                    itemCategoryId: {type: 'string', format: 'uuid'},
-                    quantity: {type: 'number'},
+                    itemCategoryId: { type: 'string', format: 'uuid' },
+                    quantity: { type: 'number' },
                   },
                 },
                 description: 'Per-category counts (from GET /profile/customer/item-categories), e.g. how many clothes vs curtains — used to size the pickup (bike vs van).',
@@ -614,7 +631,7 @@ export class CustomerProfileController {
               },
               mediaIds: {
                 type: 'array',
-                items: {type: 'string'},
+                items: { type: 'string' },
                 description: 'IDs returned by POST /files for any photos/voice notes attached to this pickup.',
               },
             },
@@ -629,7 +646,7 @@ export class CustomerProfileController {
       handoverBy: PickupHandoverBy;
       handoverPersonName?: string;
       itemCountEstimate?: number;
-      itemCategoryEstimate?: Array<{itemCategoryId: string; quantity: number}>;
+      itemCategoryEstimate?: Array<{ itemCategoryId: string; quantity: number }>;
       remarks?: string;
       mediaIds?: string[];
     },
@@ -641,7 +658,7 @@ export class CustomerProfileController {
     this.verifyOwnership(address.customerId, customer.id);
 
     const slot = await this.pickupSlotRepository.findOne({
-      where: {id: body.slotId, isActive: true, isDeleted: false, isAdminOnly: {neq: true}} as object,
+      where: { id: body.slotId, isActive: true, isDeleted: false, isAdminOnly: { neq: true } } as object,
     });
     if (!slot) throw new HttpErrors.BadRequest('Pickup slot not found or inactive.');
 
@@ -664,7 +681,7 @@ export class CustomerProfileController {
       }
     }
 
-    const {v4} = await import('uuid');
+    const { v4 } = await import('uuid');
     const count = await this.pickupRequestRepository.count();
     const pickupNumber = `PU${String(count.count + 1).padStart(6, '0')}`;
     const pickupRequest = await this.pickupRequestRepository.create({
@@ -687,18 +704,18 @@ export class CustomerProfileController {
       remarks,
       mediaIds,
     });
-    return {message: 'Pickup request created.', pickupRequest};
+    return { message: 'Pickup request created.', pickupRequest };
   }
 
   @authenticate('jwt')
   @patch('/profile/customer/pickup-requests/{id}/cancel')
-  @response(200, {description: 'Pickup request cancelled'})
+  @response(200, { description: 'Pickup request cancelled' })
   async cancelPickupRequest(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
     const customer = await this.resolveCustomer(currentUser[securityId]);
-    const pickupRequest = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false} as object});
+    const pickupRequest = await this.pickupRequestRepository.findOne({ where: { id, isDeleted: false } as object });
     if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
     this.verifyOwnership(pickupRequest.customerId ?? '', customer.id);
 
@@ -707,15 +724,15 @@ export class CustomerProfileController {
       throw new HttpErrors.BadRequest(`Cannot cancel a pickup request that is already ${current}.`);
     }
 
-    await this.pickupRequestRepository.updateById(id, {status: PickupRequestStatus.CANCELLED});
-    return {message: 'Pickup request cancelled.'};
+    await this.pickupRequestRepository.updateById(id, { status: PickupRequestStatus.CANCELLED });
+    return { message: 'Pickup request cancelled.' };
   }
 
   // ─── Coupons ────────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
   @get('/profile/customer/coupons/active')
-  @response(200, {description: 'Active coupons this customer is currently eligible for (home-screen offers)'})
+  @response(200, { description: 'Active coupons this customer is currently eligible for (home-screen offers)' })
   async getActiveCoupons(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
@@ -731,7 +748,7 @@ export class CustomerProfileController {
   @get('/profile/customer/preferences')
   @response(200, {
     description: "Caller's stored preferences (created with defaults on first read)",
-    content: {'application/json': {schema: getModelSchemaRef(CustomerPreference)}},
+    content: { 'application/json': { schema: getModelSchemaRef(CustomerPreference) } },
   })
   async getPreferences(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
@@ -744,7 +761,7 @@ export class CustomerProfileController {
   @patch('/profile/customer/preferences')
   @response(200, {
     description: 'Updated preferences',
-    content: {'application/json': {schema: getModelSchemaRef(CustomerPreference)}},
+    content: { 'application/json': { schema: getModelSchemaRef(CustomerPreference) } },
   })
   async updatePreferences(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
@@ -754,13 +771,13 @@ export class CustomerProfileController {
           schema: {
             type: 'object',
             properties: {
-              applyInstructionsToAllOrders: {type: 'boolean'},
-              specialInstructions: {type: 'string'},
-              specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
-              stainAutoApprove: {type: 'boolean'},
-              damageAutoApprove: {type: 'boolean'},
-              colourBleedingChoice: {type: 'string', enum: Object.values(ColourBleedingChoice)},
-              upgradeServiceChoice: {type: 'string', enum: Object.values(UpgradeServiceChoice)},
+              applyInstructionsToAllOrders: { type: 'boolean' },
+              specialInstructions: { type: 'string' },
+              specialInstructionMediaIds: { type: 'array', items: { type: 'string' } },
+              stainAutoApprove: { type: 'boolean' },
+              damageAutoApprove: { type: 'boolean' },
+              colourBleedingChoice: { type: 'string', enum: Object.values(ColourBleedingChoice) },
+              upgradeServiceChoice: { type: 'string', enum: Object.values(UpgradeServiceChoice) },
             },
           },
         },
