@@ -33,7 +33,7 @@ import * as Repos from './repositories';
  */
 // dist/data/*.json, copied there by the build's copy-assets step — see the
 // matching note in seed.ts.
-const SEED_FILE = path.join(__dirname, '../data/seed-service-items.json');
+const SEED_FILE = path.join(__dirname, 'data/seed-service-items.json');
 
 const CLEARED_TABLES: {table: string; repoClass: unknown}[] = [
   // child-to-parent order for the delete pass

@@ -647,7 +647,7 @@ async function seedMasters(app: presstoBackendApplication) {
   // (no src/ shipped, see pressto_backend's DEPLOY.md) would otherwise
   // silently skip seeding: existsSync below just returns false rather
   // than throwing, which is how this went unnoticed for a while.
-  const seedFile = path.join(__dirname, '../data/seed-masters.json');
+  const seedFile = path.join(__dirname, 'data/seed-masters.json');
   if (!fs.existsSync(seedFile)) {
     console.log('No master seed file found at', seedFile);
     return;
