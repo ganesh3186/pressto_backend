@@ -24,35 +24,60 @@ import * as Repos from './repositories';
  *     catalogue, but a genuine rename/removal in the new workbook can't
  *     be avoided. Run seed:pressto-seed knowing that.
  *   - service_category, item_category, additional_charge_master: NEVER
- *     cleared, only inserted if missing by id — these are shared/lower
- *     churn and other data may already point at rows here beyond what
- *     this workbook covers.
+ *     cleared, matched by `code` (their real unique key) rather than id —
+ *     a target DB can already have rows here from an earlier seed run OR
+ *     added by hand through the admin panel, under a DIFFERENT id than
+ *     whatever this JSON generated locally. Matching by id alone (the
+ *     first version of this script did) tries to INSERT a second row
+ *     with a colliding code, which Postgres rejects — and worse, leaves
+ *     any item/service that pointed at the intended id referencing a row
+ *     that was never actually created. Matching by code instead: if a
+ *     row with that code already exists, its id is REUSED for item/
+ *     service foreign keys below rather than inserting a duplicate.
  *
- * Pass --keep to skip the clear step entirely (insert-if-missing only,
- * for every table here).
+ * Pass --keep to skip the clear step entirely (still runs the code-match/
+ * remap step; item/service/service_item_mapping are then inserted only
+ * where missing by id, same as before, but now against the remapped
+ * category ids).
  */
 // dist/data/*.json, copied there by the build's copy-assets step — see the
 // matching note in seed.ts.
 const SEED_FILE = path.join(__dirname, 'data/seed-service-items.json');
 
-const CLEARED_TABLES: {table: string; repoClass: unknown}[] = [
-  // child-to-parent order for the delete pass
-  {table: 'service_item_mapping', repoClass: Repos.ServiceItemMappingRepository},
-  {table: 'service', repoClass: Repos.ServiceRepository},
-  {table: 'item', repoClass: Repos.ItemRepository},
-];
-const UPSERT_ONLY_TABLES: {table: string; repoClass: unknown}[] = [
-  {table: 'service_category', repoClass: Repos.ServiceCategoryRepository},
-  {table: 'item_category', repoClass: Repos.ItemCategoryRepository},
-  {table: 'additional_charge_master', repoClass: Repos.AdditionalChargeMasterRepository},
-];
-// insert order: parents the cleared tables' FKs point at, first
-const INSERT_ORDER: {table: string; repoClass: unknown}[] = [
-  ...UPSERT_ONLY_TABLES,
-  {table: 'item', repoClass: Repos.ItemRepository},
-  {table: 'service', repoClass: Repos.ServiceRepository},
-  {table: 'service_item_mapping', repoClass: Repos.ServiceItemMappingRepository},
-];
+interface SeedRecord {
+  id: string;
+  code?: string;
+  [key: string]: unknown;
+}
+
+async function upsertByCode(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  repo: any,
+  table: string,
+  rows: SeedRecord[],
+): Promise<Map<string, string>> {
+  // jsonId -> the id actually used in the DB (its own, or an existing row's)
+  const idRemap = new Map<string, string>();
+  let inserted = 0;
+  let matchedExisting = 0;
+  for (const record of rows) {
+    const existing = record.code ? await repo.findOne({where: {code: record.code}}) : null;
+    if (existing) {
+      idRemap.set(record.id, existing.id);
+      matchedExisting += 1;
+      continue;
+    }
+    try {
+      await repo.create(record);
+      idRemap.set(record.id, record.id);
+      inserted += 1;
+    } catch (err) {
+      console.error(`    ✗ ${table} (code: ${record.code}):`, (err as Error).message);
+    }
+  }
+  console.log(`  ${table.padEnd(22)} inserted: ${inserted}, matched existing: ${matchedExisting}`);
+  return idRemap;
+}
 
 async function seedPresstoServiceItems() {
   if (!fs.existsSync(SEED_FILE)) {
@@ -68,7 +93,13 @@ async function seedPresstoServiceItems() {
 
   if (!process.argv.includes('--keep')) {
     console.log('Clearing existing service/item catalogue (service_item_mapping, service, item)…');
-    for (const {table, repoClass} of CLEARED_TABLES) {
+    const clearOrder: {table: string; repoClass: unknown}[] = [
+      // child-to-parent order for the delete pass
+      {table: 'service_item_mapping', repoClass: Repos.ServiceItemMappingRepository},
+      {table: 'service', repoClass: Repos.ServiceRepository},
+      {table: 'item', repoClass: Repos.ItemRepository},
+    ];
+    for (const {table, repoClass} of clearOrder) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const repo = (await app.getRepository(repoClass as any)) as any;
       try {
@@ -82,9 +113,45 @@ async function seedPresstoServiceItems() {
     console.log('');
   }
 
-  for (const {table, repoClass} of INSERT_ORDER) {
-    const rows = data[table];
-    if (!Array.isArray(rows) || !rows.length) {
+  console.log('Matching service_category / item_category / additional_charge_master by code…');
+  const serviceCategoryRepo = await app.getRepository(Repos.ServiceCategoryRepository);
+  const itemCategoryRepo = await app.getRepository(Repos.ItemCategoryRepository);
+  const chargeRepo = await app.getRepository(Repos.AdditionalChargeMasterRepository);
+
+  const svcCatRemap = await upsertByCode(
+    serviceCategoryRepo,
+    'service_category',
+    data.service_category || [],
+  );
+  const itemCatRemap = await upsertByCode(itemCategoryRepo, 'item_category', data.item_category || []);
+  // additional_charge_master's ids aren't referenced by anything else in
+  // this JSON — no remap needed, just dedupe-by-code.
+  await upsertByCode(chargeRepo, 'additional_charge_master', data.additional_charge_master || []);
+  console.log('');
+
+  // Apply the remaps before inserting item/service, so their category FKs
+  // point at whatever id actually ended up in the DB.
+  const items: SeedRecord[] = (data.item || []).map((r: SeedRecord) => ({
+    ...r,
+    itemCategoryId: itemCatRemap.get(r.itemCategoryId as string) ?? r.itemCategoryId,
+  }));
+  const services: SeedRecord[] = (data.service || []).map((r: SeedRecord) => ({
+    ...r,
+    serviceCategoryId: svcCatRemap.get(r.serviceCategoryId as string) ?? r.serviceCategoryId,
+  }));
+
+  const insertOrder: {table: string; repoClass: unknown; rows: SeedRecord[]}[] = [
+    {table: 'item', repoClass: Repos.ItemRepository, rows: items},
+    {table: 'service', repoClass: Repos.ServiceRepository, rows: services},
+    {
+      table: 'service_item_mapping',
+      repoClass: Repos.ServiceItemMappingRepository,
+      rows: data.service_item_mapping || [],
+    },
+  ];
+
+  for (const {table, repoClass, rows} of insertOrder) {
+    if (!rows.length) {
       console.log(`  ${table.padEnd(22)} — no rows, skipped`);
       continue;
     }
