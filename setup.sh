@@ -48,12 +48,16 @@ npm ci --omit=dev
 
 echo ""
 echo "== 5/5 Database setup (first time only) =="
-read -r -p "Run 'npm run migrate' + 'npm run seed' against this server's DB now? [y/N] " REPLY
+# NOT `npm run migrate`/`npm run seed` — both have a `pre*` hook that reruns
+# `npm run build` (lb-tsc, which needs src/), same reason `npm start` is
+# avoided above. dist/ is already built and current; call the compiled
+# files directly to skip that hook entirely.
+read -r -p "Run migrate + seed against this server's DB now? [y/N] " REPLY
 if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-  npm run migrate
-  npm run seed
+  node dist/migrate.js
+  node dist/seed.js
 else
-  echo "Skipped. Run later with: npm run migrate && npm run seed"
+  echo "Skipped. Run later with: node dist/migrate.js && node dist/seed.js"
 fi
 
 echo ""
