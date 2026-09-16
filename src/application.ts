@@ -37,6 +37,7 @@ import { PettyCashService } from './services/petty-cash.service';
 import { DashboardService } from './services/dashboard.service';
 import { ReportsService } from './services/reports.service';
 import { RiderAssignmentService } from './services/rider-assignment.service';
+import { RazorpayService } from './services/razorpay.service';
 
 export { ApplicationConfig };
 
@@ -102,6 +103,7 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.dashboard').toClass(DashboardService);
     this.bind('services.reports').toClass(ReportsService);
     this.bind('services.rider-assignment').toClass(RiderAssignmentService);
+    this.bind('services.razorpay').toClass(RazorpayService);
   }
 
   protected configureFileUpload(destination?: string) {
