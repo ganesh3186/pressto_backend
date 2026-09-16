@@ -706,9 +706,13 @@ export class ShiftController {
       if (bucket) walletCollections[bucket] += Number(r.amount) || 0;
     }
 
-    // Register cash is order-payment cash only. Wallet recharge collections
-    // remain visible in their own section and do not inflate the till register.
-    const cashReceived = collections.cash;
+    // Register cash is every rupee of physical cash that actually landed in
+    // the till this shift — order-payment cash AND cash-mode wallet
+    // recharges both count (a recharge paid in cash hands the cashier real
+    // notes exactly like a cash order payment does). Wallet recharge
+    // collections still show separately in their own section for that
+    // breakdown, this is only the register's combined total.
+    const cashReceived = collections.cash + walletCollections.cash;
     const openingBanking = (
       shift.opening as
         | {banking?: {supposed?: number; actual?: number}}
