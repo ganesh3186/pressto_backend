@@ -10,14 +10,13 @@ import {HttpErrors} from '@loopback/rest';
 
 @globalInterceptor('unique-constraint', {tags: {name: 'uniqueConstraint'}})
 export class UniqueConstraintInterceptor implements Provider<Interceptor> {
-
   value(): Interceptor {
     return this.intercept.bind(this);
   }
 
   async intercept(
     context: InvocationContext,
-    next: () => ValueOrPromise<InvocationResult>
+    next: () => ValueOrPromise<InvocationResult>,
   ): Promise<InvocationResult> {
     // next() is typed ValueOrPromise (effectively `any`, since
     // InvocationResult itself is `any`) — a synchronous controller method
@@ -30,7 +29,6 @@ export class UniqueConstraintInterceptor implements Provider<Interceptor> {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       if (error?.code === '23505') {
-
         let message = 'Duplicate value violates unique constraint';
 
         if (error?.detail) {
@@ -46,7 +44,7 @@ export class UniqueConstraintInterceptor implements Provider<Interceptor> {
       // Postgres Foreign Key Violation
       if (error?.code === '23503') {
         throw new HttpErrors.BadRequest(
-          'Invalid reference — related record does not exist'
+          'Invalid reference — related record does not exist',
         );
       }
 

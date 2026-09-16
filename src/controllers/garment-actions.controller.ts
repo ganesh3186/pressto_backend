@@ -70,6 +70,9 @@ export class GarmentActionsController {
 
     await this._guardNoPendingRequest(id, ApprovalRequestType.RETURN_ITEM);
 
+    const returnCalculation =
+      await this.approvalService.calculateGarmentReturnAmount(id);
+
     const request = await this.approvalService.createRequest({
       type: ApprovalRequestType.RETURN_ITEM,
       entityType: 'garment',
@@ -80,7 +83,11 @@ export class GarmentActionsController {
       metadata: {remarks: body.remarks},
     });
 
-    return {message: 'Return request raised. Awaiting ASM approval.', request};
+    return {
+      message: 'Return request raised. Awaiting ASM approval.',
+      request,
+      returnCalculation,
+    };
   }
 
   // ─── Upgrade Service ──────────────────────────────────────────────────────

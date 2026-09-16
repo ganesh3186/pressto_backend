@@ -728,6 +728,18 @@ export class OrderService {
         : Promise.resolve([]),
       this.orderChargeRepo.find({where: {orderId}}, txOpt),
     ]);
+    const orderGarmentIds = orderGarments.map(garment => garment.id);
+    const garmentCharges = orderGarmentIds.length
+      ? await this.garmentAdditionalChargeRepo.find(
+          {
+            where: {
+              garmentId: {inq: orderGarmentIds},
+              isDeleted: false,
+            } as any,
+          },
+          txOpt,
+        )
+      : [];
     const garmentsByItem = new Map<string, typeof orderGarments>();
     for (const garment of orderGarments) {
       const list = garmentsByItem.get(garment.orderItemId) ?? [];
@@ -775,16 +787,49 @@ export class OrderService {
         (sum, item) => sum + item.totalPrice,
         0,
       );
-      const activeItemChargesTotal = itemCharges.reduce((sum, charge) => {
-        const orderItem = orderItems.find(item => item.id === charge.orderItemId);
-        if (!orderItem) return sum;
+      const activeItemChargesTotal = orderItems.reduce((sum, orderItem) => {
+        const lineGarments = garmentsByItem.get(orderItem.id) ?? [];
+        const lineGarmentIds = new Set(lineGarments.map(garment => garment.id));
+        const explicitLineCharges = garmentCharges.filter(charge =>
+          lineGarmentIds.has(charge.garmentId),
+        );
+        if (explicitLineCharges.length) {
+          const activeGarmentIds = new Set(
+            lineGarments
+              .filter(
+                garment =>
+                  garment.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+              )
+              .map(garment => garment.id),
+          );
+          return (
+            sum +
+            explicitLineCharges
+              .filter(charge => activeGarmentIds.has(charge.garmentId))
+              .reduce(
+                (chargeSum, charge) =>
+                  chargeSum + Number(charge.amount ?? 0),
+                0,
+              )
+          );
+        }
+
+        // Legacy orders have only an aggregate order-item charge and no
+        // garment allocations. Pro-rate only in that legacy representation.
         const storedQuantity = Number(orderItem.quantity) || 0;
         const activeQuantity =
           items.find(item => item.orderItemId === orderItem.id)?.quantity ?? 0;
+        const lineLegacyCharges = itemCharges
+          .filter(charge => charge.orderItemId === orderItem.id)
+          .reduce(
+            (chargeSum, charge) =>
+              chargeSum + Number(charge.amount ?? 0),
+            0,
+          );
         return (
           sum +
           (storedQuantity > 0
-            ? Number(charge.amount ?? 0) * (activeQuantity / storedQuantity)
+            ? lineLegacyCharges * (activeQuantity / storedQuantity)
             : 0)
         );
       }, 0);
