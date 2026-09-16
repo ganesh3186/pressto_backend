@@ -51,19 +51,11 @@ export class RefundController {
       order: ['createdAt DESC'],
     });
 
-    await Promise.all(
-      refundsDue
-        .filter(refund => refund.status !== 'paid')
-        .map(refund =>
-          this.approvalService.reconcileRefundDueAmount(refund.id),
-        ),
-    );
-    const reconciledRefundsDue = await this.refundDueRepo.find({
-      where: {orderId},
-      order: ['createdAt DESC'],
-    });
-
-    return {refundsDue: reconciledRefundsDue};
+    // A GET must not rewrite financial records. Reconciliation still runs
+    // immediately before payout-method selection and payout approval, where a
+    // state change is expected and guarded. Previously, merely reopening the
+    // invoice could overwrite a correct pending refund with a stale order total.
+    return {refundsDue};
   }
 
   // ─── Pick a payout method ──────────────────────────────────────────────────

@@ -53,13 +53,15 @@ function roundRupee(value: unknown): number {
 export function calculateSalesReturnCreditAmount(
   preTaxAmount: unknown,
   gstRate: unknown,
-  _orderPaid = true,
+  orderPaid = true,
 ): number {
   const amount = money(preTaxAmount);
-  // A return always removes the returned item's GST-inclusive value from the
-  // order. Payment state only decides whether that reduction becomes a cash
-  // refund or lowers the outstanding balance; it must not change item tax.
-  return money(amount * (1 + (Number(gstRate) || 0) / 100));
+  // Paid returns refund the GST already collected. For an unpaid order no tax
+  // has been collected, so only the discounted item/services/add-on subtotal
+  // is credited against the outstanding order value.
+  return orderPaid
+    ? money(amount * (1 + (Number(gstRate) || 0) / 100))
+    : amount;
 }
 
 export function calculateDiscountedSalesReturnAmount(
@@ -377,9 +379,11 @@ export class SalesReturnController {
       0,
     );
     const gstRate = await this._resolveGstRate();
+    const orderPaid = await this._isOrderPaid(order);
     const creditAmount = calculateSalesReturnCreditAmount(
       preTaxCreditAmount,
       gstRate,
+      orderPaid,
     );
 
     // Refund method is picked here, up front, rather than at approval time
@@ -618,14 +622,13 @@ export class SalesReturnController {
     // payout approval for Sales Return, unlike Return Item/Upgrade's
     // deferred RefundDue pipeline — the credit-note approval itself IS the
     // human sign-off here.
-    const creditAmount = money(record.creditAmount);
     const {newOrderTotal, refundAmount, newBalanceDue} =
       await this._previewCreditNote(record, order);
 
-    // The returned item lines are always pre-tax. A fully paid order stores a
-    // GST-inclusive creditAmount, while an unpaid order stores only the item
-    // price. Use the returned lines instead of reverse-grossing creditAmount
-    // so both cases update the pre-tax subtotal correctly.
+    // The returned item lines are always pre-tax. A paid order stores a
+    // GST-inclusive creditAmount, while an unpaid order stores only its
+    // discounted item/services/add-on value. Use the returned lines instead
+    // of reverse-grossing creditAmount so both cases update subtotal correctly.
     const gstRate = await this._resolveGstRate();
     const preTaxCreditAmount = money(
       (record.returnedItems ?? []).reduce(
