@@ -136,7 +136,12 @@ for (const row of rows) {
     continue;
   }
 
-  const employeeCode = String(row['Employee Code'] || '').trim();
+  // The sheet's own code is a bare number (e.g. "861") — doesn't match this
+  // platform's EMP-prefixed format (EMP0861, same as EmployeeController's own
+  // generator, just zero-padded to the sheet's own widest code instead of a
+  // fixed 3 digits, since several of these already run past 999).
+  const employeeCodeRaw = String(row['Employee Code'] || '').trim();
+  const employeeCode = `EMP${employeeCodeRaw.padStart(4, '0')}`;
   const {firstName, lastName} = splitName(row['Name']);
   const storeRaw = String(row['Store'] || '')
     .replace(/[\r\n]+/g, '')
@@ -154,7 +159,9 @@ for (const row of rows) {
     lastName,
     email: row['Email Address'] ? String(row['Email Address']).trim() : undefined,
     countryCode: '+91',
-    dummyPhone: `9${employeeCode.padStart(9, '0')}`,
+    // Derived from the sheet's raw numeric code, not the EMP-prefixed one
+    // above — keeps the dummy phone purely numeric.
+    dummyPhone: `9${employeeCodeRaw.padStart(9, '0')}`,
     dateOfBirth: toIsoDate(row['DOB']),
     joiningDate: toIsoDate(row['DOJ']),
     password: row['Password'] ? String(row['Password']).trim() : 'pressto123',
