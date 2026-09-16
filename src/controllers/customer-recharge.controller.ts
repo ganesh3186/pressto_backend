@@ -10,8 +10,10 @@ import {
   response,
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
+import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-type.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
-import {CustomerRepository} from '../repositories';
+import {CustomerRepository, UsersRepository} from '../repositories';
+import {RazorpayService} from '../services/razorpay.service';
 import {SecurityDepositService} from '../services/security-deposit.service';
 import {WalletService} from '../services/wallet.service';
 
@@ -19,10 +21,14 @@ export class CustomerRechargeController {
   constructor(
     @repository(CustomerRepository)
     private customerRepository: CustomerRepository,
+    @repository(UsersRepository)
+    private usersRepository: UsersRepository,
     @inject('services.wallet')
     private walletService: WalletService,
     @inject('services.security-deposit')
     private securityDepositService: SecurityDepositService,
+    @inject('services.razorpay')
+    private razorpayService: RazorpayService,
   ) {}
 
   private async resolveCustomerId(userId: string): Promise<string> {
@@ -33,6 +39,19 @@ export class CustomerRechargeController {
       throw new HttpErrors.NotFound('Customer profile not found.');
     }
     return customer.id;
+  }
+
+  // Name/email/phone Razorpay's Checkout popup prefills with — pulled from
+  // the customer's own profile so they never have to re-type it themselves.
+  private async resolveCustomerContact(
+    customerId: string,
+  ): Promise<{name: string; email?: string; contact?: string}> {
+    const customer = await this.customerRepository.findById(customerId);
+    const user = await this.usersRepository.findById(customer.userId);
+    const trimmedFullName = user.fullName?.trim();
+    const combinedName = [customer.firstName, customer.lastName].filter(Boolean).join(' ').trim();
+    const name = trimmedFullName ? trimmedFullName : combinedName ? combinedName : 'Customer';
+    return {name, email: customer.email ?? user.email, contact: user.phone};
   }
 
   // ─── Wallet Recharge ─────────────────────────────────────────────────────
@@ -69,6 +88,64 @@ export class CustomerRechargeController {
     return {
       message: 'Recharge request created. Proceed with payment.',
       rechargeRequest,
+    };
+  }
+
+  // Customer-initiated equivalent of the admin's
+  // adminWalletRechargeInitiateGateway + gateway-payment.controller.ts's
+  // create(), collapsed into one call — unlike the POS counter flow there's
+  // no staff-side gap between "customer picks an amount" and "open
+  // Checkout". Creates the PENDING WalletRechargeRequest via the same
+  // initiateRecharge() every other wallet mode already uses, then a real
+  // Razorpay order via RazorpayService. Nothing is credited here — only a
+  // signature-verified confirmWalletRechargeGateway() call (or the webhook)
+  // actually applies it, via RazorpayService.applyPayment()'s existing
+  // WALLET_TOPUP case (WalletService.confirmRecharge), the same path the
+  // admin flow already uses.
+  @authenticate('jwt')
+  @post('/profile/customer/wallet/recharge/initiate-gateway')
+  @response(200, {description: 'Wallet recharge Razorpay order created'})
+  async initiateWalletRechargeGateway(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['amount'],
+            properties: {
+              amount: {type: 'number', minimum: 1},
+              remarks: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {amount: number; remarks?: string},
+  ): Promise<object> {
+    const customerId = await this.resolveCustomerId(currentUser[securityId]);
+    const contact = await this.resolveCustomerContact(customerId);
+
+    const rechargeRequest = await this.walletService.initiateRecharge(
+      customerId,
+      body.amount,
+      PaymentMode.GATEWAY,
+      body.remarks,
+    );
+
+    const gatewayLink = await this.razorpayService.createOrder({
+      referenceType: GatewayPaymentReferenceType.WALLET_TOPUP,
+      referenceId: rechargeRequest.id,
+      amount: body.amount,
+      description: `Wallet recharge - ${rechargeRequest.requestNumber}`,
+      customer: contact,
+      createdBy: currentUser[securityId],
+    });
+
+    return {
+      message: 'Proceed with payment.',
+      rechargeRequest,
+      gatewayLink: {...(gatewayLink.toJSON() as object), razorpayKeyId: process.env.RAZORPAY_KEY_ID},
     };
   }
 

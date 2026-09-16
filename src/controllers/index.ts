@@ -43,6 +43,7 @@ export * from './customer-profile.controller';
 export * from './customer-order.controller';
 export * from './order-label.controller';
 export * from './customer-recharge.controller';
+export * from './customer-gateway-payment.controller';
 export * from './admin-customer-recharge.controller';
 export * from './customer-family-group.controller';
 export * from './admin-family-group.controller';

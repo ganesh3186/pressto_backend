@@ -4,6 +4,7 @@ import {repository} from '@loopback/repository';
 import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {Customer} from '../models';
+import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-type.enum';
 import {Order} from '../models/order.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {
@@ -11,10 +12,12 @@ import {
   CustomerRepository,
   InvoiceRepository,
   OrderRepository,
+  UsersRepository,
   WalletRepository,
   WalletTransactionRepository,
 } from '../repositories';
-import {OrderService} from '../services/order.service';
+import {OrderService, roundRupee} from '../services/order.service';
+import {RazorpayService} from '../services/razorpay.service';
 
 // Customer-friendly labels for the raw order status values.
 const ORDER_STATUS_LABEL: Record<string, string> = {
@@ -58,7 +61,9 @@ export class CustomerOrderController {
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepo: WalletTransactionRepository,
+    @repository(UsersRepository) private usersRepo: UsersRepository,
     @inject('services.order') private orderService: OrderService,
+    @inject('services.razorpay') private razorpayService: RazorpayService,
   ) {}
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -81,6 +86,16 @@ export class CustomerOrderController {
       throw new HttpErrors.Forbidden('You do not have access to this order.');
     }
     return order;
+  }
+
+  // Name/email/phone Razorpay's Checkout popup prefills with — pulled from
+  // the customer's own profile so they never have to re-type it themselves.
+  private async resolveContact(customer: Customer): Promise<{name: string; email?: string; contact?: string}> {
+    const user = await this.usersRepo.findById(customer.userId);
+    const trimmedFullName = user.fullName?.trim();
+    const combinedName = [customer.firstName, customer.lastName].filter(Boolean).join(' ').trim();
+    const name = trimmedFullName ? trimmedFullName : combinedName ? combinedName : 'Customer';
+    return {name, email: customer.email ?? user.email, contact: user.phone};
   }
 
   // ─── Orders: summary (declared before /{orderId} so the static path wins) ───
@@ -317,6 +332,70 @@ export class CustomerOrderController {
       amount,
       customer.userId,
     );
+  }
+
+  // ─── Orders: pay (in full or part) via Razorpay ────────────────────────────
+  // Customer-initiated equivalent of the admin/POS "PGLink" order payment —
+  // creates a real Razorpay order for an amount up to the balance due.
+  // Nothing is applied to the order here; only a signature-verified
+  // CustomerGatewayPaymentController.verify() call (or the webhook) actually
+  // records the payment, via RazorpayService.applyPayment()'s ORDER_PAYMENT
+  // case, which reuses OrderService.addPayment() — the exact same path a
+  // staff-collected payment takes. Validated against the same balance-due
+  // calculation addPayment() itself uses, so a Razorpay order is never
+  // created for more than what's actually owed.
+
+  @authenticate('jwt')
+  @post('/profile/customer/orders/{orderId}/pay/initiate-gateway')
+  @response(200, {description: 'Razorpay order created for this order payment'})
+  async payMyOrderInitiateGateway(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('orderId') orderId: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['amount'],
+            properties: {
+              amount: {
+                type: 'number',
+                minimum: 0,
+                description: 'Amount to pay via gateway. Must be > 0 and ≤ balance due.',
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {amount: number},
+  ): Promise<object> {
+    const customer = await this.resolveCustomer(currentUser);
+    const order = await this.resolveOwnedOrder(orderId, customer.id);
+
+    const amount = Number(body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new HttpErrors.BadRequest('Enter an amount greater than zero.');
+    }
+    const {due} = await this.orderService.computeBalanceDue(order);
+    if (roundRupee(amount) > due) {
+      throw new HttpErrors.BadRequest(`Amount ₹${amount} exceeds balance due ₹${due}.`);
+    }
+
+    const contact = await this.resolveContact(customer);
+    const gatewayLink = await this.razorpayService.createOrder({
+      referenceType: GatewayPaymentReferenceType.ORDER_PAYMENT,
+      referenceId: orderId,
+      amount,
+      description: `Payment for order ${order.orderNumber}`,
+      customer: contact,
+      createdBy: customer.userId,
+    });
+
+    return {
+      message: 'Proceed with payment.',
+      gatewayLink: {...(gatewayLink.toJSON() as object), razorpayKeyId: process.env.RAZORPAY_KEY_ID},
+    };
   }
 
   // ─── Orders: billing documents ─────────────────────────────────────────────
