@@ -59,13 +59,19 @@ const OUT_PATH = path.resolve(__dirname, '../src/data/users-roles.json');
 
 const uuid = () => crypto.randomUUID();
 
+// SM/AM/RM/CCI already exist as real, unlocked, client-defined roles in the
+// staging DB — checked directly against a restored staging backup before
+// this mapping was written (values/labels/scopes below copied verbatim
+// from what's already there, so the seed's upsert-by-value is a genuine
+// no-op for these four, not a rename). CCE/PMU/HOP/Finance/Management have
+// no existing equivalent and stay genuinely new roles.
 const ROLE_DEFS = {
-  SM: {value: 'sm', label: 'SM', scope: 'store'},
+  SM: {value: 'store-manager-sm', label: 'Store Manager (SM)', scope: 'store'},
   CCE: {value: 'cce', label: 'CCE', scope: 'store'},
   CCI: {value: 'cci', label: 'CCI', scope: 'store'},
   PMU: {value: 'pmu', label: 'PMU', scope: 'store'},
-  AM: {value: 'am', label: 'AM', scope: 'cluster'},
-  RM: {value: 'rm', label: 'RM', scope: 'region'},
+  AM: {value: 'manager-asm', label: 'Area Manager (AM)', scope: 'cluster'},
+  RM: {value: 'regional-manager', label: 'Regional Manager', scope: 'region'},
   HOP: {value: 'hop', label: 'HOP', scope: 'global'},
   Finance: {value: 'pulse_finance', label: 'Finance', scope: 'global'},
   Management: {value: 'management', label: 'Management', scope: 'global'},

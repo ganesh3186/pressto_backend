@@ -11,8 +11,12 @@ import * as Repos from './repositories';
  *   npm run seed:users-roles
  *
  * Roles: upserted by value (create if missing, refresh label/scope if an
- * earlier run already created them) — never locked, since these are the
- * client's own operational roles, not platform system roles.
+ * earlier run already created them). SM/AM/RM/CCI reuse existing,
+ * already-live role values (store-manager-sm/manager-asm/regional-manager/
+ * cci) rather than creating duplicates — confirmed against a real staging
+ * backup before mapping them, see migrate-users-roles.cjs. CCE/PMU/HOP/
+ * Finance/Management have no existing equivalent and are genuinely new,
+ * unlocked, client-defined roles.
  *
  * Employees: upserted by employeeCode (their real HR code from the
  * sheet, kept as-is rather than regenerated) — an existing employee's
@@ -25,9 +29,10 @@ import * as Repos from './repositories';
  * Store/cluster/region resolution follows each role's scope (see
  * migrate-users-roles.cjs's header comment for the full mapping):
  * store-scoped roles get employee.storeId from their primary store
- * code; 'am' additionally resolves that store's clusterId; 'rm'
- * resolves that cluster's regionId; the three "sees everything" roles
- * (hop/pulse_finance/management) get no store/cluster/region binding at
+ * code; 'manager-asm' (AM) additionally resolves that store's clusterId;
+ * 'regional-manager' (RM) resolves that cluster's regionId; the three
+ * "sees everything" roles (hop/pulse_finance/management) get no store/
+ * cluster/region binding at
  * all — their access comes from being hardcoded into
  * StoreScopeService.GLOBAL_ROLES instead (see that file).
  */
@@ -118,8 +123,8 @@ async function seedUsersRoles() {
   const clusterById = new Map(allClusters.map(c => [c.id, c]));
 
   const GLOBAL_SCOPE_ROLES = new Set(['hop', 'pulse_finance', 'management']);
-  const CLUSTER_SCOPE_ROLES = new Set(['am']);
-  const REGION_SCOPE_ROLES = new Set(['rm']);
+  const CLUSTER_SCOPE_ROLES = new Set(['manager-asm']);
+  const REGION_SCOPE_ROLES = new Set(['regional-manager']);
 
   let created = 0;
   let updated = 0;

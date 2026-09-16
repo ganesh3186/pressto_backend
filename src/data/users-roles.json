@@ -1,8 +1,8 @@
 {
   "roles": [
     {
-      "value": "sm",
-      "label": "SM",
+      "value": "store-manager-sm",
+      "label": "Store Manager (SM)",
       "scope": "store"
     },
     {
@@ -21,13 +21,13 @@
       "scope": "store"
     },
     {
-      "value": "am",
-      "label": "AM",
+      "value": "manager-asm",
+      "label": "Area Manager (AM)",
       "scope": "cluster"
     },
     {
-      "value": "rm",
-      "label": "RM",
+      "value": "regional-manager",
+      "label": "Regional Manager",
       "scope": "region"
     },
     {
@@ -50,7 +50,7 @@
     {
       "id": "0eb74083-c40f-4fe3-8879-72d267ca2682",
       "employeeCode": "EMP0542",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Kiran",
       "lastName": "Shankar Agawne",
       "email": "542@presstoindia.com",
@@ -70,7 +70,7 @@
     {
       "id": "ef7b9d40-27cf-4d29-8533-90d049a49d69",
       "employeeCode": "EMP0861",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Pritikumari",
       "lastName": "Jogindar Giri",
       "email": "861@presstoindia.com",
@@ -90,7 +90,7 @@
     {
       "id": "92d477bd-269f-4eed-b9ab-d26a78c7be31",
       "employeeCode": "EMP0471",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Vaibhav",
       "lastName": "Prakash Yelve",
       "email": "471@presstoindia.com",
@@ -110,7 +110,7 @@
     {
       "id": "80667a0e-898f-48d8-a76d-d5fea5ccd471",
       "employeeCode": "EMP0956",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Pankaj",
       "lastName": "Krushna Talavadekar",
       "email": "956@presstoindia.com",
@@ -130,7 +130,7 @@
     {
       "id": "760b1195-b04a-408a-ba11-325c88bb55f1",
       "employeeCode": "EMP0719",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Priyanka",
       "lastName": "Krunal Gurav",
       "email": "719@presstoindia.com",
@@ -170,7 +170,7 @@
     {
       "id": "675fc404-30ea-472b-9fb9-cbe7e03f6baf",
       "employeeCode": "EMP0534",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Hitesh",
       "lastName": "Suresh Madhavi",
       "email": "534@presstoindia.com",
@@ -190,7 +190,7 @@
     {
       "id": "d8d17828-b7f1-439e-8656-b5a01ece603f",
       "employeeCode": "EMP0961",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Omkar",
       "lastName": "Namdev Pujare",
       "email": "961@presstoindia.com",
@@ -210,7 +210,7 @@
     {
       "id": "d1fa95d6-47b5-4632-8895-19808aaa7ef6",
       "employeeCode": "EMP0952",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Mangesh",
       "lastName": "Chandrakant Kondvilkar",
       "email": "952@presstoindia.com",
@@ -250,7 +250,7 @@
     {
       "id": "e9757bd4-72ef-49ea-b9db-ba7c00804d14",
       "employeeCode": "EMP0725",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Salim",
       "lastName": "Munnawar Sayyed",
       "email": "725@presstoindia.com",
@@ -270,7 +270,7 @@
     {
       "id": "a1f90aaf-c139-4015-875d-3c9e5234bc28",
       "employeeCode": "EMP0709",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Poonam",
       "lastName": "Gogaliya",
       "email": "709@presstoindia.com",
@@ -290,7 +290,7 @@
     {
       "id": "5fa98dc7-2144-4e02-8a6c-1058d8a0be93",
       "employeeCode": "EMP0751",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Nasreen",
       "lastName": "Shamsuddin Khan",
       "email": "751@presstoindia.com",
@@ -350,7 +350,7 @@
     {
       "id": "e60413df-5f6e-4077-8961-d1db85c9b64c",
       "employeeCode": "EMP0292",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Firoz",
       "lastName": "Harun Shaikh",
       "email": "292@presstoindia.com",
@@ -370,7 +370,7 @@
     {
       "id": "511652fc-1b64-41ca-bab5-7adc0b4ee881",
       "employeeCode": "EMP0560",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Sandeepkumar",
       "lastName": "Shrikant Sharma",
       "email": "560@presstoindia.com",
@@ -390,7 +390,7 @@
     {
       "id": "0c632688-294c-4493-8f4c-e849dd8733fa",
       "employeeCode": "EMP1010",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Mayur",
       "lastName": "Prakash Mandavkar",
       "email": "1010@presstoindia.com",
@@ -410,7 +410,7 @@
     {
       "id": "ea54c689-1289-4cef-b62b-c1660db16b45",
       "employeeCode": "EMP1865",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Shrikant",
       "lastName": "Shripat Shitap",
       "email": "1865@presstoindia.com",
@@ -430,7 +430,7 @@
     {
       "id": "5eee1fce-e031-46d1-a4c3-6df1b128e57a",
       "employeeCode": "EMP0144",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Arvind",
       "lastName": "Suresh Ranje",
       "email": "144@presstoindia.com",
@@ -490,7 +490,7 @@
     {
       "id": "c9077c08-533c-4781-a1f7-be0809a4c21c",
       "employeeCode": "EMP1281",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Dharmendra",
       "lastName": "Maruti Yadav",
       "email": "1281@presstoindia.com",
@@ -510,7 +510,7 @@
     {
       "id": "b46f3707-3ed4-4228-80f6-89aeaf383935",
       "employeeCode": "EMP1051",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Mahesh",
       "lastName": "Prakash Gaikwad",
       "email": "1051@presstoindia.com",
@@ -550,7 +550,7 @@
     {
       "id": "b0debe3d-0f23-442c-af8f-28e58059623e",
       "employeeCode": "EMP1665",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Jaya",
       "lastName": "Vijay Sawant",
       "email": "1665@presstoindia.com",
@@ -570,7 +570,7 @@
     {
       "id": "64d385ed-7d7f-4d46-a92a-3e8382d751be",
       "employeeCode": "EMP1308",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Arif",
       "lastName": "Gulab Mulani",
       "email": "1308@presstoindia.com",
@@ -590,7 +590,7 @@
     {
       "id": "2bb73697-cd4b-4abf-b24c-f87ab5ce2823",
       "employeeCode": "EMP1027",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Swati",
       "lastName": "Sunil Sorte",
       "email": "1027@presstoindia.com",
@@ -610,7 +610,7 @@
     {
       "id": "cba073dd-af9e-45fa-be68-2ee58dec0239",
       "employeeCode": "EMP1217",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "SANJIB",
       "lastName": "DAS",
       "email": "1217@presstoindia.com",
@@ -630,7 +630,7 @@
     {
       "id": "7bc78c07-aad7-46a8-b072-a7eae99d169e",
       "employeeCode": "EMP1220",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "S",
       "lastName": "Ibrahim",
       "email": "1220@presstoindia.com",
@@ -650,7 +650,7 @@
     {
       "id": "a051a176-99ec-4646-a1d2-e349110a8310",
       "employeeCode": "EMP1252",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Karthik",
       "lastName": "M",
       "email": "1252@presstoindia.com",
@@ -670,7 +670,7 @@
     {
       "id": "29424757-9436-42b2-a5f8-6341396a3670",
       "employeeCode": "EMP1356",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Sanjit",
       "lastName": "Malakar",
       "email": "1356@presstoindia.com",
@@ -690,7 +690,7 @@
     {
       "id": "e33ebd20-c77c-4427-8dcb-39a8c08c74b0",
       "employeeCode": "EMP1574",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Keerthi",
       "lastName": "K D",
       "email": "1574@presstoindia.com",
@@ -750,7 +750,7 @@
     {
       "id": "ab021edc-350b-4c2c-9ca2-758b7a6b2cd9",
       "employeeCode": "EMP1451",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Vinay",
       "lastName": "Deepak Desai",
       "email": "1451@presstoindia.com",
@@ -770,7 +770,7 @@
     {
       "id": "0d736cb3-c7be-47b8-88eb-19186f96a377",
       "employeeCode": "EMP1643",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "DEEP",
       "lastName": "LIMBOO",
       "email": "1643@presstoindia.com",
@@ -810,7 +810,7 @@
     {
       "id": "1ba51252-dfe5-419d-95c5-3a9a340df1d5",
       "employeeCode": "EMP1823",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Bishwajit",
       "lastName": "Malakar",
       "email": "1823@presstoindia.com",
@@ -830,7 +830,7 @@
     {
       "id": "6ea784c4-075a-47ec-85f4-8fba5f0d64b9",
       "employeeCode": "EMP1746",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Kumaresh",
       "lastName": "M",
       "email": "1746@presstoindia.com",
@@ -850,7 +850,7 @@
     {
       "id": "3d75dd12-8b88-44b3-b9fb-045ecd424ded",
       "employeeCode": "EMP1023",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Nimai",
       "lastName": "Halder",
       "email": "1023@presstoindia.com",
@@ -870,7 +870,7 @@
     {
       "id": "303c192d-c41f-4797-8ec9-aa6d589e3caa",
       "employeeCode": "EMP1577",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Ajay",
       "lastName": "Kumar Gupta",
       "email": "1577@presstoindia.com",
@@ -890,7 +890,7 @@
     {
       "id": "f4469ed7-3b63-47d7-8097-efc63c463756",
       "employeeCode": "EMP0919",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Sanjeev",
       "lastName": "-",
       "email": "919@presstoindia.com",
@@ -910,7 +910,7 @@
     {
       "id": "d201c2c0-68de-4605-8c03-5980a7a3a292",
       "employeeCode": "EMP1692",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Avinash",
       "lastName": "Sharma",
       "email": "1692@presstoindia.com",
@@ -930,7 +930,7 @@
     {
       "id": "e66e96f1-6829-4fd4-9c96-5fe1d94771c4",
       "employeeCode": "EMP0493",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Gaurav",
       "lastName": "Aggarwal",
       "email": "493@presstoindia.com",
@@ -950,7 +950,7 @@
     {
       "id": "f7509929-7739-4cab-b170-c7016d102935",
       "employeeCode": "EMP0878",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Neeraj",
       "lastName": "Singh.",
       "email": "878@presstoindia.com",
@@ -970,7 +970,7 @@
     {
       "id": "64fcac04-17ab-4da6-a727-cb9b54256b1f",
       "employeeCode": "EMP1380",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Akash",
       "lastName": "Bobby Mathur",
       "email": "1380@presstoindia.com",
@@ -990,7 +990,7 @@
     {
       "id": "6c549354-243d-4573-9713-31d00d237fbf",
       "employeeCode": "EMP1454",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Ashwani",
       "lastName": "Sharma",
       "email": "1454@presstoindia.com",
@@ -1010,7 +1010,7 @@
     {
       "id": "3bc9d1d0-932f-47e8-af55-18a95660377a",
       "employeeCode": "EMP0484",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "SHAIKH",
       "lastName": "AFTAB AHMAD",
       "email": "484@presstoindia.com",
@@ -1030,7 +1030,7 @@
     {
       "id": "74e12b9a-6756-44ab-adfb-2a3f4d823243",
       "employeeCode": "EMP1637",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Ankur",
       "lastName": "Sharma",
       "email": "1637@presstoindia.com",
@@ -1050,7 +1050,7 @@
     {
       "id": "749221bc-9b50-46b5-89a9-39af48377c46",
       "employeeCode": "EMP0759",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Vimal",
       "lastName": "Kumar",
       "email": "759@presstoindia.com",
@@ -1070,7 +1070,7 @@
     {
       "id": "4c6e18ed-8707-4410-89ab-02484c79588d",
       "employeeCode": "EMP1627",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Prince",
       "lastName": "-",
       "email": "1627@presstoindia.com",
@@ -1090,7 +1090,7 @@
     {
       "id": "b2d6946f-85d2-4efa-b755-e5ac58ccd160",
       "employeeCode": "EMP1764",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Varun",
       "lastName": "Kumar",
       "email": "1764@presstoindia.com",
@@ -1110,7 +1110,7 @@
     {
       "id": "481846c8-4d1b-4685-b2ce-fcdd08437e2a",
       "employeeCode": "EMP1850",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Anil",
       "lastName": "Kumar",
       "email": "1850@presstoindia.com",
@@ -1130,7 +1130,7 @@
     {
       "id": "cfbd7d31-a15c-4709-aac0-18b59856ed1a",
       "employeeCode": "EMP0796",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Rajat",
       "lastName": "-",
       "email": "796@presstoindia.com",
@@ -1150,7 +1150,7 @@
     {
       "id": "4d77b932-1f78-419c-a1f0-60f4dcdc00eb",
       "employeeCode": "EMP0755",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Ajay",
       "lastName": "Haldar",
       "email": "755@presstoindia.com",
@@ -1170,7 +1170,7 @@
     {
       "id": "abca9923-42a6-4df4-b66b-4b3e23a04919",
       "employeeCode": "EMP1403",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Jai",
       "lastName": "Singh",
       "email": "1403@presstoindia.com",
@@ -1190,7 +1190,7 @@
     {
       "id": "4898c439-05d4-4be2-a575-cdf213d5ab2a",
       "employeeCode": "EMP1416",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Suraj",
       "lastName": "Roy",
       "email": "1416@presstoindia.com",
@@ -1210,7 +1210,7 @@
     {
       "id": "1a7659b9-ed18-4afc-b030-f558f2b28440",
       "employeeCode": "EMP1672",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Shivam",
       "lastName": "Rajkumar Gupta",
       "email": "1672@presstoindia.com",
@@ -1230,7 +1230,7 @@
     {
       "id": "11d3115f-1c82-4d88-af3d-9bca0fa3bed8",
       "employeeCode": "EMP1784",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Anita",
       "lastName": "-",
       "email": "1784@presstoindia.com",
@@ -1250,7 +1250,7 @@
     {
       "id": "eefc749e-b949-4b9e-9387-fc57567b4189",
       "employeeCode": "EMP0575",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Raman",
       "lastName": "Kumar",
       "email": "575@presstoindia.com",
@@ -1269,7 +1269,7 @@
     {
       "id": "76b8e673-9aec-4cb1-94c4-c36d05d85d48",
       "employeeCode": "EMP1173",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "VINOD",
       "lastName": "MAURYA",
       "email": "1173@presstoindia.com",
@@ -1289,7 +1289,7 @@
     {
       "id": "9a2f4e4a-c829-4fbd-8636-80756fcd9599",
       "employeeCode": "EMP0738",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Ganesh",
       "lastName": "Shankar Malekar",
       "email": "738@presstoindia.com",
@@ -1309,7 +1309,7 @@
     {
       "id": "dbf73b10-0df6-468c-babc-a6161ea27064",
       "employeeCode": "EMP1234",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Pooja",
       "lastName": "Jagdish Shrivardhankar",
       "email": "1234@presstoindia.com",
@@ -1389,7 +1389,7 @@
     {
       "id": "b5896a39-8a25-4909-af87-dc2722737c8f",
       "employeeCode": "EMP0934",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Reshma",
       "lastName": "Yusuf Vohra",
       "email": "934@presstoindia.com",
@@ -1449,7 +1449,7 @@
     {
       "id": "1438e9e0-d987-4d2e-9618-f132862447a0",
       "employeeCode": "EMP1288",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Dipesh",
       "lastName": "Suresh Jadhav",
       "email": "1288@presstoindia.com",
@@ -1469,7 +1469,7 @@
     {
       "id": "dcd57534-9a69-4419-a03a-3c98b4831b66",
       "employeeCode": "EMP0219",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "Tejasvi",
       "lastName": "Ganesh Mandavkar",
       "email": "219@presstoindia.com",
@@ -1489,7 +1489,7 @@
     {
       "id": "24cf41e3-20fc-49c3-b98a-b27750882075",
       "employeeCode": "EMP1919",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "ASHOK",
       "lastName": "KALLU YADAV",
       "email": "1919@presstoindia.com",
@@ -1669,7 +1669,7 @@
     {
       "id": "685e9f81-488e-4c45-827d-658080eac4f9",
       "employeeCode": "EMP2063",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "SHIVA",
       "lastName": "-",
       "email": "2063@presstoindia.com",
@@ -1749,7 +1749,7 @@
     {
       "id": "1afa7ccf-6195-469f-ba53-9f838332ada0",
       "employeeCode": "EMP2118",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "USAMA",
       "lastName": "MOBRUR",
       "email": "2118@presstoindia.com",
@@ -1889,7 +1889,7 @@
     {
       "id": "8d8f54be-c8d5-4607-a406-3742cc59feec",
       "employeeCode": "EMP2001",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "AMOL",
       "lastName": "GURAV",
       "email": "2001@presstoindia.com",
@@ -2109,7 +2109,7 @@
     {
       "id": "16efd862-dec9-4306-be44-ca39b179ba3d",
       "employeeCode": "EMP2196",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "HIMANSHI",
       "lastName": "MADHAVI",
       "email": "2196@presstoindia.com",
@@ -3569,7 +3569,7 @@
     {
       "id": "2424872b-8b22-42c1-95f9-64d18cb42994",
       "employeeCode": "EMP2327",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "RAJESH",
       "lastName": "M",
       "email": "2327@presstoindia.com",
@@ -3968,7 +3968,7 @@
     {
       "id": "f71b620a-f211-496a-9572-df3d6706d4e1",
       "employeeCode": "EMP2371",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "PANKAJ",
       "lastName": "KUMAR",
       "email": "2371@presstoindia.com",
@@ -4288,7 +4288,7 @@
     {
       "id": "9532a2d6-78bd-4f99-8720-7df4b44c3c1f",
       "employeeCode": "EMP2397",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "MOHAMMED",
       "lastName": "ADEEB KHAN",
       "email": "2397@presstoindia.com",
@@ -4468,7 +4468,7 @@
     {
       "id": "f157f6fb-b625-4db1-848d-cce716652d30",
       "employeeCode": "EMP0747",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "HANSRAJ",
       "lastName": "CHAURASIA",
       "email": "747@presstoindia.com",
@@ -4728,7 +4728,7 @@
     {
       "id": "bd32f8f9-1b9d-497d-aba6-bfd03031af2b",
       "employeeCode": "EMP2436",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "SOLANKI",
       "lastName": "ARBAZ PARVEZ",
       "email": "2436@presstoindia.com",
@@ -5127,7 +5127,7 @@
     {
       "id": "dfc19b4e-b56a-47d7-99d8-f21d2c2544bb",
       "employeeCode": "EMP2468",
-      "roleValue": "sm",
+      "roleValue": "store-manager-sm",
       "firstName": "DIPANJAN",
       "lastName": "MALAKAR",
       "email": "2468@presstoindia.com",
@@ -5387,7 +5387,7 @@
     {
       "id": "52fd5081-0232-496f-9db1-76d549c6a7f2",
       "employeeCode": "EMP0363",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Nazim",
       "lastName": "Ali Nazir Ali Qadri",
       "email": "363@presstoindia.com",
@@ -5407,7 +5407,7 @@
     {
       "id": "0e899dd4-ae11-4f3b-9db9-4b2b9ea5937c",
       "employeeCode": "EMP0158",
-      "roleValue": "rm",
+      "roleValue": "regional-manager",
       "firstName": "Jahirul",
       "lastName": "Islam Chowdhury",
       "email": "158@presstoindia.com",
@@ -5427,7 +5427,7 @@
     {
       "id": "2ad73bfa-9558-470b-b33b-990298a7cfdb",
       "employeeCode": "EMP0045",
-      "roleValue": "rm",
+      "roleValue": "regional-manager",
       "firstName": "Pradeep",
       "lastName": "Kumar Yadav",
       "email": "45@presstoindia.com",
@@ -5447,7 +5447,7 @@
     {
       "id": "8f43bdf6-7baf-47d7-89d7-dc88c8d68618",
       "employeeCode": "EMP0083",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Ganesh",
       "lastName": "Prakash Mandavkar",
       "email": "83@presstoindia.com",
@@ -5467,7 +5467,7 @@
     {
       "id": "0203e55d-1621-46fc-aff0-3b1263233d2f",
       "employeeCode": "EMP0140",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Suhas",
       "lastName": "Chandrakant Indap",
       "email": "140@presstoindia.com",
@@ -5487,7 +5487,7 @@
     {
       "id": "d3681761-6324-4957-bdd0-1455b6640d5c",
       "employeeCode": "EMP0240",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Ruhel",
       "lastName": "Alam Mazumder",
       "email": "240@presstoindia.com",
@@ -5507,7 +5507,7 @@
     {
       "id": "c7b6c4be-73cc-481e-a7c9-3c29d900bf93",
       "employeeCode": "EMP0429",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Mahadev",
       "lastName": "Hindurao Shingan",
       "email": "429@presstoindia.com",
@@ -5527,7 +5527,7 @@
     {
       "id": "c50cbc99-9a53-4866-8d1b-35c53b1ad858",
       "employeeCode": "EMP0527",
-      "roleValue": "rm",
+      "roleValue": "regional-manager",
       "firstName": "Deepak",
       "lastName": "Kapoor",
       "email": "527@presstoindia.com",
@@ -5547,7 +5547,7 @@
     {
       "id": "934ff0bc-2c23-44a4-931a-e79aa966ab72",
       "employeeCode": "EMP0528",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Alok",
       "lastName": "Kumar",
       "email": "528@presstoindia.com",
@@ -5567,7 +5567,7 @@
     {
       "id": "e98c457e-8cf6-44a2-b2ab-52a0c7b2472b",
       "employeeCode": "EMP0619",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Krunal",
       "lastName": "Gangaram Gurav",
       "email": "619@presstoindia.com",
@@ -5587,7 +5587,7 @@
     {
       "id": "96bd2a69-210d-4c1d-854f-f9a474d68be5",
       "employeeCode": "EMP0975",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Monsur",
       "lastName": "Ahmed Choudhury",
       "email": "975@presstoindia.com",
@@ -5627,7 +5627,7 @@
     {
       "id": "adea7338-d8c3-4437-8ac0-1855108bacf1",
       "employeeCode": "EMP0214",
-      "roleValue": "rm",
+      "roleValue": "regional-manager",
       "firstName": "Sadik",
       "lastName": "Raja Khan",
       "email": "214@presstoindia.com",
@@ -5647,7 +5647,7 @@
     {
       "id": "ed346201-230a-4eb6-aba3-03fe2fc86407",
       "employeeCode": "EMP0866",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Sahidul",
       "lastName": "Alom Choudhury",
       "email": "866@presstoindia.com",
@@ -5667,7 +5667,7 @@
     {
       "id": "92a77a5b-0bda-40a6-a19b-e4aa54227ae7",
       "employeeCode": "EMP1562",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "G.Prasanna",
       "lastName": "Kumar",
       "email": "1562@presstoindia.com",
@@ -5687,7 +5687,7 @@
     {
       "id": "4dd305e6-8881-449c-8eb5-59656bcf5de6",
       "employeeCode": "EMP0879",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Keshav",
       "lastName": "Kumar Thakur",
       "email": "879@presstoindia.com",
@@ -5707,7 +5707,7 @@
     {
       "id": "9cb80e9d-07d5-411d-8b53-fa99ab681f30",
       "employeeCode": "EMP0890",
-      "roleValue": "am",
+      "roleValue": "manager-asm",
       "firstName": "Satish",
       "lastName": "Sahnath Dubey",
       "email": "890@presstoindia.com",
