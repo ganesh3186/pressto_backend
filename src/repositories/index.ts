@@ -11,6 +11,7 @@ export * from './delivery-type-configuration.repository';
 export * from './wallet-configuration.repository';
 export * from './on-account-configuration.repository';
 export * from './gateway-payment-link.repository';
+export * from './store-pincode-coverage.repository';
 export * from './bag.repository';
 export * from './transfer.repository';
 export * from './transfer-item.repository';

@@ -1,0 +1,554 @@
+{
+  "riders": [
+    {
+      "id": "f0987ed5-9ecf-4163-963a-8d0e14f92cf9",
+      "phone": "9372919513",
+      "firstName": "Rohit",
+      "lastName": "-",
+      "storeNames": [
+        "Lower Parel"
+      ]
+    },
+    {
+      "id": "f5411325-7e1f-4166-8292-6f0d21b38948",
+      "phone": "8928273815",
+      "firstName": "Aniket",
+      "lastName": "-",
+      "storeNames": [
+        "Babulnath",
+        "Bablnath"
+      ]
+    },
+    {
+      "id": "c9486c64-ccae-42a9-acbe-f8720d4b88c9",
+      "phone": "9594969189",
+      "firstName": "Shekhar",
+      "lastName": "-",
+      "storeNames": [
+        "Carmichael"
+      ]
+    },
+    {
+      "id": "3841d85c-3e26-4a1a-a47f-66a60e4e3f23",
+      "phone": "9892218679",
+      "firstName": "Vinod",
+      "lastName": "-",
+      "storeNames": [
+        "Colaba",
+        "Colaba - PSB",
+        "PSB Colaba"
+      ]
+    },
+    {
+      "id": "345e1a08-9896-45d3-8b93-57e9f27814d1",
+      "phone": "8791963262",
+      "firstName": "Abhijeet",
+      "lastName": "-",
+      "storeNames": [
+        "Nepeansea",
+        "Nepeansea-PSB"
+      ]
+    },
+    {
+      "id": "2e421ee7-aedb-435d-9c6c-518273413c44",
+      "phone": "9773212444",
+      "firstName": "Adesh",
+      "lastName": "-",
+      "storeNames": [
+        "Jacob Circle"
+      ]
+    },
+    {
+      "id": "144f91a8-a9cc-4e18-ab59-fb48b9eeda2c",
+      "phone": "8591955729",
+      "firstName": "Suresh",
+      "lastName": "-",
+      "storeNames": [
+        "Lalbuag",
+        "Lalbaug"
+      ]
+    },
+    {
+      "id": "018ccbaa-0447-4515-b385-da58b3daca06",
+      "phone": "9768275772",
+      "firstName": "Akshay",
+      "lastName": "Kadam",
+      "storeNames": [
+        "Santacruz"
+      ]
+    },
+    {
+      "id": "78575acf-10cb-400f-b1be-ccbd32f060f8",
+      "phone": "8657687879",
+      "firstName": "Raghunath",
+      "lastName": "-",
+      "storeNames": [
+        "Prabhadevi"
+      ]
+    },
+    {
+      "id": "533464f8-be51-44c0-9a38-911cd9a92978",
+      "phone": "9987866355",
+      "firstName": "Tushar",
+      "lastName": "-",
+      "storeNames": [
+        "Bandra",
+        "Bandra PDC"
+      ]
+    },
+    {
+      "id": "496a0379-07de-4419-b456-983b86ce3300",
+      "phone": "8082005360",
+      "firstName": "Akash",
+      "lastName": "-",
+      "storeNames": [
+        "Versova"
+      ]
+    },
+    {
+      "id": "b614c30b-2ef7-4b35-a568-f108561d06ff",
+      "phone": "9664537691",
+      "firstName": "Sachin",
+      "lastName": "-",
+      "storeNames": [
+        "Juhu Kalaniketan"
+      ]
+    },
+    {
+      "id": "fe3130fe-078d-46f4-9218-17eefb0f9e3a",
+      "phone": "8104839199",
+      "firstName": "Niraj",
+      "lastName": "Gupta",
+      "storeNames": [
+        "Oshiwara"
+      ]
+    },
+    {
+      "id": "eed187d4-2dcb-41b6-98a6-0286d995e077",
+      "phone": "9869775902",
+      "firstName": "Prashant",
+      "lastName": "Kuvlekar",
+      "storeNames": [
+        "Vile Parle"
+      ]
+    },
+    {
+      "id": "a18aa756-9197-40c0-bafb-bcc7b149af5c",
+      "phone": "9768337742",
+      "firstName": "Kush",
+      "lastName": "-",
+      "storeNames": [
+        "Kandivali"
+      ]
+    },
+    {
+      "id": "90fb3806-7e77-4abc-8421-0cbf66b1d303",
+      "phone": "9004324568",
+      "firstName": "Suraj",
+      "lastName": "kamble",
+      "storeNames": [
+        "Goregaon"
+      ]
+    },
+    {
+      "id": "1abb9cd3-9ce4-46cd-a148-76e880f55fb7",
+      "phone": "9594269982",
+      "firstName": "Monish",
+      "lastName": "Ansari",
+      "storeNames": [
+        "Malad"
+      ]
+    },
+    {
+      "id": "59fc19f7-abdc-4283-9bcd-a86b2b2d1136",
+      "phone": "9137708062",
+      "firstName": "Ganesh",
+      "lastName": "-",
+      "storeNames": [
+        "Meadows"
+      ]
+    },
+    {
+      "id": "ae24f17d-0665-4592-ac50-b1946ff32846",
+      "phone": "7738661388",
+      "firstName": "Ashish",
+      "lastName": "-",
+      "storeNames": [
+        "Chembur"
+      ]
+    },
+    {
+      "id": "ad84f55d-1b1e-49c9-85d8-b9313016418a",
+      "phone": "9082827292",
+      "firstName": "Priyanka",
+      "lastName": "-",
+      "storeNames": [
+        "Estate"
+      ]
+    },
+    {
+      "id": "7948f199-869c-4df1-b5e9-c7c65bf19133",
+      "phone": "8657304869",
+      "firstName": "Deeptesh",
+      "lastName": "-",
+      "storeNames": [
+        "Powai"
+      ]
+    },
+    {
+      "id": "923ed2b3-0d24-44db-b919-6c321e12f41a",
+      "phone": "9372977137",
+      "firstName": "Yash",
+      "lastName": "-",
+      "storeNames": [
+        "Vashi"
+      ]
+    },
+    {
+      "id": "840b6dcd-7220-4bd0-bbcd-99ede1a30279",
+      "phone": "9082389086",
+      "firstName": "Tausif",
+      "lastName": "-",
+      "storeNames": [
+        "Bandra - PSB",
+        "PSB Bandra"
+      ]
+    },
+    {
+      "id": "f8801277-dff6-46ad-8740-e479937934ae",
+      "phone": "9990697796",
+      "firstName": "Paras",
+      "lastName": "Ram",
+      "storeNames": [
+        "PSB Defence Colony"
+      ]
+    },
+    {
+      "id": "66d344b9-fd4e-4f6b-8730-c3814425e6cf",
+      "phone": "9818985335",
+      "firstName": "Rahul",
+      "lastName": "-",
+      "storeNames": [
+        "Defence Colony"
+      ]
+    },
+    {
+      "id": "26da458d-d7b0-412f-8fb5-4d70db91fe56",
+      "phone": "9576038408",
+      "firstName": "Shatrughan",
+      "lastName": "-",
+      "storeNames": [
+        "Vasant Vihar"
+      ]
+    },
+    {
+      "id": "b2c05012-c34f-41da-8da8-1335c66e0294",
+      "phone": "9289648708",
+      "firstName": "Roshan",
+      "lastName": "Kumar",
+      "storeNames": [
+        "NFC",
+        "New Friends Colony"
+      ]
+    },
+    {
+      "id": "1f168928-97dd-458a-8ab5-29e1fb4ed2a5",
+      "phone": "7678456300",
+      "firstName": "Manish",
+      "lastName": "Kumar",
+      "storeNames": [
+        "Noida"
+      ]
+    },
+    {
+      "id": "b8cdc54a-30ff-45f0-b282-f1e21206387e",
+      "phone": "9910731602",
+      "firstName": "Brijesh",
+      "lastName": "Jain",
+      "storeNames": [
+        "Noida"
+      ]
+    },
+    {
+      "id": "e4364c47-4480-4319-82a3-84c00a51de90",
+      "phone": "9311441820",
+      "firstName": "Deepak",
+      "lastName": "Paridwal",
+      "storeNames": [
+        "Vasant Kunj"
+      ]
+    },
+    {
+      "id": "b268b522-2e4f-4c0e-b613-2e8a8fdfc360",
+      "phone": "8743893924",
+      "firstName": "Sohit",
+      "lastName": "-",
+      "storeNames": [
+        "Saket"
+      ]
+    },
+    {
+      "id": "61a59219-42d3-474c-a232-ad119c90f568",
+      "phone": "8527074264",
+      "firstName": "Tarun",
+      "lastName": "Kumar",
+      "storeNames": [
+        "Saket"
+      ]
+    },
+    {
+      "id": "5d9fd286-6e1b-4509-9807-a6e789dd0527",
+      "phone": "9315777242",
+      "firstName": "Pankaj",
+      "lastName": "Kumar",
+      "storeNames": [
+        "GK-1"
+      ]
+    },
+    {
+      "id": "b30c1608-2e72-4df3-ab81-5c11a653496c",
+      "phone": "9654319083",
+      "firstName": "Sunil",
+      "lastName": "Kumar",
+      "storeNames": [
+        "GK-2"
+      ]
+    },
+    {
+      "id": "82086624-c319-497a-b295-13f5413490f4",
+      "phone": "7303062184",
+      "firstName": "Kishan",
+      "lastName": "Kumar",
+      "storeNames": [
+        "Hauz Khas"
+      ]
+    },
+    {
+      "id": "fc643ef1-8acd-4bc4-a37e-c16eabcfb2a7",
+      "phone": "8595085142",
+      "firstName": "Ajay",
+      "lastName": "Kumar",
+      "storeNames": [
+        "C R Park",
+        "CR Park"
+      ]
+    },
+    {
+      "id": "3052d8c6-b5db-4a7a-ba19-15de5fd83440",
+      "phone": "9818699811",
+      "firstName": "Himanshu",
+      "lastName": "-",
+      "storeNames": [
+        "Punjabi Bagh"
+      ]
+    },
+    {
+      "id": "0ecf574c-79d2-4ba2-a130-929a80b0ea45",
+      "phone": "9324843087",
+      "firstName": "Pawan",
+      "lastName": "-",
+      "storeNames": [
+        "Punjabi Bagh"
+      ]
+    },
+    {
+      "id": "7202cb15-04ba-400a-b906-c3daa81864bd",
+      "phone": "8744988493",
+      "firstName": "Suraj",
+      "lastName": "-",
+      "storeNames": [
+        "Model Town"
+      ]
+    },
+    {
+      "id": "07bae168-1531-44f1-ae0d-a3f0a560758c",
+      "phone": "8800826595",
+      "firstName": "Shushil",
+      "lastName": "-",
+      "storeNames": [
+        "Rajouri Garden"
+      ]
+    },
+    {
+      "id": "77238d4a-06c8-45ea-a9ed-d1d1e05afaa1",
+      "phone": "9540040350",
+      "firstName": "Abhishek",
+      "lastName": "Kumar",
+      "storeNames": [
+        "Pitampura"
+      ]
+    },
+    {
+      "id": "a206709e-23a7-4473-88fd-f13f16fdc23d",
+      "phone": "8700745042",
+      "firstName": "Lalit",
+      "lastName": "Singh",
+      "storeNames": [
+        "Naraina Vihar"
+      ]
+    },
+    {
+      "id": "21b60c62-1756-4e3c-aeb2-c737f205445b",
+      "phone": "6397711478",
+      "firstName": "Manoj",
+      "lastName": "-",
+      "storeNames": [
+        "Central Plaza",
+        "Gurgaon"
+      ]
+    },
+    {
+      "id": "f18ed381-6311-4fbf-ab8c-6d6ec8e61480",
+      "phone": "9485501769",
+      "firstName": "Pradeep",
+      "lastName": "-",
+      "storeNames": [
+        "Gurgaon"
+      ]
+    },
+    {
+      "id": "038d4e05-eed3-429a-be53-8aabe06b5b65",
+      "phone": "9568148710",
+      "firstName": "Raj",
+      "lastName": "Kumar",
+      "storeNames": [
+        "Hibiscus"
+      ]
+    },
+    {
+      "id": "8dc2c6a9-091a-484c-97f0-8880ff9d2349",
+      "phone": "9161785531",
+      "firstName": "Raj",
+      "lastName": "Bahadur",
+      "storeNames": [
+        "Hibiscus"
+      ]
+    },
+    {
+      "id": "92f9138d-fa49-434f-96fc-382472e528bb",
+      "phone": "8900525389",
+      "firstName": "Soumendra",
+      "lastName": "-",
+      "storeNames": [
+        "Indiranagar"
+      ]
+    },
+    {
+      "id": "9ad67046-531e-42bb-b008-d05e4056ab1b",
+      "phone": "8971732852",
+      "firstName": "Suyen",
+      "lastName": "Ali",
+      "storeNames": [
+        "Indiranagar",
+        "PSB-Indiranagar"
+      ]
+    },
+    {
+      "id": "00e8784d-ff68-46f8-bd24-bb63a86a5ed0",
+      "phone": "7892016230",
+      "firstName": "Shiva",
+      "lastName": "-",
+      "storeNames": [
+        "Indiranagar"
+      ]
+    },
+    {
+      "id": "98be30b8-88a4-42dd-a2ba-327a6c4abe97",
+      "phone": "9863079078",
+      "firstName": "Rajib",
+      "lastName": "-",
+      "storeNames": [
+        "Koramangala"
+      ]
+    },
+    {
+      "id": "ccbfd2ea-94cf-45b0-9d42-c4b4321ab1ae",
+      "phone": "9402525409",
+      "firstName": "Mujaffar",
+      "lastName": "-",
+      "storeNames": [
+        "Koramangala",
+        "PSB-Koramangala"
+      ]
+    },
+    {
+      "id": "23287635-4eb2-4bac-9a8f-433e9d2b7280",
+      "phone": "9036342019",
+      "firstName": "Darshan",
+      "lastName": "-",
+      "storeNames": [
+        "PSB - Jayanagar",
+        "Jayanagar"
+      ]
+    },
+    {
+      "id": "e3872739-93ee-4658-80fd-a05696ff5062",
+      "phone": "7338053932",
+      "firstName": "Yesu",
+      "lastName": "-",
+      "storeNames": [
+        "Whitefield"
+      ]
+    },
+    {
+      "id": "a0b07fa1-26e0-40fc-aed2-3ef3c3dbf326",
+      "phone": "9740672014",
+      "firstName": "Shamsul",
+      "lastName": "-",
+      "storeNames": [
+        "Whitefield",
+        "Jayanagar",
+        "Sadashivanagar"
+      ]
+    },
+    {
+      "id": "851f24db-fa7b-4186-8072-371ade9e4a4f",
+      "phone": "6362071098",
+      "firstName": "Bharat",
+      "lastName": "-",
+      "storeNames": [
+        "Jayanagar"
+      ]
+    },
+    {
+      "id": "ff61a288-519f-4575-803c-850eb3568a69",
+      "phone": "8073562362",
+      "firstName": "Syed",
+      "lastName": "Nawaz",
+      "storeNames": [
+        "Jayanagar",
+        "Sadashivanagar"
+      ]
+    },
+    {
+      "id": "0f586ea8-30b1-400b-8b91-a9f1bdab40a1",
+      "phone": "8088810746",
+      "firstName": "Rahmath",
+      "lastName": "-",
+      "storeNames": [
+        "Richmond Circle",
+        "Richmond"
+      ]
+    },
+    {
+      "id": "cbcce171-e545-49a0-955f-ff10effe8959",
+      "phone": "9700120190",
+      "firstName": "Jawad",
+      "lastName": "Khan",
+      "storeNames": [
+        "Banjara hills",
+        "PSB -Banjara hills",
+        "Banjaria Hills"
+      ]
+    },
+    {
+      "id": "f100b1d7-1b7a-4fd1-9ac1-57d5eebcf070",
+      "phone": "7835817416",
+      "firstName": "Arbaaz",
+      "lastName": "Khan",
+      "storeNames": [
+        "Panchsheel Enclave"
+      ]
+    }
+  ]
+}

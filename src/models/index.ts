@@ -104,6 +104,7 @@ export * from './security-deposit-topup-request.model';
 export * from './gateway-payment-link.model';
 export * from './gateway-payment-link-status.enum';
 export * from './gateway-payment-reference-type.enum';
+export * from './store-pincode-coverage.model';
 export * from './customer-family-group.model';
 export * from './customer-family-group-member.model';
 export * from './order-status.enum';
