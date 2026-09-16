@@ -34,8 +34,15 @@ export type StoreScope = {
 /** Sentinel stored in the JWT for callers that may see every store. */
 export const STORE_SCOPE_GLOBAL = '*';
 
-/** Roles that are never store-bound (bypass all scope). */
-const GLOBAL_ROLES = new Set(['super_admin']);
+/**
+ * Roles that are never store-bound (bypass all scope). hop/pulse_finance/
+ * management are the client's own "All Stores" roles (see Pulse Users
+ * and Roles.xlsx's Roles sheet) — Roles.scope has no 'global' value and
+ * a Cluster can only belong to one Region, so 'region' scope can never
+ * actually cover every store for one employee. Hardcoded here instead,
+ * the same bypass super_admin already uses.
+ */
+const GLOBAL_ROLES = new Set(['super_admin', 'hop', 'pulse_finance', 'management']);
 
 const GLOBAL_SCOPE: StoreScope = {global: true, storeIds: [], scopeLevel: 'global'};
 /** Fail closed: a bound caller we cannot resolve sees nothing. */
