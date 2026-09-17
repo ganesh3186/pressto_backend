@@ -270,32 +270,82 @@ export class SalesReturnController {
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
-    // One credit note per order item — a rejected return never actually
-    // credited anything, so it doesn't block a fresh attempt; pending or
-    // approved ones do.
-    const requestedOrderItemIds = [
-      ...new Set(
-        (body.returnedItems ?? []).map(i => i.orderItemId).filter(Boolean),
-      ),
-    ];
+    // Quantity-aware, not item-aware: an order item can carry more than one
+    // garment (e.g. "Shirt x2"), and each garment is independently returned
+    // — either credited here (a prior sales-return line against this order
+    // item) or physically returned to the customer via the separate
+    // return-item/approval flow (GarmentStatus.RETURNED_TO_CUSTOMER — see
+    // ApprovalService._applyReturnEffect, which already refunded/adjusted
+    // that garment's own share). Blocking the WHOLE order item the moment
+    // ANY one garment was handled either way used to make the other,
+    // untouched garment(s) permanently un-returnable — reject only when
+    // THIS request's quantity would exceed what's actually still available
+    // (total − already credited − already returned to customer), not
+    // merely because the order item has been touched before. A rejected
+    // return never actually credited anything, so it's excluded from
+    // "already credited".
+    const requestedQtyByOrderItemId = new Map<string, number>();
+    for (const line of body.returnedItems ?? []) {
+      if (!line.orderItemId) continue;
+      requestedQtyByOrderItemId.set(
+        line.orderItemId,
+        (requestedQtyByOrderItemId.get(line.orderItemId) ?? 0) +
+          (Number(line.quantity) || 0),
+      );
+    }
+    const requestedOrderItemIds = [...requestedQtyByOrderItemId.keys()];
     if (requestedOrderItemIds.length) {
+      const requestedOrderItems = await this.orderItemRepo.find({
+        where: {id: {inq: requestedOrderItemIds}},
+      });
+      const totalQtyByItemId = new Map(
+        requestedOrderItems.map(oi => [oi.id, Number(oi.quantity) || 0]),
+      );
+
       const existingReturns = await this.salesReturnRepo.find({
         where: {orderId, status: {neq: SalesReturnStatus.REJECTED}},
       });
-      const alreadyCreditedItemIds = new Set<string>();
+      const alreadyCreditedQtyByItemId = new Map<string, number>();
       for (const existing of existingReturns) {
         for (const line of (existing.returnedItems ?? []) as Array<{
           orderItemId?: string;
+          quantity?: number;
         }>) {
-          if (line.orderItemId) alreadyCreditedItemIds.add(line.orderItemId);
+          if (!line.orderItemId) continue;
+          alreadyCreditedQtyByItemId.set(
+            line.orderItemId,
+            (alreadyCreditedQtyByItemId.get(line.orderItemId) ?? 0) +
+              (Number(line.quantity) || 0),
+          );
         }
       }
-      const conflictingIds = requestedOrderItemIds.filter(id =>
-        alreadyCreditedItemIds.has(id),
-      );
-      if (conflictingIds.length) {
+
+      const returnedGarments = await this.garmentRepo.find({
+        where: {
+          orderItemId: {inq: requestedOrderItemIds},
+          status: GarmentStatus.RETURNED_TO_CUSTOMER,
+          isDeleted: false,
+        } as object,
+      });
+      const returnedToCustomerQtyByItemId = new Map<string, number>();
+      for (const garment of returnedGarments) {
+        returnedToCustomerQtyByItemId.set(
+          garment.orderItemId,
+          (returnedToCustomerQtyByItemId.get(garment.orderItemId) ?? 0) + 1,
+        );
+      }
+
+      const overRequestedIds = requestedOrderItemIds.filter(id => {
+        const totalQty = totalQtyByItemId.get(id) ?? 0;
+        const remaining =
+          totalQty -
+          (alreadyCreditedQtyByItemId.get(id) ?? 0) -
+          (returnedToCustomerQtyByItemId.get(id) ?? 0);
+        return (requestedQtyByOrderItemId.get(id) ?? 0) > remaining;
+      });
+      if (overRequestedIds.length) {
         const conflictingOrderItems = await this.orderItemRepo.find({
-          where: {id: {inq: conflictingIds}},
+          where: {id: {inq: overRequestedIds}},
         });
         const itemIds = [
           ...new Set(conflictingOrderItems.map(oi => oi.itemId)),
@@ -308,39 +358,7 @@ export class SalesReturnController {
           oi => itemNameById.get(oi.itemId) ?? 'this item',
         );
         throw new HttpErrors.Conflict(
-          `Credit note for ${[...new Set(names)].join(', ')} already exists.`,
-        );
-      }
-
-      // A garment already returned to the customer via the separate
-      // return-item/approval flow (GarmentStatus.RETURNED_TO_CUSTOMER)
-      // already had its share of the order's total refunded/adjusted there
-      // (see ApprovalService._applyReturnEffect) — a sales-return credit
-      // note for the same order item would settle the same amount twice.
-      const returnedGarments = await this.garmentRepo.find({
-        where: {
-          orderItemId: {inq: requestedOrderItemIds},
-          status: GarmentStatus.RETURNED_TO_CUSTOMER,
-          isDeleted: false,
-        } as object,
-      });
-      if (returnedGarments.length) {
-        const returnedOrderItemIds = [
-          ...new Set(returnedGarments.map(g => g.orderItemId)),
-        ];
-        const returnedOrderItems = await this.orderItemRepo.find({
-          where: {id: {inq: returnedOrderItemIds}},
-        });
-        const itemIds = [...new Set(returnedOrderItems.map(oi => oi.itemId))];
-        const items = itemIds.length
-          ? await this.itemRepo.find({where: {id: {inq: itemIds}}})
-          : [];
-        const itemNameById = new Map(items.map(it => [it.id, it.name]));
-        const names = returnedOrderItems.map(
-          oi => itemNameById.get(oi.itemId) ?? 'this item',
-        );
-        throw new HttpErrors.Conflict(
-          `${[...new Set(names)].join(', ')} already returned to the customer — cannot create a sales return for it.`,
+          `${[...new Set(names)].join(', ')}: requested return quantity exceeds what's still available (already credited or returned to the customer).`,
         );
       }
     }
