@@ -46,7 +46,7 @@ export class Item extends Entity {
   description?: string;
 
   @belongsTo(() => Media)
-  mediaId: string;
+  mediaId?: string;
 
   @property({
     type: 'boolean',
