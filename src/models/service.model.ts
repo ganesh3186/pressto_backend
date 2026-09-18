@@ -131,7 +131,7 @@ export class Service extends Entity {
   deletedBy?: string;
 
   @belongsTo(() => Media)
-  mediaId: string;
+  mediaId?: string;
 
   @belongsTo(() => ServiceCategory)
   serviceCategoryId: string;
