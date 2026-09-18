@@ -42,7 +42,18 @@ export const STORE_SCOPE_GLOBAL = '*';
  * actually cover every store for one employee. Hardcoded here instead,
  * the same bypass super_admin already uses.
  */
-const GLOBAL_ROLES = new Set(['super_admin', 'hop', 'pulse_finance', 'management']);
+const GLOBAL_ROLES = new Set([
+  'super_admin',
+  'hop',
+  'pulse_finance',
+  'management',
+  // Marketing/SCM/MD-CEO/Admin (IT) — from the Pulse Role and Access
+  // Matrix, same "All Stores" posture as hop/pulse_finance/management.
+  'marketing',
+  'scm',
+  'md_ceo',
+  'admin_it',
+]);
 
 const GLOBAL_SCOPE: StoreScope = {global: true, storeIds: [], scopeLevel: 'global'};
 /** Fail closed: a bound caller we cannot resolve sees nothing. */

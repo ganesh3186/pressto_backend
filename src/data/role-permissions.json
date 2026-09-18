@@ -1,0 +1,800 @@
+{
+  "newRoles": [
+    {
+      "value": "marketing",
+      "label": "Marketing",
+      "global": true
+    },
+    {
+      "value": "scm",
+      "label": "SCM",
+      "global": true
+    },
+    {
+      "value": "md_ceo",
+      "label": "MD/CEO",
+      "global": true
+    },
+    {
+      "value": "admin_it",
+      "label": "Admin (IT)",
+      "global": true
+    }
+  ],
+  "newPermissions": [
+    {
+      "permission": "invoice:read",
+      "description": "Tax Invoice (from Pulse Role and Access Matrix)"
+    },
+    {
+      "permission": "invoice:update",
+      "description": "Tax Invoice (from Pulse Role and Access Matrix)"
+    },
+    {
+      "permission": "order_return:create",
+      "description": "Order Return (from Pulse Role and Access Matrix)"
+    },
+    {
+      "permission": "order_return:read",
+      "description": "Order Return (from Pulse Role and Access Matrix)"
+    },
+    {
+      "permission": "order_return:update",
+      "description": "Order Return (from Pulse Role and Access Matrix)"
+    },
+    {
+      "permission": "sales_return:create",
+      "description": "Sales Return (from Pulse Role and Access Matrix)"
+    },
+    {
+      "permission": "sales_return:read",
+      "description": "Sales Return (from Pulse Role and Access Matrix)"
+    },
+    {
+      "permission": "sales_return:approve",
+      "description": "Sales & Order Return Approval (from Pulse Role and Access Matrix)"
+    },
+    {
+      "permission": "label_reprint:create",
+      "description": "Re-Print Garment Label / Order (from Pulse Role and Access Matrix)"
+    }
+  ],
+  "rolePermissions": [
+    {
+      "roleValue": "cce",
+      "permission": "order:create"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "order:update"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "order:create"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "order:update"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "order:create"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "order:update"
+    },
+    {
+      "roleValue": "manager-asm",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "regional-manager",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "hop",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "pulse_finance",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "marketing",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "scm",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "md_ceo",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "order:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "order:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "order:update"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "invoice:update"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "invoice:update"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "invoice:update"
+    },
+    {
+      "roleValue": "manager-asm",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "regional-manager",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "hop",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "pulse_finance",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "marketing",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "scm",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "md_ceo",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "invoice:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "invoice:update"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "delivery:update"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "delivery:update"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "delivery:update"
+    },
+    {
+      "roleValue": "manager-asm",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "regional-manager",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "hop",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "pulse_finance",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "marketing",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "scm",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "md_ceo",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "delivery:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "delivery:update"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "order_return:create"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "order_return:update"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "order_return:create"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "order_return:update"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "order_return:create"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "order_return:update"
+    },
+    {
+      "roleValue": "manager-asm",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "regional-manager",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "hop",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "pulse_finance",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "marketing",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "scm",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "md_ceo",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "order_return:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "order_return:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "order_return:update"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "sales_return:create"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "sales_return:create"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "sales_return:create"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "manager-asm",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "regional-manager",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "hop",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "pulse_finance",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "marketing",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "scm",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "md_ceo",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "sales_return:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "sales_return:read"
+    },
+    {
+      "roleValue": "manager-asm",
+      "permission": "sales_return:approve"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "sales_return:approve"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "petty_cash_finance:create"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "petty_cash_finance:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "petty_cash_finance:create"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "petty_cash_register:create"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "petty_cash_register:create"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "petty_cash_register:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "petty_cash_register:create"
+    },
+    {
+      "roleValue": "manager-asm",
+      "permission": "petty_cash_register:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "petty_cash_register:update"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "shift:create"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "shift:create"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "shift:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "shift:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "shift:update"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "label_reprint:create"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "label_reprint:create"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "label_reprint:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "label_reprint:create"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "transfer:create"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "cce",
+      "permission": "transfer:update"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "transfer:create"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "cci",
+      "permission": "transfer:update"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "transfer:create"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "store-manager-sm",
+      "permission": "transfer:update"
+    },
+    {
+      "roleValue": "manager-asm",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "regional-manager",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "hop",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "pulse_finance",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "marketing",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "scm",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "md_ceo",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "transfer:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "transfer:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "transfer:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "report_mode_of_payment:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "report_on_account_billing:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "report_pending_payments:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "report_pending_tickets:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "report_petty_cash_expense:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "report_consolidated_daily_sales:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "cluster:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "cluster:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "cluster:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "cluster:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "region:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "region:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "region:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "region:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "store:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "store:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "store:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "store:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "color:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "color:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "color:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "color:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer_discount_group:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer_discount_group:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer_discount_group:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer_discount_group:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer_label:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer_label:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer_label:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer_label:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "customer:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "item:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "item:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "item:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "item:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "service:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "service:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "service:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "service:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "price_list:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "price_list:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "price_list:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "price_list:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "coupon:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "coupon:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "coupon:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "coupon:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "role:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "role:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "role:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "role:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "employee:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "employee:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "employee:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "employee:delete"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "gst_tax_configuration:create"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "gst_tax_configuration:read"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "gst_tax_configuration:update"
+    },
+    {
+      "roleValue": "admin_it",
+      "permission": "gst_tax_configuration:delete"
+    }
+  ]
+}
