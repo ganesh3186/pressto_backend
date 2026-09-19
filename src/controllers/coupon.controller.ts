@@ -278,11 +278,21 @@ export class CouponController {
   @authorize({roles: ['super_admin'], permissions: ['coupon:read']})
   @get('/coupons/{id}/price-overrides')
   @response(200, {description: 'Service/item price overrides for this coupon'})
-  async listPriceOverrides(@param.path.string('id') id: string): Promise<object> {
-    const rows = await this.couponPriceOverrideRepository.find({
-      where: {couponId: id, isDeleted: false} as object,
-      order: ['createdAt DESC'],
-    });
+  async listPriceOverrides(
+    @param.path.string('id') id: string,
+    @param.query.number('skip') skip?: number,
+    @param.query.number('limit') limit?: number,
+  ): Promise<object> {
+    const where = {couponId: id, isDeleted: false} as object;
+    const [rows, totalCount] = await Promise.all([
+      this.couponPriceOverrideRepository.find({
+        where,
+        order: ['createdAt DESC'],
+        skip,
+        limit,
+      }),
+      this.couponPriceOverrideRepository.count(where),
+    ]);
     const serviceIds = [...new Set(rows.map(r => r.serviceId))];
     const itemIds = [...new Set(rows.map(r => r.itemId))];
     const [services, items] = await Promise.all([
@@ -301,6 +311,7 @@ export class CouponController {
         itemName: itemById.get(r.itemId) ?? null,
         overridePrice: r.overridePrice,
       })),
+      totalCount: totalCount.count,
     };
   }
 
