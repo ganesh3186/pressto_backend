@@ -53,6 +53,7 @@ import {
   SalesReturnRepository,
   ServiceRepository,
   UsersRepository,
+  WalletConfigurationRepository,
   GarmentAdditionalChargeRepository,
   GarmentAdditionalServiceRepository,
   GarmentDamageImageRepository,
@@ -281,6 +282,8 @@ export class OrderService {
     private couponRedemptionRepo: CouponRedemptionRepository,
     @repository(CouponPriceOverrideRepository)
     private couponPriceOverrideRepo: CouponPriceOverrideRepository,
+    @repository(WalletConfigurationRepository)
+    private walletConfigurationRepo: WalletConfigurationRepository,
     @repository(GarmentProcessLogRepository)
     private garmentProcessLogRepo: GarmentProcessLogRepository,
     @repository(ProcessStepRepository)
@@ -5240,6 +5243,93 @@ export class OrderService {
     return {due, alreadyPaid, isChildOrder, allocPay};
   }
 
+  /**
+   * Discount for paying an order's entire total via wallet, in one shot,
+   * with zero collected via any other mode on that order ever — see the
+   * eligibility gate in addPayment(). Mirrors recalculateOrderTotals()'s
+   * subtotal -> discount -> tax -> total formula so the discounted total
+   * stays internally consistent with how every other order total is
+   * computed. Mutually exclusive with a coupon/customer-group discount,
+   * same precedence a coupon already has over customer-group — skipped
+   * outright when order.discountType is already something other than
+   * 'none'.
+   */
+  private async resolveWalletFullPaymentDiscount(
+    order: Order,
+  ): Promise<{discountAmount: number; taxAmount: number; totalAmount: number} | null> {
+    if (order.discountType && order.discountType !== 'none') return null;
+
+    const config = await this.walletConfigurationRepo.findOne({
+      where: {isActive: true, isDeleted: false},
+    });
+    const pct = Number(config?.walletDiscountPercentage ?? 0);
+    if (!config?.walletDiscountEnabled || pct <= 0) return null;
+
+    const subtotal = Number(order.subtotal ?? 0);
+    const discountAmount = Math.round(((subtotal * pct) / 100) * 100) / 100;
+    const taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
+
+    const gstConfig = await this.gstConfigRepo.findOne({
+      where: {isActive: true, isDeleted: false},
+    });
+    const gstRate = gstConfig
+      ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
+      : 0;
+    const taxAmount =
+      gstRate > 0 ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2)) : 0;
+    const totalAmount = roundRupee(taxableAmount + taxAmount);
+
+    return {discountAmount, taxAmount, totalAmount};
+  }
+
+  /**
+   * Read-only preview for the frontend: if the customer paid this order's
+   * entire balance via wallet right now, would the wallet-full-payment
+   * discount apply, and what wallet amount would actually close it out?
+   * Needed because addPayment() requires the caller to already send the
+   * discounted amount — the discount can't retroactively reduce an
+   * over-amount wallet request, so the UI has to know it up front. See
+   * resolveWalletFullPaymentDiscount() for the real eligibility rules.
+   */
+  async previewWalletFullPaymentDiscount(orderId: string): Promise<{
+    eligible: boolean;
+    reason?: string;
+    discountAmount: number;
+    totalAmount: number;
+    walletAmountRequired: number;
+  }> {
+    const order = await this.orderRepo.findOne({
+      where: {id: orderId, isDeleted: false},
+    });
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const {due, alreadyPaid} = await this.computeBalanceDue(order);
+    const undiscounted = {
+      eligible: false as const,
+      discountAmount: 0,
+      totalAmount: roundRupee(order.totalAmount),
+      walletAmountRequired: due,
+    };
+    if (alreadyPaid > 0) {
+      return {...undiscounted, reason: 'Some amount has already been collected on this order.'};
+    }
+
+    const candidate = await this.resolveWalletFullPaymentDiscount(order);
+    if (!candidate) {
+      return {
+        ...undiscounted,
+        reason: 'Wallet full-payment discount is not configured, or another discount already applies.',
+      };
+    }
+
+    return {
+      eligible: true,
+      discountAmount: candidate.discountAmount,
+      totalAmount: candidate.totalAmount,
+      walletAmountRequired: candidate.totalAmount,
+    };
+  }
+
   async addPayment(
     orderId: string,
     payment: OrderPaymentInput,
@@ -5268,8 +5358,9 @@ export class OrderService {
       );
     }
 
-    const {due, alreadyPaid, isChildOrder, allocPay} =
-      await this.computeBalanceDue(order);
+    const balanceDueResult = await this.computeBalanceDue(order);
+    const {alreadyPaid, isChildOrder, allocPay} = balanceDueResult;
+    let due = balanceDueResult.due;
 
     // On Account is deferred billing — nothing is actually collected here;
     // see the matching guard in createOrder(). Force it to 0 so it can never
@@ -5280,6 +5371,23 @@ export class OrderService {
         : Number(payment?.amount ?? 0);
     const thisWallet = Number(walletAmount ?? 0);
     const thisTotal = thisPayment + thisWallet;
+
+    // Wallet-full-payment discount: only when this is the very first money
+    // ever collected on this order, entirely via wallet (no other mode
+    // mixed in), and the wallet amount sent actually covers the
+    // discounted total — i.e. it genuinely closes the order out, not a
+    // partial wallet payment that happens to be first. See
+    // resolveWalletFullPaymentDiscount() for the config/precedence gate.
+    let orderTotalAmount = Number(order.totalAmount);
+    let walletDiscount: {discountAmount: number; taxAmount: number; totalAmount: number} | null = null;
+    if (alreadyPaid === 0 && thisPayment === 0 && thisWallet > 0) {
+      const candidate = await this.resolveWalletFullPaymentDiscount(order);
+      if (candidate && roundRupee(thisWallet) >= candidate.totalAmount) {
+        walletDiscount = candidate;
+        orderTotalAmount = candidate.totalAmount;
+        due = candidate.totalAmount;
+      }
+    }
 
     // Cheque/PDC are unconfirmed paper, not money in hand — same reasoning
     // as createOrder()'s pendingApprovalPayments. The raw amount still has
@@ -5320,6 +5428,19 @@ export class OrderService {
       isolationLevel: 'READ COMMITTED' as any,
     });
     try {
+      if (walletDiscount) {
+        await this.orderRepo.updateById(
+          orderId,
+          {
+            discountAmount: walletDiscount.discountAmount,
+            discountType: 'wallet_full_payment',
+            taxAmount: walletDiscount.taxAmount,
+            totalAmount: walletDiscount.totalAmount,
+          },
+          {transaction: tx},
+        );
+      }
+
       let createdPayment = null;
       if (thisPayment > 0 && payment && !isPendingApproval) {
         createdPayment = await this.paymentTransactionRepo.create(
@@ -5405,7 +5526,8 @@ export class OrderService {
         walletPayment,
         walletAmountDeducted: thisWallet,
         totalCollected: newPaid,
-        balanceDue: rupeeBalance(order.totalAmount, newPaid),
+        balanceDue: rupeeBalance(orderTotalAmount, newPaid),
+        walletDiscountApplied: walletDiscount ? walletDiscount.discountAmount : 0,
         pendingApproval: isPendingApproval
           ? {
               paymentMode: payment.paymentMode,
