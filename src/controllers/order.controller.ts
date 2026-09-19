@@ -1042,6 +1042,37 @@ export class OrderController {
     return this.orderService.previewWalletFullPaymentDiscount(id);
   }
 
+  // Same preview, before an order exists yet — the New Order/POS screen
+  // already tracks its own live subtotal/discountType for display, so it
+  // sends those directly rather than the backend re-deriving them from a
+  // cart it doesn't otherwise need to see.
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
+  @post('/orders/wallet-full-payment-preview')
+  @response(200, {description: 'Whether paying a new ticket fully via wallet would get a discount'})
+  async walletFullPaymentPreviewForNewOrder(
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['subtotal'],
+            properties: {
+              subtotal: {type: 'number'},
+              discountType: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {subtotal: number; discountType?: string},
+  ): Promise<object> {
+    return this.orderService.previewWalletFullPaymentDiscountForNewOrder(
+      Number(body.subtotal ?? 0),
+      body.discountType,
+    );
+  }
+
   // ─── Add Payment to Existing Order ────────────────────────────────────────
 
   @authenticate('jwt')

@@ -5358,6 +5358,34 @@ export class OrderService {
     };
   }
 
+  /**
+   * Same preview as previewWalletFullPaymentDiscount(), for the moment
+   * BEFORE an order exists yet (New Order / POS screen, paying the whole
+   * new ticket via wallet at checkout) — no order id to look one up by,
+   * so the caller sends the subtotal and any discountType it has already
+   * resolved (e.g. a referral coupon) itself, the same inputs
+   * createOrder() uses at the equivalent point in its own flow.
+   */
+  async previewWalletFullPaymentDiscountForNewOrder(
+    subtotal: number,
+    discountType?: string,
+  ): Promise<{eligible: boolean; reason?: string; discountAmount: number; totalAmount: number}> {
+    const candidate = await this.resolveWalletFullPaymentDiscount(subtotal, discountType);
+    if (!candidate) {
+      return {
+        eligible: false,
+        reason: 'Wallet full-payment discount is not configured, or another discount already applies.',
+        discountAmount: 0,
+        totalAmount: roundRupee(subtotal),
+      };
+    }
+    return {
+      eligible: true,
+      discountAmount: candidate.discountAmount,
+      totalAmount: candidate.totalAmount,
+    };
+  }
+
   async addPayment(
     orderId: string,
     payment: OrderPaymentInput,
