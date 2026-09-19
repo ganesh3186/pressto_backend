@@ -1028,6 +1028,20 @@ export class OrderController {
     );
   }
 
+  // ─── Wallet full-payment discount preview ──────────────────────────────────
+  // Read-only — tells the UI what a full-wallet payment would actually cost
+  // before the customer commits, since addPayment() needs the discounted
+  // amount sent up front (it can't retroactively shrink an over-amount
+  // wallet request). See OrderService.previewWalletFullPaymentDiscount().
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
+  @get('/orders/{id}/wallet-full-payment-preview')
+  @response(200, {description: 'Whether paying this order fully via wallet right now would get a discount'})
+  async walletFullPaymentPreview(@param.path.string('id') id: string): Promise<object> {
+    return this.orderService.previewWalletFullPaymentDiscount(id);
+  }
+
   // ─── Add Payment to Existing Order ────────────────────────────────────────
 
   @authenticate('jwt')
