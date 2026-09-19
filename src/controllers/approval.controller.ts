@@ -1,6 +1,6 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {repository, Where} from '@loopback/repository';
+import {isEntityNotFoundError, repository, Where} from '@loopback/repository';
 import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
@@ -255,10 +255,19 @@ export class ApprovalController {
       orderItem?.orderId ? this.orderRepo.findOne({where: {id: orderItem.orderId}}) : Promise.resolve(null),
       orderItem?.itemId ? this.itemRepo.findOne({where: {id: orderItem.itemId}}) : Promise.resolve(null),
     ]);
-    const returnCalculation =
-      req.type === ApprovalRequestType.RETURN_ITEM
-        ? await this.approvalService.calculateGarmentReturnAmount(garment.id)
-        : null;
+    // calculateGarmentReturnAmount() throws (ENTITY_NOT_FOUND) if this
+    // garment's order item points at an item/order/garment row that no
+    // longer exists — a handful of historical requests hit this from data
+    // migrated before this endpoint existed. One bad row must not take
+    // down the whole list for every other request in it.
+    let returnCalculation = null;
+    if (req.type === ApprovalRequestType.RETURN_ITEM) {
+      try {
+        returnCalculation = await this.approvalService.calculateGarmentReturnAmount(garment.id);
+      } catch (err) {
+        if (!isEntityNotFoundError(err)) throw err;
+      }
+    }
 
     return {
       ...req,
