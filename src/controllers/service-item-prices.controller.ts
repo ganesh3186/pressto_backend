@@ -1,9 +1,12 @@
 import {authenticate} from '@loopback/authentication';
 import {repository} from '@loopback/repository';
 import {get, HttpErrors, param, response} from '@loopback/rest';
+import {CouponDiscountType} from '../models';
 import {
   ClusterPriceListRepository,
   ClusterRepository,
+  CouponPriceOverrideRepository,
+  CouponRepository,
   PriceListRepository,
   ServiceItemMappingRepository,
   StorePriceOverrideRepository,
@@ -11,7 +14,7 @@ import {
 } from '../repositories';
 import {ServiceRepository} from '../repositories/service.repository';
 
-type PriceSource = 'store' | 'cluster' | 'region' | 'base';
+type PriceSource = 'coupon' | 'store' | 'cluster' | 'region' | 'base';
 
 interface AdditionalServicePrice {
   serviceId: string;
@@ -50,6 +53,10 @@ export class ServiceItemPricesController {
     private serviceItemMappingRepository: ServiceItemMappingRepository,
     @repository(ServiceRepository)
     private serviceRepository: ServiceRepository,
+    @repository(CouponRepository)
+    private couponRepository: CouponRepository,
+    @repository(CouponPriceOverrideRepository)
+    private couponPriceOverrideRepository: CouponPriceOverrideRepository,
   ) {}
 
   @authenticate('jwt')
@@ -68,7 +75,7 @@ export class ServiceItemPricesController {
               itemId: {type: 'string'},
               basePrice: {type: 'number'},
               resolvedPrice: {type: 'number'},
-              priceSource: {type: 'string', enum: ['store', 'cluster', 'region', 'base']},
+              priceSource: {type: 'string', enum: ['coupon', 'store', 'cluster', 'region', 'base']},
               appliedPercentage: {type: 'number', nullable: true},
               estimatedDurationInDays: {type: 'number', nullable: true},
               additionalServices: {
@@ -158,16 +165,40 @@ export class ServiceItemPricesController {
     // Key: `${serviceId}:${itemId}` → mapping (for resolving additional service prices)
     const mappingLookup = new Map(mappings.map(m => [`${m.serviceId}:${m.itemId}`, m]));
 
+    // Priority 0: active price-override coupons — same rule as
+    // OrderService.resolveCouponOverridePrice(): per (serviceId, itemId),
+    // date window covers now, region/cluster/store targeting matches this
+    // store (empty array = applies everywhere), cheaper price wins on a
+    // tie. Built once, up front, since this endpoint returns every mapping
+    // in one call rather than resolving one pair at a time.
+    const couponOverrideByPair = await this.buildCouponOverrideMap(storeId, store.clusterId, cluster.regionId);
+
     // Store/cluster/region percentage is an UPLIFT on top of base (e.g. 30 = +30%).
     // 0 = no change. First match in the store→cluster→region waterfall wins.
-    const resolvePrice = (basePrice: number) =>
-      appliedPercentage !== null
-        ? parseFloat((basePrice * (1 + appliedPercentage / 100)).toFixed(2))
-        : basePrice;
+    // A coupon override, when present for this exact pair, replaces this
+    // entirely rather than uplifting on top of it.
+    const resolveFor = (
+      pairKey: string,
+      basePrice: number,
+    ): {resolvedPrice: number; priceSource: PriceSource; appliedPercentage: number | null} => {
+      const overridePrice = couponOverrideByPair.get(pairKey);
+      if (overridePrice != null) {
+        return {resolvedPrice: overridePrice, priceSource: 'coupon', appliedPercentage: null};
+      }
+      return {
+        resolvedPrice:
+          appliedPercentage !== null
+            ? parseFloat((basePrice * (1 + appliedPercentage / 100)).toFixed(2))
+            : basePrice,
+        priceSource,
+        appliedPercentage,
+      };
+    };
 
     // 4. Apply resolved percentage to each mapping and hydrate additional services
     return mappings.map(mapping => {
       const basePrice = Number(mapping.basePrice);
+      const resolved = resolveFor(`${mapping.serviceId}:${mapping.itemId}`, basePrice);
 
       const additionalServices: AdditionalServicePrice[] = (mapping.additionalServiceIds ?? [])
         .map(additionalServiceId => {
@@ -180,7 +211,7 @@ export class ServiceItemPricesController {
             serviceName: svc.name,
             serviceCode: svc.code,
             basePrice: addBase,
-            resolvedPrice: resolvePrice(addBase),
+            resolvedPrice: resolveFor(`${additionalServiceId}:${mapping.itemId}`, addBase).resolvedPrice,
             estimatedDurationInDays: addMapping.estimatedDurationInDays ?? null,
           };
         })
@@ -191,12 +222,57 @@ export class ServiceItemPricesController {
         serviceId: mapping.serviceId,
         itemId: mapping.itemId,
         basePrice,
-        resolvedPrice: resolvePrice(basePrice),
-        priceSource,
-        appliedPercentage,
+        resolvedPrice: resolved.resolvedPrice,
+        priceSource: resolved.priceSource,
+        appliedPercentage: resolved.appliedPercentage,
         estimatedDurationInDays: mapping.estimatedDurationInDays ?? null,
         additionalServices,
       };
     });
+  }
+
+  // Mirrors OrderService.resolveCouponOverridePrice(), but built once for
+  // every (serviceId, itemId) pair up front instead of queried per pair —
+  // this endpoint returns the whole catalog in one call.
+  private async buildCouponOverrideMap(
+    storeId: string,
+    clusterId: string,
+    regionId: string,
+  ): Promise<Map<string, number>> {
+    const overrides = await this.couponPriceOverrideRepository.find({
+      where: {isActive: true, isDeleted: false},
+    });
+    if (!overrides.length) return new Map();
+
+    const couponIds = [...new Set(overrides.map(o => o.couponId))];
+    const coupons = await this.couponRepository.find({
+      where: {id: {inq: couponIds}, isActive: true, isDeleted: false},
+    });
+    const now = new Date();
+    const eligibleCouponIds = new Set(
+      coupons
+        .filter(c => {
+          if (c.discountType !== CouponDiscountType.PRICE_OVERRIDE) return false;
+          if (now < new Date(c.startDate) || now > new Date(c.endDate)) return false;
+          const hasGeoScope =
+            (c.storeIds?.length ?? 0) > 0 || (c.clusterIds?.length ?? 0) > 0 || (c.regionIds?.length ?? 0) > 0;
+          if (!hasGeoScope) return true;
+          if ((c.storeIds?.length ?? 0) > 0 && !c.storeIds!.includes(storeId)) return false;
+          if ((c.clusterIds?.length ?? 0) > 0 && !c.clusterIds!.includes(clusterId)) return false;
+          if ((c.regionIds?.length ?? 0) > 0 && !c.regionIds!.includes(regionId)) return false;
+          return true;
+        })
+        .map(c => c.id),
+    );
+
+    const map = new Map<string, number>();
+    for (const row of overrides) {
+      if (!eligibleCouponIds.has(row.couponId)) continue;
+      const key = `${row.serviceId}:${row.itemId}`;
+      const price = Number(row.overridePrice);
+      const existing = map.get(key);
+      if (existing == null || price < existing) map.set(key, price);
+    }
+    return map;
   }
 }
