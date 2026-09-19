@@ -12,6 +12,7 @@ import {
   CouponRepository,
   CustomerRepository,
   ItemRepository,
+  ServiceItemMappingRepository,
   ServiceRepository,
   UsersRepository,
 } from '../repositories';
@@ -50,6 +51,7 @@ export class CouponController {
     @repository(CouponPriceOverrideRepository) private couponPriceOverrideRepository: CouponPriceOverrideRepository,
     @repository(CustomerRepository) private customerRepository: CustomerRepository,
     @repository(ServiceRepository) private serviceRepository: ServiceRepository,
+    @repository(ServiceItemMappingRepository) private serviceItemMappingRepository: ServiceItemMappingRepository,
     @repository(ItemRepository) private itemRepository: ItemRepository,
     @repository(UsersRepository) private usersRepository: UsersRepository,
     @inject('services.coupon') private couponService: CouponService,
@@ -372,6 +374,81 @@ export class CouponController {
     if (!row) throw new HttpErrors.NotFound('Price override mapping not found on this coupon.');
     await this.couponPriceOverrideRepository.updateById(row.id, {isDeleted: true, deletedAt: new Date()});
     return {message: 'Price override mapping removed.'};
+  }
+
+  // One price applied to every (service, item) pair already mapped under a
+  // whole service category, in one request — the category can have far
+  // more pairs than are sensible to fetch/render/re-upload from the
+  // browser just to set them all to the same number. Resolved and upserted
+  // entirely server-side.
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['coupon:update']})
+  @post('/coupons/{id}/price-overrides/by-category')
+  @response(200, {description: 'One price applied to every service-item pair under a category'})
+  async setPriceOverridesByCategory(
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['serviceCategoryId', 'overridePrice'],
+            properties: {
+              serviceCategoryId: {type: 'string', format: 'uuid'},
+              overridePrice: {type: 'number'},
+            },
+          },
+        },
+      },
+    })
+    body: {serviceCategoryId: string; overridePrice: number},
+  ): Promise<object> {
+    const coupon = await this.couponRepository.findOne({where: {id, isDeleted: false}});
+    if (!coupon) throw new HttpErrors.NotFound('Coupon not found.');
+    if (coupon.discountType !== CouponDiscountType.PRICE_OVERRIDE) {
+      throw new HttpErrors.BadRequest('Price overrides only apply to a price_override coupon.');
+    }
+
+    const categoryServices = await this.serviceRepository.find({
+      where: {serviceCategoryId: body.serviceCategoryId, isActive: true, isDeleted: false} as object,
+      fields: {id: true} as object,
+    });
+    if (!categoryServices.length) {
+      return {message: 'No services found under this category.', matched: 0, created: 0, updated: 0};
+    }
+    const serviceIds = categoryServices.map(s => s.id);
+    const mappings = await this.serviceItemMappingRepository.find({
+      where: {serviceId: {inq: serviceIds}, isActive: true, isDeleted: false} as object,
+      fields: {serviceId: true, itemId: true} as object,
+    });
+
+    const {v4} = await import('uuid');
+    let created = 0;
+    let updated = 0;
+    for (const {serviceId, itemId} of mappings) {
+      const existing = await this.couponPriceOverrideRepository.findOne({
+        where: {couponId: id, serviceId, itemId, isDeleted: false} as object,
+      });
+      if (existing) {
+        await this.couponPriceOverrideRepository.updateById(existing.id, {overridePrice: body.overridePrice});
+        updated++;
+      } else {
+        await this.couponPriceOverrideRepository.create({
+          id: v4(),
+          couponId: id,
+          serviceId,
+          itemId,
+          overridePrice: body.overridePrice,
+        });
+        created++;
+      }
+    }
+    return {
+      message: `${created} added, ${updated} updated across ${mappings.length} pair(s).`,
+      matched: mappings.length,
+      created,
+      updated,
+    };
   }
 
   // ─── Redemption history ─────────────────────────────────────────────────
