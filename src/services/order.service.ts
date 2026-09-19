@@ -1725,7 +1725,7 @@ export class OrderService {
       walletAmount > 0 &&
       (input.payments ?? []).every(p => !Number(p.amount ?? 0));
     if (isWalletOnlyAttempt) {
-      const candidate = await this.resolveWalletFullPaymentDiscount(subtotal, discountType);
+      const candidate = await this.resolveWalletFullPaymentDiscount(subtotal, discountAmount);
       if (candidate && roundRupee(walletAmount) >= candidate.totalAmount) {
         discountAmount = candidate.discountAmount;
         discountType = 'wallet_full_payment';
@@ -5276,14 +5276,19 @@ export class OrderService {
    * formula so the discounted total stays internally consistent with how
    * every other order total is computed. Mutually exclusive with a
    * coupon/customer-group discount, same precedence a coupon already has
-   * over customer-group — skipped outright when a discount other than
-   * 'none' already applies.
+   * over customer-group — skipped outright when a REAL (>0) discount
+   * already applies. Gated on the discount AMOUNT, not the discountType
+   * string: resolveCustomerAutoDiscount() can tag a customer's discount
+   * group as discountType 'percentage' while its actual computed amount
+   * is 0 (e.g. the group's maxDiscountAmount caps it to 0) — treating
+   * that as "already discounted" would silently block the wallet
+   * discount from ever applying for that customer.
    */
   private async resolveWalletFullPaymentDiscount(
     subtotal: number,
-    existingDiscountType?: string,
+    existingDiscountAmount?: number,
   ): Promise<{discountAmount: number; taxAmount: number; totalAmount: number} | null> {
-    if (existingDiscountType && existingDiscountType !== 'none') return null;
+    if (Number(existingDiscountAmount) > 0) return null;
 
     const config = await this.walletConfigurationRepo.findOne({
       where: {isActive: true, isDeleted: false},
@@ -5341,7 +5346,7 @@ export class OrderService {
 
     const candidate = await this.resolveWalletFullPaymentDiscount(
       Number(order.subtotal ?? 0),
-      order.discountType,
+      Number(order.discountAmount ?? 0),
     );
     if (!candidate) {
       return {
@@ -5362,15 +5367,16 @@ export class OrderService {
    * Same preview as previewWalletFullPaymentDiscount(), for the moment
    * BEFORE an order exists yet (New Order / POS screen, paying the whole
    * new ticket via wallet at checkout) — no order id to look one up by,
-   * so the caller sends the subtotal and any discountType it has already
-   * resolved (e.g. a referral coupon) itself, the same inputs
-   * createOrder() uses at the equivalent point in its own flow.
+   * so the caller sends the subtotal and any discount amount it has
+   * already resolved (e.g. a referral coupon, or a customer discount
+   * group) itself, the same inputs createOrder() uses at the equivalent
+   * point in its own flow.
    */
   async previewWalletFullPaymentDiscountForNewOrder(
     subtotal: number,
-    discountType?: string,
+    existingDiscountAmount?: number,
   ): Promise<{eligible: boolean; reason?: string; discountAmount: number; totalAmount: number}> {
-    const candidate = await this.resolveWalletFullPaymentDiscount(subtotal, discountType);
+    const candidate = await this.resolveWalletFullPaymentDiscount(subtotal, existingDiscountAmount);
     if (!candidate) {
       return {
         eligible: false,
@@ -5439,7 +5445,7 @@ export class OrderService {
     if (alreadyPaid === 0 && thisPayment === 0 && thisWallet > 0) {
       const candidate = await this.resolveWalletFullPaymentDiscount(
         Number(order.subtotal ?? 0),
-        order.discountType,
+        Number(order.discountAmount ?? 0),
       );
       if (candidate && roundRupee(thisWallet) >= candidate.totalAmount) {
         walletDiscount = candidate;

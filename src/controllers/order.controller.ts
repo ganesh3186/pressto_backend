@@ -1043,9 +1043,12 @@ export class OrderController {
   }
 
   // Same preview, before an order exists yet — the New Order/POS screen
-  // already tracks its own live subtotal/discountType for display, so it
+  // already tracks its own live subtotal/discount for display, so it
   // sends those directly rather than the backend re-deriving them from a
-  // cart it doesn't otherwise need to see.
+  // cart it doesn't otherwise need to see. Gated on the discount AMOUNT,
+  // not a type string — see resolveWalletFullPaymentDiscount()'s comment
+  // for why (a discount group can tag discountType without any real
+  // rupee effect).
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/wallet-full-payment-preview')
@@ -1059,17 +1062,17 @@ export class OrderController {
             required: ['subtotal'],
             properties: {
               subtotal: {type: 'number'},
-              discountType: {type: 'string'},
+              discountAmount: {type: 'number'},
             },
           },
         },
       },
     })
-    body: {subtotal: number; discountType?: string},
+    body: {subtotal: number; discountAmount?: number},
   ): Promise<object> {
     return this.orderService.previewWalletFullPaymentDiscountForNewOrder(
       Number(body.subtotal ?? 0),
-      body.discountType,
+      Number(body.discountAmount ?? 0),
     );
   }
 
