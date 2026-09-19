@@ -939,11 +939,17 @@ export class OrderService {
     // because their eligible subtotal can differ from the whole order subtotal.
     // Split orders keep their allocated share of the original discount; applying
     // a fresh fixed discount independently to parent and child would duplicate it.
+    // Same reasoning for a wallet-full-payment discount (see
+    // resolveWalletFullPaymentDiscount()) — recomputing via
+    // resolveCustomerAutoDiscount() here would silently erase it the moment
+    // anyone so much as fetches the receipt, since it isn't a coupon and
+    // wouldn't otherwise be excluded.
     if (
       !order.appliedCouponId &&
       !order.couponCode &&
       !order.parentOrderId &&
-      !order.hasBeenSplit
+      !order.hasBeenSplit &&
+      order.discountType !== 'wallet_full_payment'
     ) {
       const customer = await this.customerRepo.findById(order.customerId);
       const recalculated = await this.resolveCustomerAutoDiscount(
