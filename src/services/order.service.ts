@@ -27,6 +27,7 @@ import {
 } from '../models/garment-status.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {CouponDiscountType} from '../models/coupon-discount-type.enum';
 import {
   AdditionalChargeMasterRepository,
   ApprovalAuditLogRepository,
@@ -34,6 +35,7 @@ import {
   ChallanRepository,
   ClusterPriceListRepository,
   ClusterRepository,
+  CouponPriceOverrideRepository,
   CouponRedemptionRepository,
   CouponRepository,
   CustomerContactRepository,
@@ -277,6 +279,8 @@ export class OrderService {
     @repository(CouponRepository) private couponRepo: CouponRepository,
     @repository(CouponRedemptionRepository)
     private couponRedemptionRepo: CouponRedemptionRepository,
+    @repository(CouponPriceOverrideRepository)
+    private couponPriceOverrideRepo: CouponPriceOverrideRepository,
     @repository(GarmentProcessLogRepository)
     private garmentProcessLogRepo: GarmentProcessLogRepository,
     @repository(ProcessStepRepository)
@@ -414,6 +418,67 @@ export class OrderService {
   // Public so other services (e.g. approval upgrades) reprice through the same
   // store→cluster→region→base waterfall instead of re-implementing it.
 
+  /**
+   * Priority-0 check for resolvePricing(): is there an active
+   * CouponDiscountType.PRICE_OVERRIDE coupon with a CouponPriceOverride row
+   * for this exact (serviceId, itemId), whose date window covers now and
+   * whose store/cluster/region targeting matches this store? Same
+   * AND-across-set-dimensions geo rule as CouponService's own
+   * geoScopeReason() (duplicated rather than imported — CouponService isn't
+   * injected into OrderService, and this is a small, self-contained check).
+   * Two or more equally-eligible coupons overlapping on the same mapping
+   * resolve to the cheaper price.
+   */
+  private async resolveCouponOverridePrice(
+    storeId: string,
+    serviceId: string,
+    itemId: string,
+  ): Promise<number | null> {
+    const overrides = await this.couponPriceOverrideRepo.find({
+      where: {serviceId, itemId, isActive: true, isDeleted: false},
+    });
+    if (!overrides.length) return null;
+
+    const now = new Date();
+    let store: {id: string; clusterId?: string} | null = null;
+    let cluster: {regionId: string} | null = null;
+    let cheapest: number | null = null;
+
+    for (const row of overrides) {
+      const coupon = await this.couponRepo.findOne({
+        where: {id: row.couponId, isActive: true, isDeleted: false},
+      });
+      if (!coupon || coupon.discountType !== CouponDiscountType.PRICE_OVERRIDE) continue;
+      if (now < new Date(coupon.startDate) || now > new Date(coupon.endDate)) continue;
+
+      const hasGeoScope =
+        (coupon.storeIds?.length ?? 0) > 0 ||
+        (coupon.clusterIds?.length ?? 0) > 0 ||
+        (coupon.regionIds?.length ?? 0) > 0;
+      if (hasGeoScope) {
+        if (store === null) store = await this.storeRepo.findById(storeId);
+        if ((coupon.storeIds?.length ?? 0) > 0 && !coupon.storeIds!.includes(store.id)) continue;
+        if (
+          (coupon.clusterIds?.length ?? 0) > 0 &&
+          !(store.clusterId && coupon.clusterIds!.includes(store.clusterId))
+        ) {
+          continue;
+        }
+        if ((coupon.regionIds?.length ?? 0) > 0) {
+          if (cluster === null && store.clusterId) {
+            cluster = await this.clusterRepo.findById(store.clusterId);
+          }
+          if (!cluster || !coupon.regionIds!.includes(cluster.regionId)) continue;
+        }
+      }
+
+      const price = Number(row.overridePrice);
+      if (cheapest === null || price < cheapest) cheapest = price;
+    }
+
+    return cheapest;
+  }
+
   async resolvePricing(
     storeId: string,
     serviceId: string,
@@ -423,7 +488,7 @@ export class OrderService {
     basePrice: number;
     resolvedPrice: number;
     appliedPercentage: number | null;
-    priceSource: 'store' | 'cluster' | 'region' | 'base';
+    priceSource: 'coupon' | 'store' | 'cluster' | 'region' | 'base';
     estimatedDurationInDays: number | null;
   }> {
     const mapping = await this.serviceItemMappingRepo.findOne({
@@ -436,6 +501,25 @@ export class OrderService {
     }
     const base = Number(mapping.basePrice);
     const estimatedDurationInDays = mapping.estimatedDurationInDays ?? null;
+
+    // Priority 0: an active price-override coupon for this exact
+    // (serviceId, itemId) — auto-applied, never selected/redeemed (see
+    // CouponPriceOverride). Skips store/cluster/region uplift entirely
+    // when it hits; falls through to the normal waterfall otherwise.
+    const couponOverridePrice = await this.resolveCouponOverridePrice(
+      storeId,
+      serviceId,
+      itemId,
+    );
+    if (couponOverridePrice != null) {
+      return {
+        basePrice: base,
+        resolvedPrice: couponOverridePrice,
+        appliedPercentage: null,
+        priceSource: 'coupon',
+        estimatedDurationInDays,
+      };
+    }
 
     // Additional (add-on) services run the SAME store→cluster→region waterfall
     // AND read the same `percentage` column as a primary service — there's no

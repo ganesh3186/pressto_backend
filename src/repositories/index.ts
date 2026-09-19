@@ -104,6 +104,7 @@ export * from './order-handover.repository';
 export * from './coupon.repository';
 export * from './coupon-customer.repository';
 export * from './coupon-redemption.repository';
+export * from './coupon-price-override.repository';
 export * from './customer-preference.repository';
 export * from './customer-preference-history.repository';
 export * from './warehouse.repository';

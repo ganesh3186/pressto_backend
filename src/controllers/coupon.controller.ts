@@ -7,9 +7,12 @@ import {authorize} from '../authorization';
 import {Coupon, CouponDiscountType} from '../models';
 import {
   CouponCustomerRepository,
+  CouponPriceOverrideRepository,
   CouponRedemptionRepository,
   CouponRepository,
   CustomerRepository,
+  ItemRepository,
+  ServiceRepository,
   UsersRepository,
 } from '../repositories';
 import {CouponService} from '../services/coupon.service';
@@ -44,7 +47,10 @@ export class CouponController {
     @repository(CouponRepository) private couponRepository: CouponRepository,
     @repository(CouponCustomerRepository) private couponCustomerRepository: CouponCustomerRepository,
     @repository(CouponRedemptionRepository) private couponRedemptionRepository: CouponRedemptionRepository,
+    @repository(CouponPriceOverrideRepository) private couponPriceOverrideRepository: CouponPriceOverrideRepository,
     @repository(CustomerRepository) private customerRepository: CustomerRepository,
+    @repository(ServiceRepository) private serviceRepository: ServiceRepository,
+    @repository(ItemRepository) private itemRepository: ItemRepository,
     @repository(UsersRepository) private usersRepository: UsersRepository,
     @inject('services.coupon') private couponService: CouponService,
   ) {}
@@ -260,6 +266,112 @@ export class CouponController {
     if (!grant) throw new HttpErrors.NotFound('This customer is not individually targeted by this coupon.');
     await this.couponCustomerRepository.updateById(grant.id, {isDeleted: true, deletedAt: new Date()});
     return {message: 'Customer removed from coupon.'};
+  }
+
+  // ─── Price overrides (CouponDiscountType.PRICE_OVERRIDE only) ─────────────
+  // No selection/redemption involved — OrderService.resolvePricing() reads
+  // these rows directly at pricing time. See coupon-price-override.model.ts.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['coupon:read']})
+  @get('/coupons/{id}/price-overrides')
+  @response(200, {description: 'Service/item price overrides for this coupon'})
+  async listPriceOverrides(@param.path.string('id') id: string): Promise<object> {
+    const rows = await this.couponPriceOverrideRepository.find({
+      where: {couponId: id, isDeleted: false} as object,
+      order: ['createdAt DESC'],
+    });
+    const serviceIds = [...new Set(rows.map(r => r.serviceId))];
+    const itemIds = [...new Set(rows.map(r => r.itemId))];
+    const [services, items] = await Promise.all([
+      serviceIds.length ? this.serviceRepository.find({where: {id: {inq: serviceIds}} as object}) : [],
+      itemIds.length ? this.itemRepository.find({where: {id: {inq: itemIds}} as object}) : [],
+    ]);
+    const serviceById = new Map(services.map(s => [s.id, s.name]));
+    const itemById = new Map(items.map(i => [i.id, i.name]));
+
+    return {
+      overrides: rows.map(r => ({
+        id: r.id,
+        serviceId: r.serviceId,
+        serviceName: serviceById.get(r.serviceId) ?? null,
+        itemId: r.itemId,
+        itemName: itemById.get(r.itemId) ?? null,
+        overridePrice: r.overridePrice,
+      })),
+    };
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['coupon:update']})
+  @post('/coupons/{id}/price-overrides')
+  @response(200, {description: 'Price override mappings added/updated on this coupon'})
+  async setPriceOverrides(
+    @param.path.string('id') id: string,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['overrides'],
+            properties: {
+              overrides: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['serviceId', 'itemId', 'overridePrice'],
+                  properties: {
+                    serviceId: {type: 'string', format: 'uuid'},
+                    itemId: {type: 'string', format: 'uuid'},
+                    overridePrice: {type: 'number'},
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {overrides: {serviceId: string; itemId: string; overridePrice: number}[]},
+  ): Promise<object> {
+    const coupon = await this.couponRepository.findOne({where: {id, isDeleted: false}});
+    if (!coupon) throw new HttpErrors.NotFound('Coupon not found.');
+    if (coupon.discountType !== CouponDiscountType.PRICE_OVERRIDE) {
+      throw new HttpErrors.BadRequest('Price overrides only apply to a price_override coupon.');
+    }
+
+    const {v4} = await import('uuid');
+    let created = 0;
+    let updated = 0;
+    for (const {serviceId, itemId, overridePrice} of body.overrides) {
+      const existing = await this.couponPriceOverrideRepository.findOne({
+        where: {couponId: id, serviceId, itemId, isDeleted: false} as object,
+      });
+      if (existing) {
+        await this.couponPriceOverrideRepository.updateById(existing.id, {overridePrice});
+        updated++;
+      } else {
+        await this.couponPriceOverrideRepository.create({id: v4(), couponId: id, serviceId, itemId, overridePrice});
+        created++;
+      }
+    }
+    return {message: `${created} added, ${updated} updated.`, created, updated};
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['coupon:update']})
+  @del('/coupons/{id}/price-overrides/{overrideId}')
+  @response(200, {description: 'Price override mapping removed from this coupon'})
+  async removePriceOverride(
+    @param.path.string('id') id: string,
+    @param.path.string('overrideId') overrideId: string,
+  ): Promise<object> {
+    const row = await this.couponPriceOverrideRepository.findOne({
+      where: {id: overrideId, couponId: id, isDeleted: false} as object,
+    });
+    if (!row) throw new HttpErrors.NotFound('Price override mapping not found on this coupon.');
+    await this.couponPriceOverrideRepository.updateById(row.id, {isDeleted: true, deletedAt: new Date()});
+    return {message: 'Price override mapping removed.'};
   }
 
   // ─── Redemption history ─────────────────────────────────────────────────
