@@ -1692,7 +1692,7 @@ export class OrderService {
       );
     }
 
-    const {discountAmount, discountType} = couponResult
+    let {discountAmount, discountType} = couponResult
       ? {
           discountAmount: couponResult.discountAmount,
           discountType: couponResult.discountType,
@@ -1702,15 +1702,38 @@ export class OrderService {
     const gstConfig = await this.gstConfigRepo.findOne({
       where: {isActive: true, isDeleted: false},
     });
-    const taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
+    let taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
     const gstRate = gstConfig
       ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
       : 0;
-    const taxAmount =
+    let taxAmount =
       gstRate > 0
         ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2))
         : 0;
-    const totalAmount = roundRupee(taxableAmount + taxAmount);
+    let totalAmount = roundRupee(taxableAmount + taxAmount);
+
+    // Wallet-full-payment discount: paying this brand-new order's entire
+    // total via wallet, in one shot, at checkout — no other payment leg
+    // at all (cheque/on-account included, not just cash/card/UPI). See
+    // resolveWalletFullPaymentDiscount() for the config/precedence gate.
+    // The frontend is expected to have already called
+    // previewWalletFullPaymentDiscount and sent the discounted walletAmount
+    // here — if it sends the undiscounted total instead, this simply
+    // doesn't hit the wallet-covers-it check below and falls through to a
+    // normal (non-discounted) order.
+    const isWalletOnlyAttempt =
+      walletAmount > 0 &&
+      (input.payments ?? []).every(p => !Number(p.amount ?? 0));
+    if (isWalletOnlyAttempt) {
+      const candidate = await this.resolveWalletFullPaymentDiscount(subtotal, discountType);
+      if (candidate && roundRupee(walletAmount) >= candidate.totalAmount) {
+        discountAmount = candidate.discountAmount;
+        discountType = 'wallet_full_payment';
+        taxAmount = candidate.taxAmount;
+        totalAmount = candidate.totalAmount;
+        taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
+      }
+    }
 
     // "On Account" is a deferred-billing mode — nothing is actually collected
     // at order creation; the balance stays outstanding until this customer's
@@ -5245,19 +5268,22 @@ export class OrderService {
 
   /**
    * Discount for paying an order's entire total via wallet, in one shot,
-   * with zero collected via any other mode on that order ever — see the
-   * eligibility gate in addPayment(). Mirrors recalculateOrderTotals()'s
-   * subtotal -> discount -> tax -> total formula so the discounted total
-   * stays internally consistent with how every other order total is
-   * computed. Mutually exclusive with a coupon/customer-group discount,
-   * same precedence a coupon already has over customer-group — skipped
-   * outright when order.discountType is already something other than
-   * 'none'.
+   * with zero collected via any other mode on that order ever — checked
+   * both at order creation (createOrder(), the common case — paying in
+   * full via wallet right at checkout) and when adding a payment to an
+   * already-existing order (addPayment()). Mirrors
+   * recalculateOrderTotals()'s subtotal -> discount -> tax -> total
+   * formula so the discounted total stays internally consistent with how
+   * every other order total is computed. Mutually exclusive with a
+   * coupon/customer-group discount, same precedence a coupon already has
+   * over customer-group — skipped outright when a discount other than
+   * 'none' already applies.
    */
   private async resolveWalletFullPaymentDiscount(
-    order: Order,
+    subtotal: number,
+    existingDiscountType?: string,
   ): Promise<{discountAmount: number; taxAmount: number; totalAmount: number} | null> {
-    if (order.discountType && order.discountType !== 'none') return null;
+    if (existingDiscountType && existingDiscountType !== 'none') return null;
 
     const config = await this.walletConfigurationRepo.findOne({
       where: {isActive: true, isDeleted: false},
@@ -5265,7 +5291,6 @@ export class OrderService {
     const pct = Number(config?.walletDiscountPercentage ?? 0);
     if (!config?.walletDiscountEnabled || pct <= 0) return null;
 
-    const subtotal = Number(order.subtotal ?? 0);
     const discountAmount = Math.round(((subtotal * pct) / 100) * 100) / 100;
     const taxableAmount = parseFloat((subtotal - discountAmount).toFixed(2));
 
@@ -5314,7 +5339,10 @@ export class OrderService {
       return {...undiscounted, reason: 'Some amount has already been collected on this order.'};
     }
 
-    const candidate = await this.resolveWalletFullPaymentDiscount(order);
+    const candidate = await this.resolveWalletFullPaymentDiscount(
+      Number(order.subtotal ?? 0),
+      order.discountType,
+    );
     if (!candidate) {
       return {
         ...undiscounted,
@@ -5381,7 +5409,10 @@ export class OrderService {
     let orderTotalAmount = Number(order.totalAmount);
     let walletDiscount: {discountAmount: number; taxAmount: number; totalAmount: number} | null = null;
     if (alreadyPaid === 0 && thisPayment === 0 && thisWallet > 0) {
-      const candidate = await this.resolveWalletFullPaymentDiscount(order);
+      const candidate = await this.resolveWalletFullPaymentDiscount(
+        Number(order.subtotal ?? 0),
+        order.discountType,
+      );
       if (candidate && roundRupee(thisWallet) >= candidate.totalAmount) {
         walletDiscount = candidate;
         orderTotalAmount = candidate.totalAmount;
