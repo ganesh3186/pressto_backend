@@ -49,26 +49,36 @@ import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
 
 // What status to set on the garment immediately when a request is CREATED.
-// Every garment-level approval type is held the instant it's raised, so the
-// waiting period never gets silently attributed to whatever pipeline stage
-// (in_process, quality_check, ...) the garment happened to be sitting in —
-// the piece is frozen there until someone decides.
+// Every garment-level approval type resolves the garment's status the
+// instant it's raised — approval is a side process that reconciles the
+// MONEY side later (see GARMENT_STATUS_ON_APPROVE / _applyReturnEffect /
+// _applyUpgradeOnOrderItem, all still gated on an actual approve), it no
+// longer gates the garment's own state. Most types have no real "done"
+// state yet, so they park on ON_HOLD so the wait never gets silently
+// attributed to whatever pipeline stage (in_process, quality_check, ...)
+// the garment happened to be sitting in. RETURN_ITEM is the one exception —
+// "returned to customer" already IS its own resolution, so it goes there
+// directly rather than parking on ON_HOLD first (see also
+// _resumeGarmentFromHold, which now treats RETURNED_TO_CUSTOMER the same
+// way it already treats ON_HOLD when a pending request here gets rejected).
 const GARMENT_STATUS_ON_CREATE: Partial<
   Record<ApprovalRequestType, GarmentStatus>
 > = {
   [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.ON_HOLD,
-  [ApprovalRequestType.RETURN_ITEM]: GarmentStatus.ON_HOLD,
+  [ApprovalRequestType.RETURN_ITEM]: GarmentStatus.RETURNED_TO_CUSTOMER,
   [ApprovalRequestType.ITEM_DAMAGED]: GarmentStatus.ON_HOLD,
   [ApprovalRequestType.REPROCESS]: GarmentStatus.ON_HOLD,
   [ApprovalRequestType.PROCESS_AT_RISK]: GarmentStatus.ON_HOLD,
 };
 
-// What status to set on the garment when request is APPROVED
+// What status to set on the garment when request is APPROVED. RETURN_ITEM
+// is deliberately absent — it's already RETURNED_TO_CUSTOMER from the
+// moment the request was created (see GARMENT_STATUS_ON_CREATE); approve
+// only needs to run the money side (_applyReturnEffect), not touch status
+// again (that would just add a redundant second history entry).
 const GARMENT_STATUS_ON_APPROVE: Partial<
   Record<ApprovalRequestType, GarmentStatus>
 > = {
-  // Return: go directly to returned_to_customer — no on_hold stop
-  [ApprovalRequestType.RETURN_ITEM]: GarmentStatus.RETURNED_TO_CUSTOMER,
   // Upgrade: on approve, move to in_inspection so the new service process can be initialised
   [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.IN_INSPECTION,
 };
@@ -416,11 +426,15 @@ export class ApprovalService {
     // Apply immediate status change when needed (e.g. upgrade puts garment on_hold right away)
     const immediateStatus = GARMENT_STATUS_ON_CREATE[params.type];
     if (immediateStatus && params.entityType === 'garment') {
+      const remarks =
+        immediateStatus === GarmentStatus.ON_HOLD
+          ? `Put on hold — ${params.type} approval requested`
+          : `Marked ${immediateStatus} — ${params.type} approval requested`;
       await this._updateGarmentStatus(
         params.entityId,
         immediateStatus,
         params.requestedBy,
-        `Put on hold — ${params.type} approval requested`,
+        remarks,
       );
     }
 
@@ -1435,15 +1449,17 @@ export class ApprovalService {
   }
 
   /**
-   * Move a garment off ON_HOLD back to wherever it was before — walks
+   * Move a garment off ON_HOLD — or off RETURNED_TO_CUSTOMER, for a
+   * RETURN_ITEM request rejected before its money side ever ran (see
+   * GARMENT_STATUS_ON_CREATE) — back to wherever it was before. Walks
    * garment_status_history newest-first for the last real pipeline stage,
-   * skipping ON_HOLD and RETURNED_TO_CUSTOMER (a leftover
-   * RETURNED_TO_CUSTOMER entry from an earlier approve-then-revert can never
-   * legitimately be "the real prior stage" — see the reject-effect fix
-   * above). Shared by the generic reject path (nothing the request touched
-   * was ever applied, so it just resumes) and process_at_risk's approve path
-   * (customer accepted the risk, so processing just continues from where it
-   * paused — no service/price change, unlike an upgrade approval).
+   * skipping ON_HOLD and RETURNED_TO_CUSTOMER entries (either can be a
+   * leftover from the very request being rejected/reverted right now, so
+   * neither can legitimately be "the real prior stage"). Shared by the
+   * generic reject path (nothing the request touched was ever applied, so
+   * it just resumes) and process_at_risk's approve path (customer accepted
+   * the risk, so processing just continues from where it paused — no
+   * service/price change, unlike an upgrade approval).
    */
   private async _resumeGarmentFromHold(
     garmentId: string,
@@ -1453,7 +1469,12 @@ export class ApprovalService {
     const garment = await this.garmentRepo.findOne({
       where: {id: garmentId, isDeleted: false},
     });
-    if (garment?.status !== GarmentStatus.ON_HOLD) return;
+    if (
+      garment?.status !== GarmentStatus.ON_HOLD &&
+      garment?.status !== GarmentStatus.RETURNED_TO_CUSTOMER
+    ) {
+      return;
+    }
 
     const history = await this.garmentStatusHistoryRepo.find({
       where: {garmentId},
