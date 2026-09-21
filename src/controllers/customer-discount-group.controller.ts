@@ -28,11 +28,11 @@ export class CustomerDiscountGroupController {
   ) {}
 
   private assertValidDiscount(discountPercentage?: number, maxDiscountAmount?: number) {
-    if (discountPercentage !== undefined && (discountPercentage <= 0 || discountPercentage > 100)) {
-      throw new HttpErrors.BadRequest('Discount percentage must be greater than 0 and at most 100.');
+    if (discountPercentage !== undefined && (discountPercentage < 0 || discountPercentage > 100)) {
+      throw new HttpErrors.BadRequest('Discount percentage must be between 0 and 100.');
     }
-    if (maxDiscountAmount !== undefined && maxDiscountAmount !== null && maxDiscountAmount <= 0) {
-      throw new HttpErrors.BadRequest('Max discount amount must be greater than 0 when given.');
+    if (maxDiscountAmount !== undefined && maxDiscountAmount !== null && maxDiscountAmount < 0) {
+      throw new HttpErrors.BadRequest('Max discount amount cannot be negative.');
     }
   }
 
