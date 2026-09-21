@@ -36,11 +36,11 @@ export class CustomerDiscountGroup extends Entity {
   // unless overridden by a coupon (a coupon replaces this entirely — see
   // OrderService.resolveCustomerAutoDiscount, same non-stacking rule as the
   // customer-level defaultDiscountType/Value override it sits alongside).
-  // default: 0 only keeps the migration onto existing rows safe — the
-  // controller enforces a real (>0) value on create, see
-  // customer-discount-group.controller.ts.
-  @property({type: 'number', required: true, default: 0, postgresql: {dataType: 'numeric'}})
-  discountPercentage: number;
+  // Optional — a group can be created with no discount yet (e.g. 0, or left
+  // blank) and given a real value later; resolveCustomerAutoDiscount already
+  // treats a falsy/0 value as "no discount", see its comment there.
+  @property({type: 'number', default: 0, postgresql: {dataType: 'numeric'}})
+  discountPercentage?: number;
 
   // Optional, same purpose as Coupon.maxDiscountAmount — caps the computed
   // discount regardless of how large the percentage works out to.
