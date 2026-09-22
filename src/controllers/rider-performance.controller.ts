@@ -5,11 +5,13 @@ import {get, HttpErrors, param, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {DeliveryStatus} from '../models/delivery-status.enum';
+import {PickupHandoverStatus} from '../models/pickup-handover-status.enum';
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {TransferStatus} from '../models/transfer-status.enum';
 import {
   DeliveryRepository,
   PaymentTransactionRepository,
+  PickupHandoverItemRepository,
   PickupHandoverRepository,
   PickupRequestRepository,
   RiderCashHandoverRepository,
@@ -49,6 +51,8 @@ export class RiderPerformanceController {
     @repository(RiderCashHandoverRepository)
     private riderCashHandoverRepository: RiderCashHandoverRepository,
     @repository(PickupHandoverRepository) private pickupHandoverRepository: PickupHandoverRepository,
+    @repository(PickupHandoverItemRepository)
+    private pickupHandoverItemRepository: PickupHandoverItemRepository,
     @repository(TransferRepository) private transferRepository: TransferRepository,
   ) {}
 
@@ -250,10 +254,10 @@ export class RiderPerformanceController {
     }
     const dayEnd = endOfDay(day);
 
-    const [pickups, deliveries, transfers, pickupHandovers, cashHandovers] = await Promise.all([
+    const [pickups, deliveries, transfers, cashHandovers] = await Promise.all([
       this.pickupRequestRepository.find({
         where: {assignedRiderId: rider.id, isDeleted: false, requestedDate: {between: [day, day]}} as object,
-        fields: {status: true} as object,
+        fields: {id: true, status: true} as object,
       }),
       this.deliveryRepository.find({
         where: {riderId: rider.id, isDeleted: false, deliveryDate: {between: [day, dayEnd]}} as object,
@@ -266,10 +270,6 @@ export class RiderPerformanceController {
       this.transferRepository.find({
         where: {riderId: rider.id, isDeleted: false, riderAssignedAt: {between: [day, dayEnd]}} as object,
         fields: {status: true} as object,
-      }),
-      this.pickupHandoverRepository.find({
-        where: {riderId: rider.id, isDeleted: false, submittedAt: {between: [day, dayEnd]}} as object,
-        fields: {itemCount: true} as object,
       }),
       this.riderCashHandoverRepository.find({
         where: {riderId: rider.id, isDeleted: false, submittedAt: {between: [day, dayEnd]}} as object,
@@ -294,6 +294,36 @@ export class RiderPerformanceController {
     ];
     const TRANSFER_PENDING: TransferStatus[] = [TransferStatus.RIDER_ASSIGNED, TransferStatus.IN_TRANSIT];
 
+    // "Handover count" is what the rider still needs to hand over, not what
+    // they already have — same PICKED_UP-minus-already-batched logic as
+    // GET /rider/pickup-requests/handover-eligible. It was previously "items
+    // in a batch submitted today", which is backwards from what a dashboard
+    // tile should show: 0 right after confirming a pickup (no batch exists
+    // yet), climbing to 1 only once the rider had already handed it over.
+    const pickedUpPickupIds = pickups
+      .filter(p => p.status === PickupRequestStatus.PICKED_UP)
+      .map(p => p.id);
+    let handoverOrdersCount = 0;
+    if (pickedUpPickupIds.length) {
+      const pendingHandoverIds = (
+        await this.pickupHandoverRepository.find({
+          where: {riderId: rider.id, isDeleted: false, status: PickupHandoverStatus.PENDING} as object,
+          fields: {id: true} as object,
+        })
+      ).map(h => h.id);
+      const batchedPickupIds = pendingHandoverIds.length
+        ? new Set(
+            (
+              await this.pickupHandoverItemRepository.find({
+                where: {pickupHandoverId: {inq: pendingHandoverIds}} as object,
+                fields: {pickupRequestId: true} as object,
+              })
+            ).map(i => i.pickupRequestId),
+          )
+        : new Set<string>();
+      handoverOrdersCount = pickedUpPickupIds.filter(id => !batchedPickupIds.has(id)).length;
+    }
+
     return {
       date: day,
       completedPickupsCount: pickups.filter(p => PICKUP_COMPLETED.includes(p.status as PickupRequestStatus)).length,
@@ -306,9 +336,12 @@ export class RiderPerformanceController {
         .length,
       pendingStoreTransfersCount: transfers.filter(t => TRANSFER_PENDING.includes(t.status as TransferStatus))
         .length,
-      // Each header is a batch that can contain several orders/cash
-      // transactions. Dashboard tiles show handed-over items, not batches.
-      handoverOrdersCount: pickupHandovers.reduce((count, handover) => count + (Number(handover.itemCount) || 0), 0),
+      // Pickups this rider still needs to hand over (see comment above) —
+      // not batch/item counts, unlike handoverCashCount below.
+      handoverOrdersCount,
+      // Each header is a batch that can contain several cash transactions.
+      // Cash handover isn't part of this complaint — left as "collected
+      // today", the same as before.
       handoverCashCount: cashHandovers.reduce((count, handover) => count + (Number(handover.itemCount) || 0), 0),
     };
   }
