@@ -206,6 +206,9 @@ export class RiderPickupHandoverController {
     const serviceNameById = new Map(
       services.map(service => [service.id, service.name]),
     );
+    const serviceCategoryIdByServiceId = new Map(
+      services.map(service => [service.id, service.serviceCategoryId]),
+    );
     const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
 
     return {
@@ -220,14 +223,23 @@ export class RiderPickupHandoverController {
             ? (serviceNameById.get(line.serviceId) ?? null)
             : null,
         })),
-        actualItemsByService: (p.actualItemsByService ?? []).map(line => ({
-          ...line,
-          serviceName:
-            line.serviceName || serviceNameById.get(line.serviceId) || null,
-          bagNumber: line.bagId
-            ? (bagNumberById.get(line.bagId) ?? null)
-            : null,
-        })),
+        actualItemsByService: (p.actualItemsByService ?? []).map(line => {
+          const serviceCategoryId = line.serviceId
+            ? serviceCategoryIdByServiceId.get(line.serviceId)
+            : undefined;
+          return {
+            ...line,
+            serviceName:
+              line.serviceName ?? serviceNameById.get(line.serviceId) ?? null,
+            bagNumber: line.bagId
+              ? (bagNumberById.get(line.bagId) ?? null)
+              : null,
+            serviceCategoryId: serviceCategoryId ?? null,
+            serviceCategoryName: serviceCategoryId
+              ? (categoryNameById.get(serviceCategoryId) ?? null)
+              : null,
+          };
+        }),
       })),
     };
   }
@@ -257,6 +269,49 @@ export class RiderPickupHandoverController {
       pincode: store.pincode,
       phone: store.phone ?? null,
     };
+  }
+
+  // Attaches each PickupHandoverItem's real per-service breakdown (service
+  // name + category, delivery speed, count) from its linked PickupRequest —
+  // same batched-lookup shape handoverEligible above already returns, so
+  // myHandovers/incomingHandovers show what's actually in the batch instead
+  // of just the bare customerName/pickupNumber the raw rows carry.
+  private async enrichHandoverItems<T extends {pickupRequestId: string}>(items: T[]) {
+    const pickupIds = [...new Set(items.map(i => i.pickupRequestId))];
+    const pickups = pickupIds.length
+      ? await this.pickupRequestRepository.find({where: {id: {inq: pickupIds}} as object})
+      : [];
+    const pickupById = new Map(pickups.map(p => [p.id, p]));
+
+    const serviceIds = [
+      ...new Set(pickups.flatMap(p => (p.actualItemsByService ?? []).map(line => line.serviceId).filter(Boolean))),
+    ];
+    const services = serviceIds.length
+      ? await this.serviceRepository.find({where: {id: {inq: serviceIds}} as object})
+      : [];
+    const serviceNameById = new Map(services.map(s => [s.id, s.name]));
+    const serviceCategoryIdByServiceId = new Map(services.map(s => [s.id, s.serviceCategoryId]));
+    const categoryIds = [...new Set(services.map(s => s.serviceCategoryId).filter(Boolean))];
+    const categories = categoryIds.length
+      ? await this.serviceCategoryRepository.find({where: {id: {inq: categoryIds}} as object})
+      : [];
+    const categoryNameById = new Map(categories.map(c => [c.id, c.name]));
+
+    return items.map(item => {
+      const pickup = pickupById.get(item.pickupRequestId);
+      return {
+        ...item,
+        actualItemsByService: (pickup?.actualItemsByService ?? []).map(line => {
+          const serviceCategoryId = line.serviceId ? serviceCategoryIdByServiceId.get(line.serviceId) : undefined;
+          return {
+            ...line,
+            serviceName: line.serviceName ?? (line.serviceId ? serviceNameById.get(line.serviceId) : null) ?? null,
+            serviceCategoryId: serviceCategoryId ?? null,
+            serviceCategoryName: serviceCategoryId ? categoryNameById.get(serviceCategoryId) ?? null : null,
+          };
+        }),
+      };
+    });
   }
 
   // ─── Submit a handover batch ──────────────────────────────────────────────
@@ -466,11 +521,12 @@ export class RiderPickupHandoverController {
       order: ['submittedAt DESC'],
     });
     const handoverIds = handovers.map(h => h.id);
-    const items = handoverIds.length
+    const rawItems = handoverIds.length
       ? await this.pickupHandoverItemRepository.find({
           where: {pickupHandoverId: {inq: handoverIds}} as object,
         })
       : [];
+    const items = await this.enrichHandoverItems(rawItems);
     const itemsByHandover = new Map<string, typeof items>();
     for (const item of items) {
       const list = itemsByHandover.get(item.pickupHandoverId) ?? [];
@@ -513,11 +569,12 @@ export class RiderPickupHandoverController {
       order: ['submittedAt DESC'],
     });
     const handoverIds = handovers.map(h => h.id);
-    const items = handoverIds.length
+    const rawItems = handoverIds.length
       ? await this.pickupHandoverItemRepository.find({
           where: {pickupHandoverId: {inq: handoverIds}} as object,
         })
       : [];
+    const items = await this.enrichHandoverItems(rawItems);
     const itemsByHandover = new Map<string, typeof items>();
     for (const item of items) {
       const list = itemsByHandover.get(item.pickupHandoverId) ?? [];

@@ -13,7 +13,7 @@ import {
   ItemCategory,
   PickupDeliverySlot,
   PickupHandoverBy,
-  PickupRequest,
+  PickupRequestWithRelations,
   Service,
   ServiceCategory,
   Store,
@@ -575,7 +575,7 @@ export class RiderPickupController {
     // (see rider-performance.controller.ts), so an exact/between-same-day
     // match is exact, no end-of-day boundary math needed.
     @param.query.string('date') date?: string,
-  ): Promise<PickupRequest[]> {
+  ): Promise<PickupRequestWithRelations[]> {
     const rider = await this.resolveActiveRider(currentUser);
 
     let statusWhere: object;
@@ -598,6 +598,11 @@ export class RiderPickupController {
       };
     }
 
+    // `slot` on the request itself is only a denormalized label snapshot —
+    // include the real PickupDeliverySlot row so the app can show an actual
+    // start/end time, not just text. Rows created without a pickupSlotId
+    // (e.g. some admin/call-center intake) will still come back with
+    // pickupSlot: null — that's a genuine data gap, not a bug here.
     return this.pickupRequestRepository.find({
       where: {
         assignedRiderId: rider.id,
@@ -606,6 +611,7 @@ export class RiderPickupController {
         ...(date ? {requestedDate: {between: [date, date]}} : {}),
       } as object,
       order: ['assignedAt DESC'],
+      include: [{relation: 'pickupSlot'}],
     });
   }
 
