@@ -825,17 +825,44 @@ export class OrderService {
       this.orderChargeRepo.find({where: {orderId}}, txOpt),
     ]);
     const orderGarmentIds = orderGarments.map(garment => garment.id);
-    const garmentCharges = orderGarmentIds.length
-      ? await this.garmentAdditionalChargeRepo.find(
-          {
-            where: {
-              garmentId: {inq: orderGarmentIds},
-              isDeleted: false,
-            } as any,
-          },
-          txOpt,
-        )
-      : [];
+    const itemIds = [...new Set(orderItems.map(oi => oi.itemId))];
+    const [garmentCharges, lineItems] = await Promise.all([
+      orderGarmentIds.length
+        ? this.garmentAdditionalChargeRepo.find(
+            {
+              where: {
+                garmentId: {inq: orderGarmentIds},
+                isDeleted: false,
+              } as any,
+            },
+            txOpt,
+          )
+        : Promise.resolve([]),
+      itemIds.length
+        ? this.itemRepo.find({where: {id: {inq: itemIds}} as any}, txOpt)
+        : Promise.resolve([]),
+    ]);
+    const isMeasurementByItemId = new Map(
+      lineItems.map(item => [item.id, Boolean(item.isMeasurement)]),
+    );
+    // For a measurement item (billed per length x width, e.g. a rug per sq
+    // ft), each unit/garment on the same line can have a DIFFERENT area, so
+    // its price isn't uniform across units the way a flat-priced item's is.
+    // Falls back to plain unitPrice when not a measurement item or the area
+    // isn't usable — same rule createOrder/updateOrderItems already apply
+    // when pricing a unit, and calculateMeasurementPieceBasePrice in
+    // approval.service.ts already applies when returning one.
+    const pieceBasePrice = (
+      unitPrice: number,
+      length: unknown,
+      width: unknown,
+      isMeasurement: boolean,
+    ): number => {
+      const area = Number(length) * Number(width);
+      return isMeasurement && Number.isFinite(area) && area > 0
+        ? parseFloat((unitPrice * area).toFixed(2))
+        : unitPrice;
+    };
     const garmentsByItem = new Map<string, typeof orderGarments>();
     for (const garment of orderGarments) {
       const list = garmentsByItem.get(garment.orderItemId) ?? [];
@@ -848,15 +875,38 @@ export class OrderService {
     const items = orderItems
       .map(oi => {
         const garments = garmentsByItem.get(oi.id) ?? [];
+        const activeGarments = garments.filter(
+          garment => garment.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+        );
         const activeQuantity = garments.length
-          ? garments.filter(
-              garment =>
-                garment.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
-            ).length
+          ? activeGarments.length
           : Number(oi.quantity) || 0;
         const storedQuantity = Number(oi.quantity) || 0;
-        const totalPrice =
-          storedQuantity > 0
+        const unitPrice = Number(oi.unitPrice) || 0;
+        const isMeasurement = isMeasurementByItemId.get(oi.itemId) ?? false;
+        // Sum each surviving garment's OWN price (area-aware) instead of
+        // pro-rating the line's original totalPrice by garment count —
+        // that ratio silently assumed every unit on the line costs the
+        // same, which is only true for a flat-priced (non-measurement)
+        // item. For a measurement item it could charge for whichever
+        // piece was returned instead of whichever piece remains.
+        const totalPrice = garments.length
+          ? parseFloat(
+              activeGarments
+                .reduce(
+                  (sum, garment) =>
+                    sum +
+                    pieceBasePrice(
+                      unitPrice,
+                      garment.length,
+                      garment.width,
+                      isMeasurement,
+                    ),
+                  0,
+                )
+                .toFixed(2),
+            )
+          : storedQuantity > 0
             ? parseFloat(
                 (
                   (Number(oi.totalPrice) || 0) *
