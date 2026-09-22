@@ -932,9 +932,18 @@ export class ShiftController {
     if (shift.status !== ShiftStatus.OPEN) {
       throw new HttpErrors.BadRequest('This shift is already closed.');
     }
-    if (shift.userId !== userId) {
+    // Store-scoped, not "only the original opener" — a shift is now shared
+    // across whoever is on the counter at this store (see open()'s same
+    // store-wide guard), so any authorized employee AT THIS STORE can close
+    // it, e.g. a handover where the person who opened it has already left
+    // for the day. resolveCallerStore falls back to the shift's own store
+    // for a caller with no fixed Employee.storeId (manager/super_admin),
+    // so they aren't blocked either; an employee fixed to a DIFFERENT store
+    // still can't close this one.
+    const caller = await this.resolveCallerStore(currentUser, shift.storeId);
+    if (caller.storeId !== shift.storeId) {
       throw new HttpErrors.Forbidden(
-        'Only the user who opened this shift can close it.',
+        'Only an employee of this store can close its shift.',
       );
     }
     const normalizedRemarks = String(body.remarks || '')
@@ -944,12 +953,7 @@ export class ShiftController {
       throw new HttpErrors.BadRequest('Remarks are required to close a shift.');
     }
 
-    const employee = await this.employeeRepository.findOne({
-      where: {userId, isDeleted: false} as object,
-    });
-    const closingUserName = employee
-      ? `${employee.firstName} ${employee.lastName}`
-      : shift.userName;
+    const closingUserName = caller.userName || shift.userName;
 
     const closing = this.recalcClosingDerived({
       ...body,
