@@ -2435,6 +2435,7 @@ export class OrderService {
         );
 
         let additionalServicesUnitPrice = 0;
+        const resolvedAdditionalServices: Array<{serviceId: string; amount: number}> = [];
         for (const addlServiceId of desired.additionalServiceIds ?? []) {
           const addl = await this.resolvePricing(
             order.storeId!,
@@ -2445,6 +2446,7 @@ export class OrderService {
             },
           );
           additionalServicesUnitPrice += addl.resolvedPrice;
+          resolvedAdditionalServices.push({serviceId: addlServiceId, amount: addl.resolvedPrice});
         }
 
         const unitPrice = parseFloat(
@@ -2497,6 +2499,11 @@ export class OrderService {
         await this.orderItemChargeRepo.deleteAll({orderItemId} as any, {
           transaction: tx,
         });
+        const resolvedAdditionalCharges: Array<{
+          additionalChargeId: string;
+          quantity: number;
+          amount: number;
+        }> = [];
         for (const {
           additionalChargeId: chargeId,
           quantity,
@@ -2511,6 +2518,46 @@ export class OrderService {
             {orderItemId, additionalChargeId: chargeId, amount, quantity},
             {transaction: tx},
           );
+          resolvedAdditionalCharges.push({additionalChargeId: chargeId, quantity, amount});
+        }
+
+        // Garments already created for this line (before this edit) are never
+        // touched elsewhere in this method — only autoCreateGarments, below,
+        // creates NEW ones for added quantity. Without this, an existing
+        // garment keeps whatever additional services/charges it had at
+        // creation time forever, even though the order item's own list just
+        // changed — the item-level fields above would update, but nothing
+        // in the UI actually reads them; it reads the (now stale) per-
+        // garment rows. This endpoint has no per-unit selection (see
+        // buildOrderItemsForUpdate on the frontend, which already collapses
+        // units into this same line-level union before sending), so every
+        // existing garment on the line gets the identical resolved set.
+        if (existing) {
+          const lineGarments = await this.garmentRepo.find({
+            where: {orderItemId: existing.id, isDeleted: false} as any,
+          });
+          for (const garment of lineGarments) {
+            await this.garmentAdditionalServiceRepo.deleteAll(
+              {garmentId: garment.id} as any,
+              {transaction: tx},
+            );
+            for (const {serviceId, amount} of resolvedAdditionalServices) {
+              await this.garmentAdditionalServiceRepo.create(
+                {id: v4(), garmentId: garment.id, serviceId, amount},
+                {transaction: tx},
+              );
+            }
+            await this.garmentAdditionalChargeRepo.deleteAll(
+              {garmentId: garment.id} as any,
+              {transaction: tx},
+            );
+            for (const {additionalChargeId, quantity, amount} of resolvedAdditionalCharges) {
+              await this.garmentAdditionalChargeRepo.create(
+                {id: v4(), garmentId: garment.id, additionalChargeId, quantity, amount},
+                {transaction: tx},
+              );
+            }
+          }
         }
       }
 
