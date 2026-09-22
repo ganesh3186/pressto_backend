@@ -9,10 +9,15 @@ import {ShiftStatus} from './shift-status.enum';
  * Their shapes mirror the frontend's createEmptyOpeningBalances()/
  * createDefaultClosingForm() (src/utils/shift-module.js) field-for-field.
  *
- * Scoped (userId, storeId) — one open shift per cashier per store,
- * enforced in the controller (no DB constraint precedent for a
- * status-conditional unique index elsewhere in this codebase, matching
- * RiderPincodeMapping's same posture for "one active mapping per pincode").
+ * Scoped by storeId — one open shift per STORE at a time, shared across
+ * whoever is on the counter, not one per cashier (previously scoped
+ * (userId, storeId), which let two different employees each hold their
+ * own open shift at the same store simultaneously). userId records who
+ * opened it and is the only one who can close it (see close()'s
+ * ownership check). Enforced in the controller (no DB constraint
+ * precedent for a status-conditional unique index elsewhere in this
+ * codebase, matching RiderPincodeMapping's same posture for "one active
+ * mapping per pincode").
  */
 @model({
   settings: {
