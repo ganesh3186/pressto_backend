@@ -432,16 +432,23 @@ export class ShiftController {
 
     const caller = await this.resolveCallerStore(currentUser, body.storeId);
 
+    // Store-scoped, not per-user: a store runs one shift at a time,
+    // shared across whoever is on the counter, not one per cashier. A
+    // real incident showed two different employees each with their own
+    // OPEN shift at the same store simultaneously, both taking orders,
+    // because this used to only guard against the SAME user double-
+    // opening (findOne also filtered on userId) — a different employee's
+    // own findOne query never saw the other's still-open row.
     const existingOpen = await this.shiftRepository.findOne({
       where: {
-        userId: caller.userId,
         storeId: caller.storeId,
         status: ShiftStatus.OPEN,
       } as object,
     });
     if (existingOpen) {
       throw new HttpErrors.Conflict(
-        'A shift is already open for this user at this store.',
+        `A shift is already open for this store (opened by ${existingOpen.userName ?? 'another user'}). ` +
+          'Only they can close it before a new one can be opened.',
       );
     }
 
