@@ -519,12 +519,12 @@ export class ShiftController {
     return {message: `Shift ${openingNo} opened.`, shift};
   }
 
-  // ─── Active (the caller's own open shift) ──────────────────────────────────
+  // ─── Active (this store's open shift, whoever opened it) ───────────────────
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts/active')
-  @response(200, {description: "The caller's own open shift, if any"})
+  @response(200, {description: "The store's currently open shift, if any"})
   async active(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
@@ -539,9 +539,15 @@ export class ShiftController {
       if (error instanceof HttpErrors.HttpError) return {shift: null};
       throw error;
     }
+    // Store-scoped, not per-caller — matches open()'s same store-wide
+    // guard. Used to be {userId, storeId}, so a DIFFERENT employee at a
+    // store with an already-open shift got told "you have nothing open"
+    // here, then "a shift is already open" the moment they tried to open
+    // one — same contradiction reported in the field. Whoever's asking,
+    // if the store has an open shift they should see it and use it, not
+    // just their own.
     const shift = await this.shiftRepository.findOne({
       where: {
-        userId: caller.userId,
         storeId: caller.storeId,
         status: ShiftStatus.OPEN,
       } as object,
