@@ -670,7 +670,11 @@ export class OrderService {
    * confusing downstream `ProcessService.initProcess` failure at inspection.
    */
   private async assertItemsHaveRequiredAdditionalServices(
-    items: {serviceId: string; additionalServiceIds?: string[]}[],
+    items: {
+      serviceId: string;
+      additionalServiceIds?: string[];
+      units?: {additionalServiceIds?: string[]}[];
+    }[],
   ): Promise<void> {
     const serviceIds = [...new Set(items.map(i => i.serviceId))];
     const services = await this.serviceRepo.find({
@@ -680,10 +684,15 @@ export class OrderService {
 
     for (const item of items) {
       const service = serviceById.get(item.serviceId);
-      if (
-        service?.hasOwnProcess === false &&
-        !item.additionalServiceIds?.length
-      ) {
+      // additionalServiceIds can be set line-level, or per-unit (units[].
+      // additionalServiceIds, which overrides the line-level field when
+      // present — see CreateOrderItemInput/UnitInspectionInput). Either one
+      // satisfies the requirement; only check the line-level field and miss
+      // a real per-unit selection would false-positive this error.
+      const hasAdditionalService =
+        Boolean(item.additionalServiceIds?.length) ||
+        (item.units ?? []).some(unit => Boolean(unit.additionalServiceIds?.length));
+      if (service?.hasOwnProcess === false && !hasAdditionalService) {
         throw new HttpErrors.BadRequest(
           `"${service.name}" has no process of its own — select at least one additional service for this item.`,
         );
