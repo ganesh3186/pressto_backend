@@ -3,7 +3,6 @@ import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {get, HttpErrors, param, post, Request, requestBody, response, RestBindings} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
-import {authorize} from '../authorization';
 import {GatewayPaymentLink} from '../models/gateway-payment-link.model';
 import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-type.enum';
 import {GatewayPaymentLinkRepository} from '../repositories';
@@ -38,7 +37,6 @@ export class GatewayPaymentController {
   // Checkout popup without a separate config round-trip — it's Razorpay's
   // publishable key, not the secret.
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['gateway_payment:create']})
   @post('/payments/gateway-links')
   @response(200, {description: 'Gateway payment order created'})
   async create(
@@ -85,7 +83,6 @@ export class GatewayPaymentController {
   // actual trust boundary is the per-payment signature checked inside
   // verifyAndApplyPayment(), not this endpoint's authorization.
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['gateway_payment:create']})
   @post('/payments/gateway-links/{id}/verify')
   @response(200, {description: 'Gateway payment verified and applied'})
   async verify(
@@ -112,7 +109,6 @@ export class GatewayPaymentController {
 
   // ─── Status check ───────────────────────────────────────────────────────────
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['gateway_payment:read']})
   @get('/payments/gateway-links/{id}')
   @response(200, {description: 'Gateway payment link status'})
   async findById(@param.path.string('id') id: string): Promise<GatewayPaymentLink> {

@@ -72,7 +72,6 @@ export class AdminCustomerRechargeController {
   // RazorpayService's webhook handler ever calls confirmRecharge() on it.
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['gateway_payment:create']})
   @post('/admin/customers/{customerId}/wallet/recharge/initiate-gateway')
   @response(200, {description: 'Pending wallet recharge request created, for a PGLink to attach to'})
   async adminWalletRechargeInitiateGateway(
@@ -198,7 +197,6 @@ export class AdminCustomerRechargeController {
   // Same reasoning as adminWalletRechargeInitiateGateway above — creates a
   // PENDING request via the existing initiateTopup(), never credits here.
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['gateway_payment:create']})
   @post('/admin/customers/{customerId}/security-deposit/topup/initiate-gateway')
   @response(200, {description: 'Pending security deposit top-up request created, for a PGLink to attach to'})
   async adminSecurityDepositTopupInitiateGateway(
