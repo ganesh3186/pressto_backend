@@ -21,6 +21,7 @@ import {
   PickupHandoverItemRepository,
   PickupHandoverRepository,
   PickupRequestRepository,
+  ServiceCategoryRepository,
   ServiceRepository,
 } from '../repositories';
 import {OrderService} from '../services/order.service';
@@ -47,6 +48,7 @@ export class PickupHandoverController {
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
+    @repository(ServiceCategoryRepository) private serviceCategoryRepo: ServiceCategoryRepository,
     @inject('services.order') private orderService: OrderService,
   ) {}
 
@@ -168,6 +170,21 @@ export class PickupHandoverController {
     const mediaUrlById = new Map(mediaRecords.map(m => [m.id, m.fileUrl]));
     const toUrls = (ids?: string[]) => (ids ?? []).map(id => mediaUrlById.get(id)).filter((url): url is string => Boolean(url));
 
+    // Service category per actualItemsByService line — batch service -> serviceCategory
+    // the same two-hop way _buildReworkContexts resolves item/service names above.
+    const serviceIds = [
+      ...new Set(pickups.flatMap(p => (p.actualItemsByService ?? []).map(line => line.serviceId).filter(Boolean))),
+    ];
+    const services = serviceIds.length
+      ? await this.serviceRepo.find({where: {id: {inq: serviceIds}} as object})
+      : [];
+    const serviceCategoryIdByServiceId = new Map(services.map(s => [s.id, s.serviceCategoryId]));
+    const categoryIds = [...new Set(services.map(s => s.serviceCategoryId).filter(Boolean))];
+    const categories = categoryIds.length
+      ? await this.serviceCategoryRepo.find({where: {id: {inq: categoryIds}} as object})
+      : [];
+    const categoryNameById = new Map(categories.map(c => [c.id, c.name]));
+
     const reworkContextByPickupId = await this._buildReworkContexts(pickups);
 
     return items.map(item => {
@@ -180,11 +197,16 @@ export class PickupHandoverController {
         bagNumber: pickup?.bagId ? bagNumberById.get(pickup.bagId) ?? null : null,
         itemCountEstimate: pickup?.itemCountEstimate ?? null,
         itemCategoryEstimate: pickup?.itemCategoryEstimate ?? null,
-        actualItemsByService: (pickup?.actualItemsByService ?? null)?.map(line => ({
-          ...line,
-          mediaUrls: toUrls(line.mediaIds),
-          bagNumber: line.bagId ? bagNumberById.get(line.bagId) ?? null : null,
-        })) ?? null,
+        actualItemsByService: (pickup?.actualItemsByService ?? null)?.map(line => {
+          const serviceCategoryId = line.serviceId ? serviceCategoryIdByServiceId.get(line.serviceId) : undefined;
+          return {
+            ...line,
+            mediaUrls: toUrls(line.mediaIds),
+            bagNumber: line.bagId ? bagNumberById.get(line.bagId) ?? null : null,
+            serviceCategoryId: serviceCategoryId ?? null,
+            serviceCategoryName: serviceCategoryId ? categoryNameById.get(serviceCategoryId) ?? null : null,
+          };
+        }) ?? null,
         remarks: pickup?.remarks ?? null,
         mediaIds: pickup?.mediaIds ?? null,
         mediaUrls: toUrls(pickup?.mediaIds),
