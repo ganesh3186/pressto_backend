@@ -3,6 +3,7 @@ import {repository} from '@loopback/repository';
 import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
+import {PaymentRequestStatus} from '../models/payment-request-status.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {
   ClusterRepository,
@@ -18,6 +19,7 @@ import {
   RegionRepository,
   ShiftRepository,
   StoreRepository,
+  WalletRechargeRequestRepository,
 } from '../repositories';
 
 /** Fixed business-unit label; the schema carries no BU dimension yet. */
@@ -95,6 +97,11 @@ type DailySalesRow = {
 
 const emptyPaged = () => ({rows: [], totalCount: 0, totals: {}});
 
+/** Sort key for a nullable date; undated rows sink to the bottom. */
+function timeOf(date: Date | null | undefined): number {
+  return date ? new Date(date).getTime() : 0;
+}
+
 /** Local YYYY-MM-DD, so a day is grouped by the store's own calendar. */
 function toDateKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
@@ -141,6 +148,8 @@ export class ReportsService {
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(PettyCashRegisterEntryRepository)
     private pettyCashRegisterRepo: PettyCashRegisterEntryRepository,
+    @repository(WalletRechargeRequestRepository)
+    private walletRechargeRequestRepo: WalletRechargeRequestRepository,
   ) {}
 
   /**
@@ -156,6 +165,14 @@ export class ReportsService {
    *
    * Refunds land in `reimbursement` rather than `amount`, so the column
    * carries real numbers instead of the constant zero it showed before.
+   *
+   * Wallet top-ups are folded into the same list — money the store took
+   * over the counter too, just not against a ticket. They reach a store
+   * through the customer's preferred store (see buildWalletTopUpRows)
+   * and are told apart on screen by their ticket cell, which reads
+   * `Wallet Recharge`. Note that a top-up AND the wallet-mode
+   * payment it later funds both appear: this report lists tenders taken,
+   * so summing every row double-counts wallet money by design.
    */
   async buildModeOfPayment(params: {
     storeIds: string[];
@@ -175,61 +192,79 @@ export class ReportsService {
     // Payments carry no storeId — they reach a store through their order,
     // and an order raised months ago can still be paid inside this
     // window, so the order set deliberately is NOT date-filtered.
-    const orders = await this.orderRepo.find({
-      where: {storeId: {inq: storeIds}} as object,
-      fields: {
-        id: true,
-        orderNumber: true,
-        storeId: true,
-        shiftId: true,
-        placedByName: true,
-        customerId: true,
-      } as object,
-    });
-    if (!orders.length) return empty;
+    const [orders, walletRows] = await Promise.all([
+      this.orderRepo.find({
+        where: {storeId: {inq: storeIds}} as object,
+        fields: {
+          id: true,
+          orderNumber: true,
+          storeId: true,
+          shiftId: true,
+          placedByName: true,
+          customerId: true,
+        } as object,
+      }),
+      this.buildWalletTopUpRows(storeIds, from, to),
+    ]);
 
     const orderById = new Map(orders.map(o => [o.id, o]));
-    const orderIds = orders.map(o => o.id);
+    const payments = orders.length
+      ? await this.paymentTransactionRepo.find({
+          where: {
+            orderId: {inq: orders.map(o => o.id)},
+            paymentDate: {between: [from, to]},
+          } as object,
+          order: ['paymentDate DESC'],
+        })
+      : [];
 
-    const where = {
-      orderId: {inq: orderIds},
-      paymentDate: {between: [from, to]},
-    } as object;
+    if (!payments.length && !walletRows.length) return empty;
+
+    // The two ledgers are paged as one list, so the whole merged set has
+    // to be ordered in memory before slicing: a DB-side limit/skip on the
+    // payments alone would drop the top-ups that belong on the same page.
+    type Entry =
+      | {date: Date | null; payment: (typeof payments)[number]; wallet?: undefined}
+      | {date: Date | null; wallet: ModeOfPaymentRow; payment?: undefined};
+
+    const entries: Entry[] = [
+      ...payments.map(payment => ({date: payment.paymentDate ?? null, payment})),
+      ...walletRows.map(wallet => ({date: wallet.date, wallet})),
+    ].sort((a, b) => timeOf(b.date) - timeOf(a.date));
 
     // Count and totals come from the whole matching set, never just the
     // page — a footer that only summed the visible rows would restate the
     // very bug this endpoint replaces.
-    const [{count}, pageRows, allAmounts] = await Promise.all([
-      this.paymentTransactionRepo.count(where),
-      this.paymentTransactionRepo.find({
-        where,
-        order: ['paymentDate DESC'],
-        limit,
-        skip,
-      }),
-      this.paymentTransactionRepo.find({
-        where,
-        fields: {amount: true, transactionType: true} as object,
-      }),
-    ]);
-
-    const totals = allAmounts.reduce(
-      (acc, t) => {
-        const value = Number(t.amount) || 0;
-        if (t.transactionType === 'refund') acc.reimbursement += value;
+    const totals = entries.reduce(
+      (acc, entry) => {
+        if (entry.wallet) {
+          acc.amount += entry.wallet.amount;
+          return acc;
+        }
+        const txn = entry.payment;
+        const value = Number(txn.amount) || 0;
+        if (txn.transactionType === 'refund') acc.reimbursement += value;
         else acc.amount += value;
         return acc;
       },
       {amount: 0, reimbursement: 0},
     );
 
+    const pageEntries = entries.slice(skip, skip + limit);
+    const pagePayments = pageEntries
+      .map(entry => entry.payment)
+      .filter(Boolean) as typeof payments;
+
     const [storeById, shiftById, customerById] = await Promise.all([
-      this.mapStores(pageRows, orderById),
-      this.mapShifts(pageRows, orderById),
-      this.mapCustomers(pageRows, orderById),
+      this.mapStores(pagePayments, orderById),
+      this.mapShifts(pagePayments, orderById),
+      this.mapCustomers(pagePayments, orderById),
     ]);
 
-    const rows: ModeOfPaymentRow[] = pageRows.map(txn => {
+    const rows: ModeOfPaymentRow[] = pageEntries.map(entry => {
+      if (entry.wallet) return entry.wallet;
+
+      const txn = entry.payment;
       const order = orderById.get(txn.orderId);
       const isRefund = txn.transactionType === 'refund';
       const value = Number(txn.amount) || 0;
@@ -255,7 +290,84 @@ export class ReportsService {
       };
     });
 
-    return {rows, totalCount: count, totals};
+    return {rows, totalCount: entries.length, totals};
+  }
+
+  /**
+   * Wallet top-ups taken for the selected stores, as Mode Of Payment rows.
+   *
+   * A top-up has no store of its own — nothing on the recharge request or
+   * the wallet records where the money was handed over — so the customer's
+   * preferred store is the only link the schema offers, and that is what
+   * this matches on. A customer with no preferred store therefore appears
+   * under no store at all, which is the honest answer rather than a guess.
+   *
+   * Source is WalletRechargeRequest, not the WalletTransaction credit it
+   * creates: only the request carries a paymentMode, which is the whole
+   * point of this report. Only SUCCESS requests count — pending, failed
+   * and cancelled ones are not money collected.
+   */
+  private async buildWalletTopUpRows(
+    storeIds: string[],
+    from: Date,
+    to: Date,
+  ): Promise<ModeOfPaymentRow[]> {
+    const customers = await this.customerRepo.find({
+      where: {preferredStoreId: {inq: storeIds}} as object,
+      fields: {id: true, firstName: true, lastName: true, preferredStoreId: true} as object,
+    });
+    if (!customers.length) return [];
+
+    const customerById = new Map(customers.map(c => [String(c.id), c]));
+
+    const [requests, stores] = await Promise.all([
+      this.walletRechargeRequestRepo.find({
+        where: {
+          customerId: {inq: [...customerById.keys()]},
+          status: PaymentRequestStatus.SUCCESS,
+          createdAt: {between: [from, to]},
+        } as object,
+        order: ['createdAt DESC'],
+      }),
+      this.storeRepo.find({
+        where: {id: {inq: storeIds}} as object,
+        fields: {id: true, name: true, code: true} as object,
+      }),
+    ]);
+    if (!requests.length) return [];
+
+    const storeNameById = new Map(
+      stores.map(store => [String(store.id), store.name ?? String(store.code ?? '')]),
+    );
+
+    return requests.map(request => {
+      const customer = customerById.get(String(request.customerId));
+      const customerName = customer
+        ? `${customer.firstName ?? ''} ${customer.lastName ?? ''}`.trim()
+        : '';
+
+      return {
+        // Namespaced so a top-up can never collide with a payment
+        // transaction id in the merged list.
+        id: `wallet-topup:${request.id}`,
+        storeName: customer?.preferredStoreId
+          ? (storeNameById.get(String(customer.preferredStoreId)) ?? '—')
+          : '—',
+        date: request.createdAt ?? null,
+        // A top-up is tied to no shift and no ticket. The recharge
+        // number is deliberately NOT shown: wallet.service numbers
+        // requests per customer, so WR000001 recurs across customers
+        // and would read like a ticket number that can be looked up.
+        shiftClosureNo: '—',
+        ticketNo: 'Wallet Recharge',
+        userName: customerName || '—',
+        amount: Number(request.amount) || 0,
+        reimbursement: 0,
+        paymentMode: String(request.paymentMode ?? ''),
+        paymentModeLabel:
+          PAYMENT_MODE_LABELS[request.paymentMode] ?? String(request.paymentMode ?? '—'),
+      };
+    });
   }
 
   /**
