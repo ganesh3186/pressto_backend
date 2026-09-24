@@ -182,6 +182,12 @@ function toDateKey(date: Date): string {
   ).padStart(2, '0')}`;
 }
 
+function addDays(date: Date, days: number): Date {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
 /** Shared shape for the paged, order-backed reports. */
 export type PagedReport<TRow> = {
   rows: TRow[];
@@ -1028,12 +1034,17 @@ export class ReportsService {
         where,
         fields: {amount: true, approvedAmount: true} as object,
       }),
-      // Closed shifts across the same window, to resolve each page entry's
-      // shift context. Not date-filtered any tighter than the entries
-      // themselves — an entry's shift closes the same day it was claimed
-      // in practice, so the entry window already bounds the shift window.
+      // Closed shifts to resolve each page entry's shift context, matched
+      // by the entry's createdAt (see findShiftFor below) rather than its
+      // user-editable expenseDate — widened a day past the filter window
+      // on each side since createdAt can drift outside [from, to] near a
+      // month boundary even though expenseDate stays inside it.
       this.shiftRepo.find({
-        where: {storeId: {inq: storeIds}, status: ShiftStatus.CLOSED, closedAt: {between: [from, to]}} as object,
+        where: {
+          storeId: {inq: storeIds},
+          status: ShiftStatus.CLOSED,
+          closedAt: {between: [addDays(from, -1), addDays(to, 1)]},
+        } as object,
       }),
     ]);
     if (!count) return emptyPaged();
@@ -1048,9 +1059,14 @@ export class ReportsService {
     };
     type PettyCashOpeningCell = {actual?: number; supposed?: number};
 
-    const findShiftFor = (storeId: string, expenseDate: Date | undefined) => {
-      if (!expenseDate) return undefined;
-      const t = new Date(expenseDate).getTime();
+    // Matched by createdAt, not expenseDate: PettyCashService.
+    // computeWindowActivity (which produces closing.pettyCash.used/
+    // recvFromFinance in the first place) scopes entries by createdAt —
+    // expenseDate is user-editable/backdatable and can fall well outside
+    // the shift that actually accounted for the entry.
+    const findShiftFor = (storeId: string, createdAt: Date | undefined) => {
+      if (!createdAt) return undefined;
+      const t = new Date(createdAt).getTime();
       return shifts.find(
         s =>
           s.storeId === storeId &&
@@ -1063,7 +1079,7 @@ export class ReportsService {
 
     return {
       rows: pageEntries.map(entry => {
-        const shift = findShiftFor(entry.storeId, entry.expenseDate);
+        const shift = findShiftFor(entry.storeId, entry.createdAt);
         const pettyClosing =
           ((shift?.closing ?? {}) as {pettyCash?: PettyCashClosingCell}).pettyCash ?? {};
         const pettyOpening =
