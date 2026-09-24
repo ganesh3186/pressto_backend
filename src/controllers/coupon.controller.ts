@@ -550,6 +550,55 @@ export class CouponController {
     return this.couponService.evaluate(body);
   }
 
+  // Same rules as validate() above, for several codes at once — each
+  // evaluated independently, then checked pairwise for overlapping
+  // qualifying items (see CouponService.evaluateMultiple). Lets the New
+  // Order screen preview a combination before OrderService.createOrder
+  // ever sees it, so the two can't disagree about what a given
+  // combination actually prices out to.
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['coupon:read']})
+  @post('/coupons/validate-multiple')
+  @response(200, {description: 'Multi-coupon combination eligibility + discount preview'})
+  async validateMultiple(
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['couponCodes', 'customerId', 'storeId', 'items'],
+            properties: {
+              couponCodes: {type: 'array', items: {type: 'string'}, minItems: 1},
+              customerId: {type: 'string', format: 'uuid'},
+              storeId: {type: 'string', format: 'uuid'},
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['serviceId', 'itemId', 'quantity', 'totalPrice'],
+                  properties: {
+                    serviceId: {type: 'string'},
+                    itemId: {type: 'string'},
+                    quantity: {type: 'number'},
+                    totalPrice: {type: 'number'},
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {
+      couponCodes: string[];
+      customerId: string;
+      storeId: string;
+      items: {serviceId: string; itemId: string; quantity: number; totalPrice: number}[];
+    },
+  ): Promise<object> {
+    return this.couponService.evaluateMultiple(body);
+  }
+
   // ─── Referral preview (New Order screen, before submission) ───────────────
   // A referral coupon auto-applies server-side at actual order creation
   // (OrderService.createOrder) with no code for the operator to type in —
