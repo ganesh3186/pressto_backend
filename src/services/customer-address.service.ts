@@ -1,8 +1,9 @@
-import {BindingScope, injectable} from '@loopback/core';
+import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
-import {CustomerAddress} from '../models';
+import {Customer, CustomerAddress} from '../models';
 import {CustomerAddressRepository, CustomerRepository} from '../repositories';
+import {StoreAssignmentService} from './store-assignment.service';
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class CustomerAddressService {
@@ -11,10 +12,12 @@ export class CustomerAddressService {
     private addressRepository: CustomerAddressRepository,
     @repository(CustomerRepository)
     private customerRepository: CustomerRepository,
+    @inject('services.store-assignment')
+    private storeAssignmentService: StoreAssignmentService,
   ) {}
 
   async create(customerId: string, data: Partial<CustomerAddress>): Promise<CustomerAddress> {
-    await this.customerRepository.findById(customerId);
+    const customer = await this.customerRepository.findById(customerId);
 
     if (data.isDefault) {
       await this.addressRepository.updateAll(
@@ -23,7 +26,26 @@ export class CustomerAddressService {
       );
     }
 
-    return this.addressRepository.create({...data, customerId});
+    const address = await this.addressRepository.create({...data, customerId});
+
+    // Self-registered customers have no admin-assigned store. The first
+    // address with real coordinates gets one auto-assigned (nearest store
+    // within STORE_ASSIGNMENT_RADIUS_KM) so store-scoped features have
+    // somewhere to resolve to — never overrides a store an admin, or an
+    // earlier address, already set.
+    if (!customer.preferredStoreId && address.latitude != null && address.longitude != null) {
+      const {nearestWithinRadius} = await this.storeAssignmentService.resolveForCoordinates(
+        address.latitude,
+        address.longitude,
+      );
+      if (nearestWithinRadius) {
+        await this.customerRepository.updateById(customerId, {
+          preferredStoreId: nearestWithinRadius.id,
+        } as Partial<Customer>);
+      }
+    }
+
+    return address;
   }
 
   async findAll(customerId: string): Promise<CustomerAddress[]> {

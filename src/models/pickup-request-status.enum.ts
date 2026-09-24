@@ -15,6 +15,12 @@ export enum PickupRequestStatus {
   // POST /rider/pickup-requests/{id}/reprocess.
   PICKUP_UNSUCCESSFUL = 'pickup_unsuccessful',
   CANCELLED = 'cancelled',
+  // No store was within STORE_ASSIGNMENT_RADIUS_KM of the pickup address
+  // at creation time — the request is still recorded (so ops can see the
+  // attempt and the customer app can list nearby drop-off stores) but
+  // never gets a storeId and never enters the normal rider-assignment
+  // flow. Not reachable from any other status — only set at creation.
+  NOT_SERVICEABLE = 'not_serviceable',
 }
 
 // Valid next-status transitions — enforced at the controller layer, same
@@ -40,4 +46,5 @@ export const PICKUP_REQUEST_STATUS_TRANSITIONS: Record<PickupRequestStatus, Pick
   // it deliberately isn't reachable via the generic status-update endpoint.
   [PickupRequestStatus.PICKUP_UNSUCCESSFUL]: [PickupRequestStatus.CANCELLED],
   [PickupRequestStatus.CANCELLED]: [],
+  [PickupRequestStatus.NOT_SERVICEABLE]: [PickupRequestStatus.CANCELLED],
 };

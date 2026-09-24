@@ -38,6 +38,7 @@ import { DashboardService } from './services/dashboard.service';
 import { ReportsService } from './services/reports.service';
 import { RiderAssignmentService } from './services/rider-assignment.service';
 import { RazorpayService } from './services/razorpay.service';
+import { StoreAssignmentService } from './services/store-assignment.service';
 
 export { ApplicationConfig };
 
@@ -104,6 +105,7 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.reports').toClass(ReportsService);
     this.bind('services.rider-assignment').toClass(RiderAssignmentService);
     this.bind('services.razorpay').toClass(RazorpayService);
+    this.bind('services.store-assignment').toClass(StoreAssignmentService);
   }
 
   protected configureFileUpload(destination?: string) {
