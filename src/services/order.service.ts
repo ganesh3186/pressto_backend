@@ -179,8 +179,12 @@ export interface CreateOrderInput {
   // When supplied, replaces the customer's default discount for this order
   // (CouponService.evaluate() — see the discount computation below). An
   // invalid/ineligible code hard-fails order creation rather than silently
-  // skipping the discount.
+  // skipping the discount. couponCodes (plural) is the current field —
+  // several codes may combine as long as their qualifying items don't
+  // overlap (CouponService.evaluateMultiple). couponCode (singular) still
+  // works for any caller not yet updated; treated as a one-code list.
   couponCode?: string;
+  couponCodes?: string[];
 }
 
 // The final order/invoice/challan total is always a whole rupee (≥ .5 rounds up).
@@ -1719,14 +1723,22 @@ export class OrderService {
     );
     const subtotal = parseFloat((itemsSubtotal + orderChargesTotal).toFixed(2));
 
-    // A coupon replaces the customer's standing default discount for this
-    // order entirely (does not stack) — an invalid/ineligible code hard-
-    // fails order creation rather than silently skipping the discount, so
-    // a customer told a coupon applies is never silently charged in full.
-    let couponResult: CouponEvaluationSuccess | undefined;
-    if (input.couponCode) {
-      const evaluation = await this.couponService.evaluate({
-        couponCode: input.couponCode,
+    // Coupon(s) replace the customer's standing default discount for this
+    // order entirely (does not stack) — an invalid/ineligible code, or two
+    // codes whose qualifying items overlap, hard-fails order creation
+    // rather than silently skipping/adjusting the discount, so a customer
+    // told a coupon applies is never silently charged in full or double-
+    // discounted.
+    const couponCodes = input.couponCodes?.length
+      ? input.couponCodes
+      : input.couponCode
+        ? [input.couponCode]
+        : [];
+
+    let couponResults: CouponEvaluationSuccess[] = [];
+    if (couponCodes.length) {
+      const evaluation = await this.couponService.evaluateMultiple({
+        couponCodes,
         customerId: input.customerId,
         storeId: input.storeId,
         items: itemPricings.map(p => ({
@@ -1737,7 +1749,7 @@ export class OrderService {
         })),
       });
       if (!evaluation.valid) throw new HttpErrors.BadRequest(evaluation.reason);
-      couponResult = evaluation;
+      couponResults = evaluation.coupons;
     } else {
       // No explicit code — auto-apply this customer's referral coupon
       // (Customer.referredByCouponId, set at registration), if any.
@@ -1745,7 +1757,7 @@ export class OrderService {
       // rule itself, so the New Order screen's own preview call
       // (CouponController.referralPreview) can never disagree with what
       // actually gets applied here.
-      couponResult = await this.couponService.evaluateReferralCoupon(
+      const referral = await this.couponService.evaluateReferralCoupon(
         customer,
         input.storeId,
         itemPricings.map(p => ({
@@ -1755,12 +1767,17 @@ export class OrderService {
           totalPrice: p.totalPrice,
         })),
       );
+      if (referral) couponResults = [referral];
     }
 
-    let {discountAmount, discountType} = couponResult
+    let {discountAmount, discountType} = couponResults.length
       ? {
-          discountAmount: couponResult.discountAmount,
-          discountType: couponResult.discountType,
+          discountAmount: roundRupee(couponResults.reduce((sum, r) => sum + r.discountAmount, 0)),
+          // A single coupon keeps its own discountType (percentage/flat/
+          // cheapest_item_free) for backward-compatible display; several
+          // mixed-type coupons have no one type to report, so this
+          // becomes the generic 'coupon' marker instead.
+          discountType: couponResults.length === 1 ? couponResults[0].discountType : 'coupon',
         }
       : await this.resolveCustomerAutoDiscount(subtotal, customer);
 
@@ -1914,32 +1931,38 @@ export class OrderService {
           // delivery flow to skip payment collection for genuinely
           // on-account orders (see RiderDeliveryController.deliver()).
           isOnAccount: isOnAccountCustomer && !!input.paymentIsOnAccount,
-          ...(couponResult
+          ...(couponResults.length
             ? {
-                appliedCouponId: couponResult.couponId,
-                couponCode: couponResult.code,
+                // First coupon's id, for any older single-id consumer —
+                // CouponRedemption rows below are the authoritative "every
+                // coupon on this order" record.
+                appliedCouponId: couponResults[0].couponId,
+                couponCode: couponResults.map(r => r.code).join(', '),
               }
             : {}),
         },
         {transaction: tx},
       );
 
-      if (couponResult) {
+      for (const result of couponResults) {
+        // eslint-disable-next-line no-await-in-loop
         await this.couponRedemptionRepo.create(
           {
             id: v4(),
-            couponId: couponResult.couponId,
-            couponCodeSnapshot: couponResult.code,
+            couponId: result.couponId,
+            couponCodeSnapshot: result.code,
             customerId: input.customerId,
             orderId: order.id,
-            discountType: couponResult.discountType,
-            discountAmount: couponResult.discountAmount,
+            discountType: result.discountType,
+            discountAmount: result.discountAmount,
           },
           {transaction: tx},
         );
-        const coupon = await this.couponRepo.findById(couponResult.couponId);
+        // eslint-disable-next-line no-await-in-loop
+        const coupon = await this.couponRepo.findById(result.couponId);
+        // eslint-disable-next-line no-await-in-loop
         await this.couponRepo.updateById(
-          couponResult.couponId,
+          result.couponId,
           {totalUsesCount: (coupon.totalUsesCount ?? 0) + 1},
           {transaction: tx},
         );
