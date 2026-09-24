@@ -48,6 +48,7 @@ import { CustomerAddressService } from '../services/customer-address.service';
 import { CustomerContactService } from '../services/customer-contact.service';
 import { CustomerPhoneService } from '../services/customer-phone.service';
 import { CustomerPreferenceChanges, CustomerPreferenceService } from '../services/customer-preference.service';
+import { NearbyStore, StoreAssignmentService } from '../services/store-assignment.service';
 import { filterSlotsForDate } from '../utils/pickup-slot-availability';
 
 export class CustomerProfileController {
@@ -81,7 +82,9 @@ export class CustomerProfileController {
     @inject('services.coupon')
     private couponService: CouponService,
     @repository(ServiceCategoryRepository)
-    private serviceCategoryRepository: ServiceCategoryRepository
+    private serviceCategoryRepository: ServiceCategoryRepository,
+    @inject('services.store-assignment')
+    private storeAssignmentService: StoreAssignmentService
   ) { }
 
   private async resolveCustomer(userId: string): Promise<Customer> {
@@ -681,6 +684,27 @@ export class CustomerProfileController {
       }
     }
 
+    // No store within radius (or the address has no coordinates at all —
+    // resolveForCoordinates needs both to compute anything) means this
+    // address can't be serviced by a pickup today. The request is still
+    // recorded, tagged NOT_SERVICEABLE with no storeId, rather than
+    // rejected outright, so ops has visibility and the customer app can
+    // still point at nearby stores for a walk-in drop-off.
+    let storeId: string | undefined;
+    let nearbyStores: NearbyStore[] = [];
+    if (address.latitude != null && address.longitude != null) {
+      const resolved = await this.storeAssignmentService.resolveForCoordinates(
+        address.latitude,
+        address.longitude,
+      );
+      if (resolved.nearestWithinRadius) {
+        storeId = resolved.nearestWithinRadius.id;
+      } else {
+        nearbyStores = resolved.nearbyBeyondRadius;
+      }
+    }
+    const status = storeId ? undefined : PickupRequestStatus.NOT_SERVICEABLE;
+
     const { v4 } = await import('uuid');
     const count = await this.pickupRequestRepository.count();
     const pickupNumber = `PU${String(count.count + 1).padStart(6, '0')}`;
@@ -693,6 +717,8 @@ export class CustomerProfileController {
       customerMobile: user.phone,
       address: this.addressService.toDisplaySnapshot(address),
       pincode: address.pincode,
+      storeId,
+      status,
       requestedDate: body.requestedDate,
       slot: slot.label,
       pickupSlotId: slot.id,
@@ -704,7 +730,13 @@ export class CustomerProfileController {
       remarks,
       mediaIds,
     });
-    return { message: 'Pickup request created.', pickupRequest };
+    return status === PickupRequestStatus.NOT_SERVICEABLE
+      ? {
+          message: 'Pickup is not available at this address yet. You can drop items off at a nearby store instead.',
+          pickupRequest,
+          nearbyStores,
+        }
+      : { message: 'Pickup request created.', pickupRequest };
   }
 
   @authenticate('jwt')
