@@ -84,16 +84,89 @@ export type OrderReportParams = {
 
 type DailySalesRow = {
   id: string;
+  day: string;
   date: string;
+  closureNo: string;
   storeName: string;
-  shiftCount: number;
+  storeCode: string;
+  clusterName: string;
+  regionName: string;
+  psbRevenue: number;
+  pmuRevenue: number;
+  p2dRevenue: number;
+  revenue: number;
+  discount: number;
+  taxes: number;
+  totalSales: number;
+  noOfTickets: number;
+  noOfItems: number;
+  noOfServices: number;
+  otherPaymentMode: number;
+  ppVouchers: number;
   cash: number;
-  card: number;
-  cheque: number;
+  cardsUpi: number;
+  chequesReceived: number;
+  reimbursed: number;
   pgLink: number;
   wallet: number;
-  total: number;
+  totalReceipts: number;
+  supposedBankDeposit: number;
+  actualBankDeposit: number;
+  diffInDeposit: number;
+  noOfSalesReturnServices: number;
+  salesReturnSaleAmount: number;
+  shiftOpenRemark: string;
+  shiftClosingRemark: string;
+  cumulativeDifference: string;
 };
+
+/** The revenue.pressto / salesReturn.pressto shape stored on Shift.closing. */
+type ShiftRevenueCell = {
+  revenue?: number;
+  discount?: number;
+  taxes?: number;
+  totalSales?: number;
+  tickets?: number;
+  items?: number;
+  services?: number;
+};
+
+type ShiftClosingSnapshot = {
+  remarks?: string;
+  revenue?: {pressto?: ShiftRevenueCell};
+  salesReturn?: {pressto?: ShiftRevenueCell};
+  collections?: {
+    cash?: number;
+    card?: number;
+    UPI?: number;
+    cheque?: number;
+    pgLink?: number;
+    wallet?: number;
+    ppVoucher?: number;
+  };
+  register?: {reimbursement?: number};
+  banking?: {supposed?: number; deposited?: number; cumulativeDiff?: number};
+  pettyCash?: {cumulativeDiff?: number};
+  ppVoucher?: {cumulativeDiff?: number};
+  actualCashInTill?: {cumulativeDiff?: number};
+};
+
+/** Order types booked as a walk-in/counter sale — the "PSB" revenue bucket. */
+const PSB_ORDER_TYPES = [OrderType.STORE_DROPOFF, OrderType.STORE_DROPOFF_HOME_DELIVERY];
+
+/**
+ * Payment modes that land in the Daily Sales Report's "Other Payment Mode"
+ * catch-all — everything Shift.closing.collections never bucketed on its
+ * own (that object only ever tracks cash/card/UPI/cheque/pgLink/wallet/
+ * ppVoucher — see collections above), so a net banking, bank transfer, PDC
+ * or pay-later payment falls through it entirely today.
+ */
+const OTHER_PAYMENT_MODES = new Set<string>([
+  PaymentMode.NET_BANKING,
+  PaymentMode.BANK_TRANSFER,
+  PaymentMode.PDC,
+  PaymentMode.PAY_LATER,
+]);
 
 const emptyPaged = () => ({rows: [], totalCount: 0, totals: {}});
 
@@ -276,13 +349,13 @@ export class ReportsService {
 
       return {
         id: String(txn.id),
-        storeName: (order?.storeId && storeById.get(String(order.storeId))) || '—',
+        storeName: order?.storeId ? (storeById.get(String(order.storeId)) ?? '—') : '—',
         date: txn.paymentDate ?? null,
         // closureNo exists only once a shift has been closed; an open
         // shift has no closure number yet, which is not missing data.
         shiftClosureNo: shift?.closureNo != null ? String(shift.closureNo) : '—',
         ticketNo: order?.orderNumber ?? '—',
-        userName: order?.placedByName || customerName || '—',
+        userName: (order?.placedByName ?? '') || customerName || '—',
         amount: isRefund ? 0 : value,
         reimbursement: isRefund ? value : 0,
         paymentMode: String(txn.paymentMode ?? ''),
@@ -381,7 +454,7 @@ export class ReportsService {
     deliveryStatus: string;
     customerLabelId?: string;
   }): Promise<PagedReport<object>> {
-    const {storeIds, from, to, limit, skip} = params;
+    const {storeIds, limit, skip} = params;
     if (!storeIds.length) return emptyPaged();
 
     const orders = await this.orderRepo.find({
@@ -506,7 +579,7 @@ export class ReportsService {
         receptionDate: order.createdAt ?? null,
         estDeliveryDate: order.deliveryDate ?? null,
         ticketStatus: order.status ?? '—',
-        deliveryStatus: deliveryStatuses.get(String(order.id)) || '—',
+        deliveryStatus: deliveryStatuses.get(String(order.id)) ?? '—',
         amount: Number(order.totalAmount) || 0,
       };
     });
@@ -625,6 +698,32 @@ export class ReportsService {
    * Only CLOSED shifts appear: an open shift has no closing form yet, so
    * it has no reconciled collections to report.
    */
+  /**
+   * Consolidated Daily Sales — one row per (store, closure day), matching
+   * the Pulse spec's own example (multiple closure numbers/remarks joined
+   * into one row when a store had more than one shift that day).
+   *
+   * Revenue/discount/taxes/totalSales/tickets/items/services and the sales-
+   * return figures come straight off Shift.closing (already computed by
+   * ShiftController.close() at closure time via resolveRevenue()/
+   * resolveSalesReturn() — not recomputed here, so this can't drift from
+   * what the cashier actually saw on their closing screen).
+   *
+   * PSB vs P2D revenue is the one figure closing time never split out —
+   * resolveRevenue() sums every order into a single `pressto` bucket
+   * regardless of channel. Recomputed here from the SAME order set
+   * (identical where-clause: storeId, createdAt within [openedAt,
+   * closedAt], status not draft/cancelled) split by orderType, so
+   * PSB + PMU(always 0 — see OTHER_PAYMENT_MODES's neighboring comment,
+   * nothing in the schema records a PMU channel) + P2D reconciles exactly
+   * against the shift's own stored `revenue` total.
+   *
+   * "Other Payment Mode" is the other figure the stored snapshot can't
+   * answer — Shift.closing.collections only ever buckets cash/card/UPI/
+   * cheque/pgLink/wallet/ppVoucher, so a net banking, bank transfer, PDC
+   * or pay-later payment is invisible to it. Summed here from the actual
+   * PaymentTransaction rows for each shift's orders instead.
+   */
   async buildConsolidatedDailySales(params: {
     storeIds: string[];
     from: Date;
@@ -646,54 +745,237 @@ export class ReportsService {
     ]);
     if (!shifts.length) return emptyPaged();
 
+    // One order/payment fetch for every shift in the page, instead of one
+    // pair of queries per shift — then sliced in memory per shift window
+    // below. Shifts at a store never overlap, so a plain createdAt/
+    // paymentDate range check against each shift's own [openedAt,
+    // closedAt] is exact, not an approximation.
+    const earliestOpen = shifts.reduce(
+      (min, s) => (s.openedAt && s.openedAt < min ? s.openedAt : min),
+      shifts[0].openedAt,
+    );
+    const latestClose = shifts.reduce(
+      (max, s) => (s.closedAt && s.closedAt > max ? s.closedAt : max),
+      shifts[0].closedAt ?? to,
+    );
+
+    const orders = await this.orderRepo.find({
+      where: {
+        storeId: {inq: storeIds},
+        createdAt: {between: [earliestOpen, latestClose]},
+        status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
+      } as object,
+      fields: {
+        id: true,
+        storeId: true,
+        orderType: true,
+        subtotal: true,
+        createdAt: true,
+      } as object,
+    });
+
+    const orderIds = orders.map(o => o.id);
+    const payments = orderIds.length
+      ? await this.paymentTransactionRepo.find({
+          where: {
+            orderId: {inq: orderIds},
+            paymentDate: {between: [earliestOpen, latestClose]},
+          } as object,
+          fields: {
+            orderId: true,
+            paymentMode: true,
+            amount: true,
+            transactionType: true,
+            paymentDate: true,
+          } as object,
+        })
+      : [];
+    const orderById = new Map(orders.map(o => [o.id, o]));
+
     const grouped = new Map<string, DailySalesRow>();
+    // closureNo/remarks are joined across every shift in a (store, day)
+    // group; cumulative-diff figures are running totals, so only the
+    // LAST shift closed that day carries the up-to-date number.
+    const closureNumbers = new Map<string, string[]>();
+    const openRemarks = new Map<string, string[]>();
+    const closeRemarks = new Map<string, string[]>();
+
     for (const shift of shifts) {
       if (!shift.closedAt) continue;
       const day = toDateKey(new Date(shift.closedAt));
       const key = `${day}|${shift.storeId}`;
-      const collections =
-        ((shift.closing as {collections?: Record<string, unknown>} | undefined)?.collections ??
-          {}) as Record<string, unknown>;
+      const closing = (shift.closing ?? {}) as ShiftClosingSnapshot;
+      const collections = closing.collections ?? {};
+      const revenueCell = closing.revenue?.pressto ?? {};
+      const returnCell = closing.salesReturn?.pressto ?? {};
+
+      const windowStart = shift.openedAt.getTime();
+      const windowEnd = shift.closedAt.getTime();
+      const shiftOrders = orders.filter(
+        o =>
+          o.storeId === shift.storeId &&
+          o.createdAt &&
+          new Date(o.createdAt).getTime() >= windowStart &&
+          new Date(o.createdAt).getTime() <= windowEnd,
+      );
+      let psbRevenue = 0;
+      let p2dRevenue = 0;
+      for (const order of shiftOrders) {
+        const value = Number(order.subtotal) || 0;
+        if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
+        else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
+      }
+
+      let otherPaymentMode = 0;
+      for (const payment of payments) {
+        if (payment.transactionType === 'refund') continue;
+        const order = orderById.get(payment.orderId);
+        if (!order || order.storeId !== shift.storeId) continue;
+        const paidAt = payment.paymentDate ? new Date(payment.paymentDate).getTime() : null;
+        if (paidAt == null || paidAt < windowStart || paidAt > windowEnd) continue;
+        if (OTHER_PAYMENT_MODES.has(String(payment.paymentMode))) {
+          otherPaymentMode += Number(payment.amount) || 0;
+        }
+      }
 
       const row =
         grouped.get(key) ??
         {
           id: key,
+          day: new Date(shift.closedAt).toLocaleDateString('en-IN', {weekday: 'long'}),
           date: day,
+          closureNo: '',
           storeName: storeCtx.get(String(shift.storeId))?.name ?? '—',
-          shiftCount: 0,
+          storeCode: storeCtx.get(String(shift.storeId))?.code ?? '—',
+          clusterName: storeCtx.get(String(shift.storeId))?.clusterName ?? '—',
+          regionName: storeCtx.get(String(shift.storeId))?.regionName ?? '—',
+          psbRevenue: 0,
+          pmuRevenue: 0,
+          p2dRevenue: 0,
+          revenue: 0,
+          discount: 0,
+          taxes: 0,
+          totalSales: 0,
+          noOfTickets: 0,
+          noOfItems: 0,
+          noOfServices: 0,
+          otherPaymentMode: 0,
+          ppVouchers: 0,
           cash: 0,
-          card: 0,
-          cheque: 0,
+          cardsUpi: 0,
+          chequesReceived: 0,
+          reimbursed: 0,
           pgLink: 0,
           wallet: 0,
-          total: 0,
+          totalReceipts: 0,
+          supposedBankDeposit: 0,
+          actualBankDeposit: 0,
+          diffInDeposit: 0,
+          noOfSalesReturnServices: 0,
+          salesReturnSaleAmount: 0,
+          shiftOpenRemark: '',
+          shiftClosingRemark: '',
+          cumulativeDifference: '—',
         };
 
-      row.shiftCount += 1;
+      row.psbRevenue += psbRevenue;
+      row.p2dRevenue += p2dRevenue;
+      row.revenue += Number(revenueCell.revenue) || 0;
+      row.discount += Number(revenueCell.discount) || 0;
+      row.taxes += Number(revenueCell.taxes) || 0;
+      row.totalSales += Number(revenueCell.totalSales) || 0;
+      row.noOfTickets += Number(revenueCell.tickets) || 0;
+      row.noOfItems += Number(revenueCell.items) || 0;
+      row.noOfServices += Number(revenueCell.services) || 0;
+      row.otherPaymentMode += otherPaymentMode;
+      row.ppVouchers += Number(collections.ppVoucher) || 0;
       row.cash += Number(collections.cash) || 0;
-      row.card += Number(collections.card) || 0;
-      row.cheque += Number(collections.cheque) || 0;
+      row.cardsUpi += (Number(collections.card) || 0) + (Number(collections.UPI) || 0);
+      row.chequesReceived += Number(collections.cheque) || 0;
+      row.reimbursed += Number(closing.register?.reimbursement) || 0;
       row.pgLink += Number(collections.pgLink) || 0;
       row.wallet += Number(collections.wallet) || 0;
-      row.total = row.cash + row.card + row.cheque + row.pgLink + row.wallet;
+      row.totalReceipts =
+        row.otherPaymentMode +
+        row.ppVouchers +
+        row.cash +
+        row.cardsUpi +
+        row.chequesReceived +
+        row.pgLink +
+        row.wallet;
+      row.supposedBankDeposit += Number(closing.banking?.supposed) || 0;
+      row.actualBankDeposit += Number(closing.banking?.deposited) || 0;
+      row.diffInDeposit = row.supposedBankDeposit - row.actualBankDeposit;
+      row.noOfSalesReturnServices += Number(returnCell.services) || 0;
+      row.salesReturnSaleAmount += Number(returnCell.totalSales) || 0;
+
+      const ct = closing.actualCashInTill?.cumulativeDiff ?? 0;
+      const pc = closing.pettyCash?.cumulativeDiff ?? 0;
+      const pv = closing.ppVoucher?.cumulativeDiff ?? 0;
+      const bd = closing.banking?.cumulativeDiff ?? 0;
+      row.cumulativeDifference = `CT: ${ct}, PC: ${pc}, PV: ${pv}, BD: ${bd}`;
+
+      const closureLabel =
+        shift.closureNo != null ? String(shift.closureNo) : String(shift.openingNo);
+      closureNumbers.set(key, [...(closureNumbers.get(key) ?? []), closureLabel]);
+      const openRemark = (shift.opening as {remarks?: string} | undefined)?.remarks?.trim();
+      if (openRemark) {
+        openRemarks.set(key, [
+          ...(openRemarks.get(key) ?? []),
+          `${closureLabel} - ${openRemark}`,
+        ]);
+      }
+      const closeRemark = closing.remarks?.trim();
+      if (closeRemark) {
+        closeRemarks.set(key, [
+          ...(closeRemarks.get(key) ?? []),
+          `${closureLabel} - ${closeRemark}`,
+        ]);
+      }
+
       grouped.set(key, row);
+    }
+
+    for (const [key, row] of grouped) {
+      row.closureNo = (closureNumbers.get(key) ?? []).join(', ');
+      row.shiftOpenRemark = (openRemarks.get(key) ?? []).join(', ') || '—';
+      row.shiftClosingRemark = (closeRemarks.get(key) ?? []).join(', ') || '—';
     }
 
     const rows = [...grouped.values()].sort(
       (a, b) => a.date.localeCompare(b.date) || a.storeName.localeCompare(b.storeName),
     );
 
+    const sum = (fn: (row: DailySalesRow) => number) => rows.reduce((s, r) => s + fn(r), 0);
+
     return {
       rows,
       totalCount: rows.length,
       totals: {
-        cash: rows.reduce((s, r) => s + r.cash, 0),
-        card: rows.reduce((s, r) => s + r.card, 0),
-        cheque: rows.reduce((s, r) => s + r.cheque, 0),
-        pgLink: rows.reduce((s, r) => s + r.pgLink, 0),
-        wallet: rows.reduce((s, r) => s + r.wallet, 0),
-        total: rows.reduce((s, r) => s + r.total, 0),
+        psbRevenue: sum(r => r.psbRevenue),
+        pmuRevenue: sum(r => r.pmuRevenue),
+        p2dRevenue: sum(r => r.p2dRevenue),
+        revenue: sum(r => r.revenue),
+        discount: sum(r => r.discount),
+        taxes: sum(r => r.taxes),
+        totalSales: sum(r => r.totalSales),
+        noOfTickets: sum(r => r.noOfTickets),
+        noOfItems: sum(r => r.noOfItems),
+        noOfServices: sum(r => r.noOfServices),
+        otherPaymentMode: sum(r => r.otherPaymentMode),
+        ppVouchers: sum(r => r.ppVouchers),
+        cash: sum(r => r.cash),
+        cardsUpi: sum(r => r.cardsUpi),
+        chequesReceived: sum(r => r.chequesReceived),
+        reimbursed: sum(r => r.reimbursed),
+        pgLink: sum(r => r.pgLink),
+        wallet: sum(r => r.wallet),
+        totalReceipts: sum(r => r.totalReceipts),
+        supposedBankDeposit: sum(r => r.supposedBankDeposit),
+        actualBankDeposit: sum(r => r.actualBankDeposit),
+        diffInDeposit: sum(r => r.diffInDeposit),
+        noOfSalesReturnServices: sum(r => r.noOfSalesReturnServices),
+        salesReturnSaleAmount: sum(r => r.salesReturnSaleAmount),
       },
     };
   }
@@ -809,6 +1091,7 @@ export class ReportsService {
           String(s.id),
           {
             name: s.name ?? String(s.code ?? '—'),
+            code: s.code ?? '—',
             clusterName: cluster?.name ?? '—',
             regionName: cluster?.regionName ?? '—',
           },
