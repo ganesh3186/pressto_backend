@@ -152,12 +152,13 @@ export class ShiftController {
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
   /**
-   * The caller's own (userId, storeId, storeName/Code). A role with a fixed
-   * Employee.storeId is always locked to it — requestedStoreId is ignored
-   * for them, so a store_exec can never claim a shift at a store they don't
-   * work at. Only a store-unbound role (manager, super_admin — no Employee
-   * row, or one with no storeId) falls through to requestedStoreId, which
-   * is the one and only place a client-supplied store is trusted.
+   * The caller's own (userId, storeId, storeName/Code). A store-bound
+   * employee is locked to their own store(s) — requestedStoreId is only
+   * consulted when they're bound to none, or to disambiguate when bound to
+   * several (see StoreScopeService.resolveCallerStoreId), so a store_exec
+   * can never claim a shift at a store they don't work at. Only a
+   * store-unbound role (manager, super_admin — no Employee row, or one
+   * with no stores) falls through to a bare requestedStoreId.
    */
   private async resolveCallerStore(
     currentUser: UserProfile,
@@ -168,12 +169,7 @@ export class ShiftController {
       where: {userId, isDeleted: false} as object,
     });
 
-    const storeId = employee?.storeId ?? requestedStoreId;
-    if (!storeId) {
-      throw new HttpErrors.BadRequest(
-        'Select a store — your account is not linked to one.',
-      );
-    }
+    const storeId = await this.storeScopeService.resolveCallerStoreId(userId, requestedStoreId);
 
     const store = await this.storeRepository.findOne({where: {id: storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');

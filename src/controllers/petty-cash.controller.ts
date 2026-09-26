@@ -45,19 +45,16 @@ export class PettyCashController {
   }
 
   /**
-   * Same posture as ShiftController.resolveCallerStore: a role with a
-   * fixed Employee.storeId is always locked to it (requestedStoreId
-   * ignored); only a store-unbound role falls through to the
-   * client-supplied store. Petty cash register entries have the exact
-   * same one-store-per-cashier semantics as a Shift.
+   * Same posture as ShiftController.resolveCallerStore: a store-bound
+   * employee is locked to their own store(s) — requestedStoreId is only
+   * consulted when they're bound to none, or to disambiguate when bound to
+   * several (see StoreScopeService.resolveCallerStoreId). Petty cash
+   * register entries have the exact same one-store-per-cashier semantics
+   * as a Shift.
    */
   private async resolveCallerStore(currentUser: UserProfile, requestedStoreId?: string) {
     const userId = currentUser[securityId];
-    const employee = await this.employeeRepo.findOne({where: {userId, isDeleted: false} as object});
-    const storeId = employee?.storeId ?? requestedStoreId;
-    if (!storeId) {
-      throw new HttpErrors.BadRequest('Select a store — your account is not linked to one.');
-    }
+    const storeId = await this.storeScopeService.resolveCallerStoreId(userId, requestedStoreId);
     const store = await this.storeRepo.findOne({where: {id: storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
     return {userId, storeId, storeCode: store.code, storeName: store.name};
