@@ -1,10 +1,12 @@
+import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
-import {HttpErrors, post, requestBody, response} from '@loopback/rest';
-import {securityId} from '@loopback/security';
+import {HttpErrors, patch, post, requestBody, response} from '@loopback/rest';
+import {securityId, UserProfile} from '@loopback/security';
 import {RiderRepository, UsersRepository} from '../repositories';
 import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {JWTService} from '../services/jwt-service';
+import {NotificationService} from '../services/notification.service';
 
 // How long a login OTP stays valid, in minutes.
 const OTP_TTL_MINUTES = 10;
@@ -29,6 +31,8 @@ export class RiderAuthController {
     private hasher: BcryptHasher,
     @inject('service.jwt.service')
     private jwtService: JWTService,
+    @inject('services.notification')
+    private notificationService: NotificationService,
   ) {}
 
   /**
@@ -113,12 +117,25 @@ export class RiderAuthController {
               phone: {type: 'string'},
               countryCode: {type: 'string', default: '+91'},
               otp: {type: 'string'},
+              fcmToken: {
+                type: 'string',
+                description: 'Firebase Cloud Messaging registration token for this device — registered for push notifications if given.',
+              },
+              platform: {type: 'string', description: "e.g. 'android', 'ios'"},
+              appVersion: {type: 'string'},
             },
           },
         },
       },
     })
-    body: {phone: string; countryCode: string; otp: string},
+    body: {
+      phone: string;
+      countryCode: string;
+      otp: string;
+      fcmToken?: string;
+      platform?: string;
+      appVersion?: string;
+    },
   ): Promise<object> {
     const {user, rider} = await this.resolveActiveRider(body.phone, body.countryCode);
 
@@ -138,6 +155,13 @@ export class RiderAuthController {
       loginOtp: undefined,
       loginOtpExpires: undefined,
     });
+
+    if (body.fcmToken) {
+      await this.notificationService.registerDevice(rider.id, body.fcmToken, {
+        platform: body.platform,
+        appVersion: body.appVersion,
+      });
+    }
 
     const roles = (user.roles ?? []).map((r: {value: string}) => r.value);
     const userProfile = {
@@ -171,5 +195,44 @@ export class RiderAuthController {
         roles,
       },
     };
+  }
+
+  // ─── Device token refresh ───────────────────────────────────────────────
+  // FCM tokens rotate on their own (app reinstall, Firebase-initiated
+  // refresh) — this lets the app hand over a new one without a full
+  // logout/OTP cycle. registerDevice() itself handles both "known token,
+  // update it" and "new token, create it".
+
+  @authenticate('jwt')
+  @patch('/auth/rider/device-token')
+  @response(204, {description: 'Device token registered'})
+  async registerDeviceToken(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['fcmToken'],
+            properties: {
+              fcmToken: {type: 'string'},
+              platform: {type: 'string', description: "e.g. 'android', 'ios'"},
+              appVersion: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {fcmToken: string; platform?: string; appVersion?: string},
+  ): Promise<void> {
+    const rider = await this.riderRepository.findOne({
+      where: {userId: currentUser[securityId], isDeleted: false},
+    });
+    if (!rider) throw new HttpErrors.Forbidden('This account is not registered as a rider.');
+
+    await this.notificationService.registerDevice(rider.id, body.fcmToken, {
+      platform: body.platform,
+      appVersion: body.appVersion,
+    });
   }
 }

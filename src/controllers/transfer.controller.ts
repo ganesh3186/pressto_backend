@@ -28,6 +28,7 @@ import {
   UsersRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
+import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
 
 export class TransferController {
   constructor(
@@ -45,6 +46,7 @@ export class TransferController {
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(UsersRepository) private usersRepo: UsersRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @inject('services.notification') private notificationService: NotificationService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -683,6 +685,31 @@ export class TransferController {
         {transaction: tx},
       );
       await tx.commit();
+
+      // Never blocks the assignment itself — NotificationService already
+      // swallows its own errors. transfer.riderId here is still the OLD
+      // value (fetched before the update above), so this only fires for
+      // the previous rider when this is actually a reassignment.
+      const previousRiderId = transfer.riderId;
+      await Promise.all([
+        this.notificationService.notifyRider(rider.id, {
+          type: RIDER_NOTIFICATION_TYPES.TRANSFER_ASSIGNED,
+          title: 'New transfer assigned',
+          body: `An inter-store transfer has been assigned to you.`,
+          data: {transferId: id},
+        }),
+        ...(previousRiderId && previousRiderId !== rider.id
+          ? [
+              this.notificationService.notifyRider(previousRiderId, {
+                type: RIDER_NOTIFICATION_TYPES.TRANSFER_REASSIGNED,
+                title: 'Transfer reassigned',
+                body: 'A transfer previously assigned to you has been reassigned to another rider.',
+                data: {transferId: id},
+              }),
+            ]
+          : []),
+      ]);
+
       return {message: 'Rider assigned.', transfer: await this.transferRepo.findById(id)};
     } catch (error) {
       await tx.rollback();

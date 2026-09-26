@@ -51,6 +51,7 @@ import {ApprovalService} from '../services/approval.service';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {CustomerAddressService} from '../services/customer-address.service';
 import {RiderAssignmentService} from '../services/rider-assignment.service';
+import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
 import {PickupDeliverySlotRepository} from '../repositories/pickup-delivery-slot.repository';
 
 const PAYMENT_ITEM_SCHEMA = {
@@ -161,6 +162,8 @@ export class OrderController {
     private dataSource: PresstoDataSource,
     @inject('services.rider-assignment')
     private riderAssignmentService: RiderAssignmentService,
+    @inject('services.notification')
+    private notificationService: NotificationService,
   ) {}
 
   // Cheque/PDC legs never got a PaymentTransaction (see order.service.ts's
@@ -467,6 +470,30 @@ export class OrderController {
       }
     }
 
+    // A direct single-order rider (re)assignment, distinct from the bulk
+    // assignDelivery() flow above — same notify-new/notify-old-if-changed
+    // shape. Never blocks the update itself.
+    if (assignedRiderId !== undefined && assignedRiderId !== order.assignedRiderId) {
+      await Promise.all([
+        this.notificationService.notifyRider(assignedRiderId, {
+          type: RIDER_NOTIFICATION_TYPES.DELIVERY_ASSIGNED,
+          title: 'New delivery assigned',
+          body: `A delivery has been assigned to you for order ${order.orderNumber ?? ''}.`,
+          data: {orderId: id},
+        }),
+        ...(order.assignedRiderId
+          ? [
+              this.notificationService.notifyRider(order.assignedRiderId, {
+                type: RIDER_NOTIFICATION_TYPES.DELIVERY_REASSIGNED,
+                title: 'Delivery reassigned',
+                body: `Order ${order.orderNumber ?? ''} has been reassigned to another rider.`,
+                data: {orderId: id},
+              }),
+            ]
+          : []),
+      ]);
+    }
+
     return {message: 'Order updated.'};
   }
 
@@ -701,6 +728,34 @@ export class OrderController {
       }
 
       await tx.commit();
+
+      // Never blocks or rolls back the assignment — NotificationService
+      // already swallows its own errors.
+      const previousRiderIds = new Set(
+        orders
+          .map(o => o.assignedRiderId)
+          .filter((riderId): riderId is string => Boolean(riderId) && riderId !== body.riderId),
+      );
+      await Promise.all([
+        this.notificationService.notifyRider(body.riderId, {
+          type: RIDER_NOTIFICATION_TYPES.DELIVERY_ASSIGNED,
+          title: 'New delivery assigned',
+          body:
+            orders.length > 1
+              ? `${orders.length} deliveries assigned to you for ${deliverySlot}.`
+              : `A delivery has been assigned to you for ${deliverySlot}.`,
+          data: {deliveryId: delivery.id, deliveryNumber, orderIds: body.orderIds.join(',')},
+        }),
+        ...[...previousRiderIds].map(oldRiderId =>
+          this.notificationService.notifyRider(oldRiderId, {
+            type: RIDER_NOTIFICATION_TYPES.DELIVERY_REASSIGNED,
+            title: 'Delivery reassigned',
+            body: 'A delivery previously assigned to you has been reassigned to another rider.',
+            data: {deliveryId: delivery.id, deliveryNumber},
+          }),
+        ),
+      ]);
+
       return {
         message: 'Orders assigned for delivery.',
         assignedCount: orders.length,

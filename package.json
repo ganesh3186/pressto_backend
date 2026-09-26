@@ -88,6 +88,7 @@
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.2.3",
+    "firebase-admin": "^14.5.0",
     "isemail": "^3.2.0",
     "jsonwebtoken": "^9.0.2",
     "loopback-connector-postgresql": "^8.0.3",
