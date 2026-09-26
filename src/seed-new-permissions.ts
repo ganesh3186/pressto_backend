@@ -96,6 +96,13 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
     permission: 'rider_pincode_mapping:delete',
     description: 'Delete a rider pincode mapping',
   },
+  // Rider Notifications (see RiderNotificationController) — system-
+  // generated (pickup/delivery/transfer assign/reassign/cancel), never
+  // manually authored, so read is the only permission this needs.
+  {
+    permission: 'rider_notification:read',
+    description: 'View notifications sent to riders',
+  },
   // Interstore Transfer (see TransferController) — send and receive share
   // one permission (transfer:create), since both are the same day-to-day
   // counter workflow. transfer:update is separate and narrower: it only
@@ -302,6 +309,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'rider_pincode_mapping:read',
       'rider_pincode_mapping:update',
       'rider_pincode_mapping:delete',
+      // Visibility into what riders have actually been notified about.
+      'rider_notification:read',
       // Interstore Transfer: the scan-and-send/scan-and-receive counter
       // workflow, plus resolving a discrepancy — an exception/write-off
       // call reserved for a manager, not front-desk staff.
@@ -368,6 +377,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'pickup_request:update',
       // Read-only visibility into which rider covers which pincode.
       'rider_pincode_mapping:read',
+      // Read-only visibility into what riders have been notified about.
+      'rider_notification:read',
       // Interstore Transfer: same counter workflow as manager.
       'transfer:create',
       'transfer:read',
