@@ -6,6 +6,7 @@ export * from './rider-type.enum';
 export * from './rider-attendance.model';
 export * from './rider-roster.model';
 export * from './rider-roster-type.enum';
+export * from './rider-device.model';
 export * from './rider-pincode-mapping.model';
 export * from './pickup-request.model';
 export * from './pickup-request-source.enum';

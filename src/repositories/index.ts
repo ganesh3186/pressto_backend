@@ -4,6 +4,7 @@ export * from './employee.repository';
 export * from './rider.repository';
 export * from './rider-attendance.repository';
 export * from './rider-roster.repository';
+export * from './rider-device.repository';
 export * from './rider-pincode-mapping.repository';
 export * from './pickup-request.repository';
 export * from './gst-tax-configuration.repository';

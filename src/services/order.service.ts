@@ -88,6 +88,7 @@ import {
 import {DeliveryType} from '../models/delivery-type.enum';
 import {GarmentImageType} from '../models/garment-image-type.enum';
 import {CouponEvaluationSuccess, CouponService} from './coupon.service';
+import {NotificationService, RIDER_NOTIFICATION_TYPES} from './notification.service';
 
 export interface OrderPaymentInput {
   paymentMode: PaymentMode;
@@ -307,6 +308,7 @@ export class OrderService {
     @repository(PickupRequestRepository)
     private pickupRequestRepo: PickupRequestRepository,
     @inject('services.coupon') private couponService: CouponService,
+    @inject('services.notification') private notificationService: NotificationService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -2245,6 +2247,17 @@ export class OrderService {
       changedBy,
       remarks,
     });
+
+    // Never blocks or rolls back the status change — NotificationService
+    // already swallows its own errors.
+    if (newStatus === OrderStatus.CANCELLED && order.assignedRiderId) {
+      await this.notificationService.notifyRider(order.assignedRiderId, {
+        type: RIDER_NOTIFICATION_TYPES.DELIVERY_CANCELLED,
+        title: 'Delivery cancelled',
+        body: `Order ${order.orderNumber ?? ''} has been cancelled.`,
+        data: {orderId},
+      });
+    }
 
     // Auto-create garments when order is received at store
     if (newStatus === OrderStatus.RECEIVED_AT_STORE) {

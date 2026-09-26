@@ -7,6 +7,7 @@ import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {RiderAssignmentService} from '../services/rider-assignment.service';
 import {StoreScope, StoreScopeService} from '../services/store-scope.service';
+import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
 import {PickupRequest} from '../models';
 import {RiderPincodeMappingWithRelations} from '../models/rider-pincode-mapping.model';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
@@ -89,6 +90,8 @@ export class PickupRequestController {
     private riderAssignmentService: RiderAssignmentService,
     @inject('services.store-scope')
     private storeScopeService: StoreScopeService,
+    @inject('services.notification')
+    private notificationService: NotificationService,
   ) {}
 
   // ─── Validation helpers ───────────────────────────────────────────────────
@@ -433,6 +436,20 @@ export class PickupRequestController {
       ...(status !== undefined ? {status} : {}),
       ...(convertedOrderId !== undefined ? {convertedOrderId} : {}),
     });
+
+    if (
+      status === PickupRequestStatus.CANCELLED &&
+      existing.status !== PickupRequestStatus.CANCELLED &&
+      existing.assignedRiderId
+    ) {
+      await this.notificationService.notifyRider(existing.assignedRiderId, {
+        type: RIDER_NOTIFICATION_TYPES.PICKUP_CANCELLED,
+        title: 'Pickup cancelled',
+        body: `The pickup at ${existing.pincode ?? 'the customer address'} has been cancelled.`,
+        data: {pickupRequestId: id},
+      });
+    }
+
     return {message: 'Pickup request updated.'};
   }
 
@@ -579,6 +596,35 @@ export class PickupRequestController {
       await tx.rollback();
       throw error;
     }
+
+    // Notifications never block or roll back the assignment itself — see
+    // NotificationService.notifyRider, which already swallows its own
+    // errors. The rider actually getting the work matters regardless of
+    // whether the push succeeds.
+    const previousRiderIds = new Set(
+      requests
+        .map(r => r.assignedRiderId)
+        .filter((riderId): riderId is string => Boolean(riderId) && riderId !== body.riderId),
+    );
+    await Promise.all([
+      this.notificationService.notifyRider(body.riderId, {
+        type: RIDER_NOTIFICATION_TYPES.PICKUP_ASSIGNED,
+        title: 'New pickup assigned',
+        body:
+          requests.length > 1
+            ? `${requests.length} pickups assigned to you for ${body.scheduledDate}.`
+            : `A pickup at ${requests[0].pincode ?? 'the customer address'} has been assigned to you.`,
+        data: {runId, runNumber, pickupRequestIds: body.pickupRequestIds.join(',')},
+      }),
+      ...[...previousRiderIds].map(oldRiderId =>
+        this.notificationService.notifyRider(oldRiderId, {
+          type: RIDER_NOTIFICATION_TYPES.PICKUP_REASSIGNED,
+          title: 'Pickup reassigned',
+          body: 'A pickup previously assigned to you has been reassigned to another rider.',
+          data: {runId, runNumber},
+        }),
+      ),
+    ]);
 
     return {message: 'Pickup requests assigned.', runId, runNumber, assignedCount: requests.length};
   }
