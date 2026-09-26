@@ -3,7 +3,7 @@ import {App, cert, initializeApp} from 'firebase-admin/app';
 import {getMessaging, MulticastMessage, SendResponse} from 'firebase-admin/messaging';
 import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
-import {RiderDeviceRepository} from '../repositories';
+import {RiderDeviceRepository, RiderNotificationRepository} from '../repositories';
 
 /**
  * A rider-facing push notification — deliberately DATA-ONLY (no top-level
@@ -13,7 +13,7 @@ import {RiderDeviceRepository} from '../repositories';
  * below); title/body are still sent, just inside `data`, for the app to
  * render itself rather than letting the OS render Firebase's own payload.
  */
-export interface RiderNotification {
+export interface RiderNotificationPayload {
   type: string;
   title: string;
   body: string;
@@ -52,6 +52,7 @@ export class NotificationService {
 
   constructor(
     @repository(RiderDeviceRepository) private riderDeviceRepo: RiderDeviceRepository,
+    @repository(RiderNotificationRepository) private riderNotificationRepo: RiderNotificationRepository,
   ) {
     this.initializeFirebase();
   }
@@ -118,18 +119,50 @@ export class NotificationService {
   }
 
   /**
-   * Sends to every active device this rider is currently signed into.
-   * Never throws — a push failure must not roll back or block the
+   * Sends to every active device this rider is currently signed into, AND
+   * always records the event in RiderNotification — the rider's
+   * notification history is independent of whether a push actually went
+   * out (no device registered yet, Firebase not configured, or the send
+   * itself failed all still get a row, just with deliveryStatus reflecting
+   * that). Never throws — a push failure must not roll back or block the
    * assignment/status-change that triggered it; errors are logged and
    * swallowed. A token FCM reports as unregistered/invalid is deactivated
    * so future sends stop wasting a call on it.
    */
-  async notifyRider(riderId: string, notification: RiderNotification): Promise<void> {
-    if (!this.ready) return;
+  async notifyRider(riderId: string, notification: RiderNotificationPayload): Promise<void> {
+    const deliveryStatus = await this.sendPush(riderId, notification);
+
+    try {
+      const {v4} = await import('uuid');
+      const data: Record<string, string> = {};
+      Object.entries(notification.data ?? {}).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) data[key] = String(value);
+      });
+      await this.riderNotificationRepo.create({
+        id: v4(),
+        riderId,
+        type: notification.type,
+        title: notification.title,
+        body: notification.body,
+        data,
+        deliveryStatus,
+      });
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error(`[NotificationService] Failed to record notification history for rider ${riderId}.`, error);
+    }
+  }
+
+  /** The actual FCM send — split out so notifyRider can record history regardless of outcome. */
+  private async sendPush(
+    riderId: string,
+    notification: RiderNotificationPayload,
+  ): Promise<'sent' | 'failed' | 'skipped'> {
+    if (!this.ready) return 'skipped';
 
     try {
       const devices = await this.riderDeviceRepo.find({where: {riderId, isActive: true}});
-      if (!devices.length) return;
+      if (!devices.length) return 'skipped';
 
       const data: Record<string, string> = {
         type: notification.type,
@@ -157,12 +190,14 @@ export class NotificationService {
           }
         }),
       );
+      return response.successCount > 0 ? 'sent' : 'failed';
     } catch (error) {
       // Whole method is guarded, not just the Firebase call — a DB error
       // resolving devices must not throw either, so this can be called
       // fire-and-forget-safely from anywhere without a .catch().
       // eslint-disable-next-line no-console
       console.error(`[NotificationService] Failed to notify rider ${riderId}.`, error);
+      return 'failed';
     }
   }
 }
