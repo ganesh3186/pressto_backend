@@ -38,12 +38,16 @@ export const RIDER_NOTIFICATION_TYPES = {
  * RiderDevice (one row per app install, see that model — a rider can have
  * several), not on Rider itself.
  *
- * Firebase credentials (FIREBASE_SERVICE_ACCOUNT_PATH) are optional at
- * boot: the client hadn't handed over the service account key yet at the
- * time this was built, and the app must still start and run normally
- * without it. initializeFirebase() logs one warning and every send
- * becomes a no-op until a real key file is placed — see
- * firebase-service-account.json.placeholder for where.
+ * Firebase credentials (FIREBASE_SERVICE_ACCOUNT_PATH) are optional: the
+ * client hadn't handed over the service account key yet at the time this
+ * was built, and the app must still start and run normally without it.
+ * Deliberately NOT initialized in the constructor — a credential/library
+ * problem here must never fail DI resolution and take the whole
+ * application down with it (LoopBack propagates a constructor throw
+ * straight up through app boot); it should only ever disable
+ * notifications. getFirebaseApp() initializes lazily on first real use
+ * instead, well after the app has already booted successfully, and every
+ * call site here already tolerates a null app / a failed send.
  */
 @injectable({scope: BindingScope.SINGLETON})
 export class NotificationService {
@@ -53,37 +57,43 @@ export class NotificationService {
   constructor(
     @repository(RiderDeviceRepository) private riderDeviceRepo: RiderDeviceRepository,
     @repository(RiderNotificationRepository) private riderNotificationRepo: RiderNotificationRepository,
-  ) {
-    this.initializeFirebase();
-  }
+  ) {}
 
-  private initializeFirebase(): void {
+  /**
+   * Re-attempts on every call while uninitialized (cheap: one
+   * fs.existsSync, then a one-time initializeApp()) — so dropping in a
+   * real key file while the process is already running is picked up on
+   * the next notification without a restart. The "not configured" warning
+   * still only logs once, not on every attempt.
+   */
+  private getFirebaseApp(): App | null {
+    if (this.app) return this.app;
+
     const path = process.env.FIREBASE_SERVICE_ACCOUNT_PATH ?? './firebase-service-account.json';
     if (!fs.existsSync(path)) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[NotificationService] No Firebase service account found at "${path}" — rider push ` +
-          'notifications are disabled until it is added (see firebase-service-account.json.placeholder).',
-      );
-      return;
+      if (!this.warnedMissingCredentials) {
+        this.warnedMissingCredentials = true;
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[NotificationService] No Firebase service account found at "${path}" — rider push ` +
+            'notifications are disabled until it is added (see firebase-service-account.json.placeholder).',
+        );
+      }
+      return null;
     }
     try {
       const serviceAccount = JSON.parse(fs.readFileSync(path, 'utf8'));
-      this.app = initializeApp({credential: cert(serviceAccount)});
+      // A distinct app name, not Firebase's default — avoids ever
+      // colliding with another default app elsewhere in the process, and
+      // means a retried initializeApp() call (after an earlier failed
+      // attempt left this.app null) can't hit 'app/duplicate-app'.
+      this.app = initializeApp({credential: cert(serviceAccount)}, 'rider-notifications');
+      return this.app;
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('[NotificationService] Failed to initialize Firebase — push notifications disabled.', error);
+      return null;
     }
-  }
-
-  private get ready(): boolean {
-    if (this.app) return true;
-    if (!this.warnedMissingCredentials) {
-      this.warnedMissingCredentials = true;
-      // eslint-disable-next-line no-console
-      console.warn('[NotificationService] Skipping send — Firebase is not configured yet.');
-    }
-    return false;
   }
 
   /**
@@ -158,7 +168,8 @@ export class NotificationService {
     riderId: string,
     notification: RiderNotificationPayload,
   ): Promise<'sent' | 'failed' | 'skipped'> {
-    if (!this.ready) return 'skipped';
+    const app = this.getFirebaseApp();
+    if (!app) return 'skipped';
 
     try {
       const devices = await this.riderDeviceRepo.find({where: {riderId, isActive: true}});
@@ -177,7 +188,7 @@ export class NotificationService {
         tokens: devices.map(d => d.fcmToken),
         data,
       };
-      const response = await getMessaging(this.app!).sendEachForMulticast(message);
+      const response = await getMessaging(app).sendEachForMulticast(message);
       await Promise.all(
         response.responses.map(async (result: SendResponse, index: number) => {
           if (result.success) return;
