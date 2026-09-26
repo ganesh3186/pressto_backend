@@ -4,7 +4,10 @@ import {HttpErrors} from '@loopback/rest';
 import {UserProfile} from '@loopback/security';
 import {
   ClusterRepository,
+  EmployeeClusterRepository,
+  EmployeeRegionRepository,
   EmployeeRepository,
+  EmployeeStoreRepository,
   GarmentRepository,
   OrderItemRepository,
   OrderRepository,
@@ -12,6 +15,7 @@ import {
   StoreRepository,
   TransferRepository,
 } from '../repositories';
+import {Employee} from '../models';
 
 /** Scope levels a role can declare (Roles.scope). super_admin ignores these. */
 type RoleScope = 'store' | 'cluster' | 'region';
@@ -70,6 +74,9 @@ export class StoreScopeService {
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(TransferRepository) private transferRepo: TransferRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
+    @repository(EmployeeStoreRepository) private employeeStoreRepo: EmployeeStoreRepository,
+    @repository(EmployeeClusterRepository) private employeeClusterRepo: EmployeeClusterRepository,
+    @repository(EmployeeRegionRepository) private employeeRegionRepo: EmployeeRegionRepository,
   ) {}
 
   /**
@@ -77,9 +84,13 @@ export class StoreScopeService {
    * JWT, and as the fallback for tokens issued before store scope existed.
    *
    * The role's `scope` decides which employee binding is authoritative:
-   *   store   → the employee's storeId
-   *   cluster → every store in the employee's clusterId
-   *   region  → every store in the employee's regionId (via its clusters)
+   *   store   → every store the employee is bound to (primary storeId + EmployeeStore)
+   *   cluster → every store in every cluster the employee is bound to (primary clusterId + EmployeeCluster)
+   *   region  → every store in every region the employee is bound to (primary regionId + EmployeeRegion)
+   * An employee normally has exactly one binding at their role's level — the
+   * additional-assignment tables only ever add MORE of the same kind, never
+   * a second kind, so this always unions same-level ids together, then
+   * expands once to stores.
    */
   async resolveForUser(userId: string, roles: string[]): Promise<StoreScope> {
     if ((roles ?? []).some(role => GLOBAL_ROLES.has(role))) return GLOBAL_SCOPE;
@@ -93,16 +104,84 @@ export class StoreScopeService {
     if (!employee) return EMPTY_SCOPE(scope);
 
     if (scope === 'region') {
-      if (!employee.regionId) return EMPTY_SCOPE(scope);
-      return {global: false, storeIds: await this.storeIdsForRegion(String(employee.regionId)), scopeLevel: scope};
+      const regionIds = await this.allRegionIdsForEmployee(employee);
+      if (!regionIds.length) return EMPTY_SCOPE(scope);
+      const storeIds = [...new Set((await Promise.all(regionIds.map(id => this.storeIdsForRegion(id)))).flat())];
+      return {global: false, storeIds, scopeLevel: scope};
     }
     if (scope === 'cluster') {
-      if (!employee.clusterId) return EMPTY_SCOPE(scope);
-      return {global: false, storeIds: await this.storeIdsForCluster(String(employee.clusterId)), scopeLevel: scope};
+      const clusterIds = await this.allClusterIdsForEmployee(employee);
+      if (!clusterIds.length) return EMPTY_SCOPE(scope);
+      const storeIds = [...new Set((await Promise.all(clusterIds.map(id => this.storeIdsForCluster(id)))).flat())];
+      return {global: false, storeIds, scopeLevel: scope};
     }
     // store scope (default)
-    if (!employee.storeId) return EMPTY_SCOPE(scope);
-    return {global: false, storeIds: [String(employee.storeId)], scopeLevel: scope};
+    const storeIds = await this.allStoreIdsForEmployee(employee);
+    if (!storeIds.length) return EMPTY_SCOPE(scope);
+    return {global: false, storeIds, scopeLevel: scope};
+  }
+
+  /** Every store this employee is bound to: primary Employee.storeId plus EmployeeStore rows. */
+  async allStoreIdsForEmployee(employee: Employee): Promise<string[]> {
+    const extra = await this.employeeStoreRepo.find({
+      where: {employeeId: employee.id, isActive: true, isDeleted: false} as object,
+      fields: {storeId: true} as object,
+    });
+    return [...new Set([employee.storeId, ...extra.map(e => e.storeId)].filter(Boolean))] as string[];
+  }
+
+  /** Every cluster this employee is bound to: primary Employee.clusterId plus EmployeeCluster rows. */
+  async allClusterIdsForEmployee(employee: Employee): Promise<string[]> {
+    const extra = await this.employeeClusterRepo.find({
+      where: {employeeId: employee.id, isActive: true, isDeleted: false} as object,
+      fields: {clusterId: true} as object,
+    });
+    return [...new Set([employee.clusterId, ...extra.map(e => e.clusterId)].filter(Boolean))] as string[];
+  }
+
+  /** Every region this employee is bound to: primary Employee.regionId plus EmployeeRegion rows. */
+  async allRegionIdsForEmployee(employee: Employee): Promise<string[]> {
+    const extra = await this.employeeRegionRepo.find({
+      where: {employeeId: employee.id, isActive: true, isDeleted: false} as object,
+      fields: {regionId: true} as object,
+    });
+    return [...new Set([employee.regionId, ...extra.map(e => e.regionId)].filter(Boolean))] as string[];
+  }
+
+  /**
+   * Resolves which ONE store a physically-single-location action (opening a
+   * shift, logging a petty cash expense) applies to, for a store-scoped
+   * employee who may now be bound to several. Auto-picks when there's only
+   * one; a multi-store employee must say which one via `requestedStoreId`
+   * (validated against their own bound stores — never lets them act on a
+   * store they're not scoped to, same posture as `allows()`). Preserves the
+   * pre-multi-store behavior exactly for the common single-store case:
+   * that employee's one store always wins over whatever requestedStoreId
+   * says, same as when Employee.storeId alone was authoritative.
+   */
+  async resolveCallerStoreId(userId: string, requestedStoreId?: string): Promise<string> {
+    const employee = await this.employeeRepo.findOne({
+      where: {userId, isDeleted: false},
+      fields: {id: true, storeId: true, clusterId: true, regionId: true},
+    });
+    const boundStoreIds = employee ? await this.allStoreIdsForEmployee(employee) : [];
+
+    if (boundStoreIds.length === 1) return boundStoreIds[0];
+    if (boundStoreIds.length > 1) {
+      if (!requestedStoreId) {
+        throw new HttpErrors.BadRequest('You are assigned to multiple stores — specify which one this is for.');
+      }
+      if (!boundStoreIds.includes(requestedStoreId)) {
+        throw new HttpErrors.BadRequest('That store is not one you are assigned to.');
+      }
+      return requestedStoreId;
+    }
+    // Not bound to any store at all (e.g. a cluster/region-scoped employee,
+    // or no Employee record) — same fallback the pre-multi-store code used.
+    if (!requestedStoreId) {
+      throw new HttpErrors.BadRequest('Select a store — your account is not linked to one.');
+    }
+    return requestedStoreId;
   }
 
   /** The scope level of the caller's primary role; defaults to the narrowest. */
