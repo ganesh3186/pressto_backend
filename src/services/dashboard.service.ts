@@ -48,7 +48,7 @@ const emptyCollections = (): CollectionBuckets => ({
  * new payment mode has to be added in BOTH places or the dashboard KPI and
  * the closing form will disagree about the same store takings.
  */
-const BUCKET_OF: Record<string, keyof CollectionBuckets | null> = {
+export const BUCKET_OF: Record<string, keyof CollectionBuckets | null> = {
   [PaymentMode.CASH]: 'cash',
   [PaymentMode.CARD]: 'card',
   [PaymentMode.CHEQUE]: 'cheque',
@@ -67,7 +67,7 @@ const BUCKET_OF: Record<string, keyof CollectionBuckets | null> = {
  * dashboard view, as opposed to a historical range the user picked.
  * Only that view aligns its cash figure to the open shift.
  */
-function isTodayWindow(from: Date, to: Date): boolean {
+export function isTodayWindow(from: Date, to: Date): boolean {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const endOfToday = new Date();

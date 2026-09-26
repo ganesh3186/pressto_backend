@@ -35,6 +35,7 @@ import { CouponService } from './services/coupon.service';
 import { CustomerPreferenceService } from './services/customer-preference.service';
 import { PettyCashService } from './services/petty-cash.service';
 import { DashboardService } from './services/dashboard.service';
+import { StoreDashboardService } from './services/store-dashboard.service';
 import { ReportsService } from './services/reports.service';
 import { RiderAssignmentService } from './services/rider-assignment.service';
 import { RazorpayService } from './services/razorpay.service';
@@ -103,6 +104,7 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.customer-preference').toClass(CustomerPreferenceService);
     this.bind('services.petty-cash').toClass(PettyCashService);
     this.bind('services.dashboard').toClass(DashboardService);
+    this.bind('services.store-dashboard').toClass(StoreDashboardService);
     this.bind('services.reports').toClass(ReportsService);
     this.bind('services.rider-assignment').toClass(RiderAssignmentService);
     this.bind('services.razorpay').toClass(RazorpayService);

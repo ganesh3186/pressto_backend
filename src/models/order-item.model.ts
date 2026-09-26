@@ -1,7 +1,12 @@
 import {Entity, model, property} from '@loopback/repository';
 
 @model({
-  settings: {postgresql: {table: 'order_item', schema: 'public'}},
+  settings: {
+    postgresql: {table: 'order_item', schema: 'public'},
+    indexes: {
+      orderItemOrderId: {keys: ['orderId']},
+    },
+  },
 })
 export class OrderItem extends Entity {
   @property({type: 'string', id: true, generated: false, postgresql: {dataType: 'uuid'}})

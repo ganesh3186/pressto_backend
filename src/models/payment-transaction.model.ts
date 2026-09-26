@@ -2,7 +2,13 @@ import {Entity, model, property} from '@loopback/repository';
 import {PaymentMode} from './payment-mode.enum';
 
 @model({
-  settings: {postgresql: {table: 'payment_transaction', schema: 'public'}},
+  settings: {
+    postgresql: {table: 'payment_transaction', schema: 'public'},
+    indexes: {
+      paymentTransactionOrderId: {keys: ['orderId']},
+      paymentTransactionPaymentDate: {keys: ['paymentDate']},
+    },
+  },
 })
 export class PaymentTransaction extends Entity {
   @property({type: 'string', id: true, generated: false, postgresql: {dataType: 'uuid'}})
