@@ -37,8 +37,13 @@ async function addDashboardIndexes() {
   await client.connect();
   try {
     for (const [name, table, columns] of INDEXES) {
+      // CONCURRENTLY avoids locking the table against writes while a large
+      // production table (orders, garment, payment_transaction, ...) builds
+      // the index — a plain CREATE INDEX blocks inserts/updates/deletes on
+      // that table for the whole build. It cannot run inside a transaction
+      // block, which this script never opens (each query auto-commits).
       await client.query(
-        `CREATE INDEX IF NOT EXISTS "${name}" ON public.${table} USING btree (${columns})`,
+        `CREATE INDEX CONCURRENTLY IF NOT EXISTS "${name}" ON public.${table} USING btree (${columns})`,
       );
       console.log(`${table}.${name} is available.`);
     }
