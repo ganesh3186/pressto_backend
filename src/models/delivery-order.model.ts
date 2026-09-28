@@ -18,6 +18,7 @@ import {DeliveryOrderStatus} from './delivery-order-status.enum';
     postgresql: {table: 'delivery_order', schema: 'public'},
     indexes: {
       deliveryOrderLookup: {keys: ['orderId']},
+      deliveryOrderDeliveryId: {keys: ['deliveryId']},
     },
   },
 })

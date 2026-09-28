@@ -31,6 +31,7 @@
     "premigrate": "npm run build",
     "migrate": "node ./dist/migrate",
     "migrate:customer-persona": "node scripts/add-customer-persona-column.cjs",
+    "migrate:dashboard-indexes": "node scripts/add-dashboard-indexes.cjs",
     "preseed": "npm run build",
     "seed": "node ./dist/seed",
     "preseed:new-permissions": "npm run build",

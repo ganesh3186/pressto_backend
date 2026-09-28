@@ -27,6 +27,7 @@ import {Store} from './store.model';
     postgresql: {table: 'pickup_request', schema: 'public'},
     indexes: {
       uniquePickupNumber: {keys: ['pickupNumber'], options: {unique: true}},
+      pickupRequestStoreStatusDate: {keys: ['storeId', 'status', 'requestedDate']},
     },
   },
 })

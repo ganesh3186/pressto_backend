@@ -13,6 +13,10 @@ import {PickupRequestSource} from './pickup-request-source.enum';
     postgresql: {table: 'orders', schema: 'public'},
     indexes: {
       uniqueOrderNumber: {keys: ['orderNumber'], options: {unique: true}},
+      // Store dashboard ticket lists (overdue / pending / ready / in store).
+      orderStoreStatusDeliveryDate: {keys: ['storeId', 'status', 'deliveryDate']},
+      // Store dashboard "tickets raised in window" count.
+      orderStoreCreatedAt: {keys: ['storeId', 'createdAt']},
     },
   },
 })
