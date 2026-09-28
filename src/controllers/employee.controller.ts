@@ -98,6 +98,46 @@ export class EmployeeController {
     }
   }
 
+  /**
+   * Flattens each employee's EmployeeStore/EmployeeCluster/EmployeeRegion rows
+   * into additionalStoreIds/additionalClusterIds/additionalRegionIds arrays on
+   * the response — the read-side mirror of syncAdditionalScopeBindings, so the
+   * admin-panel edit form can hydrate an employee's existing extra bindings
+   * (not exposed as LoopBack relations since Employee has no hasMany side
+   * defined for these join tables; a flat array matches the write contract
+   * anyway).
+   */
+  private async attachAdditionalScopeIds(employees: Employee[]): Promise<Record<string, unknown>[]> {
+    const ids = employees.map(e => e.id);
+    if (!ids.length) return [];
+
+    const [storeRows, clusterRows, regionRows] = await Promise.all([
+      this.employeeStoreRepository.find({where: {employeeId: {inq: ids}}}),
+      this.employeeClusterRepository.find({where: {employeeId: {inq: ids}}}),
+      this.employeeRegionRepository.find({where: {employeeId: {inq: ids}}}),
+    ]);
+
+    const groupBy = (rows: {employeeId: string}[], idKey: string): Map<string, string[]> => {
+      const map = new Map<string, string[]>();
+      for (const row of rows) {
+        const list = map.get(row.employeeId) ?? [];
+        list.push((row as unknown as Record<string, string>)[idKey]);
+        map.set(row.employeeId, list);
+      }
+      return map;
+    };
+    const storeMap = groupBy(storeRows, 'storeId');
+    const clusterMap = groupBy(clusterRows, 'clusterId');
+    const regionMap = groupBy(regionRows, 'regionId');
+
+    return employees.map(e => ({
+      ...e.toJSON(),
+      additionalStoreIds: storeMap.get(e.id) ?? [],
+      additionalClusterIds: clusterMap.get(e.id) ?? [],
+      additionalRegionIds: regionMap.get(e.id) ?? [],
+    }));
+  }
+
   private async generateUniqueUsername(email: string): Promise<string> {
     const base = email.split('@')[0].toLowerCase();
     let username = base;
@@ -407,7 +447,7 @@ export class EmployeeController {
     @param.query.string('status') status?: string,
     @param.query.string('role') role?: string,
     @param.query.string('storeId') storeId?: string,
-  ): Promise<Employee[]> {
+  ): Promise<Record<string, unknown>[]> {
     const where = await this._buildEmployeeWhere({search, status, role, storeId, extraWhere: filter?.where});
     const results = await this.employeeRepository.find({
       ...filter,
@@ -427,7 +467,7 @@ export class EmployeeController {
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
-    return results.map(e => this.stripNonStaffRoles(e));
+    return this.attachAdditionalScopeIds(results.map(e => this.stripNonStaffRoles(e)));
   }
 
   @authenticate('jwt')
@@ -518,7 +558,7 @@ export class EmployeeController {
   async findById(
     @param.path.string('id') id: string,
     @param.filter(Employee, {exclude: 'where'}) filter?: FilterExcludingWhere<Employee>,
-  ): Promise<Employee> {
+  ): Promise<Record<string, unknown>> {
     const result = await this.employeeRepository.findById(id, {
       ...filter,
       include: [
@@ -533,7 +573,8 @@ export class EmployeeController {
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
-    return this.stripNonStaffRoles(result);
+    const [withAdditionalIds] = await this.attachAdditionalScopeIds([this.stripNonStaffRoles(result)]);
+    return withAdditionalIds;
   }
 
   @authenticate('jwt')
