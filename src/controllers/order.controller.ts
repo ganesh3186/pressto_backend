@@ -486,9 +486,10 @@ export class OrderController {
 
     // A direct single-order rider (re)assignment, distinct from the bulk
     // assignDelivery() flow above — same notify-new/notify-old-if-changed
-    // shape. Never blocks the update itself.
+    // shape. Not awaited — a slow/unreachable FCM call must never delay
+    // this response (notifyRider already swallows its own errors).
     if (assignedRiderId !== undefined && assignedRiderId !== order.assignedRiderId) {
-      await Promise.all([
+      Promise.all([
         this.notificationService.notifyRider(assignedRiderId, {
           type: RIDER_NOTIFICATION_TYPES.DELIVERY_ASSIGNED,
           title: 'New delivery assigned',
@@ -505,7 +506,7 @@ export class OrderController {
               }),
             ]
           : []),
-      ]);
+      ]).catch(() => {});
     }
 
     return {message: 'Order updated.'};
@@ -743,14 +744,14 @@ export class OrderController {
 
       await tx.commit();
 
-      // Never blocks or rolls back the assignment — NotificationService
-      // already swallows its own errors.
+      // Not awaited — a slow/unreachable FCM call must never delay this
+      // response. NotificationService already swallows its own errors.
       const previousRiderIds = new Set(
         orders
           .map(o => o.assignedRiderId)
           .filter((riderId): riderId is string => Boolean(riderId) && riderId !== body.riderId),
       );
-      await Promise.all([
+      Promise.all([
         this.notificationService.notifyRider(body.riderId, {
           type: RIDER_NOTIFICATION_TYPES.DELIVERY_ASSIGNED,
           title: 'New delivery assigned',
@@ -768,7 +769,7 @@ export class OrderController {
             data: {deliveryId: delivery.id, deliveryNumber},
           }),
         ),
-      ]);
+      ]).catch(() => {});
 
       return {
         message: 'Orders assigned for delivery.',

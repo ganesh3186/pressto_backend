@@ -442,12 +442,17 @@ export class PickupRequestController {
       existing.status !== PickupRequestStatus.CANCELLED &&
       existing.assignedRiderId
     ) {
-      await this.notificationService.notifyRider(existing.assignedRiderId, {
-        type: RIDER_NOTIFICATION_TYPES.PICKUP_CANCELLED,
-        title: 'Pickup cancelled',
-        body: `The pickup at ${existing.pincode ?? 'the customer address'} has been cancelled.`,
-        data: {pickupRequestId: id},
-      });
+      // Not awaited — a slow/unreachable FCM call must never delay this
+      // response. notifyRider() already swallows its own errors, but
+      // .catch() is cheap insurance against an unhandled rejection.
+      this.notificationService
+        .notifyRider(existing.assignedRiderId, {
+          type: RIDER_NOTIFICATION_TYPES.PICKUP_CANCELLED,
+          title: 'Pickup cancelled',
+          body: `The pickup at ${existing.pincode ?? 'the customer address'} has been cancelled.`,
+          data: {pickupRequestId: id},
+        })
+        .catch(() => {});
     }
 
     return {message: 'Pickup request updated.'};
@@ -597,16 +602,17 @@ export class PickupRequestController {
       throw error;
     }
 
-    // Notifications never block or roll back the assignment itself — see
-    // NotificationService.notifyRider, which already swallows its own
-    // errors. The rider actually getting the work matters regardless of
-    // whether the push succeeds.
+    // Not awaited — notifications never block or roll back the assignment
+    // itself. NotificationService.notifyRider already swallows its own
+    // errors; .catch() here is cheap insurance against an unhandled
+    // rejection. The rider actually getting the work matters regardless of
+    // whether the push succeeds, and it must not delay this response.
     const previousRiderIds = new Set(
       requests
         .map(r => r.assignedRiderId)
         .filter((riderId): riderId is string => Boolean(riderId) && riderId !== body.riderId),
     );
-    await Promise.all([
+    Promise.all([
       this.notificationService.notifyRider(body.riderId, {
         type: RIDER_NOTIFICATION_TYPES.PICKUP_ASSIGNED,
         title: 'New pickup assigned',
@@ -624,7 +630,7 @@ export class PickupRequestController {
           data: {runId, runNumber},
         }),
       ),
-    ]);
+    ]).catch(() => {});
 
     return {message: 'Pickup requests assigned.', runId, runNumber, assignedCount: requests.length};
   }

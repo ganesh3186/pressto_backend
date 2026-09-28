@@ -686,12 +686,13 @@ export class TransferController {
       );
       await tx.commit();
 
-      // Never blocks the assignment itself — NotificationService already
-      // swallows its own errors. transfer.riderId here is still the OLD
-      // value (fetched before the update above), so this only fires for
-      // the previous rider when this is actually a reassignment.
+      // Not awaited — a slow/unreachable FCM call must never delay this
+      // response (NotificationService already swallows its own errors).
+      // transfer.riderId here is still the OLD value (fetched before the
+      // update above), so this only fires for the previous rider when
+      // this is actually a reassignment.
       const previousRiderId = transfer.riderId;
-      await Promise.all([
+      Promise.all([
         this.notificationService.notifyRider(rider.id, {
           type: RIDER_NOTIFICATION_TYPES.TRANSFER_ASSIGNED,
           title: 'New transfer assigned',
@@ -708,7 +709,7 @@ export class TransferController {
               }),
             ]
           : []),
-      ]);
+      ]).catch(() => {});
 
       return {message: 'Rider assigned.', transfer: await this.transferRepo.findById(id)};
     } catch (error) {
