@@ -26,6 +26,7 @@ import {DeliveryStatus} from './delivery-status.enum';
     postgresql: {table: 'delivery', schema: 'public'},
     indexes: {
       uniqueDeliveryNumber: {keys: ['deliveryNumber'], options: {unique: true}},
+      deliveryStoreStartedAt: {keys: ['storeId', 'startedAt']},
     },
   },
 })

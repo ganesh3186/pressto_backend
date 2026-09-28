@@ -5,6 +5,13 @@ import {UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {DashboardService} from '../services/dashboard.service';
 import {StoreScopeService} from '../services/store-scope.service';
+import {
+  DASHBOARD_LISTS,
+  DashboardList,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+  StoreDashboardService,
+} from '../services/store-dashboard.service';
 
 /** Widest window the dashboard will aggregate over, in days. */
 const MAX_RANGE_DAYS = 31;
@@ -24,6 +31,7 @@ export class DashboardController {
   constructor(
     @inject('services.dashboard') private dashboardService: DashboardService,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @inject('services.store-dashboard') private storeDashboardService: StoreDashboardService,
   ) {}
 
   @authenticate('jwt')
@@ -54,6 +62,97 @@ export class DashboardController {
     const summary = await this.dashboardService.buildStoreSummary(storeIds, from, to);
     return {summary};
   }
+
+  // ─── Paged dashboard ──────────────────────────────────────────────────────
+  //
+  // The landing screen loads with two calls — `live` (ignores the date
+  // range) and `window` (follows it) — so changing the date never refetches
+  // the live lists. Each returns true counts plus the first page of every
+  // list; "Show more" on one card then calls `lists/{list}` for that card
+  // alone.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['dashboard:read']})
+  @get('/dashboard/live')
+  @response(200, {description: 'Live store figures and first page of each live list'})
+  async live(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.number('limit') limit?: number,
+  ): Promise<object> {
+    const storeIds = await this.resolveStoreIds(currentUser, storeId);
+    return this.storeDashboardService.live(storeIds, resolveLimit(limit));
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['dashboard:read']})
+  @get('/dashboard/window')
+  @response(200, {description: 'Date-range store figures and first page of each range list'})
+  async window(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+    @param.query.number('limit') limit?: number,
+  ): Promise<object> {
+    const window = resolveWindow(dateFrom, dateTo);
+    const storeIds = await this.resolveStoreIds(currentUser, storeId);
+    return this.storeDashboardService.window(storeIds, window, resolveLimit(limit));
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['dashboard:read']})
+  @get('/dashboard/lists/{list}')
+  @response(200, {description: 'The next page of one dashboard list'})
+  async listPage(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('list') list: string,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+    @param.query.string('cursor') cursor?: string,
+    @param.query.number('limit') limit?: number,
+  ): Promise<object> {
+    if (!DASHBOARD_LISTS.includes(list)) {
+      throw new HttpErrors.NotFound(`Unknown dashboard list "${list}".`);
+    }
+    // Only the range lists read the window, but validating it for every
+    // list keeps a malformed date a 400 regardless of which card asked.
+    const window = resolveWindow(dateFrom, dateTo);
+    const storeIds = await this.resolveStoreIds(currentUser, storeId);
+    return this.storeDashboardService.listPage(
+      list as DashboardList,
+      storeIds,
+      window,
+      cursor,
+      resolveLimit(limit),
+    );
+  }
+
+  /** Same scoping rule as storeSummary: a global caller must pick a store. */
+  private async resolveStoreIds(currentUser: UserProfile, storeId?: string): Promise<string[]> {
+    // The ids end up in a ::uuid[] cast; reject a malformed one as a 400
+    // here rather than letting Postgres fail the query with a 500.
+    if (storeId && !UUID.test(storeId)) {
+      throw new HttpErrors.BadRequest('storeId is not a valid id.');
+    }
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
+    if (storeIds === null) {
+      throw new HttpErrors.BadRequest(
+        'Select a store — storeId is required for accounts that can see every store.',
+      );
+    }
+    return storeIds;
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Page size for dashboard lists, clamped so a client cannot ask for everything. */
+function resolveLimit(limit?: number): number {
+  if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_PAGE_SIZE;
+  return Math.min(Math.max(Math.trunc(limit), 1), MAX_PAGE_SIZE);
 }
 
 /**

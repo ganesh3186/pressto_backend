@@ -27,6 +27,8 @@ import {TransferStatus} from './transfer-status.enum';
     indexes: {
       uniqueTransitId: {keys: ['transitId'], options: {unique: true}},
       uniqueTransferOrderNumber: {keys: ['transferOrderNumber'], options: {unique: true}},
+      // Store dashboard: tickets visible to a store via an inbound transfer.
+      transferToStoreId: {keys: ['toStoreId']},
     },
   },
 })
