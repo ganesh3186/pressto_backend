@@ -8,6 +8,7 @@ import {
 import {Users} from './users.model';
 import {CustomerLabel} from './customer-label.model';
 import {CustomerLabelAssignment} from './customer-label-assignment.model';
+import {CustomerPhone} from './customer-phone.model';
 import {PaymentMode} from './payment-mode.enum';
 import {CustomerPersona} from './customer-persona.enum';
 
@@ -193,6 +194,13 @@ export class Customer extends Entity {
   })
   customerLabels: CustomerLabel[];
 
+  // Additional phone numbers beyond the primary one on Users (e.g. an
+  // alternate/secondary contact number) — see CustomerPhone.isPrimary.
+  // keyTo explicit rather than inferred, since CustomerPhone/Customer
+  // inject each other's repository (a genuine bidirectional relation).
+  @hasMany(() => CustomerPhone, {keyTo: 'customerId'})
+  customerPhones: CustomerPhone[];
+
   constructor(data?: Partial<Customer>) {
     super(data);
   }
@@ -201,6 +209,7 @@ export class Customer extends Entity {
 export interface CustomerRelations {
   user?: Users;
   customerLabels?: CustomerLabel[];
+  customerPhones?: CustomerPhone[];
 }
 
 export type CustomerWithRelations = Customer & CustomerRelations;
