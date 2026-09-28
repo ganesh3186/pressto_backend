@@ -45,6 +45,7 @@ import {
   reprocessWindowDays,
 } from '../models/reprocess-reason.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
+import {EditOrderUnitInput} from '../services/order-item-edit-units';
 import {ReprocessContactChannel, ReprocessService} from '../services/reprocess.service';
 import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
@@ -99,6 +100,19 @@ const ORDER_UNIT_SCHEMA = {
     rejectedAtIntake: {type: 'boolean' as const},
     rejectionReason: {type: 'string' as const},
     rejectionRemarks: {type: 'string' as const},
+  },
+};
+
+// PUT /orders/{id}/items unit: same selections as creation, plus the garment id of
+// an existing piece so its own services/charges/measurements are updated.
+const EDIT_ORDER_UNIT_SCHEMA = {
+  ...ORDER_UNIT_SCHEMA,
+  properties: {
+    ...ORDER_UNIT_SCHEMA.properties,
+    id: {
+      type: 'string' as const,
+      description: 'Garment id of an existing piece; omit for a piece added in this edit.',
+    },
   },
 };
 
@@ -888,6 +902,14 @@ export class OrderController {
                     specialInstructions: {type: 'string'},
                     specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
                     remarks: {type: 'string'},
+                    units: {
+                      type: 'array',
+                      items: EDIT_ORDER_UNIT_SCHEMA,
+                      description:
+                        'Optional per-piece selections, one per unit of quantity. Per-unit ' +
+                        'additionalServiceIds/additionalChargeIds override the line-level lists; ' +
+                        'without units every piece gets the line-level lists.',
+                    },
                   },
                 },
               },
@@ -906,6 +928,7 @@ export class OrderController {
         specialInstructions?: string;
         specialInstructionMediaIds?: string[];
         remarks?: string;
+        units?: EditOrderUnitInput[];
       }[];
     },
   ): Promise<object> {
