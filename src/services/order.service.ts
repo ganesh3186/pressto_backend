@@ -2257,15 +2257,19 @@ export class OrderService {
       remarks,
     });
 
-    // Never blocks or rolls back the status change — NotificationService
-    // already swallows its own errors.
+    // Not awaited — a slow/unreachable FCM call must never delay or block
+    // the status change (NotificationService already swallows its own
+    // errors; .catch() here is cheap insurance against an unhandled
+    // rejection).
     if (newStatus === OrderStatus.CANCELLED && order.assignedRiderId) {
-      await this.notificationService.notifyRider(order.assignedRiderId, {
-        type: RIDER_NOTIFICATION_TYPES.DELIVERY_CANCELLED,
-        title: 'Delivery cancelled',
-        body: `Order ${order.orderNumber ?? ''} has been cancelled.`,
-        data: {orderId},
-      });
+      this.notificationService
+        .notifyRider(order.assignedRiderId, {
+          type: RIDER_NOTIFICATION_TYPES.DELIVERY_CANCELLED,
+          title: 'Delivery cancelled',
+          body: `Order ${order.orderNumber ?? ''} has been cancelled.`,
+          data: {orderId},
+        })
+        .catch(() => {});
     }
 
     // Auto-create garments when order is received at store

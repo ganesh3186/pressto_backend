@@ -4,6 +4,7 @@ import {HttpErrors} from '@loopback/rest';
 import {Customer, CustomerAddress} from '../models';
 import {CustomerAddressRepository, CustomerRepository} from '../repositories';
 import {StoreAssignmentService} from './store-assignment.service';
+import {GeocodingService} from './geocoding.service';
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class CustomerAddressService {
@@ -14,6 +15,8 @@ export class CustomerAddressService {
     private customerRepository: CustomerRepository,
     @inject('services.store-assignment')
     private storeAssignmentService: StoreAssignmentService,
+    @inject('services.geocoding')
+    private geocodingService: GeocodingService,
   ) {}
 
   async create(customerId: string, data: Partial<CustomerAddress>): Promise<CustomerAddress> {
@@ -27,6 +30,24 @@ export class CustomerAddressService {
     }
 
     const address = await this.addressRepository.create({...data, customerId});
+
+    // Same fallback as CustomerProfileController.createPickupRequest — an
+    // address saved without the frontend's location picker has no
+    // coordinates, so geocode it here too rather than silently never
+    // auto-assigning a store for this customer.
+    if (address.latitude == null || address.longitude == null) {
+      const geocoded = await this.geocodingService.geocodeAddress(
+        this.toDisplaySnapshot(address),
+      );
+      if (geocoded) {
+        await this.addressRepository.updateById(address.id, {
+          latitude: geocoded.latitude,
+          longitude: geocoded.longitude,
+        });
+        address.latitude = geocoded.latitude;
+        address.longitude = geocoded.longitude;
+      }
+    }
 
     // Self-registered customers have no admin-assigned store. The first
     // address with real coordinates gets one auto-assigned (nearest store

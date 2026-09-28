@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import {App, cert, initializeApp} from 'firebase-admin/app';
+import {App, cert, getApp, initializeApp} from 'firebase-admin/app';
 import {getMessaging, MulticastMessage, SendResponse} from 'firebase-admin/messaging';
 import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
@@ -90,6 +90,23 @@ export class NotificationService {
       this.app = initializeApp({credential: cert(serviceAccount)}, 'rider-notifications');
       return this.app;
     } catch (error) {
+      // This service is meant to be a singleton so `this.app` alone remembers
+      // whether Firebase is already initialized in this process — but if that
+      // scoping is ever wrong (it was: see the .inScope(SINGLETON) fix on this
+      // binding in application.ts) a second instance lands here with a fresh
+      // `this.app = null` even though the FIRST instance already registered
+      // the app. Firebase's own app registry is a process-wide global, not
+      // tied to any one instance, so reuse what's already there instead of
+      // permanently disabling notifications for this instance's lifetime.
+      const code = (error as {code?: string} | null)?.code;
+      if (code === 'app/duplicate-app' || code === 'app/invalid-app-options') {
+        try {
+          this.app = getApp('rider-notifications');
+          return this.app;
+        } catch {
+          // Fall through to the log below — genuinely not there either.
+        }
+      }
       // eslint-disable-next-line no-console
       console.error('[NotificationService] Failed to initialize Firebase — push notifications disabled.', error);
       return null;
