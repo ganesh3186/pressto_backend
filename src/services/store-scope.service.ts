@@ -377,6 +377,48 @@ export class StoreScopeService {
   }
 
   /**
+   * Stricter sibling of assertGarmentEditable, scoped to fast-track-ready
+   * only for now (GarmentProcessController.fastTrackToReady) rather than
+   * changed there — assertGarmentEditable has 19 other call sites and
+   * widening its behavior needs its own separate review.
+   *
+   * assertGarmentEditable only checks store-scope while activeTransferId
+   * is set (the visiting-store case); with no active transfer it returns
+   * unconditionally, without ever checking the caller's scope against the
+   * garment's own home store. This checks the caller's scope against
+   * wherever the garment actually is right now — home store, or the
+   * transfer's destination while one is active — either way, via the same
+   * resolveGarmentCurrentStoreId this file already uses for the garment
+   * scan/lookup surface.
+   */
+  async assertGarmentAtCallerStore(garmentId: string, currentUser: UserProfile): Promise<void> {
+    const scope = await this.resolve(currentUser);
+    if (scope.global) return;
+
+    const garment = await this.garmentRepo.findOne({
+      where: {id: garmentId, isDeleted: false} as object,
+      fields: {id: true, orderItemId: true, activeTransferId: true} as object,
+    });
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+
+    const orderItem = await this.orderItemRepo.findOne({
+      where: {id: garment.orderItemId} as object,
+      fields: {id: true, orderId: true} as object,
+    });
+    const order = orderItem
+      ? await this.orderRepo.findOne({
+          where: {id: orderItem.orderId} as object,
+          fields: {id: true, storeId: true} as object,
+        })
+      : null;
+
+    const currentStoreId = await this.resolveGarmentCurrentStoreId(garment, order?.storeId ?? null);
+    if (this.allows(scope, currentStoreId)) return;
+
+    throw new HttpErrors.BadRequest('This garment does not belong to a store in your scope.');
+  }
+
+  /**
    * Where a garment physically is right now: the transfer's toStoreId while
    * activeTransferId is set (same resolution as assertGarmentEditable's
    * write guard), otherwise its order's home store. Used by the garment
