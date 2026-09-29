@@ -4,7 +4,7 @@ import {HttpErrors} from '@loopback/rest';
 import {Customer, CustomerAddress} from '../models';
 import {CustomerAddressRepository, CustomerRepository} from '../repositories';
 import {StoreAssignmentService} from './store-assignment.service';
-import {GeocodingService} from './geocoding.service';
+import {GeocodingService, hasRealCoordinates} from './geocoding.service';
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class CustomerAddressService {
@@ -32,10 +32,11 @@ export class CustomerAddressService {
     const address = await this.addressRepository.create({...data, customerId});
 
     // Same fallback as CustomerProfileController.createPickupRequest — an
-    // address saved without the frontend's location picker has no
-    // coordinates, so geocode it here too rather than silently never
-    // auto-assigning a store for this customer.
-    if (address.latitude == null || address.longitude == null) {
+    // address saved without the frontend's location picker has no usable
+    // coordinates (missing, or the (0,0) "Null Island" placeholder — see
+    // hasRealCoordinates), so geocode it here too rather than silently
+    // never auto-assigning a store for this customer.
+    if (!hasRealCoordinates(address.latitude, address.longitude)) {
       const geocoded = await this.geocodingService.geocodeAddress(
         this.toDisplaySnapshot(address),
       );
@@ -54,10 +55,12 @@ export class CustomerAddressService {
     // within STORE_ASSIGNMENT_RADIUS_KM) so store-scoped features have
     // somewhere to resolve to — never overrides a store an admin, or an
     // earlier address, already set.
-    if (!customer.preferredStoreId && address.latitude != null && address.longitude != null) {
+    if (!customer.preferredStoreId && hasRealCoordinates(address.latitude, address.longitude)) {
+      // hasRealCoordinates just confirmed both are set and non-(0,0) — TS
+      // can't narrow through a plain function call, hence the assertions.
       const {nearestWithinRadius} = await this.storeAssignmentService.resolveForCoordinates(
-        address.latitude,
-        address.longitude,
+        address.latitude!,
+        address.longitude!,
       );
       if (nearestWithinRadius) {
         await this.customerRepository.updateById(customerId, {

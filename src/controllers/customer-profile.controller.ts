@@ -49,7 +49,7 @@ import { CustomerContactService } from '../services/customer-contact.service';
 import { CustomerPhoneService } from '../services/customer-phone.service';
 import { CustomerPreferenceChanges, CustomerPreferenceService } from '../services/customer-preference.service';
 import { NearbyStore, StoreAssignmentService } from '../services/store-assignment.service';
-import { GeocodingService } from '../services/geocoding.service';
+import { GeocodingService, hasRealCoordinates } from '../services/geocoding.service';
 import { filterSlotsForDate } from '../utils/pickup-slot-availability';
 
 export class CustomerProfileController {
@@ -692,16 +692,19 @@ export class CustomerProfileController {
     // with no storeId, rather than rejected outright, so ops has
     // visibility and the customer app can still point at nearby stores
     // for a walk-in drop-off.
-    let addressLat = address.latitude;
-    let addressLng = address.longitude;
+    const addressHasRealCoordinates = hasRealCoordinates(address.latitude, address.longitude);
+    let addressLat = addressHasRealCoordinates ? address.latitude : undefined;
+    let addressLng = addressHasRealCoordinates ? address.longitude : undefined;
     // Older addresses (or ones saved without the frontend's location
-    // picker) have no coordinates at all — resolveForCoordinates needs
-    // both to compute anything, and without this fallback those
-    // customers got NOT_SERVICEABLE with an EMPTY nearby-stores list: no
-    // assignment and nothing to offer as an alternative either. Geocode
-    // the address text on the fly instead, and save the result onto the
-    // address so this only ever has to happen once per address.
-    if (addressLat == null || addressLng == null) {
+    // picker) have no usable coordinates — missing, or the (0,0) "Null
+    // Island" placeholder (see hasRealCoordinates) — and
+    // resolveForCoordinates needs a real point to compute anything.
+    // Without this fallback those customers got NOT_SERVICEABLE with an
+    // EMPTY nearby-stores list: no assignment and nothing to offer as an
+    // alternative either. Geocode the address text on the fly instead,
+    // and save the result onto the address so this only ever has to
+    // happen once per address.
+    if (!addressHasRealCoordinates) {
       const geocoded = await this.geocodingService.geocodeAddress(
         this.addressService.toDisplaySnapshot(address),
       );

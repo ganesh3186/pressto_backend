@@ -7,6 +7,27 @@ export interface GeocodedPoint {
 }
 
 /**
+ * Whether an address/store actually has usable coordinates — null/undefined
+ * obviously don't, but so doesn't the exact pair (0, 0): "Null Island", a
+ * well-known placeholder in the Gulf of Guinea that shows up whenever a
+ * numeric field gets defaulted/coerced instead of left empty (a manual "0"
+ * typed into a form, a map that reports its click before it's finished
+ * loading, etc.) — never a real customer address. Treating it as present
+ * skips the geocoding fallback and lets StoreAssignmentService compute a
+ * real (thousands-of-km) distance from it instead of catching the problem.
+ */
+export function hasRealCoordinates(
+  latitude?: number | string | null,
+  longitude?: number | string | null,
+): boolean {
+  if (latitude == null || longitude == null) return false;
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  return !(lat === 0 && lng === 0);
+}
+
+/**
  * Google Geocoding API, address text -> lat/lng. Used to fill in
  * coordinates for a customer address that has none on file (older
  * addresses, or ones saved without the frontend's location picker) so
