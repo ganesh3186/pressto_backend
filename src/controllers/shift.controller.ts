@@ -308,10 +308,20 @@ export class ShiftController {
       Number(input.ppVoucher.actualVoucher || 0) -
       Number(input.ppVoucher.currSupVoucher || 0);
 
+    // Physical cash in the till can only ever be whole rupees, so the
+    // admin-panel's closing form rounds cashReceived - reimbursement UP
+    // to the nearest rupee before adding it (see roundUpCashAmount /
+    // recalcClosingForm in shift-module.js) — matched here exactly.
+    // Without this, a paise-carrying cashReceived (routine — payment
+    // totals aren't whole rupees) made this server-side recomputation
+    // disagree with what the form showed the user as already balanced,
+    // rejecting a close the user was correctly told was fine.
     const currSupCashInTill =
       Number(input.register.prevActCashInTill || 0) +
-      Number(input.register.cashReceived || 0) -
-      Number(input.register.reimbursement || 0);
+      Math.ceil(
+        Number(input.register.cashReceived || 0) -
+          Number(input.register.reimbursement || 0),
+      );
 
     const actualCashInTillDifference =
       Number(input.actualCashInTill.actual || 0) - currSupCashInTill;
