@@ -19,6 +19,7 @@ import {
   StoreRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
+import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
 
 /**
  * Admin-facing surface for Delivery — created only when
@@ -35,6 +36,7 @@ export class DeliveryController {
     @repository(StoreRepository) private storeRepo: StoreRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @inject('services.notification') private notificationService: NotificationService,
   ) {}
 
   private async enrichDeliveries(deliveries: Delivery[]): Promise<object[]> {
@@ -225,6 +227,23 @@ export class DeliveryController {
       eventType: DeliveryCustodyEventType.CANCELLED,
       performedBy: currentUser[securityId],
     });
+
+    // Not awaited — a slow/unreachable FCM call must never delay this
+    // response (NotificationService already swallows its own errors).
+    // delivery.riderId (not each order's assignedRiderId, which this
+    // method just cleared) is who the whole run was assigned to — see
+    // Delivery.riderId's own doc comment: GET /rider/deliveries reads
+    // this field, not the per-order one.
+    if (delivery.riderId) {
+      this.notificationService
+        .notifyRider(delivery.riderId, {
+          type: RIDER_NOTIFICATION_TYPES.DELIVERY_CANCELLED,
+          title: 'Delivery run cancelled',
+          body: 'Your assigned delivery run has been cancelled.',
+          data: {deliveryId: id},
+        })
+        .catch(() => {});
+    }
 
     return {message: delivery.bagId ? 'Delivery cancelled. Bag released.' : 'Delivery cancelled.'};
   }
