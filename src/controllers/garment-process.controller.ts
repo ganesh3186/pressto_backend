@@ -131,6 +131,12 @@ export class GarmentProcessController {
     body?: {qrCode?: string},
   ): Promise<object> {
     await this.storeScopeService.assertGarmentEditable(id, currentUser);
+    // Stricter than assertGarmentEditable above (see its own doc comment):
+    // that check alone lets any non-global staff fast-track a garment from
+    // a store that isn't theirs, as long as it isn't mid-transfer. This
+    // additionally requires the garment to actually be at a store the
+    // caller can act on right now.
+    await this.storeScopeService.assertGarmentAtCallerStore(id, currentUser);
     return this.processService.fastTrackToReady(id, currentUser[securityId], body?.qrCode);
   }
 
