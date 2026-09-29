@@ -312,13 +312,15 @@ export class ShiftController {
       Number(input.ppVoucher.actualVoucher || 0) -
       Number(input.ppVoucher.currSupVoucher || 0);
 
-    const currSupCashInTill =
+    const currSupCashInTill = Math.round(
       Number(input.register.prevActCashInTill || 0) +
-      Number(input.register.cashReceived || 0) -
-      Number(input.register.reimbursement || 0);
+        Number(input.register.cashReceived || 0) -
+        Number(input.register.reimbursement || 0),
+    );
 
     const actualCashInTillDifference =
-      Number(input.actualCashInTill.actual || 0) - currSupCashInTill;
+      Math.round(Number(input.actualCashInTill.actual || 0)) -
+      currSupCashInTill;
 
     return {
       collections: {...input.collections, total: collectionsTotal},
