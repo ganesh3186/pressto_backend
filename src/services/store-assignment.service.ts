@@ -19,7 +19,14 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return EARTH_RADIUS_KM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export type NearbyStore = {id: string; name: string; code: string; distanceKm: number};
+export type NearbyStore = {
+  id: string;
+  name: string;
+  code: string;
+  distanceKm: number;
+  latitude: number;
+  longitude: number;
+};
 
 /**
  * Distance-based store lookup, keyed off Store.latitude/longitude — a
@@ -51,12 +58,22 @@ export class StoreAssignmentService {
     });
     return stores
       .filter(s => s.latitude != null && s.longitude != null)
-      .map(s => ({
-        id: s.id,
-        name: s.name,
-        code: s.code,
-        distanceKm: haversineKm(lat, lng, s.latitude as number, s.longitude as number),
-      }))
+      .map(s => {
+        // Postgres decimal columns come back as strings — fine for the
+        // haversine math below (JS coerces), but latitude/longitude are
+        // now part of the API response itself (nearbyStores), so they
+        // need to actually be JSON numbers, not numeric strings.
+        const latitude = Number(s.latitude);
+        const longitude = Number(s.longitude);
+        return {
+          id: s.id,
+          name: s.name,
+          code: s.code,
+          distanceKm: haversineKm(lat, lng, latitude, longitude),
+          latitude,
+          longitude,
+        };
+      })
       .sort((a, b) => a.distanceKm - b.distanceKm);
   }
 
