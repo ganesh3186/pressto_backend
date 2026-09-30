@@ -228,6 +228,14 @@ export class NotificationService {
         response.responses.map(async (result: SendResponse, index: number) => {
           if (result.success) return;
           const code = result.error?.code;
+          // A per-token failure inside a successful API response is not an
+          // exception, so it never reached the catch block below — this
+          // service could return 'failed' with zero record of *why*.
+          // eslint-disable-next-line no-console
+          console.error(
+            `[NotificationService] Send failed for rider ${riderId}, device ${devices[index].id}: ` +
+              `${code ?? 'unknown code'} — ${result.error?.message ?? 'no message'}`,
+          );
           if (
             code === 'messaging/registration-token-not-registered' ||
             code === 'messaging/invalid-registration-token'
