@@ -204,6 +204,24 @@ export class NotificationService {
       const message: MulticastMessage = {
         tokens: devices.map(d => d.fcmToken),
         data,
+        // Without this, FCM defaults a data-only message to normal
+        // priority — Android is then free to delay or drop it once the
+        // app is backgrounded/killed or the device is in Doze, especially
+        // on the battery-aggressive OEM skins (MIUI, ColorOS, FunTouch)
+        // most rider-tier phones run. FCM still reports success either
+        // way (that only means it accepted the message, not that the
+        // device actually got it promptly) — this is the likely cause of
+        // "sometimes it arrives, sometimes it doesn't" with no matching
+        // failure in our own delivery-status tracking.
+        android: {priority: 'high'},
+        // iOS equivalent: a silent/background push (content-available,
+        // no alert/sound/badge — matches this being data-only) is
+        // REQUIRED by Apple to use apns-priority 5, not 10; 10 is only
+        // for a user-visible alert and can get a silent push rejected.
+        apns: {
+          headers: {'apns-priority': '5'},
+          payload: {aps: {contentAvailable: true}},
+        },
       };
       const response = await getMessaging(app).sendEachForMulticast(message);
       await Promise.all(
