@@ -530,7 +530,6 @@ export class ShiftController {
   // ─── Active (this store's open shift, whoever opened it) ───────────────────
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts/active')
   @response(200, {description: "The store's currently open shift, if any"})
   async active(
@@ -635,16 +634,30 @@ export class ShiftController {
   // so a same-shift return on a same-shift ticket is already netted into
   // revenue automatically; subtracting salesReturn from it again would
   // double-count. See resolveRevenue()/resolveSalesReturn() below.
+  // No @authorize — every role needs this just to prefill their own
+  // shift's closing form (see close()), and gating it behind shift:read
+  // would force granting that permission broadly, which also unlocks the
+  // admin-only shift list/history screen. Safe to open up because, like
+  // active()/close(), the store check below is enforced in code instead
+  // of via permission — a caller can only ever see their own store's shift.
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts/{id}/collected')
   @response(200, {
     description:
       'Real collections during this shift, bucketed for the closing form',
   })
-  async collected(@param.path.string('id') id: string): Promise<object> {
+  async collected(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
     const shift = await this.shiftRepository.findById(id);
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
+    const caller = await this.resolveCallerStore(currentUser, shift.storeId);
+    if (caller.storeId !== shift.storeId) {
+      throw new HttpErrors.Forbidden(
+        'Only an employee of this store can view its shift collections.',
+      );
+    }
 
     const windowEnd = shift.closedAt ?? new Date();
     const collections = {cash: 0, card: 0, cheque: 0, pgLink: 0, upi: 0, wallet: 0};
