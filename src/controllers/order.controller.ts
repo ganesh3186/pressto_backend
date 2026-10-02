@@ -53,6 +53,7 @@ import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {CustomerAddressService} from '../services/customer-address.service';
 import {RiderAssignmentService} from '../services/rider-assignment.service';
 import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
+import {SystemNotificationService} from '../services/system-notification.service';
 import {PickupDeliverySlotRepository} from '../repositories/pickup-delivery-slot.repository';
 
 const PAYMENT_ITEM_SCHEMA = {
@@ -178,6 +179,8 @@ export class OrderController {
     private riderAssignmentService: RiderAssignmentService,
     @inject('services.notification')
     private notificationService: NotificationService,
+    @inject('services.system-notification', {optional: true})
+    private systemNotificationService?: SystemNotificationService,
   ) {}
 
   // Cheque/PDC legs never got a PaymentTransaction (see order.service.ts's
@@ -270,6 +273,28 @@ export class OrderController {
         await this._createPendingPaymentApprovalRequest(result.order.id, leg, createdBy),
       );
     }
+
+    if (result?.order?.id && this.systemNotificationService) {
+      this.orderRepository
+        .findById(result.order.id)
+        .then(async savedOrder => {
+          let customerName: string | undefined;
+          try {
+            const customerId = savedOrder?.customerId ?? body.customerId;
+            if (customerId) {
+              const cust = await this.customerRepository.findById(customerId);
+              if (cust) {
+                customerName = [cust.firstName, cust.lastName].filter(Boolean).join(' ').trim();
+              }
+            }
+          } catch (_) {}
+          return this.systemNotificationService!.notifyOrderCreated(savedOrder, customerName);
+        })
+        .catch(err => {
+          console.error('Failed to notify super admin for created order:', err);
+        });
+    }
+
     return {message: 'Order created successfully.', ...result, approvalRequests};
   }
 
@@ -809,6 +834,27 @@ export class OrderController {
   ): Promise<object> {
     const changedBy = currentUser[securityId];
     const result = await this.orderService.changeStatus(id, body.status, changedBy, body.remarks);
+
+    if (body.status === OrderStatus.READY && this.systemNotificationService) {
+      this.orderRepository
+        .findById(id)
+        .then(async readyOrder => {
+          let customerName: string | undefined;
+          try {
+            if (readyOrder?.customerId) {
+              const cust = await this.customerRepository.findById(readyOrder.customerId);
+              if (cust) {
+                customerName = [cust.firstName, cust.lastName].filter(Boolean).join(' ').trim();
+              }
+            }
+          } catch (_) {}
+          return this.systemNotificationService!.notifyOrderReady(readyOrder, customerName);
+        })
+        .catch(err => {
+          console.error('Failed to notify super admin for ready order:', err);
+        });
+    }
+
     const response: Record<string, unknown> = {message: `Order status changed to '${body.status}'.`};
     if ((result as any).garments?.length) {
       response.garments = (result as any).garments;

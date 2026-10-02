@@ -43,6 +43,7 @@ import { StoreAssignmentService } from './services/store-assignment.service';
 import { NotificationService } from './services/notification.service';
 import { GeocodingService } from './services/geocoding.service';
 import { WhatsAppService } from './services/whatsapp.service';
+import { SystemNotificationService } from './services/system-notification.service';
 
 export { ApplicationConfig };
 
@@ -129,6 +130,7 @@ export class presstoBackendApplication extends BootMixin(
     // Same reason again — WhatsAppService also tracks a one-time
     // "credentials missing" warning in instance state.
     this.bind('services.whatsapp').toClass(WhatsAppService).inScope(BindingScope.SINGLETON);
+    this.bind('services.system-notification').toClass(SystemNotificationService).inScope(BindingScope.SINGLETON);
   }
 
   protected configureFileUpload(destination?: string) {
