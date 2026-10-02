@@ -105,6 +105,55 @@ export class RazorpayService {
   }
 
   /**
+   * A real, shareable Razorpay Payment Link (short_url) — order payment
+   * only, for sending to the customer over WhatsApp rather than opening
+   * Razorpay's Checkout on staff's own screen. No popup, no `handler`
+   * callback: handlePaymentLinkPaid() (the `payment_link.paid` webhook)
+   * is the only confirmation path, so this can be created and the admin
+   * panel can move on immediately — the order gets marked paid whenever
+   * the customer actually pays, not synchronously here.
+   */
+  async createPaymentLink(input: CreateGatewayOrderInput): Promise<GatewayPaymentLink> {
+    if (!(input.amount > 0)) {
+      throw new HttpErrors.BadRequest('Amount must be greater than zero.');
+    }
+
+    const {v4} = await import('uuid');
+    const id = v4();
+
+    // reference_id is Razorpay's own field name — mirrors the same
+    // suppress-comment pattern already used above for key_id/key_secret.
+    /* eslint-disable @typescript-eslint/naming-convention */
+    const link = await this.client.paymentLink.create({
+      amount: Math.round(input.amount * 100),
+      currency: 'INR',
+      description: input.description,
+      customer: {
+        name: input.customer.name,
+        email: input.customer.email,
+        contact: input.customer.contact,
+      },
+      // Phone/email prompts aren't useful here — the link itself is the
+      // notification (sent over WhatsApp separately), not Razorpay's own.
+      notify: {sms: false, email: false},
+      reference_id: id,
+      notes: {referenceType: input.referenceType, referenceId: input.referenceId},
+    });
+    /* eslint-enable @typescript-eslint/naming-convention */
+
+    return this.gatewayPaymentLinkRepo.create({
+      id,
+      razorpayPaymentLinkId: link.id,
+      shortUrl: link.short_url,
+      amount: input.amount,
+      status: GatewayPaymentLinkStatus.CREATED,
+      referenceType: input.referenceType,
+      referenceId: input.referenceId,
+      createdBy: input.createdBy,
+    });
+  }
+
+  /**
    * Raw HMAC-SHA256 check over the UNPARSED request body — Razorpay's own
    * SDK helper, not reimplemented here. Must be called with the literal
    * raw bytes/string the request arrived with, before any JSON.parse.
@@ -164,6 +213,33 @@ export class RazorpayService {
       // Not one of ours (or already deleted) — nothing to apply. Not an
       // error: Razorpay sends this webhook for every order on the
       // account, including ones this service didn't create.
+      return;
+    }
+    if (link.status === GatewayPaymentLinkStatus.PAID) return;
+
+    await this.markPaidAndApply(link, payload.razorpayPaymentId, payload.rawPayload);
+  }
+
+  /**
+   * Called only after the webhook's signature has already been verified —
+   * the ONLY confirmation path for a shareable Payment Link (createPaymentLink()).
+   * There's no Checkout popup/`handler` callback here (staff never see
+   * Razorpay's UI, the customer pays the link on their own device
+   * whenever), so unlike handlePaymentCaptured() above this isn't a
+   * fallback for anything — it's the one place a Payment Link ever gets
+   * marked paid. Idempotent against a redelivered webhook the same way.
+   */
+  async handlePaymentLinkPaid(payload: {
+    razorpayPaymentLinkId: string;
+    razorpayPaymentId: string;
+    rawPayload: object;
+  }): Promise<void> {
+    const link = await this.gatewayPaymentLinkRepo.findOne({
+      where: {razorpayPaymentLinkId: payload.razorpayPaymentLinkId} as object,
+    });
+    if (!link) {
+      // Not one of ours — nothing to apply. Not an error: Razorpay sends
+      // this webhook for every payment link on the account.
       return;
     }
     if (link.status === GatewayPaymentLinkStatus.PAID) return;
