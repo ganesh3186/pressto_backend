@@ -42,6 +42,7 @@ import { RazorpayService } from './services/razorpay.service';
 import { StoreAssignmentService } from './services/store-assignment.service';
 import { NotificationService } from './services/notification.service';
 import { GeocodingService } from './services/geocoding.service';
+import { WhatsAppService } from './services/whatsapp.service';
 
 export { ApplicationConfig };
 
@@ -125,6 +126,9 @@ export class presstoBackendApplication extends BootMixin(
     // GeocodingService tracks a one-time "key missing" warning in instance
     // state, so it needs .inScope() explicitly for the same reason.
     this.bind('services.geocoding').toClass(GeocodingService).inScope(BindingScope.SINGLETON);
+    // Same reason again — WhatsAppService also tracks a one-time
+    // "credentials missing" warning in instance state.
+    this.bind('services.whatsapp').toClass(WhatsAppService).inScope(BindingScope.SINGLETON);
   }
 
   protected configureFileUpload(destination?: string) {
