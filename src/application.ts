@@ -42,6 +42,7 @@ import { RazorpayService } from './services/razorpay.service';
 import { StoreAssignmentService } from './services/store-assignment.service';
 import { NotificationService } from './services/notification.service';
 import { GeocodingService } from './services/geocoding.service';
+import { SystemNotificationService } from './services/system-notification.service';
 
 export { ApplicationConfig };
 
@@ -125,6 +126,7 @@ export class presstoBackendApplication extends BootMixin(
     // GeocodingService tracks a one-time "key missing" warning in instance
     // state, so it needs .inScope() explicitly for the same reason.
     this.bind('services.geocoding').toClass(GeocodingService).inScope(BindingScope.SINGLETON);
+    this.bind('services.system-notification').toClass(SystemNotificationService).inScope(BindingScope.SINGLETON);
   }
 
   protected configureFileUpload(destination?: string) {

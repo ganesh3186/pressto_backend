@@ -19,6 +19,7 @@ import {
   StoreRepository,
   TransferRepository,
 } from '../repositories';
+import {SystemNotificationService} from './system-notification.service';
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class ProcessService {
@@ -43,6 +44,8 @@ export class ProcessService {
     @repository(StoreRepository) private storeRepo: StoreRepository,
     @repository(TransferRepository) private transferRepo: TransferRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
+    @inject('services.system-notification', {optional: true})
+    private systemNotificationService?: SystemNotificationService,
   ) {
     this.qrScanRequired = process.env.QR_SCAN_REQUIRED === 'true';
     // Default TRUE (enforced) — preserves today's real behavior for any
@@ -703,6 +706,11 @@ export class ProcessService {
         changedBy,
         remarks,
       });
+      if (status === OrderStatus.READY && this.systemNotificationService) {
+        this.systemNotificationService
+          .notifyOrderReady(order)
+          .catch(err => console.error('Failed to notify order ready:', err));
+      }
     };
 
     // Active = anything still in the pipeline (exclude on_hold / returned)

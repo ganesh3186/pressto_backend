@@ -51,6 +51,7 @@ import { CustomerPreferenceChanges, CustomerPreferenceService } from '../service
 import { NearbyStore, StoreAssignmentService } from '../services/store-assignment.service';
 import { GeocodingService, hasRealCoordinates } from '../services/geocoding.service';
 import { filterSlotsForDate } from '../utils/pickup-slot-availability';
+import { SystemNotificationService } from '../services/system-notification.service';
 
 export class CustomerProfileController {
   constructor(
@@ -87,7 +88,9 @@ export class CustomerProfileController {
     @inject('services.store-assignment')
     private storeAssignmentService: StoreAssignmentService,
     @inject('services.geocoding')
-    private geocodingService: GeocodingService
+    private geocodingService: GeocodingService,
+    @inject('services.system-notification', {optional: true})
+    private systemNotificationService?: SystemNotificationService,
   ) { }
 
   private async resolveCustomer(userId: string): Promise<Customer> {
@@ -758,6 +761,18 @@ export class CustomerProfileController {
       remarks,
       mediaIds,
     });
+
+    if (this.systemNotificationService) {
+      this.systemNotificationService
+        .notifyCustomerPickupRequested(
+          pickupRequest,
+          `${customer.firstName} ${customer.lastName}`.trim(),
+        )
+        .catch(err => {
+          console.error('Failed to dispatch customer pickup notification:', err);
+        });
+    }
+
     return status === PickupRequestStatus.NOT_SERVICEABLE
       ? {
           message: 'Pickup is not available at this address yet. You can drop items off at a nearby store instead.',
@@ -785,6 +800,18 @@ export class CustomerProfileController {
     }
 
     await this.pickupRequestRepository.updateById(id, { status: PickupRequestStatus.CANCELLED });
+
+    if (this.systemNotificationService) {
+      this.systemNotificationService
+        .notifyCustomerPickupCancelled(
+          pickupRequest,
+          `${customer.firstName} ${customer.lastName}`.trim(),
+        )
+        .catch(err => {
+          console.error('Failed to dispatch customer pickup cancelled notification:', err);
+        });
+    }
+
     return { message: 'Pickup request cancelled.' };
   }
 

@@ -23,6 +23,7 @@ import {ServiceRepository} from '../repositories/service.repository';
 import {WalletRepository} from '../repositories/wallet.repository';
 import {WalletTransactionRepository} from '../repositories/wallet-transaction.repository';
 import {RefundDueRepository} from '../repositories/refund-due.repository';
+import {SystemNotificationService} from './system-notification.service';
 import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
@@ -273,6 +274,8 @@ export class ApprovalService {
     @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
     @inject('services.audit') private auditService: AuditService,
     @inject('services.order') private orderService: OrderService,
+    @inject('services.system-notification', {optional: true})
+    private systemNotificationService?: SystemNotificationService,
   ) {}
 
   async calculateGarmentReturnAmount(garmentId: string): Promise<{
@@ -422,6 +425,14 @@ export class ApprovalService {
       remarks: `Request created for ${params.type} on ${params.entityType} ${params.entityId}`,
       performedBy: params.requestedBy,
     });
+
+    if (this.systemNotificationService) {
+      this.systemNotificationService
+        .notifyApprovalRequired(request, params.requestReason)
+        .catch(err => {
+          console.error('Failed to notify super admin for approval request:', err);
+        });
+    }
 
     // Apply immediate status change when needed (e.g. upgrade puts garment on_hold right away)
     const immediateStatus = GARMENT_STATUS_ON_CREATE[params.type];
