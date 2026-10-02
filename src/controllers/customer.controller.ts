@@ -452,7 +452,22 @@ export class CustomerController {
           relation: 'customerPhones',
           scope: {
             where: {isDeleted: false} as object,
-            fields: {id: true, countryCode: true, phone: true, isPrimary: true, isWhatsappNumber: true},
+            // customerId (the hasMany FK) must stay in this projection even
+            // though callers only care about the phone fields below — the
+            // inclusion resolver re-associates each fetched row back to its
+            // Customer by this column, and a fields filter that omits it
+            // comes back as customerId: undefined on every row, which
+            // silently drops the whole customerPhones array (no error,
+            // just absent from the response — confirmed via LoopBack's own
+            // relation-helpers: buildLookupMap keys on this field).
+            fields: {
+              id: true,
+              customerId: true,
+              countryCode: true,
+              phone: true,
+              isPrimary: true,
+              isWhatsappNumber: true,
+            },
           },
         },
       ],
@@ -592,7 +607,22 @@ export class CustomerController {
           relation: 'customerPhones',
           scope: {
             where: {isDeleted: false} as object,
-            fields: {id: true, countryCode: true, phone: true, isPrimary: true, isWhatsappNumber: true},
+            // customerId (the hasMany FK) must stay in this projection even
+            // though callers only care about the phone fields below — the
+            // inclusion resolver re-associates each fetched row back to its
+            // Customer by this column, and a fields filter that omits it
+            // comes back as customerId: undefined on every row, which
+            // silently drops the whole customerPhones array (no error,
+            // just absent from the response — confirmed via LoopBack's own
+            // relation-helpers: buildLookupMap keys on this field).
+            fields: {
+              id: true,
+              customerId: true,
+              countryCode: true,
+              phone: true,
+              isPrimary: true,
+              isWhatsappNumber: true,
+            },
           },
         },
       ],
