@@ -16,6 +16,8 @@ import {OrderService} from './order.service';
 import {SecurityDepositService} from './security-deposit.service';
 import {WalletService} from './wallet.service';
 
+const PAYMENT_LINK_VALIDITY_MS = 24 * 60 * 60 * 1000;
+
 export interface CreateGatewayOrderInput {
   amount: number;
   description: string;
@@ -113,13 +115,56 @@ export class RazorpayService {
    * panel can move on immediately — the order gets marked paid whenever
    * the customer actually pays, not synchronously here.
    */
+  /**
+   * Returns the single open payment link for this reference if it's still
+   * valid for the same amount — otherwise cancels any open ones and issues
+   * a fresh link. Repeated clicks on PGLink therefore never leave several
+   * live links for one balance (a second payment against it would fail to
+   * apply and need manual reconciliation).
+   */
   async createPaymentLink(input: CreateGatewayOrderInput): Promise<GatewayPaymentLink> {
     if (!(input.amount > 0)) {
       throw new HttpErrors.BadRequest('Amount must be greater than zero.');
     }
 
+    const now = new Date();
+    const openLinks = await this.gatewayPaymentLinkRepo.find({
+      where: {
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        status: GatewayPaymentLinkStatus.CREATED,
+        razorpayPaymentLinkId: {neq: null},
+      } as object,
+      order: ['createdAt DESC'],
+    });
+
+    const reusable = openLinks.find(
+      link =>
+        Number(link.amount) === Number(input.amount) &&
+        !!link.expiresAt &&
+        new Date(link.expiresAt).getTime() > now.getTime(),
+    );
+    if (reusable) return reusable;
+
+    for (const stale of openLinks) {
+      try {
+        await this.client.paymentLink.cancel(stale.razorpayPaymentLinkId as string);
+      } catch (err) {
+        // Razorpay refuses to cancel a link that has already been paid —
+        // stop here rather than issuing a second link for the same balance.
+        throw new HttpErrors.Conflict(
+          'The previous payment link could not be cancelled, so it may already have been paid. ' +
+            'Check the ticket before sharing a new link.',
+        );
+      }
+      await this.gatewayPaymentLinkRepo.updateById(stale.id, {
+        status: GatewayPaymentLinkStatus.CANCELLED,
+      });
+    }
+
     const {v4} = await import('uuid');
     const id = v4();
+    const expiresAt = new Date(now.getTime() + PAYMENT_LINK_VALIDITY_MS);
 
     // reference_id is Razorpay's own field name — mirrors the same
     // suppress-comment pattern already used above for key_id/key_secret.
@@ -137,6 +182,7 @@ export class RazorpayService {
       // notification (sent over WhatsApp separately), not Razorpay's own.
       notify: {sms: false, email: false},
       reference_id: id,
+      expire_by: Math.floor(expiresAt.getTime() / 1000),
       notes: {referenceType: input.referenceType, referenceId: input.referenceId},
     });
     /* eslint-enable @typescript-eslint/naming-convention */
@@ -150,6 +196,7 @@ export class RazorpayService {
       referenceType: input.referenceType,
       referenceId: input.referenceId,
       createdBy: input.createdBy,
+      expiresAt,
     });
   }
 

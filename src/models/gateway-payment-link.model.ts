@@ -47,6 +47,9 @@ export class GatewayPaymentLink extends Entity {
   @property({type: 'string'})
   shortUrl?: string;
 
+  @property({type: 'date'})
+  expiresAt?: Date;
+
   @property({type: 'number', required: true, postgresql: {dataType: 'numeric'}})
   amount: number;
 

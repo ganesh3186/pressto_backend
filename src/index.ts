@@ -21,7 +21,14 @@ if (require.main === module) {
   const config = {
     rest: {
       port: +(process.env.PORT ?? 3000),
-      host: process.env.HOST ?? '127.0.0.1',
+      // client-server branch only: defaults to listening on every
+      // interface, not just loopback, since this deployment is reached by
+      // other devices on the LAN via its own IP (admin-panel/customer-web
+      // both call that IP directly, baked in at their own build time) —
+      // 127.0.0.1 would refuse those connections outright even with a
+      // correct .env, if HOST ever went unset. Still fully overridable via
+      // .env's HOST for a server that genuinely wants loopback-only.
+      host: process.env.HOST ?? '0.0.0.0',
       // The `gracePeriodForClose` provides a graceful close for http/https
       // servers with keep-alive clients. The default value is `Infinity`
       // (don't force-close). If you want to immediately destroy all sockets
