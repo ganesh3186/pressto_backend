@@ -9,6 +9,7 @@ import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-t
 import {PaymentMode} from '../models/payment-mode.enum';
 import {
   GatewayPaymentLinkRepository,
+  OrderRepository,
   SecurityDepositTopupRequestRepository,
   WalletRechargeRequestRepository,
 } from '../repositories';
@@ -63,6 +64,7 @@ export class RazorpayService {
     private walletRechargeRequestRepo: WalletRechargeRequestRepository,
     @repository(SecurityDepositTopupRequestRepository)
     private securityDepositTopupRequestRepo: SecurityDepositTopupRequestRepository,
+    @repository(OrderRepository) private orderRepo: OrderRepository,
     @inject('services.order') private orderService: OrderService,
     @inject('services.wallet') private walletService: WalletService,
     @inject('services.security-deposit') private securityDepositService: SecurityDepositService,
@@ -125,6 +127,21 @@ export class RazorpayService {
   async createPaymentLink(input: CreateGatewayOrderInput): Promise<GatewayPaymentLink> {
     if (!(input.amount > 0)) {
       throw new HttpErrors.BadRequest('Amount must be greater than zero.');
+    }
+
+    // Checked before reusing any open link: a ticket paid in cash since the
+    // last link was issued must not get a link for money it no longer owes.
+    if (input.referenceType === GatewayPaymentReferenceType.ORDER_PAYMENT) {
+      const order = await this.orderRepo.findById(input.referenceId);
+      const {due} = await this.orderService.computeBalanceDue(order);
+      if (due <= 0) {
+        throw new HttpErrors.Conflict('Nothing is due on this ticket.');
+      }
+      if (input.amount > due + 0.005) {
+        throw new HttpErrors.BadRequest(
+          `Requested amount ₹${input.amount} is more than the ₹${due} still due on this ticket.`,
+        );
+      }
     }
 
     const now = new Date();
