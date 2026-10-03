@@ -53,3 +53,4 @@ export * from './service-item-prices.controller';
 export * from './dashboard.controller';
 export * from './reports.controller';
 export * from './warehouse.controller';
+export * from './system-notification.controller';

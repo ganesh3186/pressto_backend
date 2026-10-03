@@ -29,6 +29,7 @@ import {
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
+import {SystemNotificationService} from '../services/system-notification.service';
 
 export class TransferController {
   constructor(
@@ -48,6 +49,8 @@ export class TransferController {
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
     @inject('services.notification') private notificationService: NotificationService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
+    @inject('services.system-notification', {optional: true})
+    private systemNotificationService?: SystemNotificationService,
   ) {}
 
   // ─── Validation helpers ───────────────────────────────────────────────────
@@ -608,6 +611,14 @@ export class TransferController {
       bagNumber: bagNumberById.get(b.bagId) ?? null,
       itemCount: b.garmentIds.length,
     }));
+
+    // Trigger notification only if rider is NOT assigned at transfer out time
+    if (!transfer.riderId && this.systemNotificationService) {
+      this.systemNotificationService
+        .notifyTransferOutRiderNeeded(transfer, fromStore.name, toStore.name)
+        .catch(err => console.error('Failed to notify transfer out rider needed:', err));
+    }
+
     return {
       message: 'Transfer created and sent.',
       transfer: {...transfer, bags: responseBags},
