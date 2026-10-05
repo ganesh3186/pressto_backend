@@ -42,6 +42,15 @@ export class StoreServiceMappingController {
     private orderItemRepository: OrderItemRepository,
   ) {}
 
+  // Every garment gets pressed regardless of which primary service it was
+  // booked under (dry clean, wash, ...) — pressing is a shared downstream
+  // step, not something only "Press" orders use. So whatever a store's
+  // "Press" capacity is meant to track, it has to include every OTHER
+  // service's booked quantity too, not just literal Press line items.
+  // Identified by its stable catalog code rather than an id, which can
+  // differ across environments.
+  private static readonly PRESS_SERVICE_CODE = 'press';
+
   // ─── Store service capacity (available vs filled) ──────────────────────────
   // Per service configured for a store: dailyCapacity vs how much is already
   // booked for a given delivery date. "Filled" = sum of order-item quantities on
@@ -80,7 +89,14 @@ export class StoreServiceMappingController {
       fields: {id: true} as any,
     });
 
-    // Sum booked quantity per service across those orders' items.
+    // Sum booked quantity per service across those orders' items — every
+    // item also tops up Press (see PRESS_SERVICE_CODE above), in addition to
+    // its own service.
+    const pressService = await this.serviceRepository.findOne({
+      where: {code: StoreServiceMappingController.PRESS_SERVICE_CODE, isDeleted: false} as any,
+    });
+    const pressServiceId = pressService?.id;
+
     const filledByService = new Map<string, number>();
     if (orders.length) {
       const items = await this.orderItemRepository.find({
@@ -88,7 +104,11 @@ export class StoreServiceMappingController {
         fields: {serviceId: true, quantity: true} as any,
       });
       for (const it of items) {
-        filledByService.set(it.serviceId, (filledByService.get(it.serviceId) ?? 0) + (Number(it.quantity) || 0));
+        const qty = Number(it.quantity) || 0;
+        filledByService.set(it.serviceId, (filledByService.get(it.serviceId) ?? 0) + qty);
+        if (pressServiceId && it.serviceId !== pressServiceId) {
+          filledByService.set(pressServiceId, (filledByService.get(pressServiceId) ?? 0) + qty);
+        }
       }
     }
 
