@@ -393,6 +393,57 @@ export class ApprovalService {
     };
   }
 
+  private async _resolveApprovalNotificationContext(request: ApprovalRequest): Promise<{
+    storeId?: string;
+    orderNumber?: string;
+    garmentTag?: string;
+    amount?: number;
+    method?: string;
+  }> {
+    try {
+      if (request.entityType === 'order') {
+        const order = await this.orderRepo.findOne({where: {id: request.entityId}});
+        const metadata = (request.metadata ?? {}) as Record<string, unknown>;
+        return {
+          storeId: order?.storeId,
+          orderNumber: order?.orderNumber ?? (metadata.originalOrderNumber as string | undefined),
+          amount: typeof metadata.amount === 'number' ? metadata.amount : undefined,
+        };
+      }
+      if (request.entityType === 'garment') {
+        const garment = await this.garmentRepo.findOne({where: {id: request.entityId}});
+        if (garment?.orderItemId) {
+          const orderItem = await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
+          if (orderItem?.orderId) {
+            const order = await this.orderRepo.findOne({where: {id: orderItem.orderId}});
+            return {
+              storeId: order?.storeId,
+              orderNumber: order?.orderNumber,
+              garmentTag: garment.garmentTagNumber,
+            };
+          }
+        }
+        return {garmentTag: garment?.garmentTagNumber};
+      }
+      if (request.entityType === 'refund_due') {
+        const refundDue = await this.refundDueRepo.findOne({where: {id: request.entityId}});
+        if (refundDue?.orderId) {
+          const order = await this.orderRepo.findOne({where: {id: refundDue.orderId}});
+          return {
+            storeId: order?.storeId,
+            orderNumber: order?.orderNumber,
+            amount: refundDue.amount,
+            method: refundDue.method,
+          };
+        }
+        return {amount: refundDue?.amount, method: refundDue?.method};
+      }
+    } catch (err) {
+      console.error('Error resolving approval notification context:', err);
+    }
+    return {};
+  }
+
   async createRequest(params: {
     type: ApprovalRequestType;
     entityType: string;
@@ -427,10 +478,16 @@ export class ApprovalService {
     });
 
     if (this.systemNotificationService) {
-      this.systemNotificationService
-        .notifyApprovalRequired(request, params.requestReason)
+      this._resolveApprovalNotificationContext(request)
+        .then(context =>
+          this.systemNotificationService!.notifyApprovalRequired(
+            request,
+            params.requestReason,
+            context,
+          ),
+        )
         .catch(err => {
-          console.error('Failed to notify super admin for approval request:', err);
+          console.error('Failed to notify for approval request:', err);
         });
     }
 
@@ -668,6 +725,23 @@ export class ApprovalService {
       await this._applyApproveEffect(request, params.performedBy);
     } else {
       await this._applyRejectEffect(request, params.performedBy, params.action);
+    }
+
+    if (this.systemNotificationService) {
+      this._resolveApprovalNotificationContext(request)
+        .then(context =>
+          this.systemNotificationService!.notifyApprovalResolved(
+            request,
+            params.action === ApprovalActionType.APPROVED ? 'approved' : 'rejected',
+            {
+              ...context,
+              comments: params.comments,
+            },
+          ),
+        )
+        .catch(err => {
+          console.error('Failed to notify approval resolution:', err);
+        });
     }
 
     return resolved;
@@ -1293,6 +1367,29 @@ export class ApprovalService {
           `awaiting a pickup to bring the garment(s) back.`,
         performedBy,
       });
+
+      if (this.systemNotificationService) {
+        const order = await this.orderRepo.findOne({where: {id: request.entityId}});
+        const channelLabel =
+          contactChannel === 'whatsapp'
+            ? 'WhatsApp'
+            : contactChannel === 'phone'
+              ? 'On Call'
+              : 'Other';
+        this.systemNotificationService
+          .notifyReprocessPickupRequired({
+            orderId: request.entityId,
+            orderNumber: order?.orderNumber ?? (metadata.originalOrderNumber as string),
+            storeId: order?.storeId,
+            contactChannel,
+            channelLabel,
+            garmentCount: garmentIds.length,
+          })
+          .catch(err => {
+            console.error('Failed to send reprocess pickup notification:', err);
+          });
+      }
+
       return;
     }
 

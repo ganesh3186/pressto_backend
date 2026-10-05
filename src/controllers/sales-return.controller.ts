@@ -524,6 +524,9 @@ export class SalesReturnController {
     // finance can see what they've already approved/rejected, not just
     // what's still pending.
     @param.query.string('status') status?: string,
+    @param.query.number('page') page?: number,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
     @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
   ): Promise<object> {
     const statuses = (status ?? '')
@@ -531,13 +534,31 @@ export class SalesReturnController {
       .map(s => s.trim())
       .filter(Boolean) as SalesReturnStatus[];
 
+    const where = statuses.length
+      ? {status: statuses.length > 1 ? {inq: statuses} : statuses[0]}
+      : {};
+
+    const resolvedLimit = limit !== undefined ? Number(limit) : undefined;
+    let resolvedSkip = skip !== undefined ? Number(skip) : undefined;
+    if (resolvedSkip === undefined && page !== undefined && resolvedLimit !== undefined) {
+      const pageNum = Number(page);
+      const zeroBasedPage = pageNum >= 1 ? pageNum - 1 : Math.max(0, pageNum);
+      resolvedSkip = zeroBasedPage * resolvedLimit;
+    }
+
     const salesReturns = await this.salesReturnRepo.find({
-      where: statuses.length
-        ? {status: statuses.length > 1 ? {inq: statuses} : statuses[0]}
-        : {},
+      where,
       order: ['createdAt DESC'],
     });
-    if (!salesReturns.length) return {salesReturns: []};
+    if (!salesReturns.length) {
+      return {
+        salesReturns: [],
+        total: 0,
+        limit: resolvedLimit,
+        skip: resolvedSkip,
+        page: page ?? 1,
+      };
+    }
 
     const orderIds = [...new Set(salesReturns.map(sr => sr.orderId))];
     const orders = await this.orderRepo.find({where: {id: {inq: orderIds}}});
@@ -561,8 +582,17 @@ export class SalesReturnController {
             : false;
         });
 
+    const total = inScope.length;
+
+    const paged =
+      resolvedLimit !== undefined
+        ? inScope.slice(resolvedSkip ?? 0, (resolvedSkip ?? 0) + resolvedLimit)
+        : resolvedSkip !== undefined
+        ? inScope.slice(resolvedSkip)
+        : inScope;
+
     const customerIds = [
-      ...new Set(inScope.map(sr => sr.customerId).filter(Boolean)),
+      ...new Set(paged.map(sr => sr.customerId).filter(Boolean)),
     ];
     const customers = customerIds.length
       ? await this.customerRepo.find({where: {id: {inq: customerIds}}})
@@ -570,7 +600,7 @@ export class SalesReturnController {
     const customerById = new Map(customers.map(c => [c.id, c]));
 
     const rows = await Promise.all(
-      inScope.map(async sr => {
+      paged.map(async sr => {
         const order = orderById.get(sr.orderId);
         const customer = customerById.get(sr.customerId);
         // Only preview live for a still-PENDING record — approve() has
@@ -607,7 +637,17 @@ export class SalesReturnController {
       }),
     );
 
-    return {salesReturns: rows};
+    return {
+      salesReturns: rows,
+      total,
+      limit: resolvedLimit,
+      skip: resolvedSkip,
+      page:
+        page ??
+        (resolvedSkip !== undefined && resolvedLimit
+          ? Math.floor(resolvedSkip / resolvedLimit) + 1
+          : 1),
+    };
   }
 
   // ─── Approve Sales Return ─────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import {PresstoDataSource} from '../datasources';
 import {RiderAssignmentService} from '../services/rider-assignment.service';
 import {StoreScope, StoreScopeService} from '../services/store-scope.service';
 import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
+import {SystemNotificationService} from '../services/system-notification.service';
 import {PickupRequest} from '../models';
 import {RiderPincodeMappingWithRelations} from '../models/rider-pincode-mapping.model';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
@@ -92,6 +93,8 @@ export class PickupRequestController {
     private storeScopeService: StoreScopeService,
     @inject('services.notification')
     private notificationService: NotificationService,
+    @inject('services.system-notification', {optional: true})
+    private systemNotificationService?: SystemNotificationService,
   ) {}
 
   // ─── Validation helpers ───────────────────────────────────────────────────
@@ -297,6 +300,34 @@ export class PickupRequestController {
       customerCountryCode: body.customerCountryCode?.trim() ? body.customerCountryCode.trim() : '+91',
       status: PickupRequestStatus.REQUESTED,
     });
+
+    if (this.systemNotificationService) {
+      if (body.isReworkPickup) {
+        const origOrderId = body.reworkOfOrderId;
+        const findOrder = origOrderId
+          ? this.orderRepository.findOne({where: {id: origOrderId}})
+          : Promise.resolve(null);
+        findOrder
+          .then(origOrder =>
+            this.systemNotificationService!.notifyReprocessPickupCreated({
+              pickupNumber: pickupRequest.pickupNumber ?? pickupRequest.id,
+              orderNumber: origOrder?.orderNumber,
+              storeId: pickupRequest.storeId,
+              customerName: pickupRequest.customerName,
+            }),
+          )
+          .catch(err => {
+            console.error('Failed to notify reprocess pickup created:', err);
+          });
+      } else {
+        this.systemNotificationService
+          .notifyCustomerPickupRequested(pickupRequest, pickupRequest.customerName)
+          .catch(err => {
+            console.error('Failed to notify customer pickup requested:', err);
+          });
+      }
+    }
+
     return {message: 'Pickup request created.', pickupRequest};
   }
 
@@ -335,8 +366,18 @@ export class PickupRequestController {
           : {storeId: {inq: storeIds}};
     }
 
+    const rawIncludes = filter?.include;
+    const filterIncludes = Array.isArray(rawIncludes) ? rawIncludes : [];
+    const hasPickupSlotInclude = filterIncludes.some(
+      (inc: any) => inc === 'pickupSlot' || inc?.relation === 'pickupSlot',
+    );
+    const include = hasPickupSlotInclude
+      ? filterIncludes
+      : [...filterIncludes, {relation: 'pickupSlot'}];
+
     const requests = await this.pickupRequestRepository.find({
       ...filter,
+      include,
       where: {...filter?.where, ...scopeWhere, isDeleted: false},
       order: filter?.order ?? ['createdAt DESC'],
     });
@@ -364,7 +405,12 @@ export class PickupRequestController {
   ): Promise<PickupRequest> {
     const pickupRequest = await this.pickupRequestRepository.findOne({
       where: {id, isDeleted: false},
-      include: [{relation: 'assignedRider'}, {relation: 'customer'}, {relation: 'store'}],
+      include: [
+        {relation: 'assignedRider'},
+        {relation: 'customer'},
+        {relation: 'store'},
+        {relation: 'pickupSlot'},
+      ],
     });
     if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
     const scope = await this.storeScopeService.resolve(currentUser);

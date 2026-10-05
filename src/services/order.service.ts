@@ -4277,6 +4277,43 @@ export class OrderService {
       });
     }
 
+    // ── Pickup rider (for home_pickup orders) ──────────────────────────────────
+    const isHomePickup =
+      order.orderType === OrderType.HOME_PICKUP ||
+      order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY ||
+      String(order.orderType || '').toLowerCase().includes('home_pickup') ||
+      Boolean(order.pickupSource);
+
+    let pickupRiderName: string | null = null;
+    let pickupRiderPhone: string | null = null;
+
+    if (isHomePickup) {
+      const pickupRequest = await this.pickupRequestRepo.findOne({
+        where: {convertedOrderId: orderId, isDeleted: false} as any,
+        include: [{relation: 'assignedRider'}],
+      });
+
+      if (pickupRequest) {
+        pickupRiderName = pickupRequest.assignedRiderName ?? null;
+        const rider = (pickupRequest as any).assignedRider;
+        if (rider) {
+          if (!pickupRiderName) {
+            pickupRiderName =
+              `${rider.firstName || ''} ${rider.lastName || ''}`.trim() || null;
+          }
+          if (rider.userId) {
+            const riderUser = await this.userRepo.findOne({
+              where: {id: rider.userId} as any,
+              fields: {phone: true} as any,
+            });
+            pickupRiderPhone = riderUser?.phone ?? rider.alternateNumber ?? null;
+          } else {
+            pickupRiderPhone = rider.alternateNumber ?? null;
+          }
+        }
+      }
+    }
+
     // ── Garment stage histories ───────────────────────────────────────────────
     const garmentIds = garments.map(g => g.id);
     const [
@@ -4610,6 +4647,12 @@ export class OrderService {
           totalAmount: c.totalAmount,
           allocatedPayment: c.allocatedPayment,
         })),
+        ...(isHomePickup
+          ? {
+              pickupRiderName,
+              pickupRiderPhone,
+            }
+          : {}),
       },
       items: enrichedItems,
       orderCharges: namedOrderCharges,

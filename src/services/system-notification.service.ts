@@ -14,6 +14,7 @@ import {
 import { SystemNotification } from '../models/system-notification.model';
 import { Order } from '../models/order.model';
 import { ApprovalRequest } from '../models/approval-request.model';
+import { ApprovalRequestType } from '../models/approval-request-type.enum';
 import { PickupRequest } from '../models/pickup-request.model';
 import { Transfer } from '../models/transfer.model';
 
@@ -53,26 +54,76 @@ export class SystemNotificationService {
    * Retrieves all active user IDs holding the 'super_admin' role.
    */
   async getSuperAdminUserIds(): Promise<string[]> {
+    return this.getUserIdsByRole('super_admin');
+  }
+
+  /**
+   * Retrieves all active user IDs holding a specific role value.
+   */
+  async getUserIdsByRole(roleValue: string): Promise<string[]> {
     try {
-      const superAdminRole = await this.rolesRepository.findOne({
-        where: { value: 'super_admin', isDeleted: false },
+      const role = await this.rolesRepository.findOne({
+        where: { value: roleValue, isDeleted: false },
       });
-
-      if (!superAdminRole) {
-        return [];
-      }
-
+      if (!role) return [];
       const userRoles = await this.userRolesRepository.find({
-        where: { rolesId: superAdminRole.id, isDeleted: false },
+        where: { rolesId: role.id, isDeleted: false },
       });
-
-      const userIds = userRoles
-        .map(ur => ur.usersId)
-        .filter((id): id is string => Boolean(id));
-
-      return Array.from(new Set(userIds));
+      return Array.from(
+        new Set(userRoles.map(ur => ur.usersId).filter((id): id is string => Boolean(id))),
+      );
     } catch (error) {
-      console.error('Error fetching super admin user IDs:', error);
+      console.error(`Error fetching user IDs for role ${roleValue}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Retrieves all active user IDs holding any of the specified role values.
+   */
+  async getUserIdsByRoles(roleValues: string[]): Promise<string[]> {
+    try {
+      const roles = await this.rolesRepository.find({
+        where: { value: { inq: roleValues }, isDeleted: false },
+      });
+      if (!roles.length) return [];
+      const roleIds = roles.map(r => r.id);
+      const userRoles = await this.userRolesRepository.find({
+        where: { rolesId: { inq: roleIds }, isDeleted: false },
+      });
+      return Array.from(
+        new Set(userRoles.map(ur => ur.usersId).filter((id): id is string => Boolean(id))),
+      );
+    } catch (error) {
+      console.error('Error fetching user IDs for roles:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Retrieves all active user IDs holding a specific permission.
+   */
+  async getUserIdsByPermission(permissionName: string): Promise<string[]> {
+    try {
+      const perm = await this.permissionsRepository.findOne({
+        where: { permission: permissionName, isDeleted: false },
+      });
+      if (!perm) return [];
+      const rolePerms = await this.rolePermissionsRepository.find({
+        where: { permissionsId: perm.id, isDeleted: false },
+      });
+      const roleIds = Array.from(
+        new Set(rolePerms.map(rp => rp.rolesId).filter((id): id is string => Boolean(id))),
+      );
+      if (!roleIds.length) return [];
+      const userRoles = await this.userRolesRepository.find({
+        where: { rolesId: { inq: roleIds }, isDeleted: false },
+      });
+      return Array.from(
+        new Set(userRoles.map(ur => ur.usersId).filter((id): id is string => Boolean(id))),
+      );
+    } catch (error) {
+      console.error(`Error fetching user IDs for permission ${permissionName}:`, error);
       return [];
     }
   }
@@ -215,6 +266,7 @@ export class SystemNotificationService {
     payload: NotificationPayload,
     storeId?: string,
     additionalPermissions: string[] = [],
+    extraUserIds: string[] = [],
   ): Promise<SystemNotification[]> {
     try {
       const superAdminUserIds = await this.getSuperAdminUserIds();
@@ -225,7 +277,7 @@ export class SystemNotificationService {
       }
 
       const targetUserIds = Array.from(
-        new Set([...superAdminUserIds, ...storeStaffUserIds]),
+        new Set([...superAdminUserIds, ...storeStaffUserIds, ...extraUserIds]),
       );
 
       if (!targetUserIds.length) {
@@ -332,33 +384,270 @@ export class SystemNotificationService {
   }
 
   /**
-   * Trigger: When an approval is required.
+   * Trigger: When an approval is required (Internal approvals, Finance approvals, etc.).
    */
   async notifyApprovalRequired(
     approvalRequest: ApprovalRequest,
     details?: string,
+    context?: {
+      storeId?: string;
+      orderNumber?: string;
+      garmentTag?: string;
+      amount?: number;
+      method?: string;
+    },
   ): Promise<void> {
     try {
-      const typeLabel = approvalRequest.type ? approvalRequest.type.replace(/_/g, ' ') : 'General';
-      const description =
-        details ||
-        `A new approval request of type "${typeLabel}" requires review.`;
+      const type = approvalRequest.type;
+      let title = 'Approval Required';
+      let body = details || 'An approval request requires your review.';
+      let pathname = '/dashboard/orders/approval';
+      let template = 'approval_required';
+      let targetPermissions = ['approval:read', 'approval_internal:read', 'order:read'];
+      let extraUserIds: string[] = [];
 
-      await this.notifyUsers({
-        title: `Approval Required: ${typeLabel.toUpperCase()}`,
-        body: description,
-        template: 'approval_required',
-        pathname: `/dashboard/orders/approval`,
-        extraDetails: {
-          approvalRequestId: approvalRequest.id,
-          type: approvalRequest.type,
-          entityType: approvalRequest.entityType,
-          entityId: approvalRequest.entityId,
-          assignedToRole: approvalRequest.assignedToRole,
+      const orderRef = context?.orderNumber ? `Order #${context.orderNumber}` : '';
+      const tagRef = context?.garmentTag ? `Garment #${context.garmentTag}` : '';
+
+      switch (type) {
+        case ApprovalRequestType.RETURN_ITEM: {
+          title = 'Return Item Approval Required';
+          const target = [tagRef, orderRef].filter(Boolean).join(' on ');
+          body = details
+            ? `Return requested for ${target || 'item'}: ${details}`
+            : `Return requested for ${target || 'item'}. Please review and approve.`;
+          pathname = '/dashboard/orders/approval';
+          template = 'approval_required';
+          extraUserIds = await this.getUserIdsByRoles(['asm', 'manager']);
+          break;
+        }
+
+        case ApprovalRequestType.ITEM_DAMAGED: {
+          title = 'Item Damaged Approval Required';
+          const target = [tagRef, orderRef].filter(Boolean).join(' on ');
+          body = details
+            ? `Damaged item approval requested for ${target || 'item'}: ${details}`
+            : `Damaged item approval requested for ${target || 'item'}. Please review and approve.`;
+          pathname = '/dashboard/orders/approval';
+          template = 'approval_required';
+          extraUserIds = await this.getUserIdsByRoles(['store_exec', 'manager']);
+          break;
+        }
+
+        case ApprovalRequestType.REPROCESS: {
+          title = 'Reprocess Approval Required';
+          body = details
+            ? `Reprocess approval requested for ${orderRef || 'order'}: ${details}`
+            : `Reprocess approval requested for ${orderRef || 'order'}. Please review and approve.`;
+          pathname = '/dashboard/orders/approval';
+          template = 'approval_required';
+          extraUserIds = await this.getUserIdsByRoles(['store_exec', 'manager']);
+          break;
+        }
+
+        case ApprovalRequestType.CHEQUE_PAYMENT: {
+          title = 'Cheque Payment Approval Required';
+          const amtStr = context?.amount !== undefined ? `₹${context.amount}` : '';
+          body = `Cheque payment${amtStr ? ` of ${amtStr}` : ''}${orderRef ? ` for ${orderRef}` : ''} requires finance review.`;
+          pathname = '/dashboard/finance/approvals';
+          template = 'finance_approval_required';
+          targetPermissions = ['finance_approval:read', 'finance:read'];
+          extraUserIds = await this.getUserIdsByRole('finance');
+          break;
+        }
+
+        case ApprovalRequestType.PDC_PAYMENT: {
+          title = 'PDC Payment Approval Required';
+          const amtStr = context?.amount !== undefined ? `₹${context.amount}` : '';
+          body = `Post-Dated Cheque payment${amtStr ? ` of ${amtStr}` : ''}${orderRef ? ` for ${orderRef}` : ''} requires finance review.`;
+          pathname = '/dashboard/finance/approvals';
+          template = 'finance_approval_required';
+          targetPermissions = ['finance_approval:read', 'finance:read'];
+          extraUserIds = await this.getUserIdsByRole('finance');
+          break;
+        }
+
+        case ApprovalRequestType.REFUND_PAYOUT: {
+          title = 'Refund Payout Approval Required';
+          const amtStr = context?.amount !== undefined ? `₹${context.amount}` : '';
+          const methStr = context?.method ? ` via ${context.method}` : '';
+          body = `Refund payout${amtStr ? ` of ${amtStr}` : ''}${methStr}${orderRef ? ` for ${orderRef}` : ''} requires finance review.`;
+          pathname = '/dashboard/finance/approvals';
+          template = 'finance_approval_required';
+          targetPermissions = ['finance_approval:read', 'finance:read'];
+          extraUserIds = await this.getUserIdsByRole('finance');
+          break;
+        }
+
+        default: {
+          const typeLabel = type ? type.replace(/_/g, ' ') : 'General';
+          title = `Approval Required: ${typeLabel.toUpperCase()}`;
+          body = details || `A new approval request of type "${typeLabel}" requires review.`;
+          pathname = '/dashboard/orders/approval';
+          template = 'approval_required';
+          if (approvalRequest.assignedToRole) {
+            extraUserIds = await this.getUserIdsByRole(approvalRequest.assignedToRole);
+          }
+          break;
+        }
+      }
+
+      await this.notifyUsers(
+        {
+          title,
+          body,
+          template,
+          pathname,
+          extraDetails: {
+            approvalRequestId: approvalRequest.id,
+            type: approvalRequest.type,
+            entityType: approvalRequest.entityType,
+            entityId: approvalRequest.entityId,
+            assignedToRole: approvalRequest.assignedToRole,
+            orderNumber: context?.orderNumber,
+            garmentTag: context?.garmentTag,
+            storeId: context?.storeId,
+          },
         },
-      });
+        context?.storeId,
+        targetPermissions,
+        extraUserIds,
+      );
     } catch (error) {
       console.error('Error in notifyApprovalRequired:', error);
+    }
+  }
+
+  /**
+   * Trigger: When an approval is resolved (Approved / Rejected).
+   * Notifies the original requester and the store staff of the decision.
+   */
+  async notifyApprovalResolved(
+    approvalRequest: ApprovalRequest,
+    action: 'approved' | 'rejected',
+    context?: {
+      storeId?: string;
+      orderNumber?: string;
+      garmentTag?: string;
+      comments?: string;
+      amount?: number;
+    },
+  ): Promise<void> {
+    try {
+      const isFinance =
+        approvalRequest.type === ApprovalRequestType.CHEQUE_PAYMENT ||
+        approvalRequest.type === ApprovalRequestType.PDC_PAYMENT ||
+        approvalRequest.type === ApprovalRequestType.REFUND_PAYOUT;
+
+      const typeLabel = approvalRequest.type ? approvalRequest.type.replace(/_/g, ' ') : 'Approval';
+      const actionCapitalized = action.charAt(0).toUpperCase() + action.slice(1);
+      const targetPath = isFinance ? '/dashboard/finance/approvals' : '/dashboard/orders/approval';
+
+      const targetTitle = `${typeLabel.toUpperCase()} ${actionCapitalized}`;
+      const orderInfo = context?.orderNumber ? ` for Order #${context.orderNumber}` : '';
+      const tagInfo = context?.garmentTag ? ` (Garment #${context.garmentTag})` : '';
+      const remarksInfo = context?.comments ? `: ${context.comments}` : '.';
+
+      const targetBody = `${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)} request${orderInfo}${tagInfo} has been ${action}${remarksInfo}`;
+
+      const extraUsers = approvalRequest.requestedBy ? [approvalRequest.requestedBy] : [];
+
+      await this.notifyUsers(
+        {
+          title: targetTitle,
+          body: targetBody,
+          template: 'approval_resolved',
+          pathname: targetPath,
+          extraDetails: {
+            approvalRequestId: approvalRequest.id,
+            type: approvalRequest.type,
+            action,
+            orderNumber: context?.orderNumber,
+            garmentTag: context?.garmentTag,
+            storeId: context?.storeId,
+          },
+        },
+        context?.storeId,
+        isFinance ? ['finance_approval:read', 'order:read'] : ['approval:read', 'order:read'],
+        extraUsers,
+      );
+    } catch (error) {
+      console.error('Error in notifyApprovalResolved:', error);
+    }
+  }
+
+  /**
+   * Trigger: When a reprocess request is approved for garments currently at customer's home
+   * (contact channel is whatsapp, phone/on call, or other).
+   * Alerts store staff and logistics coordinators that a pickup request needs to be scheduled.
+   */
+  async notifyReprocessPickupRequired(params: {
+    orderId: string;
+    orderNumber?: string;
+    storeId?: string;
+    customerName?: string;
+    contactChannel?: string;
+    channelLabel?: string;
+    garmentCount?: number;
+  }): Promise<void> {
+    try {
+      const channel = params.channelLabel || params.contactChannel || 'Customer Request';
+      const itemsCount = params.garmentCount
+        ? ` (${params.garmentCount} item${params.garmentCount > 1 ? 's' : ''})`
+        : '';
+      const orderRef = params.orderNumber ? `Order #${params.orderNumber}` : 'order';
+
+      await this.notifyUsers(
+        {
+          title: 'Schedule Pickup for Reprocess',
+          body: `Reprocess approved for ${orderRef}${itemsCount} via ${channel}. Please generate a pickup request to collect the garment(s).`,
+          template: 'reprocess_pickup_required',
+          pathname: '/dashboard/logistics/pickups',
+          extraDetails: {
+            orderId: params.orderId,
+            orderNumber: params.orderNumber,
+            storeId: params.storeId,
+            contactChannel: params.contactChannel,
+            garmentCount: params.garmentCount,
+          },
+        },
+        params.storeId,
+        ['pickup_request:read', 'pickup_request:create', 'order:read'],
+      );
+    } catch (error) {
+      console.error('Error in notifyReprocessPickupRequired:', error);
+    }
+  }
+
+  /**
+   * Trigger: When a pickup request is generated for a rework/reprocess order.
+   */
+  async notifyReprocessPickupCreated(params: {
+    pickupNumber?: string;
+    orderNumber?: string;
+    storeId?: string;
+    customerName?: string;
+  }): Promise<void> {
+    try {
+      const orderInfo = params.orderNumber ? ` for Reprocess Order #${params.orderNumber}` : '';
+      const numLabel = params.pickupNumber ? `Pickup #${params.pickupNumber}` : 'Pickup request';
+      await this.notifyUsers(
+        {
+          title: 'Reprocess Pickup Request Created',
+          body: `${numLabel} generated${orderInfo}. Ready for rider assignment.`,
+          template: 'pickup_requested',
+          pathname: '/dashboard/logistics/pickups',
+          extraDetails: {
+            pickupNumber: params.pickupNumber,
+            orderNumber: params.orderNumber,
+            storeId: params.storeId,
+          },
+        },
+        params.storeId,
+        ['pickup_request:read', 'pickup_request:update', 'delivery:read'],
+      );
+    } catch (error) {
+      console.error('Error in notifyReprocessPickupCreated:', error);
     }
   }
 
