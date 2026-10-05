@@ -4602,11 +4602,23 @@ export class OrderService {
     const totalAmount = Number(order.totalAmount ?? 0);
     const balanceDue = rupeeBalance(totalAmount, totalCollected);
 
+    // Actual hand-over moment, as opposed to order.deliveryDate (the promised
+    // estimate) — the last time this order's status genuinely flipped to
+    // delivered. Works for every delivery method (rider, in-store pickup),
+    // since it reads the order's own status history rather than a
+    // rider-specific delivery record. Last rather than first, in case of a
+    // return-then-redeliver cycle.
+    const deliveredAt =
+      [...statusHistory]
+        .reverse()
+        .find(h => h.status === OrderStatus.DELIVERED)?.changedAt ?? null;
+
     return {
       order: {
         ...order,
         createdByName,
         receivedByName: createdByName,
+        deliveredAt,
         orderLabels: orderLabels.map(l => ({
           id: l.id,
           name: l.name,
