@@ -2472,6 +2472,7 @@ export class OrderService {
       units?: EditOrderUnitInput[];
     }[],
     changedBy: string,
+    options: {skipDowngradeGate?: boolean} = {},
   ): Promise<object> {
     const {v4} = await import('uuid');
 
@@ -2525,6 +2526,123 @@ export class OrderService {
       desiredByKey,
       lineKey,
     );
+
+    // Once an order has actually been placed (past the staff's own cart —
+    // draft/confirmed are still just composing it), a staff member dropping
+    // a whole service line or an attached add-on quietly shrinks the bill
+    // with no one else looking. Gate that specific pattern behind internal
+    // approval; it never applies automatically. A quantity reduction or a
+    // switch to a cheaper service still applies immediately, same as always
+    // — those aren't what this gate is for. Skipped entirely when this call
+    // IS the approved application itself (see
+    // ApprovalService._applyOrderItemsDowngrade).
+    const isPlacedOrder =
+      order.status !== OrderStatus.DRAFT && order.status !== OrderStatus.CONFIRMED;
+    if (!options.skipDowngradeGate && isPlacedOrder) {
+      const removableGarmentIds = new Set(removableGarments.map(g => String(g.id)));
+      const removedLineRows = existingItems.filter(
+        oi => !desiredByKey.has(lineKey(oi.serviceId, oi.itemId)),
+      );
+      const removedAddonRows: Array<{
+        garmentId: string;
+        garmentTagNumber?: string;
+        serviceId: string;
+      }> = [];
+      for (const existing of existingItems) {
+        const desired = desiredByKey.get(lineKey(existing.serviceId, existing.itemId));
+        if (!desired) continue; // whole-line removal — already captured above
+
+        const keptGarments = (
+          await this.garmentRepo.find({
+            where: {orderItemId: existing.id, isDeleted: false} as any,
+            order: ['garmentTagNumber ASC'],
+          })
+        ).filter(g => !removableGarmentIds.has(String(g.id)));
+        if (!keptGarments.length) continue;
+
+        const quantity = Number(desired.quantity);
+        const slotPlan = planEditUnitSlots(quantity, desired.units, keptGarments);
+        const unitServiceIds = resolveEditUnitServiceIds(
+          quantity,
+          desired.units,
+          desired.additionalServiceIds,
+        );
+        const slots = [
+          ...slotPlan.garmentBySlot.flatMap((garment, slot) =>
+            garment ? [{garment, slot: slot as number | undefined}] : [],
+          ),
+          ...slotPlan.unassignedGarments.map(garment => ({
+            garment,
+            slot: undefined as number | undefined,
+          })),
+        ];
+        for (const {garment, slot} of slots) {
+          const newIds = new Set(
+            slot === undefined ? (desired.additionalServiceIds ?? []) : (unitServiceIds[slot] ?? []),
+          );
+          const currentRows = await this.garmentAdditionalServiceRepo.find({
+            where: {garmentId: garment.id, isDeleted: false} as any,
+          });
+          for (const row of currentRows) {
+            if (!newIds.has(row.serviceId)) {
+              removedAddonRows.push({
+                garmentId: garment.id,
+                garmentTagNumber: garment.garmentTagNumber,
+                serviceId: row.serviceId,
+              });
+            }
+          }
+        }
+      }
+
+      if (removedLineRows.length || removedAddonRows.length) {
+        const serviceIds = [
+          ...new Set([
+            ...removedLineRows.map(oi => oi.serviceId),
+            ...removedAddonRows.map(a => a.serviceId),
+          ]),
+        ];
+        const itemIds = [...new Set(removedLineRows.map(oi => oi.itemId))];
+        const [services, items] = await Promise.all([
+          serviceIds.length
+            ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as any})
+            : Promise.resolve([]),
+          itemIds.length
+            ? this.itemRepo.find({where: {id: {inq: itemIds}} as any})
+            : Promise.resolve([]),
+        ]);
+        const serviceNameById = new Map(services.map(s => [s.id, (s as any).name as string]));
+        const itemNameById = new Map(items.map(i => [i.id, (i as any).name as string]));
+
+        const removedLines = removedLineRows.map(oi => ({
+          serviceId: oi.serviceId,
+          itemId: oi.itemId,
+          serviceName: serviceNameById.get(oi.serviceId) ?? oi.serviceId,
+          itemName: itemNameById.get(oi.itemId) ?? oi.itemId,
+        }));
+        const removedAddons = removedAddonRows.map(a => ({
+          garmentId: a.garmentId,
+          garmentTagNumber: a.garmentTagNumber,
+          serviceId: a.serviceId,
+          serviceName: serviceNameById.get(a.serviceId) ?? a.serviceId,
+        }));
+
+        const summaryParts = [
+          ...removedLines.map(l => `removing "${l.serviceName}" (${l.itemName})`),
+          ...removedAddons.map(
+            a => `removing add-on "${a.serviceName}"${a.garmentTagNumber ? ` (tag ${a.garmentTagNumber})` : ''}`,
+          ),
+        ];
+
+        return {
+          status: 'pending_approval',
+          message:
+            'This edit removes a service or add-on, so it needs internal approval before it applies. Nothing has changed yet.',
+          requestReason: summaryParts.join('; '),
+          downgrade: {desiredItems, removedLines, removedAddons},
+        };
+      }
+    }
 
     const deliveryMultiplier =
       1 + (Number(order.deliveryTypePercentage) || 0) / 100;
@@ -4696,6 +4814,7 @@ export class OrderService {
     [ApprovalRequestType.CHEQUE_PAYMENT]: 'Cheque payment',
     [ApprovalRequestType.PDC_PAYMENT]: 'PDC payment',
     [ApprovalRequestType.PROCESS_AT_RISK]: 'Process-at-risk',
+    [ApprovalRequestType.ORDER_ITEMS_DOWNGRADE]: 'Order downgrade',
   };
 
   async getActivityLog(orderId: string): Promise<{

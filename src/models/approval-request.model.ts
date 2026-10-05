@@ -20,6 +20,10 @@ export const APPROVAL_ROLE_ROUTING: Record<ApprovalRequestType, string> = {
   [ApprovalRequestType.PROCESS_AT_RISK]: 'store_exec',
   // Money actually moving — same role as the other payment approvals.
   [ApprovalRequestType.REFUND_PAYOUT]: 'finance',
+  // Same internal queue as the other order-floor removal/edit decisions
+  // (upgrade, damage, reprocess) rather than finance — this is a floor
+  // call about whether the removal is legitimate, not a payment to verify.
+  [ApprovalRequestType.ORDER_ITEMS_DOWNGRADE]: 'store_exec',
 };
 
 // Which of ApprovalActionType a customer may pick, per request type they're

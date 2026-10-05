@@ -15,4 +15,10 @@ export enum ApprovalRequestType {
   // money actually moves. See ApprovalService.selectPayoutMethod/
   // _applyRefundPayout.
   REFUND_PAYOUT = 'refund_payout',
+  // Raised from the POS "Update Order" edit when staff remove a whole
+  // service line or an attached add-on service — never applied immediately,
+  // since that would let revenue quietly disappear from an already-placed
+  // order with no oversight. See OrderService.updateOrderItems /
+  // ApprovalService._applyOrderItemsDowngrade.
+  ORDER_ITEMS_DOWNGRADE = 'order_items_downgrade',
 }

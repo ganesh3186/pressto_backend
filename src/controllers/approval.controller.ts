@@ -147,6 +147,29 @@ export class ApprovalController {
       };
     }
 
+    // Order downgrade: no garments involved at request time (nothing was
+    // applied yet) — a flat row naming the order/customer is all the
+    // Internal Approvals screen needs. What's actually being removed is
+    // already in requestReason (see OrderService.updateOrderItems).
+    if (
+      req.entityType === 'order' &&
+      req.type === ApprovalRequestType.ORDER_ITEMS_DOWNGRADE
+    ) {
+      const order = await this.orderRepo.findOne({where: {id: req.entityId}});
+      const customer = order?.customerId
+        ? await this.customerRepo.findOne({where: {id: order.customerId}})
+        : null;
+      return {
+        ...req,
+        orderId: req.entityId,
+        orderNumber: (order as any)?.orderNumber ?? null,
+        orderStatus: order?.status ?? null,
+        customerId: order?.customerId ?? null,
+        customerName: customer ? `${customer.firstName} ${customer.lastName}`.trim() : null,
+        media,
+      };
+    }
+
     // Order-scoped requests (post-delivery reprocess) name the order directly
     // and carry their garments in metadata — without this they would show as a
     // bare uuid with no order number and no items.

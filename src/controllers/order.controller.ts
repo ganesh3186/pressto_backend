@@ -50,6 +50,8 @@ import {ReprocessContactChannel, ReprocessService} from '../services/reprocess.s
 import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
+import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
 import {CustomerAddressService} from '../services/customer-address.service';
 import {RiderAssignmentService} from '../services/rider-assignment.service';
 import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
@@ -179,6 +181,8 @@ export class OrderController {
     private riderAssignmentService: RiderAssignmentService,
     @inject('services.notification')
     private notificationService: NotificationService,
+    @repository(ApprovalRequestRepository)
+    private approvalRequestRepo: ApprovalRequestRepository,
     @inject('services.system-notification', {optional: true})
     private systemNotificationService?: SystemNotificationService,
   ) {}
@@ -980,7 +984,51 @@ export class OrderController {
     },
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser);
-    return this.orderService.updateOrderItems(id, body.items, currentUser[securityId]);
+    const result = (await this.orderService.updateOrderItems(
+      id,
+      body.items,
+      currentUser[securityId],
+    )) as {
+      status?: string;
+      message?: string;
+      requestReason?: string;
+      downgrade?: {
+        desiredItems: unknown;
+        removedLines: unknown[];
+        removedAddons: unknown[];
+      };
+    };
+
+    if (result.status !== 'pending_approval') return result;
+
+    // Removing a whole service line or an attached add-on never applies on
+    // its own — it needs an internal (not customer) approval first. Nothing
+    // was written to the order by the call above; this just raises the
+    // request for a store exec to review.
+    const existing = await this.approvalRequestRepo.findOne({
+      where: {
+        entityType: 'order',
+        entityId: id,
+        type: ApprovalRequestType.ORDER_ITEMS_DOWNGRADE,
+        status: ApprovalRequestStatus.PENDING,
+      } as any,
+    });
+    if (existing) {
+      throw new HttpErrors.Conflict(
+        'A downgrade for this order is already pending internal approval.',
+      );
+    }
+
+    const request = await this.approvalService.createRequest({
+      type: ApprovalRequestType.ORDER_ITEMS_DOWNGRADE,
+      entityType: 'order',
+      entityId: id,
+      requestedBy: currentUser[securityId],
+      requestReason: result.requestReason,
+      metadata: result.downgrade as unknown as Record<string, unknown>,
+    });
+
+    return {status: 'pending_approval', message: result.message, request};
   }
 
   // ─── Reprocess after delivery ─────────────────────────────────────────────
