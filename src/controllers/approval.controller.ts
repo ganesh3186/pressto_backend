@@ -424,9 +424,13 @@ export class ApprovalController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('status') status?: ApprovalRequestStatus,
     @param.query.string('type') type?: string,
+    @param.query.string('audience') audience?: string,
     @param.query.string('entityType') entityType?: string,
     @param.query.string('entityId') entityId?: string,
     @param.query.string('assignedToRole') assignedToRole?: string,
+    @param.query.number('page') page?: number,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
   ): Promise<object> {
     const where: Where<ApprovalRequest> = {};
     if (status) (where as Record<string, unknown>).status = status;
@@ -435,10 +439,53 @@ export class ApprovalController {
       // cheque_payment and pdc_payment in one call instead of two.
       const types = type.split(',').map(t => t.trim()).filter(Boolean);
       (where as Record<string, unknown>).type = types.length > 1 ? {inq: types} : types[0];
+    } else if (audience === 'customer') {
+      (where as Record<string, unknown>).type = {
+        inq: [ApprovalRequestType.UPGRADE_SERVICE, ApprovalRequestType.PROCESS_AT_RISK],
+      };
+    } else if (audience === 'internal') {
+      (where as Record<string, unknown>).type = {
+        nin: [ApprovalRequestType.UPGRADE_SERVICE, ApprovalRequestType.PROCESS_AT_RISK],
+      };
     }
     if (entityType) (where as Record<string, unknown>).entityType = entityType;
     if (entityId) (where as Record<string, unknown>).entityId = entityId;
     if (assignedToRole) (where as Record<string, unknown>).assignedToRole = assignedToRole;
+
+    const scope = await this.storeScopeService.resolve(currentUser);
+
+    const resolvedLimit = limit !== undefined ? Number(limit) : undefined;
+    let resolvedSkip = skip !== undefined ? Number(skip) : undefined;
+    if (resolvedSkip === undefined && page !== undefined && resolvedLimit !== undefined) {
+      const pageNum = Number(page);
+      const zeroBasedPage = pageNum >= 1 ? pageNum - 1 : Math.max(0, pageNum);
+      resolvedSkip = zeroBasedPage * resolvedLimit;
+    }
+
+    if (scope.global) {
+      const countResult = await this.approvalRequestRepo.count(where);
+      const total = countResult.count;
+
+      const requests = await this.approvalRequestRepo.find({
+        where,
+        order: ['createdAt DESC'],
+        ...(resolvedLimit !== undefined ? {limit: resolvedLimit} : {}),
+        ...(resolvedSkip !== undefined ? {skip: resolvedSkip} : {}),
+      });
+
+      const enriched = await Promise.all(requests.map(r => this.enrichRequest(r)));
+      return {
+        requests: enriched,
+        total,
+        limit: resolvedLimit,
+        skip: resolvedSkip,
+        page:
+          page ??
+          (resolvedSkip !== undefined && resolvedLimit
+            ? Math.floor(resolvedSkip / resolvedLimit) + 1
+            : 1),
+      };
+    }
 
     const requests = await this.approvalRequestRepo.find({
       where,
@@ -446,8 +493,27 @@ export class ApprovalController {
     });
 
     const inScope = await this._filterByStoreScope(requests, currentUser);
-    const enriched = await Promise.all(inScope.map(r => this.enrichRequest(r)));
-    return {requests: enriched};
+    const total = inScope.length;
+
+    const paged =
+      resolvedLimit !== undefined
+        ? inScope.slice(resolvedSkip ?? 0, (resolvedSkip ?? 0) + resolvedLimit)
+        : resolvedSkip !== undefined
+        ? inScope.slice(resolvedSkip)
+        : inScope;
+
+    const enriched = await Promise.all(paged.map(r => this.enrichRequest(r)));
+    return {
+      requests: enriched,
+      total,
+      limit: resolvedLimit,
+      skip: resolvedSkip,
+      page:
+        page ??
+        (resolvedSkip !== undefined && resolvedLimit
+          ? Math.floor(resolvedSkip / resolvedLimit) + 1
+          : 1),
+    };
   }
 
   // ─── Get Single Request + Audit Trail ────────────────────────────────────
