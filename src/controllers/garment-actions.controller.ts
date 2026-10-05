@@ -9,6 +9,8 @@ import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {GARMENT_STATUS_RANK, GarmentStatus} from '../models/garment-status.enum';
 import {ApprovalService} from '../services/approval.service';
 import {StoreScopeService} from '../services/store-scope.service';
+import {OrderService} from '../services/order.service';
+import {GarmentAdditionalServiceRepository} from '../repositories/garment-additional-service.repository';
 import {
   ApprovalRequestRepository,
   BagRepository,
@@ -22,12 +24,15 @@ export class GarmentActionsController {
   constructor(
     @inject('services.approval') private approvalService: ApprovalService,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @inject('services.order') private orderService: OrderService,
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(BagRepository) private bagRepo: BagRepository,
+    @repository(GarmentAdditionalServiceRepository)
+    private garmentAdditionalServiceRepo: GarmentAdditionalServiceRepository,
   ) {}
 
   // ─── Return Item ──────────────────────────────────────────────────────────
@@ -95,8 +100,16 @@ export class GarmentActionsController {
   }
 
   // ─── Upgrade Service ──────────────────────────────────────────────────────
-  // Garment put on hold immediately.
-  // On customer approve → serviceId updated, price recalculated, garment → in_inspection.
+  // Garment put on hold immediately. Two independent, combinable parts:
+  // - toServiceId (optional): OVERRIDES the garment's current primary
+  //   service, exactly like before.
+  // - additionalServiceIds (optional): ATTACHED alongside whichever primary
+  //   service ends up in effect, additive-only — never removes an existing
+  //   add-on. Same eligibility gate the POS screen relies on server-side
+  //   (resolvePricing() throwing when no ServiceItemMapping/basePrice exists
+  //   for the (service, item) pair), not a separate allow-list check.
+  // At least one of the two must be present.
+  // On customer approve → see ApprovalService._applyUpgradeOnOrderItem.
   // On reject → garment restored to previous status.
 
   @authenticate('jwt')
@@ -111,9 +124,9 @@ export class GarmentActionsController {
         'application/json': {
           schema: {
             type: 'object',
-            required: ['toServiceId'],
             properties: {
               toServiceId: {type: 'string', format: 'uuid'},
+              additionalServiceIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
               remarks: {type: 'string'},
               mediaIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
             },
@@ -121,22 +134,75 @@ export class GarmentActionsController {
         },
       },
     })
-    body: {toServiceId: string; remarks?: string; mediaIds?: string[]},
+    body: {
+      toServiceId?: string;
+      additionalServiceIds?: string[];
+      remarks?: string;
+      mediaIds?: string[];
+    },
   ): Promise<object> {
     await this.storeScopeService.assertGarmentEditable(id, currentUser);
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
-    const toService = await this.serviceRepo.findOne({
-      where: {id: body.toServiceId, isDeleted: false, isActive: true},
-    });
-    if (!toService) throw new HttpErrors.NotFound('Target service not found.');
-
     const orderItem = await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
     if (!orderItem) throw new HttpErrors.UnprocessableEntity('Order item not found for garment.');
 
-    if (orderItem.serviceId === body.toServiceId) {
-      throw new HttpErrors.BadRequest('Garment is already on that service.');
+    const requestedAddlIds = Array.from(
+      new Set((body.additionalServiceIds ?? []).filter(Boolean)),
+    );
+
+    if (!body.toServiceId && requestedAddlIds.length === 0) {
+      throw new HttpErrors.BadRequest('Select a new service, add-on services, or both.');
+    }
+
+    let toService: {id: string; name?: string} | null = null;
+    if (body.toServiceId) {
+      toService = await this.serviceRepo.findOne({
+        where: {id: body.toServiceId, isDeleted: false, isActive: true},
+      });
+      if (!toService) throw new HttpErrors.NotFound('Target service not found.');
+      if (orderItem.serviceId === body.toServiceId) {
+        throw new HttpErrors.BadRequest('Garment is already on that service.');
+      }
+    }
+
+    // Additive-only: drop any requested add-on already attached to this
+    // garment rather than erroring, so re-submitting an existing selection
+    // doesn't block a legitimate new one alongside it.
+    const existingAddlServices = await this.garmentAdditionalServiceRepo.find({
+      where: {garmentId: id, isDeleted: false} as any,
+    });
+    const existingAddlServiceIds = new Set(existingAddlServices.map(s => s.serviceId));
+    const newAddlIds = requestedAddlIds.filter(sid => !existingAddlServiceIds.has(sid));
+
+    if (requestedAddlIds.length > 0 && newAddlIds.length === 0) {
+      throw new HttpErrors.BadRequest(
+        'All selected add-on services are already attached to this garment.',
+      );
+    }
+
+    if (!body.toServiceId && newAddlIds.length === 0) {
+      throw new HttpErrors.BadRequest('Select a new service, add-on services, or both.');
+    }
+
+    const addlServiceNames = new Map<string, string>();
+    if (newAddlIds.length > 0) {
+      const order = await this.orderRepo.findOne({where: {id: orderItem.orderId}});
+      if (!order) throw new HttpErrors.UnprocessableEntity('Order not found for garment.');
+
+      for (const addlId of newAddlIds) {
+        const addlService = await this.serviceRepo.findOne({
+          where: {id: addlId, isDeleted: false, isActive: true},
+        });
+        if (!addlService) throw new HttpErrors.NotFound(`Add-on service ${addlId} not found.`);
+        addlServiceNames.set(addlId, (addlService as any).name);
+        // Same server-side gate POS/order-edit rely on — throws BadRequest
+        // when no ServiceItemMapping/basePrice exists for this pairing.
+        await this.orderService.resolvePricing(order.storeId, addlId, orderItem.itemId, {
+          additional: true,
+        });
+      }
     }
 
     await this._guardNoPendingRequest(id, ApprovalRequestType.UPGRADE_SERVICE);
@@ -148,11 +214,23 @@ export class GarmentActionsController {
       requestedBy: currentUser[securityId],
       requestReason: body.remarks,
       mediaIds: body.mediaIds,
-      metadata: {toServiceId: body.toServiceId, toServiceName: (toService as any).name},
+      metadata: {
+        ...(toService ? {toServiceId: toService.id, toServiceName: (toService as any).name} : {}),
+        ...(newAddlIds.length
+          ? {
+              additionalServiceIds: newAddlIds,
+              additionalServiceNames: newAddlIds.map(sid => addlServiceNames.get(sid)),
+            }
+          : {}),
+      },
     });
 
+    const messageParts: string[] = [];
+    if (toService) messageParts.push(`upgrade to "${(toService as any).name}"`);
+    if (newAddlIds.length) messageParts.push(`${newAddlIds.length} add-on service(s)`);
+
     return {
-      message: `Upgrade to "${(toService as any).name}" requested. Garment on hold pending customer approval.`,
+      message: `Requested ${messageParts.join(' and ')}. Garment on hold pending customer approval.`,
       request,
     };
   }

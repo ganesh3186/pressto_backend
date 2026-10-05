@@ -786,6 +786,17 @@ export class ApprovalService {
       return;
     }
 
+    // Order downgrade approved: this is the moment the removal actually
+    // applies — nothing was written when the request was raised (see
+    // OrderService.updateOrderItems's downgrade gate).
+    if (
+      request.entityType === 'order' &&
+      request.type === ApprovalRequestType.ORDER_ITEMS_DOWNGRADE
+    ) {
+      await this._applyOrderItemsDowngrade(request, performedBy);
+      return;
+    }
+
     if (request.entityType !== 'garment') return;
 
     const garment = await this.garmentRepo.findOne({
@@ -1323,6 +1334,27 @@ export class ApprovalService {
     });
   }
 
+  // ─── Order downgrade: apply the edit now that it's approved ───────────────
+  // The request's metadata carries the full desired item list exactly as
+  // submitted (see OrderService.updateOrderItems's downgrade gate) — nothing
+  // was applied at request time, so approving just replays that same edit
+  // through the real update path, with the gate itself skipped (it would
+  // otherwise just detect the same removal again and re-raise a request
+  // instead of applying it).
+  private async _applyOrderItemsDowngrade(
+    request: ApprovalRequest,
+    performedBy: string,
+  ): Promise<void> {
+    const desiredItems = request.metadata?.desiredItems as
+      | Parameters<OrderService['updateOrderItems']>[1]
+      | undefined;
+    if (!desiredItems) return;
+
+    await this.orderService.updateOrderItems(request.entityId, desiredItems, performedBy, {
+      skipDowngradeGate: true,
+    });
+  }
+
   // ─── Reprocess: reset process logs + return garment to in_process ──────────
 
   /**
@@ -1613,7 +1645,9 @@ export class ApprovalService {
     garmentId: string,
   ): Promise<void> {
     const toServiceId = request.metadata?.toServiceId as string | undefined;
-    if (!toServiceId) return;
+    const requestedAddlIds =
+      (request.metadata?.additionalServiceIds as string[] | undefined) ?? [];
+    if (!toServiceId && requestedAddlIds.length === 0) return;
 
     const orderItem = await this.orderItemRepo.findOne({
       where: {id: orderItemId},
@@ -1625,57 +1659,115 @@ export class ApprovalService {
     });
     if (!order) return;
 
-    // Reprice the new service through the SAME store→cluster→region→base waterfall,
-    // then apply the order's delivery-tier uplift — identical to order creation.
-    let pricing: {basePrice: number; resolvedPrice: number};
-    try {
-      pricing = await this.orderService.resolvePricing(
-        order.storeId!,
-        toServiceId,
-        orderItem.itemId,
-      );
-    } catch {
-      // No price configured for the new service+item — fall back to existing base.
-      const base = Number(orderItem.basePrice) || 0;
-      pricing = {basePrice: base, resolvedPrice: base};
-    }
     const deliveryMultiplier =
       1 + (Number(order.deliveryTypePercentage) || 0) / 100;
-    const newBasePrice = pricing.basePrice;
+
+    // ─── Primary service portion — unchanged if toServiceId is absent ───────
+    // Reprice the new service through the SAME store→cluster→region→base waterfall,
+    // then apply the order's delivery-tier uplift — identical to order creation.
+    let newBasePrice = Number(orderItem.basePrice) || 0;
+    let newResolvedPrice = Number(orderItem.resolvedPrice) || 0;
+    if (toServiceId) {
+      try {
+        const pricing = await this.orderService.resolvePricing(
+          order.storeId!,
+          toServiceId,
+          orderItem.itemId,
+        );
+        newBasePrice = pricing.basePrice;
+        newResolvedPrice = pricing.resolvedPrice;
+      } catch {
+        // No price configured for the new service+item — fall back to existing base.
+        newBasePrice = Number(orderItem.basePrice) || 0;
+        newResolvedPrice = newBasePrice;
+      }
+    }
+    // Base-only per-unit reference (no add-ons folded in) — same meaning as
+    // OrderItem.unitPrice everywhere else (order.service.ts's createOrder).
     const newUnitPrice = parseFloat(
-      (pricing.resolvedPrice * deliveryMultiplier).toFixed(2),
+      (newResolvedPrice * deliveryMultiplier).toFixed(2),
     );
+
+    // ─── Add-on portion — additive only, never touches existing rows ───────
+    // This garment's add-ons BEFORE this upgrade — already folded into
+    // orderItem.totalPrice from order creation / a prior upgrade.
+    const existingAddlServices = await this.garmentAdditionalServiceRepo.find({
+      where: {garmentId, isDeleted: false} as any,
+    });
+    const existingAddlAmountSum = existingAddlServices.reduce(
+      (sum, s) => sum + Number(s.amount),
+      0,
+    );
+    const alreadyAttachedIds = new Set(
+      existingAddlServices.map(s => s.serviceId),
+    );
+    // Resolved independently of the primary-service pricing above, same as
+    // order creation — an add-on that no longer prices (catalog changed
+    // since the request was raised) is skipped rather than blocking the
+    // whole approval.
+    const newlyAddedAddlServices: Array<{serviceId: string; amount: number}> = [];
+    for (const addlId of requestedAddlIds) {
+      if (alreadyAttachedIds.has(addlId)) continue;
+      try {
+        const addlPricing = await this.orderService.resolvePricing(
+          order.storeId!,
+          addlId,
+          orderItem.itemId,
+          {additional: true},
+        );
+        newlyAddedAddlServices.push({
+          serviceId: addlId,
+          amount: addlPricing.resolvedPrice,
+        });
+      } catch {
+        // Skip — no longer priceable for this item.
+      }
+    }
+    const newAddlAmountSum =
+      existingAddlAmountSum +
+      newlyAddedAddlServices.reduce((sum, s) => sum + s.amount, 0);
+
     // A measurement item (curtain/carpet) is billed per square metre, and
     // its garments can each carry a different area — quantity × unit price
     // alone understates/overstates the real total unless every garment
-    // happens to share the same area. Sum each garment's own area instead,
+    // happens to share the same area. Sum this garment's own area instead,
     // same rule order creation applies (order.service.ts's
-    // perUnitTotalPrices) — a plain piece-priced item still reduces to
-    // unitPrice × quantity, since totalArea has no meaning for it.
+    // perUnitTotalPrices) — a plain piece-priced item still reduces to a
+    // single per-garment price.
     const item = await this.itemRepo.findOne({where: {id: orderItem.itemId}});
-    let newTotalPrice: number;
-    let oldAffectedPrice: number;
-    if (item?.isMeasurement) {
-      const targetGarment = await this.garmentRepo.findOne({
-        where: {id: garmentId, isDeleted: false},
-      });
-      const affectedArea =
-        (Number(targetGarment?.length) || 0) *
-        (Number(targetGarment?.width) || 0);
-      newTotalPrice = parseFloat((newUnitPrice * affectedArea).toFixed(2));
-      oldAffectedPrice = parseFloat(
-        (money(orderItem.unitPrice) * affectedArea).toFixed(2),
-      );
-    } else {
-      newTotalPrice = newUnitPrice;
-      oldAffectedPrice = money(orderItem.unitPrice);
-    }
+    const targetGarment = await this.garmentRepo.findOne({
+      where: {id: garmentId, isDeleted: false},
+    });
+    const affectedArea = item?.isMeasurement
+      ? (Number(targetGarment?.length) || 0) * (Number(targetGarment?.width) || 0)
+      : 1;
+
+    const oldPerUnitPrice = parseFloat(
+      (
+        ((Number(orderItem.resolvedPrice) || 0) + existingAddlAmountSum) *
+        deliveryMultiplier
+      ).toFixed(2),
+    );
+    const newPerUnitPrice = parseFloat(
+      ((newResolvedPrice + newAddlAmountSum) * deliveryMultiplier).toFixed(2),
+    );
+    const oldAffectedPrice = parseFloat(
+      (oldPerUnitPrice * affectedArea).toFixed(2),
+    );
+    const newTotalPrice = parseFloat(
+      (newPerUnitPrice * affectedArea).toFixed(2),
+    );
 
     const oldTotalPrice = money(orderItem.totalPrice);
     const priceDiff = newTotalPrice - oldAffectedPrice;
     let upgradedOrderItemId = orderItemId;
 
-    if (Number(orderItem.quantity) > 1) {
+    // A split is only needed for a PRIMARY SERVICE override on a multi-qty
+    // line — serviceId/basePrice/resolvedPrice are line-level fields shared
+    // by every garment on it, so changing them for just one garment needs
+    // its own line. Add-ons are already per-garment (GarmentAdditionalService),
+    // so an add-ons-only change never needs a split, regardless of quantity.
+    if (toServiceId && Number(orderItem.quantity) > 1) {
       // A line represents all identical quantities, while an approval targets
       // one physical garment. Split that garment onto its own line so the
       // other quantities keep their original service and price. Spread the
@@ -1694,7 +1786,7 @@ export class ApprovalService {
         quantity: 1,
         serviceId: toServiceId,
         basePrice: newBasePrice,
-        resolvedPrice: pricing.resolvedPrice,
+        resolvedPrice: newResolvedPrice,
         unitPrice: newUnitPrice,
         totalPrice: newTotalPrice,
         createdAt: new Date(),
@@ -1709,15 +1801,37 @@ export class ApprovalService {
         garmentOrderItemId: orderItemId,
         splitGarmentId: garmentId,
       });
-    } else {
+    } else if (toServiceId) {
       await this.orderItemRepo.updateById(orderItemId, {
         serviceId: toServiceId,
         basePrice: newBasePrice,
-        resolvedPrice: pricing.resolvedPrice,
+        resolvedPrice: newResolvedPrice,
         unitPrice: newUnitPrice,
         totalPrice: newTotalPrice,
         updatedAt: new Date(),
       });
+    } else if (priceDiff !== 0) {
+      // Add-ons-only: the line's own serviceId/basePrice/resolvedPrice/unitPrice
+      // stay untouched (still shared with every other garment on the line) —
+      // only the line's aggregate totalPrice moves, by this garment's own delta.
+      await this.orderItemRepo.updateById(orderItemId, {
+        totalPrice: parseFloat((oldTotalPrice + priceDiff).toFixed(2)),
+        updatedAt: new Date(),
+      });
+    }
+
+    // Freeze each newly-added add-on's price onto the garment — additive
+    // only, existing rows are never touched or removed.
+    if (newlyAddedAddlServices.length > 0) {
+      const {v4} = await import('uuid');
+      for (const {serviceId, amount} of newlyAddedAddlServices) {
+        await this.garmentAdditionalServiceRepo.create({
+          id: v4(),
+          garmentId,
+          serviceId,
+          amount,
+        });
+      }
     }
 
     // Adjust order totals
@@ -1763,7 +1877,7 @@ export class ApprovalService {
         );
         if (invoiceItemIdx !== -1) {
           const sourceItem = items[invoiceItemIdx];
-          if (Number(orderItem.quantity) > 1) {
+          if (toServiceId && Number(orderItem.quantity) > 1) {
             items[invoiceItemIdx] = {
               ...sourceItem,
               quantity: Number(orderItem.quantity) - 1,
@@ -1780,11 +1894,16 @@ export class ApprovalService {
               totalPrice: newTotalPrice,
             });
           } else {
+            // No split: either a direct (quantity===1) service/add-on change,
+            // or an add-ons-only change on a multi-qty line, where this
+            // garment's delta must be applied on top of the line's existing
+            // aggregate total rather than replacing it outright.
             items[invoiceItemIdx] = {
               ...sourceItem,
-              serviceId: toServiceId,
-              unitPrice: newUnitPrice,
-              totalPrice: newTotalPrice,
+              ...(toServiceId ? {serviceId: toServiceId, unitPrice: newUnitPrice} : {}),
+              totalPrice: parseFloat(
+                (money(sourceItem.totalPrice) + priceDiff).toFixed(2),
+              ),
             };
           }
         }
@@ -1815,7 +1934,7 @@ export class ApprovalService {
         );
         if (challanItemIdx !== -1) {
           const sourceItem = items[challanItemIdx];
-          if (Number(orderItem.quantity) > 1) {
+          if (toServiceId && Number(orderItem.quantity) > 1) {
             items[challanItemIdx] = {
               ...sourceItem,
               quantity: Number(orderItem.quantity) - 1,
@@ -1834,9 +1953,10 @@ export class ApprovalService {
           } else {
             items[challanItemIdx] = {
               ...sourceItem,
-              serviceId: toServiceId,
-              unitPrice: newUnitPrice,
-              totalPrice: newTotalPrice,
+              ...(toServiceId ? {serviceId: toServiceId, unitPrice: newUnitPrice} : {}),
+              totalPrice: parseFloat(
+                (money(sourceItem.totalPrice) + priceDiff).toFixed(2),
+              ),
             };
           }
         }
@@ -1885,13 +2005,20 @@ export class ApprovalService {
         serviceId: orderItem.serviceId,
         unitPrice: orderItem.unitPrice,
         totalPrice: oldTotalPrice,
+        additionalServiceIds: existingAddlServices.map(s => s.serviceId),
       },
       after: {
-        serviceId: toServiceId,
+        serviceId: toServiceId ?? orderItem.serviceId,
         unitPrice: newUnitPrice,
         totalPrice: newTotalPrice,
+        additionalServiceIds: [
+          ...existingAddlServices.map(s => s.serviceId),
+          ...newlyAddedAddlServices.map(s => s.serviceId),
+        ],
       },
-      remarks: `Service upgraded via approval ${request.id}`,
+      remarks: toServiceId
+        ? `Service upgraded via approval ${request.id}`
+        : `Add-on service(s) attached via approval ${request.id}`,
     });
   }
 
@@ -1979,6 +2106,21 @@ export class ApprovalService {
           `This refund had already been paid out via ${refundDue.method ?? 'the chosen method'} and has NOT been clawed back. Re-approving this reverted request will have no further effect — correct the payout manually if it was made in error.`,
         );
       }
+    }
+
+    // Reverting an approved order downgrade: the removal already went through
+    // updateOrderItems (items/garments/totals/invoice/challan all changed) —
+    // none of that is captured by the snapshot above (garment-only), so
+    // there's nothing for _restoreSnapshot to put back. Say so rather than
+    // let the revert look like it undid the removal.
+    if (
+      previousStatus === ApprovalRequestStatus.APPROVED &&
+      request.entityType === 'order' &&
+      request.type === ApprovalRequestType.ORDER_ITEMS_DOWNGRADE
+    ) {
+      notes.push(
+        'This downgrade had already been applied to the order (items, garments and totals changed) and has NOT been undone — reverting only reopens the request. Correct the order manually if the removed service/add-on needs to be reinstated.',
+      );
     }
 
     if (request.type === ApprovalRequestType.REPROCESS) {
@@ -2192,32 +2334,55 @@ export class ApprovalService {
 
     const fromServiceId = orderItem?.serviceId;
     const toServiceId = request.metadata?.toServiceId as string | undefined;
+    const requestedAddlIds =
+      (request.metadata?.additionalServiceIds as string[] | undefined) ?? [];
 
-    const [fromService, toService, item, media, decision] = await Promise.all([
-      fromServiceId
-        ? this.serviceRepo.findOne({where: {id: fromServiceId}})
-        : Promise.resolve(null),
-      toServiceId
-        ? this.serviceRepo.findOne({where: {id: toServiceId}})
-        : Promise.resolve(null),
-      orderItem?.itemId
-        ? this.itemRepo.findOne({where: {id: orderItem.itemId}})
-        : Promise.resolve(null),
-      this.resolveMedia(request.mediaIds),
-      this.approvalActionRepo.findOne({
-        where: {approvalRequestId: request.id},
-        order: ['actionDate DESC'],
-      }),
-    ]);
+    const [fromService, toService, item, media, decision, existingAddlServices, requestedAddlServiceRows] =
+      await Promise.all([
+        fromServiceId
+          ? this.serviceRepo.findOne({where: {id: fromServiceId}})
+          : Promise.resolve(null),
+        toServiceId
+          ? this.serviceRepo.findOne({where: {id: toServiceId}})
+          : Promise.resolve(null),
+        orderItem?.itemId
+          ? this.itemRepo.findOne({where: {id: orderItem.itemId}})
+          : Promise.resolve(null),
+        this.resolveMedia(request.mediaIds),
+        this.approvalActionRepo.findOne({
+          where: {approvalRequestId: request.id},
+          order: ['actionDate DESC'],
+        }),
+        garment
+          ? this.garmentAdditionalServiceRepo.find({
+              where: {garmentId: garment.id, isDeleted: false} as any,
+            })
+          : Promise.resolve([]),
+        requestedAddlIds.length
+          ? this.serviceRepo.find({where: {id: {inq: requestedAddlIds}} as any})
+          : Promise.resolve([]),
+      ]);
 
-    // Quote the proposed service.
+    // Quote the proposed service + add-ons.
     // This approval is garment-scoped even when its source order line groups
     // several identical pieces. Quote only the selected physical garment.
     const quantity = garment ? 1 : 0;
+    const deliveryMultiplier =
+      1 + (Number(order?.deliveryTypePercentage) || 0) / 100;
+    const existingAddlAmountSum = existingAddlServices.reduce(
+      (sum, s) => sum + Number(s.amount),
+      0,
+    );
+    const alreadyAttachedIds = new Set(existingAddlServices.map(s => s.serviceId));
+    // Only the NET-NEW add-ons (same additive-only rule the apply path
+    // follows) actually change the quote.
+    const newAddlIds = requestedAddlIds.filter(sid => !alreadyAttachedIds.has(sid));
+
+    const currentResolvedPrice = Number(orderItem?.resolvedPrice) || 0;
     const currentUnitPrice = Number(orderItem?.unitPrice) || 0;
     let currentTotal = currentUnitPrice;
 
-    let newUnitPrice = currentUnitPrice;
+    let newResolvedPrice = currentResolvedPrice;
     if (order && orderItem && toServiceId) {
       try {
         const pricing = await this.orderService.resolvePricing(
@@ -2225,29 +2390,61 @@ export class ApprovalService {
           toServiceId,
           orderItem.itemId,
         );
-        const deliveryMultiplier =
-          1 + (Number(order.deliveryTypePercentage) || 0) / 100;
-        newUnitPrice = parseFloat(
-          (pricing.resolvedPrice * deliveryMultiplier).toFixed(2),
-        );
+        newResolvedPrice = pricing.resolvedPrice;
       } catch {
         // No price configured for the new service + item — quote no extra charge,
         // matching the fallback the approve path takes.
-        newUnitPrice = currentUnitPrice;
+        newResolvedPrice = currentResolvedPrice;
       }
     }
+    const newUnitPrice = parseFloat(
+      (newResolvedPrice * deliveryMultiplier).toFixed(2),
+    );
+
+    let newAddlAmountSum = existingAddlAmountSum;
+    const requestedAdditionalServices: Array<{id: string; name: string; amount: number}> = [];
+    if (order && orderItem && newAddlIds.length) {
+      for (const addlId of newAddlIds) {
+        const service = requestedAddlServiceRows.find(s => s.id === addlId);
+        try {
+          const addlPricing = await this.orderService.resolvePricing(
+            order.storeId!,
+            addlId,
+            orderItem.itemId,
+            {additional: true},
+          );
+          newAddlAmountSum += addlPricing.resolvedPrice;
+          requestedAdditionalServices.push({
+            id: addlId,
+            name: (service as any)?.name ?? addlId,
+            amount: addlPricing.resolvedPrice,
+          });
+        } catch {
+          // No longer priceable — excluded from the quote, same as the apply path skips it.
+        }
+      }
+    }
+
     // Same area-aware total as _applyUpgradeOnOrderItem, which this quote
     // must match exactly — a measurement item's garments can each carry a
     // different area, so quantity × unit price alone doesn't reflect what
-    // approving would actually bill.
+    // approving would actually bill. Both sides fold in this garment's
+    // add-ons (existing + newly requested), matching the apply path's math.
+    const currentPerUnitPrice = parseFloat(
+      ((currentResolvedPrice + existingAddlAmountSum) * deliveryMultiplier).toFixed(2),
+    );
+    const newPerUnitPrice = parseFloat(
+      ((newResolvedPrice + newAddlAmountSum) * deliveryMultiplier).toFixed(2),
+    );
     let newTotal: number;
     if (item?.isMeasurement && orderItem) {
       const area =
         (Number(garment?.length) || 0) * (Number(garment?.width) || 0);
-      currentTotal = parseFloat((currentUnitPrice * area).toFixed(2));
-      newTotal = parseFloat((newUnitPrice * area).toFixed(2));
+      currentTotal = parseFloat((currentPerUnitPrice * area).toFixed(2));
+      newTotal = parseFloat((newPerUnitPrice * area).toFixed(2));
     } else {
-      newTotal = parseFloat((newUnitPrice * quantity).toFixed(2));
+      currentTotal = parseFloat((currentPerUnitPrice * quantity).toFixed(2));
+      newTotal = parseFloat((newPerUnitPrice * quantity).toFixed(2));
     }
 
     const isPending = request.status === ApprovalRequestStatus.PENDING;
@@ -2277,6 +2474,14 @@ export class ApprovalService {
       requestedService: toService
         ? {id: toService.id, name: toService.name, unitPrice: newUnitPrice}
         : null,
+
+      currentAdditionalServices: existingAddlServices.map(s => ({
+        serviceId: s.serviceId,
+        amount: Number(s.amount),
+      })),
+      // Add-ons being REQUESTED now — additive only, attached alongside
+      // whichever primary service ends up in effect, never overriding it.
+      requestedAdditionalServices,
 
       pricing: {
         quantity,
