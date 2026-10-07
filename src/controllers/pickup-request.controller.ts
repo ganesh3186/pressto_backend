@@ -594,8 +594,21 @@ export class PickupRequestController {
     if (requests.length !== body.pickupRequestIds.length) {
       throw new HttpErrors.NotFound('One or more pickup requests were not found.');
     }
+    // Also reassignable once a rider is already on it (rider_assigned) or
+    // has set off (out_for_pickup) — the admin panel's own "Change Rider"
+    // action targets exactly those two statuses (see
+    // REASSIGNABLE_STATUSES in pickup-management-view.js) and calls this
+    // same endpoint, so rejecting them here made every reassignment
+    // attempt fail with "already rider_assigned/out_for_pickup". Still
+    // blocked once the pickup is actually done (arrived/picked up/at
+    // store) or terminal (unsuccessful/cancelled/not serviceable) — there's
+    // no rider left to reassign away from at that point.
     const notAssignable = requests.filter(
-      r => r.status !== PickupRequestStatus.REQUESTED && r.status !== PickupRequestStatus.SCHEDULED,
+      r =>
+        r.status !== PickupRequestStatus.REQUESTED &&
+        r.status !== PickupRequestStatus.SCHEDULED &&
+        r.status !== PickupRequestStatus.RIDER_ASSIGNED &&
+        r.status !== PickupRequestStatus.OUT_FOR_PICKUP,
     );
     if (notAssignable.length) {
       throw new HttpErrors.BadRequest(
