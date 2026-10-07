@@ -63,6 +63,7 @@ export type ModeOfPaymentRow = {
   shiftClosureNo: string;
   ticketNo: string;
   userName: string;
+  customerNameWithCode: string;
   amount: number;
   reimbursement: number;
   paymentMode: string;
@@ -109,6 +110,8 @@ type DailySalesRow = {
   reimbursed: number;
   pgLink: number;
   wallet: number;
+  walletRechargedCash: number;
+  walletRechargedOther: number;
   totalReceipts: number;
   supposedBankDeposit: number;
   actualBankDeposit: number;
@@ -144,6 +147,12 @@ type ShiftClosingSnapshot = {
     wallet?: number;
     ppVoucher?: number;
   };
+  // Cash/card/UPI/net-banking taken in for WALLET TOP-UPS specifically — a
+  // separate money-in event from a ticket payment, prefilled for the
+  // closing form by ShiftController.collected() and stored verbatim here
+  // once the cashier submits. Distinct from collections.wallet above, which
+  // is stored-wallet-balance REDEMPTION against a ticket (no fresh money).
+  walletCollections?: {cash?: number; card?: number; upi?: number; netBanking?: number};
   register?: {reimbursement?: number};
   banking?: {supposed?: number; deposited?: number; cumulativeDiff?: number};
   pettyCash?: {cumulativeDiff?: number};
@@ -182,6 +191,11 @@ function toDateKey(date: Date): string {
   ).padStart(2, '0')}`;
 }
 
+/** Round to paise — plain JS float addition otherwise drifts over many rows. */
+function roundRupees(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 function addDays(date: Date, days: number): Date {
   const result = new Date(date);
   result.setDate(result.getDate() + days);
@@ -199,6 +213,11 @@ export type ModeOfPaymentReport = {
   rows: ModeOfPaymentRow[];
   totalCount: number;
   totals: {amount: number; reimbursement: number};
+  // Amount collected per payment mode, across the whole matching set (not
+  // just the current page) — shown at the top of the report, e.g. "Cash
+  // 45000", one figure per mode. Keyed by the same display label as each
+  // row's paymentModeLabel, so it reads the same way on screen.
+  totalsByMode: Record<string, number>;
 };
 
 /**
@@ -265,6 +284,7 @@ export class ReportsService {
       rows: [],
       totalCount: 0,
       totals: {amount: 0, reimbursement: 0},
+      totalsByMode: {},
     };
     if (!storeIds.length) return empty;
 
@@ -314,16 +334,25 @@ export class ReportsService {
     // Count and totals come from the whole matching set, never just the
     // page — a footer that only summed the visible rows would restate the
     // very bug this endpoint replaces.
+    const totalsByMode: Record<string, number> = {};
     const totals = entries.reduce(
       (acc, entry) => {
         if (entry.wallet) {
           acc.amount += entry.wallet.amount;
+          const label =
+            PAYMENT_MODE_LABELS[entry.wallet.paymentMode] ?? entry.wallet.paymentModeLabel;
+          totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + entry.wallet.amount);
           return acc;
         }
         const txn = entry.payment;
         const value = Number(txn.amount) || 0;
-        if (txn.transactionType === 'refund') acc.reimbursement += value;
-        else acc.amount += value;
+        const label = PAYMENT_MODE_LABELS[txn.paymentMode] ?? String(txn.paymentMode ?? '—');
+        if (txn.transactionType === 'refund') {
+          acc.reimbursement += value;
+        } else {
+          acc.amount += value;
+          totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + value);
+        }
         return acc;
       },
       {amount: 0, reimbursement: 0},
@@ -349,9 +378,6 @@ export class ReportsService {
       const value = Number(txn.amount) || 0;
       const shift = order?.shiftId ? shiftById.get(String(order.shiftId)) : undefined;
       const customer = order?.customerId ? customerById.get(String(order.customerId)) : undefined;
-      const customerName = customer
-        ? `${customer.firstName ?? ''} ${customer.lastName ?? ''}`.trim()
-        : '';
 
       return {
         id: String(txn.id),
@@ -361,7 +387,10 @@ export class ReportsService {
         // shift has no closure number yet, which is not missing data.
         shiftClosureNo: shift?.closureNo != null ? String(shift.closureNo) : '—',
         ticketNo: order?.orderNumber ?? '—',
-        userName: (order?.placedByName ?? '') || customerName || '—',
+        // The staff member who placed the ticket — never the customer, even
+        // when placedByName is blank. Who bought it is its own column.
+        userName: order?.placedByName ?? '—',
+        customerNameWithCode: this.formatCustomerNameWithCode(customer),
         amount: isRefund ? 0 : value,
         reimbursement: isRefund ? value : 0,
         paymentMode: String(txn.paymentMode ?? ''),
@@ -369,7 +398,7 @@ export class ReportsService {
       };
     });
 
-    return {rows, totalCount: entries.length, totals};
+    return {rows, totalCount: entries.length, totals, totalsByMode};
   }
 
   /**
@@ -393,7 +422,13 @@ export class ReportsService {
   ): Promise<ModeOfPaymentRow[]> {
     const customers = await this.customerRepo.find({
       where: {preferredStoreId: {inq: storeIds}} as object,
-      fields: {id: true, firstName: true, lastName: true, preferredStoreId: true} as object,
+      fields: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        customerCode: true,
+        preferredStoreId: true,
+      } as object,
     });
     if (!customers.length) return [];
 
@@ -421,9 +456,6 @@ export class ReportsService {
 
     return requests.map(request => {
       const customer = customerById.get(String(request.customerId));
-      const customerName = customer
-        ? `${customer.firstName ?? ''} ${customer.lastName ?? ''}`.trim()
-        : '';
 
       return {
         // Namespaced so a top-up can never collide with a payment
@@ -439,7 +471,9 @@ export class ReportsService {
         // and would read like a ticket number that can be looked up.
         shiftClosureNo: '—',
         ticketNo: 'Wallet Recharge',
-        userName: customerName || '—',
+        // Self-service — no staff member placed this, unlike a ticket payment.
+        userName: '—',
+        customerNameWithCode: this.formatCustomerNameWithCode(customer),
         amount: Number(request.amount) || 0,
         reimbursement: 0,
         paymentMode: String(request.paymentMode ?? ''),
@@ -812,6 +846,7 @@ export class ReportsService {
       const key = `${day}|${shift.storeId}`;
       const closing = (shift.closing ?? {}) as ShiftClosingSnapshot;
       const collections = closing.collections ?? {};
+      const walletCollections = closing.walletCollections ?? {};
       const revenueCell = closing.revenue?.pressto ?? {};
       const returnCell = closing.salesReturn?.pressto ?? {};
 
@@ -873,6 +908,8 @@ export class ReportsService {
           reimbursed: 0,
           pgLink: 0,
           wallet: 0,
+          walletRechargedCash: 0,
+          walletRechargedOther: 0,
           totalReceipts: 0,
           supposedBankDeposit: 0,
           actualBankDeposit: 0,
@@ -901,6 +938,11 @@ export class ReportsService {
       row.reimbursed += Number(closing.register?.reimbursement) || 0;
       row.pgLink += Number(collections.pgLink) || 0;
       row.wallet += Number(collections.wallet) || 0;
+      row.walletRechargedCash += Number(walletCollections.cash) || 0;
+      row.walletRechargedOther +=
+        (Number(walletCollections.card) || 0) +
+        (Number(walletCollections.upi) || 0) +
+        (Number(walletCollections.netBanking) || 0);
       row.totalReceipts =
         row.otherPaymentMode +
         row.ppVouchers +
@@ -976,6 +1018,8 @@ export class ReportsService {
         reimbursed: sum(r => r.reimbursed),
         pgLink: sum(r => r.pgLink),
         wallet: sum(r => r.wallet),
+        walletRechargedCash: sum(r => r.walletRechargedCash),
+        walletRechargedOther: sum(r => r.walletRechargedOther),
         totalReceipts: sum(r => r.totalReceipts),
         supposedBankDeposit: sum(r => r.supposedBankDeposit),
         actualBankDeposit: sum(r => r.actualBankDeposit),
@@ -1367,17 +1411,31 @@ export class ReportsService {
   private async mapCustomers(
     txns: {orderId: string}[],
     orderById: Map<string, {customerId?: string}>,
-  ): Promise<Map<string, {firstName?: string; lastName?: string}>> {
+  ): Promise<Map<string, {firstName?: string; lastName?: string; customerCode?: string}>> {
     const ids = [
       ...new Set(txns.map(t => orderById.get(t.orderId)?.customerId).filter(Boolean) as string[]),
     ];
     if (!ids.length) return new Map();
     const customers = await this.customerRepo.find({
       where: {id: {inq: ids}} as object,
-      fields: {id: true, firstName: true, lastName: true} as object,
+      fields: {id: true, firstName: true, lastName: true, customerCode: true} as object,
     });
     return new Map(
-      customers.map(c => [String(c.id), {firstName: c.firstName, lastName: c.lastName}]),
+      customers.map(c => [
+        String(c.id),
+        {firstName: c.firstName, lastName: c.lastName, customerCode: c.customerCode},
+      ]),
     );
+  }
+
+  /** "Jane Doe (CUST-00123)", or just the name/code alone if the other is missing. */
+  private formatCustomerNameWithCode(
+    customer: {firstName?: string; lastName?: string; customerCode?: string} | undefined,
+  ): string {
+    if (!customer) return '—';
+    const name = `${customer.firstName ?? ''} ${customer.lastName ?? ''}`.trim();
+    const code = customer.customerCode ?? '';
+    if (name && code) return `${name} (${code})`;
+    return name || code || '—';
   }
 }
