@@ -1194,8 +1194,12 @@ export class OrderService {
   // ─── On-Account Credit Status ───────────────────────────────────────────
   // The customer's security deposit doubles as their on-account credit limit
   // (no separate creditLimit field) — "used" is computed live as the sum of
-  // totalAmount across every order that isn't yet fully paid off, rather than
-  // stored, so it can never drift out of sync with real payment/order state.
+  // totalAmount across every ORDER ACTUALLY BILLED ON ACCOUNT (isOnAccount)
+  // that isn't yet fully paid off, rather than stored, so it can never drift
+  // out of sync with real payment/order state. An unpaid order billed some
+  // other way (cash/card/UPI/etc. still outstanding) is a separate
+  // collections problem — it never touched this credit limit in the first
+  // place, so it must not count against it here either.
 
   async computeOnAccountCreditStatus(
     customerId: string,
@@ -1209,6 +1213,7 @@ export class OrderService {
       where: {
         customerId,
         isDeleted: false,
+        isOnAccount: true,
         status: {
           nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED, OrderStatus.RETURNED],
         },
@@ -3425,9 +3430,13 @@ export class OrderService {
     });
 
     // 2. Hard block on outstanding balance. Refund entries are money out — not
-    // counted toward what the customer has paid. Waived for on-account
-    // (business) customers — they're billed later via one consolidated
-    // invoice covering several delivered orders, not per-order before handover.
+    // counted toward what the customer has paid. Waived only when THIS order
+    // was actually billed on account (order.isOnAccount) — they're billed
+    // later via one consolidated invoice covering several delivered orders,
+    // not per-order before handover. Deliberately NOT gated on the
+    // customer's general on-account eligibility: an eligible customer who
+    // chose Pay Later (or any other mode) for this specific order still
+    // owes it in full before it leaves the store, same as anyone else.
     //
     // Split-aware: a split order's payment lives in allocatedPayment, not a
     // PaymentTransaction row of its own (see the same pattern at ~line 1636
@@ -3458,10 +3467,7 @@ export class OrderService {
         ? allocPay
         : paid;
     const balanceDue = rupeeBalance(order.totalAmount, collected);
-    const isOnAccountCustomer =
-      handoverCustomer?.customerEntityType === 'business' ||
-      handoverCustomer?.isOnAccountEligible === true;
-    if (balanceDue > 0 && !isOnAccountCustomer) {
+    if (balanceDue > 0 && !order.isOnAccount) {
       throw new HttpErrors.BadRequest(
         `Cannot hand over: ₹${balanceDue} is still due. Collect the balance first.`,
       );
