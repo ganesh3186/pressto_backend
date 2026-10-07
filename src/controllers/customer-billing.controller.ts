@@ -6,6 +6,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {PresstoDataSource} from '../datasources';
 import {authorize} from '../authorization';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
+import {Order} from '../models/order.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {
   CustomerRepository,
@@ -205,6 +206,34 @@ export class CustomerBillingController {
     let remaining = paymentAmount;
     const allocations: Array<{invoiceId: string; invoiceNumber: string; orderId: string; allocated: number}> = [];
 
+    // A consolidated invoice's own orderId is just one representative order, so
+    // each payment against it is split across every order it covers — otherwise
+    // the other orders would keep showing unpaid and keep counting against the
+    // customer's on-account credit limit. Outstanding per link = its snapshot
+    // total minus anything paid on that order since the invoice was generated.
+    const consolidatedIds = pending.filter(inv => inv.isConsolidated).map(inv => inv.id);
+    const linksByInvoice = new Map<string, Array<{orderId: string; due: number}>>();
+    if (consolidatedIds.length) {
+      const links = await this.invoiceOrderLinkRepo.find({
+        where: {invoiceId: {inq: consolidatedIds}} as any,
+        order: ['createdAt ASC'],
+      });
+      for (const link of links) {
+        const since = new Date(link.createdAt as Date);
+        const paidSince = (
+          await this.paymentRepo.find({
+            where: {orderId: link.orderId, paymentDate: {gte: since}} as any,
+          })
+        )
+          .filter(p => (p as any).transactionType !== 'refund')
+          .reduce((s, p) => money(s + money((p as any).amount)), 0);
+        const due = Math.max(0, money(money(link.orderTotal) - paidSince));
+        const list = linksByInvoice.get(link.invoiceId) ?? [];
+        list.push({orderId: link.orderId, due});
+        linksByInvoice.set(link.invoiceId, list);
+      }
+    }
+
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED'} as any);
 
     try {
@@ -233,18 +262,32 @@ export class CustomerBillingController {
         // — the model has no remarks/recordedBy column at all, so the Club & Pay
         // note is folded into gatewayResponse (a free-text field) instead of
         // being silently dropped.
-        await this.paymentRepo.create(
-          {
-            id: v4(),
-            orderId: inv.orderId,
-            amount: allocated,
-            paymentMode: body.paymentMode,
-            transactionReference: body.referenceNumber,
-            gatewayResponse: `Club & Pay: ${body.remarks ?? ''}`.trim(),
-            paymentDate: new Date(),
-          } as any,
-          {transaction: tx}
-        );
+        const paymentNote = `Club & Pay: ${body.remarks ?? ''}`.trim();
+        const targets = inv.isConsolidated
+          ? (linksByInvoice.get(inv.id) ?? [])
+          : [{orderId: inv.orderId, due: allocated}];
+        if (!targets.length) targets.push({orderId: inv.orderId, due: allocated});
+        let left = allocated;
+        for (let i = 0; i < targets.length && left > 0; i++) {
+          const isLast = i === targets.length - 1;
+          // The last order takes whatever is left, absorbing rounding differences
+          // between the invoice balance and the sum of its order totals.
+          const share = money(isLast ? left : Math.min(left, targets[i].due));
+          if (share <= 0) continue;
+          left = money(left - share);
+          await this.paymentRepo.create(
+            {
+              id: v4(),
+              orderId: targets[i].orderId,
+              amount: share,
+              paymentMode: body.paymentMode,
+              transactionReference: body.referenceNumber,
+              gatewayResponse: paymentNote,
+              paymentDate: new Date(),
+            } as any,
+            {transaction: tx}
+          );
+        }
 
         allocations.push({
           invoiceId: inv.id,
@@ -279,7 +322,20 @@ export class CustomerBillingController {
   @authorize({roles: ['super_admin'], permissions: ['on_account:read']})
   @get('/customers/{customerId}/on-account/billable-orders')
   @response(200, {description: 'Delivered, not-yet-invoiced orders for an on-account customer'})
-  async billableOrders(@param.path.string('customerId') customerId: string): Promise<object> {
+  async billableOrders(
+    @param.path.string('customerId') customerId: string,
+    @param.query.string('from') from?: string,
+    @param.query.string('to') to?: string,
+  ): Promise<object> {
+    // Inclusive calendar range in IST (the business's own timezone), YYYY-MM-DD.
+    const fromTime = from ? new Date(`${from}T00:00:00+05:30`).getTime() : -Infinity;
+    const toTime = to ? new Date(`${to}T23:59:59.999+05:30`).getTime() : Infinity;
+    if (Number.isNaN(fromTime) || Number.isNaN(toTime)) {
+      throw new HttpErrors.BadRequest('from/to must be valid YYYY-MM-DD dates.');
+    }
+    if (fromTime > toTime) {
+      throw new HttpErrors.BadRequest('"to" must be on or after "from".');
+    }
     const customer = await this.customerRepo.findOne({where: {id: customerId, isDeleted: false}});
     if (!customer) throw new HttpErrors.NotFound('Customer not found.');
 
@@ -298,7 +354,13 @@ export class CustomerBillingController {
       ...individualInvoices.map(i => i.orderId),
       ...links.map(l => l.orderId),
     ]);
-    const billable = orders.filter(o => !invoicedOrderIds.has(o.id));
+    // Delivered date when recorded, otherwise the order's own date, so an
+    // order is never silently unfilterable.
+    const inRange = (o: Order) => {
+      const when = new Date(((o as any).deliveryDate ?? o.createdAt) as Date).getTime();
+      return when >= fromTime && when <= toTime;
+    };
+    const billable = orders.filter(o => !invoicedOrderIds.has(o.id) && inRange(o));
     if (!billable.length) return {billableOrders: [], totalDue: 0};
 
     const payments = await this.paymentRepo.find({

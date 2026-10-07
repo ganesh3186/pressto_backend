@@ -467,8 +467,17 @@ export class ApprovalController {
         inq: [ApprovalRequestType.UPGRADE_SERVICE, ApprovalRequestType.PROCESS_AT_RISK],
       };
     } else if (audience === 'internal') {
+      // Finance-owned approvals have their own Finance Approvals screen
+      // (cheque/PDC, refund payouts) — keep them out of the Internal tab so
+      // the same request isn't listed twice and the counts stay honest.
       (where as Record<string, unknown>).type = {
-        nin: [ApprovalRequestType.UPGRADE_SERVICE, ApprovalRequestType.PROCESS_AT_RISK],
+        nin: [
+          ApprovalRequestType.UPGRADE_SERVICE,
+          ApprovalRequestType.PROCESS_AT_RISK,
+          ApprovalRequestType.CHEQUE_PAYMENT,
+          ApprovalRequestType.PDC_PAYMENT,
+          ApprovalRequestType.REFUND_PAYOUT,
+        ],
       };
     }
     if (entityType) (where as Record<string, unknown>).entityType = entityType;

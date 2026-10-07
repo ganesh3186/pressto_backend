@@ -264,6 +264,15 @@ export class InvoiceController {
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
+    // On-account orders are billed only through a consolidated on-account
+    // invoice (see CustomerBillingController) — an individual one would bill
+    // the same order twice.
+    if (order.isOnAccount) {
+      throw new HttpErrors.BadRequest(
+        'On-account orders are billed on a consolidated on-account invoice, not an individual invoice.',
+      );
+    }
+
     const ALLOWED_STATUSES = [
       OrderStatus.READY,
       OrderStatus.PARTIALLY_DISPATCHED,
