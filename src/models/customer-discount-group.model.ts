@@ -44,8 +44,12 @@ export class CustomerDiscountGroup extends Entity {
 
   // Optional, same purpose as Coupon.maxDiscountAmount — caps the computed
   // discount regardless of how large the percentage works out to.
-  @property({type: 'number', postgresql: {dataType: 'numeric'}})
-  maxDiscountAmount?: number;
+  @property({
+    type: 'number',
+    postgresql: {dataType: 'numeric'},
+    jsonSchema: {nullable: true},
+  })
+  maxDiscountAmount?: number | null;
 
   @property({type: 'boolean', default: true})
   isActive?: boolean;

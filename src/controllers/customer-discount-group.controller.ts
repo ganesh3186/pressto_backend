@@ -27,7 +27,7 @@ export class CustomerDiscountGroupController {
     public customerDiscountGroupRepository: CustomerDiscountGroupRepository,
   ) {}
 
-  private assertValidDiscount(discountPercentage?: number, maxDiscountAmount?: number) {
+  private assertValidDiscount(discountPercentage?: number, maxDiscountAmount?: number | null) {
     if (discountPercentage !== undefined && (discountPercentage < 0 || discountPercentage > 100)) {
       throw new HttpErrors.BadRequest('Discount percentage must be between 0 and 100.');
     }
