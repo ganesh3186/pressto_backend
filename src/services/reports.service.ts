@@ -751,12 +751,13 @@ export class ReportsService {
    *
    * PSB vs P2D revenue is the one figure closing time never split out —
    * resolveRevenue() sums every order into a single `pressto` bucket
-   * regardless of channel. Recomputed here from the SAME order set
-   * (identical where-clause: storeId, createdAt within [openedAt,
-   * closedAt], status not draft/cancelled) split by orderType, so
-   * PSB + PMU(always 0 — see OTHER_PAYMENT_MODES's neighboring comment,
-   * nothing in the schema records a PMU channel) + P2D reconciles exactly
-   * against the shift's own stored `revenue` total.
+   * regardless of channel. Recomputed here keyed and prorated exactly like
+   * resolveRevenue() itself (by payment date, split by how much of each
+   * order's total that shift's payment represents — never by order
+   * createdAt, see resolveRevenue()'s own doc comment for why), split by
+   * orderType, so PSB + PMU(always 0 — see OTHER_PAYMENT_MODES's
+   * neighboring comment, nothing in the schema records a PMU channel) +
+   * P2D reconciles exactly against the shift's own stored `revenue` total.
    *
    * "Other Payment Mode" is the other figure the stored snapshot can't
    * answer — Shift.closing.collections only ever buckets cash/card/UPI/
@@ -832,6 +833,41 @@ export class ReportsService {
       : [];
     const orderById = new Map(orders.map(o => [o.id, o]));
 
+    // PSB/P2D must be keyed and prorated exactly like ShiftController's own
+    // resolveRevenue() (payment-date, not order createdAt; split by amount
+    // actually paid this window ÷ the order's total) or these two stop
+    // reconciling against the shift's stored revenue total — see this
+    // method's doc comment. A separate fetch from `orders`/`payments` above
+    // because the order set differs: an order created weeks ago but paid
+    // inside this window belongs here even though its createdAt falls
+    // outside [earliestOpen, latestClose].
+    const revenuePayments = await this.paymentTransactionRepo.find({
+      where: {
+        riderId: null,
+        transactionType: {neq: 'refund'},
+        paymentDate: {between: [earliestOpen, latestClose]},
+      } as object,
+      fields: {orderId: true, amount: true, paymentDate: true} as object,
+    });
+    const revenueOrderIds = [...new Set(revenuePayments.map(p => p.orderId))];
+    const revenueOrders = revenueOrderIds.length
+      ? await this.orderRepo.find({
+          where: {
+            id: {inq: revenueOrderIds},
+            storeId: {inq: storeIds},
+            status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
+          } as object,
+          fields: {
+            id: true,
+            storeId: true,
+            orderType: true,
+            subtotal: true,
+            totalAmount: true,
+          } as object,
+        })
+      : [];
+    const revenueOrderById = new Map(revenueOrders.map(o => [o.id, o]));
+
     const grouped = new Map<string, DailySalesRow>();
     // closureNo/remarks are joined across every shift in a (store, day)
     // group; cumulative-diff figures are running totals, so only the
@@ -852,17 +888,18 @@ export class ReportsService {
 
       const windowStart = shift.openedAt.getTime();
       const windowEnd = shift.closedAt.getTime();
-      const shiftOrders = orders.filter(
-        o =>
-          o.storeId === shift.storeId &&
-          o.createdAt &&
-          new Date(o.createdAt).getTime() >= windowStart &&
-          new Date(o.createdAt).getTime() <= windowEnd,
-      );
+
       let psbRevenue = 0;
       let p2dRevenue = 0;
-      for (const order of shiftOrders) {
-        const value = Number(order.subtotal) || 0;
+      for (const payment of revenuePayments) {
+        const order = revenueOrderById.get(payment.orderId);
+        if (!order || order.storeId !== shift.storeId) continue;
+        const paidAt = payment.paymentDate ? new Date(payment.paymentDate).getTime() : null;
+        if (paidAt == null || paidAt < windowStart || paidAt > windowEnd) continue;
+        const total = Number(order.totalAmount) || 0;
+        if (total <= 0) continue;
+        const fraction = Math.min(1, (Number(payment.amount) || 0) / total);
+        const value = (Number(order.subtotal) || 0) * fraction;
         if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
         else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
       }

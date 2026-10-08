@@ -779,19 +779,66 @@ export class ShiftController {
     };
   }
 
-  // Today's NEW tickets — orders created within this shift's window at
-  // this store, summed using their CURRENT totals (already net of any
-  // approved sales return, since approve() mutates the order directly).
+  // Today's revenue — keyed by when PAYMENT was actually RECEIVED against
+  // an order, not when the order was created. An order placed 1 Oct but
+  // paid at delivery on 7 Oct books its revenue on 7 Oct's shift, not 1
+  // Oct's — otherwise this figure can show revenue for money that hasn't
+  // actually come in yet, which is exactly the mismatch this report
+  // exists to prevent (see buildConsolidatedDailySales' own doc comment).
+  //
+  // A split order — paid across more than one shift (an advance now, the
+  // balance at delivery) — has its revenue/discount/taxes PRORATED by how
+  // much of the order's total that shift's payment actually represents,
+  // so the two shifts' revenue always adds up to exactly the order's full
+  // amount: nothing lost, nothing double-counted. totalSales is simply the
+  // sum of what was actually collected this window — by definition already
+  // correct with no proration needed.
+  //
+  // tickets/items/services are NOT prorated — a half-paid ticket isn't half
+  // a ticket. Each one books exactly once, on whichever shift's payment
+  // first brings its balance to zero (never again on a later top-up of an
+  // order already fully settled, e.g. a correction).
   // Shape matches SHIFT_REVENUE_COLUMNS (one column today: 'pressto').
   private async resolveRevenue(
     storeId: string,
     from: Date,
     to: Date,
   ): Promise<object> {
+    const cell = {
+      revenue: 0,
+      discount: 0,
+      taxes: 0,
+      totalSales: 0,
+      tickets: 0,
+      items: 0,
+      services: 0,
+    };
+
+    // Bounded by the window alone, regardless of how far back the orders
+    // behind these payments were created — never a store-wide, unbounded
+    // order scan.
+    const windowPayments = await this.paymentTransactionRepository.find({
+      where: {
+        riderId: null,
+        transactionType: {neq: 'refund'},
+        paymentDate: {between: [from, to]},
+      } as object,
+      fields: {orderId: true, amount: true} as object,
+    });
+    if (!windowPayments.length) return {pressto: cell};
+
+    const windowAmountByOrder = new Map<string, number>();
+    for (const payment of windowPayments) {
+      windowAmountByOrder.set(
+        payment.orderId,
+        (windowAmountByOrder.get(payment.orderId) ?? 0) + (Number(payment.amount) || 0),
+      );
+    }
+
     const orders = await this.orderRepository.find({
       where: {
+        id: {inq: [...windowAmountByOrder.keys()]},
         storeId,
-        createdAt: {between: [from, to]},
         status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
       } as object,
       fields: {
@@ -802,26 +849,52 @@ export class ShiftController {
         totalAmount: true,
       } as object,
     });
+    if (!orders.length) return {pressto: cell};
+    const touchedOrderIds = orders.map(o => o.id);
 
-    const cell = {
-      revenue: 0,
-      discount: 0,
-      taxes: 0,
-      totalSales: 0,
-      tickets: orders.length,
-      items: 0,
-      services: 0,
-    };
-    for (const order of orders) {
-      cell.revenue += Number(order.subtotal) || 0;
-      cell.discount += Number(order.discountAmount) || 0;
-      cell.taxes += Number(order.taxAmount) || 0;
-      cell.totalSales += Number(order.totalAmount) || 0;
+    // Full payment history of just these touched orders (any date) — the
+    // only way to tell a payment that newly settles an order apart from a
+    // top-up on one already fully paid before this shift opened.
+    const historyPayments = await this.paymentTransactionRepository.find({
+      where: {
+        orderId: {inq: touchedOrderIds},
+        riderId: null,
+        transactionType: {neq: 'refund'},
+      } as object,
+      fields: {orderId: true, amount: true, paymentDate: true} as object,
+    });
+    const paidBeforeWindow = new Map<string, number>();
+    for (const payment of historyPayments) {
+      if (new Date(payment.paymentDate as Date).getTime() < from.getTime()) {
+        paidBeforeWindow.set(
+          payment.orderId,
+          (paidBeforeWindow.get(payment.orderId) ?? 0) + (Number(payment.amount) || 0),
+        );
+      }
     }
 
-    if (orders.length) {
+    const settledOrderIds: string[] = [];
+    for (const order of orders) {
+      const windowAmount = windowAmountByOrder.get(order.id) ?? 0;
+      if (windowAmount <= 0) continue;
+      const total = Number(order.totalAmount) || 0;
+      const fraction = total > 0 ? Math.min(1, windowAmount / total) : 0;
+
+      cell.totalSales += windowAmount;
+      cell.revenue += (Number(order.subtotal) || 0) * fraction;
+      cell.discount += (Number(order.discountAmount) || 0) * fraction;
+      cell.taxes += (Number(order.taxAmount) || 0) * fraction;
+
+      const before = paidBeforeWindow.get(order.id) ?? 0;
+      if (total > 0 && before < total - 0.005 && before + windowAmount >= total - 0.005) {
+        settledOrderIds.push(order.id);
+      }
+    }
+
+    cell.tickets = settledOrderIds.length;
+    if (settledOrderIds.length) {
       const items = await this.orderItemRepository.find({
-        where: {orderId: {inq: orders.map(o => o.id)}} as object,
+        where: {orderId: {inq: settledOrderIds}} as object,
         fields: {quantity: true, additionalServiceIds: true} as object,
       });
       for (const item of items) {
