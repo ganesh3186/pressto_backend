@@ -2434,17 +2434,22 @@ export class OrderService {
   // The counter changing what is on an order after it was booked — a customer
   // ringing up to add a shirt, or handing over one fewer than counted.
   //
-  // Allowed up to in_inspection: past that the pieces are on the factory floor.
+  // Allowed up to in_process: past that the pieces are in quality check or
+  // further along and an edit could no longer be reconciled sensibly.
   // Takes the full desired item list and diffs it, so it mirrors the POS cart.
   // Garments are reconciled to match, and the order total is recalculated from
   // scratch using the same rules as order creation. Money is not touched — the
   // difference simply becomes balance due, collected through the normal flow.
+  // collectRemovableGarments() below is the real safety net for removals —
+  // it still refuses to drop a piece whose garment already reached
+  // in_process, regardless of this order-level gate.
 
   private static readonly ITEM_EDITABLE_STATUSES = new Set<OrderStatus>([
     OrderStatus.DRAFT,
     OrderStatus.CONFIRMED,
     OrderStatus.RECEIVED_AT_STORE,
     OrderStatus.IN_INSPECTION,
+    OrderStatus.IN_PROCESS,
   ]);
 
   async updateOrderItems(
@@ -2478,7 +2483,7 @@ export class OrderService {
     if (!OrderService.ITEM_EDITABLE_STATUSES.has(order.status as OrderStatus)) {
       throw new HttpErrors.BadRequest(
         `Items cannot be changed once the order is '${order.status}'. ` +
-          'They are editable up to inspection only.',
+          'They are editable up to processing only.',
       );
     }
 

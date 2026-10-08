@@ -18,6 +18,19 @@ interface CreateGatewayLinkBody {
   customerContact?: string;
 }
 
+// Reads the exact bytes Razorpay signed. LoopBack's body parsers would
+// decode the JSON first, and the signature has to be checked over the
+// original text, so this route deliberately bypasses them.
+function readRawBody(request: Request): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => (data += chunk));
+    request.on('end', () => resolve(data));
+    request.on('error', reject);
+  });
+}
+
 export class GatewayPaymentController {
   constructor(
     @repository(GatewayPaymentLinkRepository)
@@ -177,9 +190,8 @@ export class GatewayPaymentController {
   @response(200, {description: 'Webhook acknowledged'})
   async webhook(
     @inject(RestBindings.Http.REQUEST) request: Request,
-    @requestBody({content: {'application/json': {'x-parser': 'text', schema: {type: 'string'}}}})
-    rawBody: string,
   ): Promise<{received: boolean}> {
+    const rawBody = await readRawBody(request);
     const signature = request.headers['x-razorpay-signature'] as string | undefined;
     if (!this.razorpayService.verifyWebhookSignature(rawBody, signature)) {
       throw new HttpErrors.BadRequest('Invalid webhook signature.');

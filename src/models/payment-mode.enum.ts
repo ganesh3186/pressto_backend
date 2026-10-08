@@ -10,4 +10,5 @@ export enum PaymentMode {
   ON_ACCOUNT = 'on_account',   // B2B only — deducted from running deposit balance
   GATEWAY = 'gateway',
   WALLET = 'wallet',           // internal wallet deduction — always creates a PaymentTransaction
+  PP_VOUCHER = 'pp_voucher',   // wallet top-up only — staff-confirmed directly, no gateway/approval
 }
