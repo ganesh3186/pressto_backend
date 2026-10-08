@@ -29,6 +29,11 @@
 //   node scripts/backfill-shift-revenue-by-payment-date.js                    (dry run, default — 60 days)
 //   node scripts/backfill-shift-revenue-by-payment-date.js --apply            (writes changes — 60 days)
 //   node scripts/backfill-shift-revenue-by-payment-date.js --apply --since-days=90
+//   node scripts/backfill-shift-revenue-by-payment-date.js --apply --shift-ids=<uuid>,<uuid>
+//
+// --shift-ids narrows to exactly those shifts (ignores --since-days entirely)
+// — use this for a small, already-verified pilot run before trusting a wide
+// date-range --apply against a live database.
 //
 // Connection: DATABASE_URL if set, else PG_HOST/PG_PORT/PG_USER/PG_PASSWORD/
 // PG_DATABASE — same names this repo's own .env already uses. Point these
@@ -49,6 +54,14 @@ const { Client } = require('pg');
 const isApply = process.argv.includes('--apply');
 const sinceDaysArg = process.argv.find((a) => a.startsWith('--since-days='));
 const sinceDays = sinceDaysArg ? Number(sinceDaysArg.split('=')[1]) : 60;
+const shiftIdsArg = process.argv.find((a) => a.startsWith('--shift-ids='));
+const shiftIds = shiftIdsArg
+  ? shiftIdsArg
+      .split('=')[1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  : null;
 
 function buildClient() {
   if (process.env.DATABASE_URL) {
@@ -155,20 +168,38 @@ async function main() {
 
   try {
     const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
-    const { rows: shifts } = await client.query(
-      `select id, storeid, openedat, closedat, closing from shift
-       where status = 'closed' and closedat >= $1
-       order by closedat asc`,
-      [since]
-    );
+    const { rows: shifts } = shiftIds
+      ? await client.query(
+          `select id, storeid, openedat, closedat, closing from shift
+           where id = any($1::uuid[])
+           order by closedat asc`,
+          [shiftIds]
+        )
+      : await client.query(
+          `select id, storeid, openedat, closedat, closing from shift
+           where status = 'closed' and closedat >= $1
+           order by closedat asc`,
+          [since]
+        );
 
     if (!shifts.length) {
-      console.log(`No closed shifts found in the last ${sinceDays} days.`);
+      console.log(
+        shiftIds
+          ? `None of the given --shift-ids were found.`
+          : `No closed shifts found in the last ${sinceDays} days.`
+      );
       return;
+    }
+    if (shiftIds && shifts.length !== shiftIds.length) {
+      console.log(
+        `WARNING: asked for ${shiftIds.length} shift(s), found ${shifts.length} — some id(s) didn't match any shift.`
+      );
     }
 
     console.log(
-      `${isApply ? 'APPLYING' : '[DRY RUN]'} — recomputing revenue for ${shifts.length} shift(s) closed since ${since.toISOString()}.\n`
+      shiftIds
+        ? `${isApply ? 'APPLYING' : '[DRY RUN]'} — recomputing revenue for ${shifts.length} specific shift(s).\n`
+        : `${isApply ? 'APPLYING' : '[DRY RUN]'} — recomputing revenue for ${shifts.length} shift(s) closed since ${since.toISOString()}.\n`
     );
 
     const backupRows = [];
