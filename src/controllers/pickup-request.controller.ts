@@ -17,12 +17,17 @@ import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {
   ApprovalRequestRepository,
+  BagRepository,
   CustomerRepository,
+  ItemCategoryRepository,
+  MediaRepository,
   OrderRepository,
   PickupDeliverySlotRepository,
   PickupRequestRepository,
   RiderPincodeMappingRepository,
   RiderRepository,
+  ServiceCategoryRepository,
+  ServiceRepository,
   StoreRepository,
 } from '../repositories';
 
@@ -84,6 +89,16 @@ export class PickupRequestController {
     private orderRepository: OrderRepository,
     @repository(ApprovalRequestRepository)
     private approvalRequestRepository: ApprovalRequestRepository,
+    @repository(BagRepository)
+    private bagRepository: BagRepository,
+    @repository(MediaRepository)
+    private mediaRepository: MediaRepository,
+    @repository(ItemCategoryRepository)
+    private itemCategoryRepository: ItemCategoryRepository,
+    @repository(ServiceRepository)
+    private serviceRepository: ServiceRepository,
+    @repository(ServiceCategoryRepository)
+    private serviceCategoryRepository: ServiceCategoryRepository,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
     @inject('services.rider-assignment')
@@ -355,21 +370,102 @@ export class PickupRequestController {
   @authorize({roles: ['super_admin'], permissions: ['pickup_request:read']})
   @get('/pickup-requests/{id}')
   @response(200, {
-    description: 'One pickup request',
-    content: {'application/json': {schema: getModelSchemaRef(PickupRequest, {includeRelations: true})}},
+    description: 'One pickup request with bag numbers, media URLs, and service names',
+    content: {'application/json': {schema: {
+      allOf: [
+        getModelSchemaRef(PickupRequest, {includeRelations: true}),
+        {type: 'object', properties: {
+          suggestedRiderId: {type: 'string', nullable: true},
+          suggestedRiderName: {type: 'string', nullable: true},
+          reworkOfOrderNumber: {type: 'string', nullable: true},
+          convertedOrderNumber: {type: 'string', nullable: true},
+          bagNumber: {type: 'number', nullable: true},
+          mediaUrls: {type: 'array', items: {type: 'string'}},
+          itemCategoryEstimate: {type: 'array', items: {type: 'object', properties: {
+            itemCategoryName: {type: 'string', nullable: true},
+            serviceName: {type: 'string', nullable: true},
+          }}},
+          actualItemsByService: {type: 'array', items: {type: 'object', properties: {
+            serviceName: {type: 'string', nullable: true},
+            serviceCategoryId: {type: 'string', nullable: true},
+            serviceCategoryName: {type: 'string', nullable: true},
+            bagNumber: {type: 'number', nullable: true},
+            mediaUrls: {type: 'array', items: {type: 'string'}},
+          }}},
+        }},
+      ],
+    }}},
   })
   async findById(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
-  ): Promise<PickupRequest> {
+  ): Promise<object> {
     const pickupRequest = await this.pickupRequestRepository.findOne({
       where: {id, isDeleted: false},
-      include: [{relation: 'assignedRider'}, {relation: 'customer'}, {relation: 'store'}],
+      include: [{relation: 'assignedRider'}, {relation: 'customer'}, {relation: 'store'}, {relation: 'pickupSlot'}],
     });
     if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
     const scope = await this.storeScopeService.resolve(currentUser);
     this.assertPickupScopeVisible(scope, pickupRequest.storeId);
-    return pickupRequest;
+
+    const bagIds = [...new Set([
+      pickupRequest.bagId,
+      ...(pickupRequest.actualItemsByService ?? []).map(line => line.bagId),
+    ].filter((id): id is string => Boolean(id)))];
+    const mediaIds = [...new Set([
+      ...(pickupRequest.mediaIds ?? []),
+      ...(pickupRequest.actualItemsByService ?? []).flatMap(line => line.mediaIds ?? []),
+    ])];
+    const itemCategoryIds = [...new Set((pickupRequest.itemCategoryEstimate ?? []).map(line => line.itemCategoryId))];
+    const serviceIds = [...new Set([
+      ...(pickupRequest.itemCategoryEstimate ?? []).map(line => line.serviceId),
+      ...(pickupRequest.actualItemsByService ?? []).map(line => line.serviceId),
+    ].filter((id): id is string => Boolean(id)))];
+
+    const [bags, media, itemCategories, services, convertedOrder, enriched] = await Promise.all([
+      bagIds.length ? this.bagRepository.find({where: {id: {inq: bagIds}} as object}) : [],
+      mediaIds.length ? this.mediaRepository.find({where: {id: {inq: mediaIds}} as object}) : [],
+      itemCategoryIds.length ? this.itemCategoryRepository.find({where: {id: {inq: itemCategoryIds}} as object}) : [],
+      serviceIds.length ? this.serviceRepository.find({where: {id: {inq: serviceIds}} as object}) : [],
+      pickupRequest.convertedOrderId
+        ? this.orderRepository.findOne({where: {id: pickupRequest.convertedOrderId}, fields: {id: true, orderNumber: true} as object})
+        : null,
+      this.enrichWithSuggestedRider([pickupRequest]).then(requests => this.enrichWithReworkOrderNumber(requests)),
+    ]);
+    const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
+    const mediaUrlById = new Map(media.map(file => [file.id, file.fileUrl]));
+    const itemCategoryNameById = new Map(itemCategories.map(category => [category.id, category.name]));
+    const serviceNameById = new Map(services.map(service => [service.id, service.name]));
+    const serviceCategoryIds = [...new Set(services.map(service => service.serviceCategoryId).filter((id): id is string => Boolean(id)))];
+    const serviceCategories = serviceCategoryIds.length
+      ? await this.serviceCategoryRepository.find({where: {id: {inq: serviceCategoryIds}} as object})
+      : [];
+    const serviceCategoryNameById = new Map(serviceCategories.map(category => [category.id, category.name]));
+    const serviceCategoryIdByServiceId = new Map(services.map(service => [service.id, service.serviceCategoryId]));
+    const toUrls = (ids?: string[]) => (ids ?? []).map(id => mediaUrlById.get(id)).filter((url): url is string => Boolean(url));
+
+    return {
+      ...enriched[0],
+      convertedOrderNumber: convertedOrder?.orderNumber ?? null,
+      bagNumber: pickupRequest.bagId ? bagNumberById.get(pickupRequest.bagId) ?? null : null,
+      mediaUrls: toUrls(pickupRequest.mediaIds),
+      itemCategoryEstimate: (pickupRequest.itemCategoryEstimate ?? []).map(line => ({
+        ...line,
+        itemCategoryName: itemCategoryNameById.get(line.itemCategoryId) ?? null,
+        serviceName: line.serviceId ? serviceNameById.get(line.serviceId) ?? null : null,
+      })),
+      actualItemsByService: (pickupRequest.actualItemsByService ?? []).map(line => {
+        const serviceCategoryId = serviceCategoryIdByServiceId.get(line.serviceId);
+        return {
+          ...line,
+          serviceName: line.serviceName ?? serviceNameById.get(line.serviceId) ?? null,
+          serviceCategoryId: serviceCategoryId ?? null,
+          serviceCategoryName: serviceCategoryId ? serviceCategoryNameById.get(serviceCategoryId) ?? null : null,
+          bagNumber: line.bagId ? bagNumberById.get(line.bagId) ?? null : null,
+          mediaUrls: toUrls(line.mediaIds),
+        };
+      }),
+    };
   }
 
   // ─── Update (details + status transitions) ─────────────────────────────────

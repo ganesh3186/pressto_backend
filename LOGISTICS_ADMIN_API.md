@@ -137,7 +137,53 @@ rider via §2.6; nothing is enforced server-side.
 
 ```
 GET /pickup-requests/count?where={...}
-GET /pickup-requests/{id}     // includes assignedRider, customer, store relations
+GET /pickup-requests/{id}     // complete detail for the Pickup Management view
+```
+
+The detail response contains the `PickupRequest` fields and its
+`assignedRider`, `customer`, `store`, and `pickupSlot` relations. It also adds:
+
+- `suggestedRiderId`, `suggestedRiderName`, `reworkOfOrderNumber`, and
+  `convertedOrderNumber` for display (when applicable).
+- `bagNumber` for the legacy top-level `bagId`. A confirmed pickup can have
+  several bags; use each `actualItemsByService[].bagNumber` as the authoritative
+  number for that service line.
+- `mediaUrls` alongside the top-level `mediaIds` for general pickup attachments.
+- `itemCategoryEstimate[].itemCategoryName` and `serviceName` for the booking
+  estimate.
+- `actualItemsByService[].serviceName`, `serviceCategoryId`,
+  `serviceCategoryName`, `bagNumber`, and `mediaUrls` for rider-confirmed items.
+  The rider's note is `actualItemsByService[].remarks`; the top-level `remarks`
+  is the general pickup instruction. The original `mediaIds` and `bagId`
+  values remain in the response.
+
+`mediaUrls` are the stored `Media.fileUrl` strings returned by the existing
+file upload flow. Missing or deleted media records are omitted from the URL
+array, while their original IDs remain available in `mediaIds`.
+
+For example, the frontend receives URL **strings**, grouped with the service
+line that the rider confirmed:
+
+```json
+{
+  "pickupNumber": "PU000464",
+  "bagId": "bag-uuid-1",
+  "bagNumber": 1042,
+  "mediaIds": ["general-media-uuid"],
+  "mediaUrls": ["https://api.example.com/files/file/general.jpg"],
+  "actualItemsByService": [
+    {
+      "serviceId": "service-uuid",
+      "serviceName": "Wash & Fold",
+      "quantity": 2,
+      "remarks": "Small stain on one shirt",
+      "bagId": "bag-uuid-1",
+      "bagNumber": 1042,
+      "mediaIds": ["rider-media-uuid"],
+      "mediaUrls": ["https://api.example.com/files/file/stain.jpg"]
+    }
+  ]
+}
 ```
 
 ### 2.4 Update (details or a status transition)
