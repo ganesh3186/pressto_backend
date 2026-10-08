@@ -100,6 +100,20 @@ export class RiderPincodeMappingController {
     return {message: 'Pincodes mapped.', mappings, skipped};
   }
 
+  // ─── Count ────────────────────────────────────────────────────────────────
+  // Backs useBackendPagination on the Pincode Mapping master screen — that
+  // screen fetches by RIDER page (see find()'s riderId:{inq} filter usage),
+  // never the whole table, so this counts against the same caller-supplied
+  // where clause the list call uses.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['rider_pincode_mapping:read']})
+  @get('/rider-pincode-mappings/count')
+  @response(200, {description: 'Rider pincode mapping count'})
+  async count(@param.query.object('where') where?: object): Promise<{count: number}> {
+    return this.mappingRepository.count({...where, isDeleted: false} as object);
+  }
+
   // ─── List ─────────────────────────────────────────────────────────────────
 
   @authenticate('jwt')

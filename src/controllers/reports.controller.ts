@@ -173,7 +173,7 @@ export class ReportsController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['report_petty_cash_expense:read']})
   @get('/reports/petty-cash-expense')
-  @response(200, {description: 'Petty Cash Expense report — register entries for the window'})
+  @response(200, {description: 'Petty Cash Expense report — one row per shift closure'})
   async pettyCashExpense(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,

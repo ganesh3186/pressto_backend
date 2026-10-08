@@ -24,6 +24,7 @@ import {Customer, CustomerPersona} from '../models';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {
   CustomerLabelAssignmentRepository,
+  CustomerPhoneRepository,
   CustomerRepository,
   CustomerSecurityDepositRepository,
   RolesRepository,
@@ -60,6 +61,8 @@ export class CustomerController {
     private customerSecurityDepositRepository: CustomerSecurityDepositRepository,
     @repository(CustomerLabelAssignmentRepository)
     private customerLabelAssignmentRepository: CustomerLabelAssignmentRepository,
+    @repository(CustomerPhoneRepository)
+    private customerPhoneRepository: CustomerPhoneRepository,
     @repository(WalletRepository)
     private walletRepository: WalletRepository,
     @inject('datasources.pressto')
@@ -445,6 +448,13 @@ export class CustomerController {
             fields: {id: true, name: true, code: true},
           },
         },
+        {
+          relation: 'customerPhones',
+          scope: {
+            where: {isDeleted: false} as object,
+            fields: {id: true, countryCode: true, phone: true, isPrimary: true, isWhatsappNumber: true},
+          },
+        },
       ],
     });
   }
@@ -522,6 +532,15 @@ export class CustomerController {
         if (matchedUsers.length) {
           orClauses.push({userId: {inq: matchedUsers.map(u => u.id)}});
         }
+        // Same resolve-then-fold pattern for alternate/secondary numbers,
+        // which live in CustomerPhone (customerId FK), not on Users.
+        const matchedPhones = await this.customerPhoneRepository.find({
+          where: {phone: {like: `%${digits}%`}, isDeleted: false} as object,
+          fields: {customerId: true},
+        });
+        if (matchedPhones.length) {
+          orClauses.push({id: {inq: matchedPhones.map(p => p.customerId)}});
+        }
       }
       clauses.push({or: orClauses});
     }
@@ -567,6 +586,13 @@ export class CustomerController {
           relation: 'customerLabels',
           scope: {
             fields: {id: true, name: true, code: true},
+          },
+        },
+        {
+          relation: 'customerPhones',
+          scope: {
+            where: {isDeleted: false} as object,
+            fields: {id: true, countryCode: true, phone: true, isPrimary: true, isWhatsappNumber: true},
           },
         },
       ],

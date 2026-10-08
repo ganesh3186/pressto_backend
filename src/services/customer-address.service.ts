@@ -1,8 +1,10 @@
-import {BindingScope, injectable} from '@loopback/core';
+import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
-import {CustomerAddress} from '../models';
+import {Customer, CustomerAddress} from '../models';
 import {CustomerAddressRepository, CustomerRepository} from '../repositories';
+import {StoreAssignmentService} from './store-assignment.service';
+import {GeocodingService, hasRealCoordinates} from './geocoding.service';
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class CustomerAddressService {
@@ -11,10 +13,14 @@ export class CustomerAddressService {
     private addressRepository: CustomerAddressRepository,
     @repository(CustomerRepository)
     private customerRepository: CustomerRepository,
+    @inject('services.store-assignment')
+    private storeAssignmentService: StoreAssignmentService,
+    @inject('services.geocoding')
+    private geocodingService: GeocodingService,
   ) {}
 
   async create(customerId: string, data: Partial<CustomerAddress>): Promise<CustomerAddress> {
-    await this.customerRepository.findById(customerId);
+    const customer = await this.customerRepository.findById(customerId);
 
     if (data.isDefault) {
       await this.addressRepository.updateAll(
@@ -23,7 +29,47 @@ export class CustomerAddressService {
       );
     }
 
-    return this.addressRepository.create({...data, customerId});
+    const address = await this.addressRepository.create({...data, customerId});
+
+    // Same fallback as CustomerProfileController.createPickupRequest — an
+    // address saved without the frontend's location picker has no usable
+    // coordinates (missing, or the (0,0) "Null Island" placeholder — see
+    // hasRealCoordinates), so geocode it here too rather than silently
+    // never auto-assigning a store for this customer.
+    if (!hasRealCoordinates(address.latitude, address.longitude)) {
+      const geocoded = await this.geocodingService.geocodeAddress(
+        this.toDisplaySnapshot(address),
+      );
+      if (geocoded) {
+        await this.addressRepository.updateById(address.id, {
+          latitude: geocoded.latitude,
+          longitude: geocoded.longitude,
+        });
+        address.latitude = geocoded.latitude;
+        address.longitude = geocoded.longitude;
+      }
+    }
+
+    // Self-registered customers have no admin-assigned store. The first
+    // address with real coordinates gets one auto-assigned (nearest store
+    // within STORE_ASSIGNMENT_RADIUS_KM) so store-scoped features have
+    // somewhere to resolve to — never overrides a store an admin, or an
+    // earlier address, already set.
+    if (!customer.preferredStoreId && hasRealCoordinates(address.latitude, address.longitude)) {
+      // hasRealCoordinates just confirmed both are set and non-(0,0) — TS
+      // can't narrow through a plain function call, hence the assertions.
+      const {nearestWithinRadius} = await this.storeAssignmentService.resolveForCoordinates(
+        address.latitude!,
+        address.longitude!,
+      );
+      if (nearestWithinRadius) {
+        await this.customerRepository.updateById(customerId, {
+          preferredStoreId: nearestWithinRadius.id,
+        } as Partial<Customer>);
+      }
+    }
+
+    return address;
   }
 
   async findAll(customerId: string): Promise<CustomerAddress[]> {

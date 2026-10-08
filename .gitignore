@@ -57,6 +57,10 @@ typings/
 # dotenv environment variables file
 .env
 
+# Firebase service account credentials — real key pasted in locally,
+# never committed. See .env.example's FIREBASE_SERVICE_ACCOUNT_PATH.
+firebase-service-account.json
+
 # Transpiled JavaScript files from Typescript
 /dist
 

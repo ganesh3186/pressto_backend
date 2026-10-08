@@ -3,11 +3,13 @@ import {Coupon} from './coupon.model';
 import {Customer} from './customer.model';
 import {Order} from './order.model';
 
-// Append-only audit row — one per order that used a coupon. Authoritative
-// record of "who used what coupon, on which order, for how much", used to
-// enforce maxUsesPerCustomer/maxUsesTotal and to power the admin
-// redemption-history view. isReversed/reversedAt are reserved for a
-// future order-cancellation integration — nothing sets them yet.
+// Append-only audit row — one per (order, coupon) pair; an order that
+// combined several coupons (OrderService.createOrder's couponCodes) gets
+// one row per coupon. Authoritative record of "who used what coupon, on
+// which order, for how much", used to enforce maxUsesPerCustomer/
+// maxUsesTotal and to power the admin redemption-history view.
+// isReversed/reversedAt are reserved for a future order-cancellation
+// integration — nothing sets them yet.
 @model({
   settings: {
     postgresql: {table: 'coupon_redemption', schema: 'public'},

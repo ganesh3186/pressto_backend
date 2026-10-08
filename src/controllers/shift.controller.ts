@@ -11,12 +11,12 @@ import {
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
-import {Shift} from '../models/shift.model';
-import {ShiftStatus} from '../models/shift-status.enum';
+import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
-import {OrderStatus} from '../models/order-status.enum';
 import {SalesReturnStatus} from '../models/sales-return.model';
+import {ShiftStatus} from '../models/shift-status.enum';
+import {Shift} from '../models/shift.model';
 import {
   EmployeeRepository,
   GstTaxConfigurationRepository,
@@ -152,12 +152,13 @@ export class ShiftController {
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
   /**
-   * The caller's own (userId, storeId, storeName/Code). A role with a fixed
-   * Employee.storeId is always locked to it — requestedStoreId is ignored
-   * for them, so a store_exec can never claim a shift at a store they don't
-   * work at. Only a store-unbound role (manager, super_admin — no Employee
-   * row, or one with no storeId) falls through to requestedStoreId, which
-   * is the one and only place a client-supplied store is trusted.
+   * The caller's own (userId, storeId, storeName/Code). A store-bound
+   * employee is locked to their own store(s) — requestedStoreId is only
+   * consulted when they're bound to none, or to disambiguate when bound to
+   * several (see StoreScopeService.resolveCallerStoreId), so a store_exec
+   * can never claim a shift at a store they don't work at. Only a
+   * store-unbound role (manager, super_admin — no Employee row, or one
+   * with no stores) falls through to a bare requestedStoreId.
    */
   private async resolveCallerStore(
     currentUser: UserProfile,
@@ -168,12 +169,10 @@ export class ShiftController {
       where: {userId, isDeleted: false} as object,
     });
 
-    const storeId = employee?.storeId ?? requestedStoreId;
-    if (!storeId) {
-      throw new HttpErrors.BadRequest(
-        'Select a store — your account is not linked to one.',
-      );
-    }
+    const storeId = await this.storeScopeService.resolveCallerStoreId(
+      userId,
+      requestedStoreId,
+    );
 
     const store = await this.storeRepository.findOne({where: {id: storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
@@ -312,11 +311,22 @@ export class ShiftController {
       Number(input.ppVoucher.actualVoucher || 0) -
       Number(input.ppVoucher.currSupVoucher || 0);
 
-    const currSupCashInTill = Math.round(
+    // Physical cash in the till can only ever be whole rupees, so the
+    // admin-panel's closing form rounds cashReceived - reimbursement to
+    // the nearest rupee before adding it (see roundCashAmount /
+    // recalcClosingForm in shift-module.js) — matched here exactly.
+    // Without this, a paise-carrying cashReceived (routine — payment
+    // totals aren't whole rupees) made this server-side recomputation
+    // disagree with what the form showed the user as already balanced,
+    // rejecting a close the user was correctly told was fine. The
+    // frontend rounds to nearest (Math.round), not always up — this must
+    // track that exactly or the two sides only agree by coincidence.
+    const currSupCashInTill =
       Number(input.register.prevActCashInTill || 0) +
+      Math.round(
         Number(input.register.cashReceived || 0) -
-        Number(input.register.reimbursement || 0),
-    );
+          Number(input.register.reimbursement || 0),
+      );
 
     const actualCashInTillDifference =
       Math.round(Number(input.actualCashInTill.actual || 0)) -
@@ -641,7 +651,14 @@ export class ShiftController {
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
 
     const windowEnd = shift.closedAt ?? new Date();
-    const collections = {cash: 0, card: 0, cheque: 0, pgLink: 0, upi: 0, wallet: 0};
+    const collections = {
+      cash: 0,
+      card: 0,
+      cheque: 0,
+      pgLink: 0,
+      upi: 0,
+      wallet: 0,
+    };
     let cashReimbursement = 0;
 
     const orders = await this.orderRepository.find({

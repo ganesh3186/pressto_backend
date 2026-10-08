@@ -48,6 +48,8 @@ import { CustomerAddressService } from '../services/customer-address.service';
 import { CustomerContactService } from '../services/customer-contact.service';
 import { CustomerPhoneService } from '../services/customer-phone.service';
 import { CustomerPreferenceChanges, CustomerPreferenceService } from '../services/customer-preference.service';
+import { NearbyStore, StoreAssignmentService } from '../services/store-assignment.service';
+import { GeocodingService, hasRealCoordinates } from '../services/geocoding.service';
 import { filterSlotsForDate } from '../utils/pickup-slot-availability';
 
 export class CustomerProfileController {
@@ -81,7 +83,11 @@ export class CustomerProfileController {
     @inject('services.coupon')
     private couponService: CouponService,
     @repository(ServiceCategoryRepository)
-    private serviceCategoryRepository: ServiceCategoryRepository
+    private serviceCategoryRepository: ServiceCategoryRepository,
+    @inject('services.store-assignment')
+    private storeAssignmentService: StoreAssignmentService,
+    @inject('services.geocoding')
+    private geocodingService: GeocodingService
   ) { }
 
   private async resolveCustomer(userId: string): Promise<Customer> {
@@ -681,6 +687,52 @@ export class CustomerProfileController {
       }
     }
 
+    // No store within radius means this address can't be serviced by a
+    // pickup today. The request is still recorded, tagged NOT_SERVICEABLE
+    // with no storeId, rather than rejected outright, so ops has
+    // visibility and the customer app can still point at nearby stores
+    // for a walk-in drop-off.
+    const addressHasRealCoordinates = hasRealCoordinates(address.latitude, address.longitude);
+    let addressLat = addressHasRealCoordinates ? address.latitude : undefined;
+    let addressLng = addressHasRealCoordinates ? address.longitude : undefined;
+    // Older addresses (or ones saved without the frontend's location
+    // picker) have no usable coordinates — missing, or the (0,0) "Null
+    // Island" placeholder (see hasRealCoordinates) — and
+    // resolveForCoordinates needs a real point to compute anything.
+    // Without this fallback those customers got NOT_SERVICEABLE with an
+    // EMPTY nearby-stores list: no assignment and nothing to offer as an
+    // alternative either. Geocode the address text on the fly instead,
+    // and save the result onto the address so this only ever has to
+    // happen once per address.
+    if (!addressHasRealCoordinates) {
+      const geocoded = await this.geocodingService.geocodeAddress(
+        this.addressService.toDisplaySnapshot(address),
+      );
+      if (geocoded) {
+        addressLat = geocoded.latitude;
+        addressLng = geocoded.longitude;
+        await this.addressService.update(address.id, {
+          latitude: geocoded.latitude,
+          longitude: geocoded.longitude,
+        });
+      }
+    }
+
+    let storeId: string | undefined;
+    let nearbyStores: NearbyStore[] = [];
+    if (addressLat != null && addressLng != null) {
+      const resolved = await this.storeAssignmentService.resolveForCoordinates(
+        addressLat,
+        addressLng,
+      );
+      if (resolved.nearestWithinRadius) {
+        storeId = resolved.nearestWithinRadius.id;
+      } else {
+        nearbyStores = resolved.nearbyBeyondRadius;
+      }
+    }
+    const status = storeId ? undefined : PickupRequestStatus.NOT_SERVICEABLE;
+
     const { v4 } = await import('uuid');
     const count = await this.pickupRequestRepository.count();
     const pickupNumber = `PU${String(count.count + 1).padStart(6, '0')}`;
@@ -693,6 +745,8 @@ export class CustomerProfileController {
       customerMobile: user.phone,
       address: this.addressService.toDisplaySnapshot(address),
       pincode: address.pincode,
+      storeId,
+      status,
       requestedDate: body.requestedDate,
       slot: slot.label,
       pickupSlotId: slot.id,
@@ -704,7 +758,13 @@ export class CustomerProfileController {
       remarks,
       mediaIds,
     });
-    return { message: 'Pickup request created.', pickupRequest };
+    return status === PickupRequestStatus.NOT_SERVICEABLE
+      ? {
+          message: 'Pickup is not available at this address yet. You can drop items off at a nearby store instead.',
+          pickupRequest,
+          nearbyStores,
+        }
+      : { message: 'Pickup request created.', pickupRequest };
   }
 
   @authenticate('jwt')

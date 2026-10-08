@@ -1,6 +1,6 @@
 import { AuthenticationComponent, registerAuthenticationStrategy } from '@loopback/authentication';
 import { BootMixin } from '@loopback/boot';
-import { ApplicationConfig } from '@loopback/core';
+import { ApplicationConfig, BindingScope } from '@loopback/core';
 import { RepositoryMixin } from '@loopback/repository';
 import { RestApplication } from '@loopback/rest';
 import {
@@ -35,9 +35,13 @@ import { CouponService } from './services/coupon.service';
 import { CustomerPreferenceService } from './services/customer-preference.service';
 import { PettyCashService } from './services/petty-cash.service';
 import { DashboardService } from './services/dashboard.service';
+import { StoreDashboardService } from './services/store-dashboard.service';
 import { ReportsService } from './services/reports.service';
 import { RiderAssignmentService } from './services/rider-assignment.service';
 import { RazorpayService } from './services/razorpay.service';
+import { StoreAssignmentService } from './services/store-assignment.service';
+import { NotificationService } from './services/notification.service';
+import { GeocodingService } from './services/geocoding.service';
 
 export { ApplicationConfig };
 
@@ -101,9 +105,26 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.customer-preference').toClass(CustomerPreferenceService);
     this.bind('services.petty-cash').toClass(PettyCashService);
     this.bind('services.dashboard').toClass(DashboardService);
+    this.bind('services.store-dashboard').toClass(StoreDashboardService);
     this.bind('services.reports').toClass(ReportsService);
     this.bind('services.rider-assignment').toClass(RiderAssignmentService);
     this.bind('services.razorpay').toClass(RazorpayService);
+    this.bind('services.store-assignment').toClass(StoreAssignmentService);
+    // NotificationService must stay a true singleton: getFirebaseApp() relies on
+    // instance state (this.app) to avoid re-initializing Firebase every call. A
+    // manual .toClass() binding defaults to TRANSIENT scope even though the class
+    // itself is decorated @injectable({scope: SINGLETON}) — that decorator's scope
+    // is only picked up by convention-based binding (app.service()/component
+    // discovery), not by an explicit .bind().toClass() call. Without .inScope()
+    // here, every injection created a fresh instance with app = null, and each one
+    // called Firebase's initializeApp('rider-notifications', ...) again — colliding
+    // with the still-registered app from the previous instance and failing every
+    // send after the first one in the process's lifetime with 'app/invalid-app-options'.
+    this.bind('services.notification').toClass(NotificationService).inScope(BindingScope.SINGLETON);
+    // Same singleton-scope requirement as NotificationService above —
+    // GeocodingService tracks a one-time "key missing" warning in instance
+    // state, so it needs .inScope() explicitly for the same reason.
+    this.bind('services.geocoding').toClass(GeocodingService).inScope(BindingScope.SINGLETON);
   }
 
   protected configureFileUpload(destination?: string) {

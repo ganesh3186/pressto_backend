@@ -15,7 +15,10 @@ import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {Employee, Users} from '../models';
 import {
+  EmployeeClusterRepository,
+  EmployeeRegionRepository,
   EmployeeRepository,
+  EmployeeStoreRepository,
   RolesRepository,
   UserRolesRepository,
   UsersRepository,
@@ -34,6 +37,12 @@ export class EmployeeController {
     private rolesRepository: RolesRepository,
     @repository(UserRolesRepository)
     private userRolesRepository: UserRolesRepository,
+    @repository(EmployeeStoreRepository)
+    private employeeStoreRepository: EmployeeStoreRepository,
+    @repository(EmployeeClusterRepository)
+    private employeeClusterRepository: EmployeeClusterRepository,
+    @repository(EmployeeRegionRepository)
+    private employeeRegionRepository: EmployeeRegionRepository,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
     @inject('service.hasher')
@@ -41,6 +50,93 @@ export class EmployeeController {
     @inject('service.media.service')
     private mediaService: MediaService,
   ) {}
+
+  /**
+   * Replaces an employee's ADDITIONAL store/cluster/region bindings
+   * wholesale — the client's "assign multiple stores/clusters/regions"
+   * request, on top of the primary storeId/clusterId/regionId,
+   * which stays the single "default" binding used everywhere that auto-
+   * resolves a caller's one store (shift open, petty cash, New Order — see
+   * StoreScopeService.resolveCallerStoreId). Each of the three ids arrays
+   * is independent and only touched when the caller actually sends it —
+   * undefined means "leave this dimension alone" (same convention as
+   * order.controller.ts's orderLabelIds), an empty array means "clear it".
+   * A primary id is never duplicated into its own additional-ids table —
+   * StoreScopeService already unions the primary field back in when
+   * resolving scope, so a duplicate row here would only risk drifting out
+   * of sync with it.
+   */
+  private async syncAdditionalScopeBindings(
+    employeeId: string,
+    ids: {storeIds?: string[]; clusterIds?: string[]; regionIds?: string[]},
+    primary: {storeId?: string | null; clusterId?: string | null; regionId?: string | null},
+    tx?: unknown,
+  ): Promise<void> {
+    const options = tx ? {transaction: tx as never} : undefined;
+    const {v4} = await import('uuid');
+
+    if (ids.storeIds !== undefined) {
+      await this.employeeStoreRepository.deleteAll({employeeId} as object, options);
+      for (const storeId of new Set(ids.storeIds)) {
+        if (!storeId || storeId === primary.storeId) continue;
+        await this.employeeStoreRepository.create({id: v4(), employeeId, storeId}, options);
+      }
+    }
+    if (ids.clusterIds !== undefined) {
+      await this.employeeClusterRepository.deleteAll({employeeId} as object, options);
+      for (const clusterId of new Set(ids.clusterIds)) {
+        if (!clusterId || clusterId === primary.clusterId) continue;
+        await this.employeeClusterRepository.create({id: v4(), employeeId, clusterId}, options);
+      }
+    }
+    if (ids.regionIds !== undefined) {
+      await this.employeeRegionRepository.deleteAll({employeeId} as object, options);
+      for (const regionId of new Set(ids.regionIds)) {
+        if (!regionId || regionId === primary.regionId) continue;
+        await this.employeeRegionRepository.create({id: v4(), employeeId, regionId}, options);
+      }
+    }
+  }
+
+  /**
+   * Flattens each employee's EmployeeStore/EmployeeCluster/EmployeeRegion rows
+   * into additionalStoreIds/additionalClusterIds/additionalRegionIds arrays on
+   * the response — the read-side mirror of syncAdditionalScopeBindings, so the
+   * admin-panel edit form can hydrate an employee's existing extra bindings
+   * (not exposed as LoopBack relations since Employee has no hasMany side
+   * defined for these join tables; a flat array matches the write contract
+   * anyway).
+   */
+  private async attachAdditionalScopeIds(employees: Employee[]): Promise<Record<string, unknown>[]> {
+    const ids = employees.map(e => e.id);
+    if (!ids.length) return [];
+
+    const [storeRows, clusterRows, regionRows] = await Promise.all([
+      this.employeeStoreRepository.find({where: {employeeId: {inq: ids}}}),
+      this.employeeClusterRepository.find({where: {employeeId: {inq: ids}}}),
+      this.employeeRegionRepository.find({where: {employeeId: {inq: ids}}}),
+    ]);
+
+    const groupBy = (rows: {employeeId: string}[], idKey: string): Map<string, string[]> => {
+      const map = new Map<string, string[]>();
+      for (const row of rows) {
+        const list = map.get(row.employeeId) ?? [];
+        list.push((row as unknown as Record<string, string>)[idKey]);
+        map.set(row.employeeId, list);
+      }
+      return map;
+    };
+    const storeMap = groupBy(storeRows, 'storeId');
+    const clusterMap = groupBy(clusterRows, 'clusterId');
+    const regionMap = groupBy(regionRows, 'regionId');
+
+    return employees.map(e => ({
+      ...e.toJSON(),
+      additionalStoreIds: storeMap.get(e.id) ?? [],
+      additionalClusterIds: clusterMap.get(e.id) ?? [],
+      additionalRegionIds: regionMap.get(e.id) ?? [],
+    }));
+  }
 
   private async generateUniqueUsername(email: string): Promise<string> {
     const base = email.split('@')[0].toLowerCase();
@@ -93,6 +189,13 @@ export class EmployeeController {
               // roles use storeId above instead. See Employee.clusterId/regionId.
               clusterId: {type: 'string', format: 'uuid', nullable: true},
               regionId: {type: 'string', format: 'uuid', nullable: true},
+              // Additional stores/clusters/regions beyond the primary one
+              // above — e.g. a store_exec who covers two stores, or an ASM
+              // whose cluster assignment spans several clusters. See
+              // EmployeeStore/EmployeeCluster/EmployeeRegion.
+              additionalStoreIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              additionalClusterIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              additionalRegionIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               city: {type: 'string'},
@@ -125,6 +228,9 @@ export class EmployeeController {
       storeId?: string | null;
       clusterId?: string | null;
       regionId?: string | null;
+      additionalStoreIds?: string[];
+      additionalClusterIds?: string[];
+      additionalRegionIds?: string[];
       addressLine1: string;
       addressLine2?: string;
       city: string;
@@ -253,6 +359,17 @@ export class EmployeeController {
         {transaction: tx},
       );
 
+      await this.syncAdditionalScopeBindings(
+        employee.id,
+        {
+          storeIds: body.additionalStoreIds,
+          clusterIds: body.additionalClusterIds,
+          regionIds: body.additionalRegionIds,
+        },
+        {storeId: body.storeId, clusterId: body.clusterId, regionId: body.regionId},
+        tx,
+      );
+
       for (const role of roles) {
         // An existing login may already hold some of these — adding the same
         // role twice would leave duplicate rows behind.
@@ -330,7 +447,7 @@ export class EmployeeController {
     @param.query.string('status') status?: string,
     @param.query.string('role') role?: string,
     @param.query.string('storeId') storeId?: string,
-  ): Promise<Employee[]> {
+  ): Promise<Record<string, unknown>[]> {
     const where = await this._buildEmployeeWhere({search, status, role, storeId, extraWhere: filter?.where});
     const results = await this.employeeRepository.find({
       ...filter,
@@ -350,7 +467,7 @@ export class EmployeeController {
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
-    return results.map(e => this.stripNonStaffRoles(e));
+    return this.attachAdditionalScopeIds(results.map(e => this.stripNonStaffRoles(e)));
   }
 
   @authenticate('jwt')
@@ -441,7 +558,7 @@ export class EmployeeController {
   async findById(
     @param.path.string('id') id: string,
     @param.filter(Employee, {exclude: 'where'}) filter?: FilterExcludingWhere<Employee>,
-  ): Promise<Employee> {
+  ): Promise<Record<string, unknown>> {
     const result = await this.employeeRepository.findById(id, {
       ...filter,
       include: [
@@ -456,7 +573,8 @@ export class EmployeeController {
         {relation: 'store', scope: {fields: {id: true, name: true, code: true}}},
       ],
     });
-    return this.stripNonStaffRoles(result);
+    const [withAdditionalIds] = await this.attachAdditionalScopeIds([this.stripNonStaffRoles(result)]);
+    return withAdditionalIds;
   }
 
   @authenticate('jwt')
@@ -499,6 +617,12 @@ export class EmployeeController {
               // roles use storeId above instead. See Employee.clusterId/regionId.
               clusterId: {type: 'string', format: 'uuid', nullable: true},
               regionId: {type: 'string', format: 'uuid', nullable: true},
+              // Additional stores/clusters/regions beyond the primary one
+              // above. undefined = leave alone, [] = clear. See
+              // syncAdditionalScopeBindings.
+              additionalStoreIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              additionalClusterIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              additionalRegionIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
               addressLine1: {type: 'string'},
               addressLine2: {type: 'string'},
               city: {type: 'string'},
@@ -530,6 +654,9 @@ export class EmployeeController {
       storeId?: string | null;
       clusterId?: string | null;
       regionId?: string | null;
+      additionalStoreIds?: string[];
+      additionalClusterIds?: string[];
+      additionalRegionIds?: string[];
       addressLine1?: string;
       addressLine2?: string;
       city?: string;
@@ -620,6 +747,25 @@ export class EmployeeController {
           );
         }
       }
+
+      // Effective primary ids: whatever this request just set, else the
+      // employee's existing value — needed so a primary id already on
+      // record (not touched by this particular edit) still gets excluded
+      // from the additional-ids table, same as create()'s own dedup.
+      await this.syncAdditionalScopeBindings(
+        id,
+        {
+          storeIds: rest.additionalStoreIds,
+          clusterIds: rest.additionalClusterIds,
+          regionIds: rest.additionalRegionIds,
+        },
+        {
+          storeId: rest.storeId !== undefined ? rest.storeId : employee.storeId,
+          clusterId: rest.clusterId !== undefined ? rest.clusterId : employee.clusterId,
+          regionId: rest.regionId !== undefined ? rest.regionId : employee.regionId,
+        },
+        tx,
+      );
 
       await tx.commit();
     } catch (error) {

@@ -45,12 +45,14 @@ import {
   reprocessWindowDays,
 } from '../models/reprocess-reason.enum';
 import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
+import {EditOrderUnitInput} from '../services/order-item-edit-units';
 import {ReprocessContactChannel, ReprocessService} from '../services/reprocess.service';
 import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {CustomerAddressService} from '../services/customer-address.service';
 import {RiderAssignmentService} from '../services/rider-assignment.service';
+import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
 import {PickupDeliverySlotRepository} from '../repositories/pickup-delivery-slot.repository';
 
 const PAYMENT_ITEM_SCHEMA = {
@@ -98,6 +100,19 @@ const ORDER_UNIT_SCHEMA = {
     rejectedAtIntake: {type: 'boolean' as const},
     rejectionReason: {type: 'string' as const},
     rejectionRemarks: {type: 'string' as const},
+  },
+};
+
+// PUT /orders/{id}/items unit: same selections as creation, plus the garment id of
+// an existing piece so its own services/charges/measurements are updated.
+const EDIT_ORDER_UNIT_SCHEMA = {
+  ...ORDER_UNIT_SCHEMA,
+  properties: {
+    ...ORDER_UNIT_SCHEMA.properties,
+    id: {
+      type: 'string' as const,
+      description: 'Garment id of an existing piece; omit for a piece added in this edit.',
+    },
   },
 };
 
@@ -161,6 +176,8 @@ export class OrderController {
     private dataSource: PresstoDataSource,
     @inject('services.rider-assignment')
     private riderAssignmentService: RiderAssignmentService,
+    @inject('services.notification')
+    private notificationService: NotificationService,
   ) {}
 
   // Cheque/PDC legs never got a PaymentTransaction (see order.service.ts's
@@ -467,6 +484,31 @@ export class OrderController {
       }
     }
 
+    // A direct single-order rider (re)assignment, distinct from the bulk
+    // assignDelivery() flow above — same notify-new/notify-old-if-changed
+    // shape. Not awaited — a slow/unreachable FCM call must never delay
+    // this response (notifyRider already swallows its own errors).
+    if (assignedRiderId !== undefined && assignedRiderId !== order.assignedRiderId) {
+      Promise.all([
+        this.notificationService.notifyRider(assignedRiderId, {
+          type: RIDER_NOTIFICATION_TYPES.DELIVERY_ASSIGNED,
+          title: 'New delivery assigned',
+          body: `A delivery has been assigned to you for order ${order.orderNumber ?? ''}.`,
+          data: {orderId: id},
+        }),
+        ...(order.assignedRiderId
+          ? [
+              this.notificationService.notifyRider(order.assignedRiderId, {
+                type: RIDER_NOTIFICATION_TYPES.DELIVERY_REASSIGNED,
+                title: 'Delivery reassigned',
+                body: `Order ${order.orderNumber ?? ''} has been reassigned to another rider.`,
+                data: {orderId: id},
+              }),
+            ]
+          : []),
+      ]).catch(() => {});
+    }
+
     return {message: 'Order updated.'};
   }
 
@@ -701,6 +743,34 @@ export class OrderController {
       }
 
       await tx.commit();
+
+      // Not awaited — a slow/unreachable FCM call must never delay this
+      // response. NotificationService already swallows its own errors.
+      const previousRiderIds = new Set(
+        orders
+          .map(o => o.assignedRiderId)
+          .filter((riderId): riderId is string => Boolean(riderId) && riderId !== body.riderId),
+      );
+      Promise.all([
+        this.notificationService.notifyRider(body.riderId, {
+          type: RIDER_NOTIFICATION_TYPES.DELIVERY_ASSIGNED,
+          title: 'New delivery assigned',
+          body:
+            orders.length > 1
+              ? `${orders.length} deliveries assigned to you for ${deliverySlot}.`
+              : `A delivery has been assigned to you for ${deliverySlot}.`,
+          data: {deliveryId: delivery.id, deliveryNumber, orderIds: body.orderIds.join(',')},
+        }),
+        ...[...previousRiderIds].map(oldRiderId =>
+          this.notificationService.notifyRider(oldRiderId, {
+            type: RIDER_NOTIFICATION_TYPES.DELIVERY_REASSIGNED,
+            title: 'Delivery reassigned',
+            body: 'A delivery previously assigned to you has been reassigned to another rider.',
+            data: {deliveryId: delivery.id, deliveryNumber},
+          }),
+        ),
+      ]).catch(() => {});
+
       return {
         message: 'Orders assigned for delivery.',
         assignedCount: orders.length,
@@ -833,6 +903,14 @@ export class OrderController {
                     specialInstructions: {type: 'string'},
                     specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
                     remarks: {type: 'string'},
+                    units: {
+                      type: 'array',
+                      items: EDIT_ORDER_UNIT_SCHEMA,
+                      description:
+                        'Optional per-piece selections, one per unit of quantity. Per-unit ' +
+                        'additionalServiceIds/additionalChargeIds override the line-level lists; ' +
+                        'without units every piece gets the line-level lists.',
+                    },
                   },
                 },
               },
@@ -851,6 +929,7 @@ export class OrderController {
         specialInstructions?: string;
         specialInstructionMediaIds?: string[];
         remarks?: string;
+        units?: EditOrderUnitInput[];
       }[];
     },
   ): Promise<object> {

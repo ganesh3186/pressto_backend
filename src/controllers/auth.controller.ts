@@ -227,21 +227,27 @@ export class AuthController {
       where: { userId: user.id, isDeleted: false },
       fields: { id: true, storeId: true, clusterId: true, regionId: true, firstName: true, lastName: true },
     });
-    // Only a genuinely store-scoped employee has an authoritative "their one
-    // store" — a cluster/region-scoped employee can carry a stale storeId
+    // Only a genuinely store-scoped employee has an authoritative "their
+    // store(s)" — a cluster/region-scoped employee can carry a stale storeId
     // left over from before their role was re-scoped, and exposing it here
     // would make the frontend (e.g. New Order's store auto-assign) wrongly
     // pin them to that one old store instead of letting them work across
-    // their whole cluster/region.
-    const singleStoreId = storeScope.scopeLevel === 'store' ? employee?.storeId ?? null : null;
-    // Same reasoning, one level up: a cluster-scoped employee's clusterId is
-    // authoritative for building a "filter by store within my cluster" UI; a
-    // region-scoped employee's regionId is authoritative for "filter by
-    // cluster/store within my region". Neither is meaningful outside its own
-    // scope level, so — like storeId — only expose the one that actually
-    // applies.
-    const scopedClusterId = storeScope.scopeLevel === 'cluster' ? employee?.clusterId ?? null : null;
-    const scopedRegionId = storeScope.scopeLevel === 'region' ? employee?.regionId ?? null : null;
+    // their whole cluster/region. An employee can now be bound to several
+    // stores/clusters/regions (see StoreScopeService's EmployeeStore/
+    // EmployeeCluster/EmployeeRegion) — the singular id* fields below stay
+    // backward-compatible (null unless there's exactly ONE, so existing
+    // frontend auto-pin logic is untouched for the common single case); the
+    // new id*s arrays carry the full bound set for a multi-store employee's
+    // UI to build a picker from.
+    const boundStoreIds =
+      employee && storeScope.scopeLevel === 'store' ? await this.storeScopeService.allStoreIdsForEmployee(employee) : [];
+    const boundClusterIds =
+      employee && storeScope.scopeLevel === 'cluster' ? await this.storeScopeService.allClusterIdsForEmployee(employee) : [];
+    const boundRegionIds =
+      employee && storeScope.scopeLevel === 'region' ? await this.storeScopeService.allRegionIdsForEmployee(employee) : [];
+    const singleStoreId = boundStoreIds.length === 1 ? boundStoreIds[0] : null;
+    const scopedClusterId = boundClusterIds.length === 1 ? boundClusterIds[0] : null;
+    const scopedRegionId = boundRegionIds.length === 1 ? boundRegionIds[0] : null;
 
     // Same reasoning as /auth/me: Users.fullName is the account's own name,
     // not necessarily the profile name kept current via Employee/Customer
@@ -286,9 +292,12 @@ export class AuthController {
         roles: [roleValue],
         permissions,
         storeId: singleStoreId,
+        storeIds: boundStoreIds,
         scopeLevel: storeScope.scopeLevel,
         clusterId: scopedClusterId,
+        clusterIds: boundClusterIds,
         regionId: scopedRegionId,
+        regionIds: boundRegionIds,
       },
     };
   }
@@ -361,12 +370,19 @@ export class AuthController {
     });
     // Same reasoning as login: only expose storeId when the role is actually
     // store-scoped, or a cluster/region-scoped employee's stale leftover
-    // storeId gets treated as authoritative by the frontend.
+    // storeId gets treated as authoritative by the frontend. See login's own
+    // comment for why this is now a bound SET, not just the primary field.
     const roles = (currentUser.roles as string[]) ?? [];
     const storeScope = await this.storeScopeService.resolveForUser(String(userId), roles);
-    const singleStoreId = storeScope.scopeLevel === 'store' ? employee?.storeId ?? null : null;
-    const scopedClusterId = storeScope.scopeLevel === 'cluster' ? employee?.clusterId ?? null : null;
-    const scopedRegionId = storeScope.scopeLevel === 'region' ? employee?.regionId ?? null : null;
+    const boundStoreIds =
+      employee && storeScope.scopeLevel === 'store' ? await this.storeScopeService.allStoreIdsForEmployee(employee) : [];
+    const boundClusterIds =
+      employee && storeScope.scopeLevel === 'cluster' ? await this.storeScopeService.allClusterIdsForEmployee(employee) : [];
+    const boundRegionIds =
+      employee && storeScope.scopeLevel === 'region' ? await this.storeScopeService.allRegionIdsForEmployee(employee) : [];
+    const singleStoreId = boundStoreIds.length === 1 ? boundStoreIds[0] : null;
+    const scopedClusterId = boundClusterIds.length === 1 ? boundClusterIds[0] : null;
+    const scopedRegionId = boundRegionIds.length === 1 ? boundRegionIds[0] : null;
 
     // Users.fullName is the account's own name — but for a staff or customer
     // session it should reflect that PROFILE's name (kept up to date via
@@ -397,9 +413,12 @@ export class AuthController {
       roles: currentUser.roles,
       employeeId: employee?.id ?? null,
       storeId: singleStoreId,
+      storeIds: boundStoreIds,
       scopeLevel: storeScope.scopeLevel,
       clusterId: scopedClusterId,
+      clusterIds: boundClusterIds,
       regionId: scopedRegionId,
+      regionIds: boundRegionIds,
     };
   }
 

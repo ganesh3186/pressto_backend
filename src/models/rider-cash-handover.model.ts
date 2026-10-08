@@ -23,6 +23,9 @@ import {RiderCashHandoverTargetType} from './rider-cash-handover-target-type.enu
     postgresql: {table: 'rider_cash_handover', schema: 'public'},
     indexes: {
       uniqueHandoverNumber: {keys: ['handoverNumber'], options: {unique: true}},
+      riderCashHandoverStoreStatusConfirmed: {
+        keys: ['handoverToStoreId', 'status', 'confirmedAt'],
+      },
     },
   },
 })

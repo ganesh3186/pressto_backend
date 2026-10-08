@@ -1,6 +1,15 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
+import {
+  EditOrderUnitInput,
+  hasEditUnitCharges,
+  orderGarmentsForRemoval,
+  planEditUnitSlots,
+  priceEditedLine,
+  resolveEditUnitAreas,
+  resolveEditUnitServiceIds,
+} from './order-item-edit-units';
 import {PresstoDataSource} from '../datasources';
 import {Order} from '../models/order.model';
 import {Customer} from '../models/customer.model';
@@ -88,6 +97,7 @@ import {
 import {DeliveryType} from '../models/delivery-type.enum';
 import {GarmentImageType} from '../models/garment-image-type.enum';
 import {CouponEvaluationSuccess, CouponService} from './coupon.service';
+import {NotificationService, RIDER_NOTIFICATION_TYPES} from './notification.service';
 
 export interface OrderPaymentInput {
   paymentMode: PaymentMode;
@@ -179,8 +189,12 @@ export interface CreateOrderInput {
   // When supplied, replaces the customer's default discount for this order
   // (CouponService.evaluate() — see the discount computation below). An
   // invalid/ineligible code hard-fails order creation rather than silently
-  // skipping the discount.
+  // skipping the discount. couponCodes (plural) is the current field —
+  // several codes may combine as long as their qualifying items don't
+  // overlap (CouponService.evaluateMultiple). couponCode (singular) still
+  // works for any caller not yet updated; treated as a one-code list.
   couponCode?: string;
+  couponCodes?: string[];
 }
 
 // The final order/invoice/challan total is always a whole rupee (≥ .5 rounds up).
@@ -303,6 +317,7 @@ export class OrderService {
     @repository(PickupRequestRepository)
     private pickupRequestRepo: PickupRequestRepository,
     @inject('services.coupon') private couponService: CouponService,
+    @inject('services.notification') private notificationService: NotificationService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -1719,14 +1734,22 @@ export class OrderService {
     );
     const subtotal = parseFloat((itemsSubtotal + orderChargesTotal).toFixed(2));
 
-    // A coupon replaces the customer's standing default discount for this
-    // order entirely (does not stack) — an invalid/ineligible code hard-
-    // fails order creation rather than silently skipping the discount, so
-    // a customer told a coupon applies is never silently charged in full.
-    let couponResult: CouponEvaluationSuccess | undefined;
-    if (input.couponCode) {
-      const evaluation = await this.couponService.evaluate({
-        couponCode: input.couponCode,
+    // Coupon(s) replace the customer's standing default discount for this
+    // order entirely (does not stack) — an invalid/ineligible code, or two
+    // codes whose qualifying items overlap, hard-fails order creation
+    // rather than silently skipping/adjusting the discount, so a customer
+    // told a coupon applies is never silently charged in full or double-
+    // discounted.
+    const couponCodes = input.couponCodes?.length
+      ? input.couponCodes
+      : input.couponCode
+        ? [input.couponCode]
+        : [];
+
+    let couponResults: CouponEvaluationSuccess[] = [];
+    if (couponCodes.length) {
+      const evaluation = await this.couponService.evaluateMultiple({
+        couponCodes,
         customerId: input.customerId,
         storeId: input.storeId,
         items: itemPricings.map(p => ({
@@ -1737,7 +1760,7 @@ export class OrderService {
         })),
       });
       if (!evaluation.valid) throw new HttpErrors.BadRequest(evaluation.reason);
-      couponResult = evaluation;
+      couponResults = evaluation.coupons;
     } else {
       // No explicit code — auto-apply this customer's referral coupon
       // (Customer.referredByCouponId, set at registration), if any.
@@ -1745,7 +1768,7 @@ export class OrderService {
       // rule itself, so the New Order screen's own preview call
       // (CouponController.referralPreview) can never disagree with what
       // actually gets applied here.
-      couponResult = await this.couponService.evaluateReferralCoupon(
+      const referral = await this.couponService.evaluateReferralCoupon(
         customer,
         input.storeId,
         itemPricings.map(p => ({
@@ -1755,12 +1778,17 @@ export class OrderService {
           totalPrice: p.totalPrice,
         })),
       );
+      if (referral) couponResults = [referral];
     }
 
-    let {discountAmount, discountType} = couponResult
+    let {discountAmount, discountType} = couponResults.length
       ? {
-          discountAmount: couponResult.discountAmount,
-          discountType: couponResult.discountType,
+          discountAmount: roundRupee(couponResults.reduce((sum, r) => sum + r.discountAmount, 0)),
+          // A single coupon keeps its own discountType (percentage/flat/
+          // cheapest_item_free) for backward-compatible display; several
+          // mixed-type coupons have no one type to report, so this
+          // becomes the generic 'coupon' marker instead.
+          discountType: couponResults.length === 1 ? couponResults[0].discountType : 'coupon',
         }
       : await this.resolveCustomerAutoDiscount(subtotal, customer);
 
@@ -1914,32 +1942,38 @@ export class OrderService {
           // delivery flow to skip payment collection for genuinely
           // on-account orders (see RiderDeliveryController.deliver()).
           isOnAccount: isOnAccountCustomer && !!input.paymentIsOnAccount,
-          ...(couponResult
+          ...(couponResults.length
             ? {
-                appliedCouponId: couponResult.couponId,
-                couponCode: couponResult.code,
+                // First coupon's id, for any older single-id consumer —
+                // CouponRedemption rows below are the authoritative "every
+                // coupon on this order" record.
+                appliedCouponId: couponResults[0].couponId,
+                couponCode: couponResults.map(r => r.code).join(', '),
               }
             : {}),
         },
         {transaction: tx},
       );
 
-      if (couponResult) {
+      for (const result of couponResults) {
+        // eslint-disable-next-line no-await-in-loop
         await this.couponRedemptionRepo.create(
           {
             id: v4(),
-            couponId: couponResult.couponId,
-            couponCodeSnapshot: couponResult.code,
+            couponId: result.couponId,
+            couponCodeSnapshot: result.code,
             customerId: input.customerId,
             orderId: order.id,
-            discountType: couponResult.discountType,
-            discountAmount: couponResult.discountAmount,
+            discountType: result.discountType,
+            discountAmount: result.discountAmount,
           },
           {transaction: tx},
         );
-        const coupon = await this.couponRepo.findById(couponResult.couponId);
+        // eslint-disable-next-line no-await-in-loop
+        const coupon = await this.couponRepo.findById(result.couponId);
+        // eslint-disable-next-line no-await-in-loop
         await this.couponRepo.updateById(
-          couponResult.couponId,
+          result.couponId,
           {totalUsesCount: (coupon.totalUsesCount ?? 0) + 1},
           {transaction: tx},
         );
@@ -2223,6 +2257,21 @@ export class OrderService {
       remarks,
     });
 
+    // Not awaited — a slow/unreachable FCM call must never delay or block
+    // the status change (NotificationService already swallows its own
+    // errors; .catch() here is cheap insurance against an unhandled
+    // rejection).
+    if (newStatus === OrderStatus.CANCELLED && order.assignedRiderId) {
+      this.notificationService
+        .notifyRider(order.assignedRiderId, {
+          type: RIDER_NOTIFICATION_TYPES.DELIVERY_CANCELLED,
+          title: 'Delivery cancelled',
+          body: `Order ${order.orderNumber ?? ''} has been cancelled.`,
+          data: {orderId},
+        })
+        .catch(() => {});
+    }
+
     // Auto-create garments when order is received at store
     if (newStatus === OrderStatus.RECEIVED_AT_STORE) {
       const garments = await this.autoCreateGarments(orderId, changedBy, v4);
@@ -2409,6 +2458,13 @@ export class OrderService {
       specialInstructions?: string;
       specialInstructionMediaIds?: string[];
       remarks?: string;
+      /**
+       * Per-piece selections, one per unit of quantity. `id` is the garment id of
+       * an existing piece. A unit's own additionalServiceIds / additionalChargeIds
+       * win over the line-level lists (same rule as createOrder); callers that
+       * send no units keep the line-level behaviour.
+       */
+      units?: EditOrderUnitInput[];
     }[],
     changedBy: string,
   ): Promise<object> {
@@ -2471,12 +2527,20 @@ export class OrderService {
     // every item-level additional charge below.
     const additionalChargePercentage =
       await this.resolveAdditionalChargePercentage(order.storeId!);
+    // Measurements for pieces this edit adds, applied once their garments exist.
+    const newGarmentDimensions = new Map<
+      string,
+      {length: number; width: number}[]
+    >();
     const tx = await this.dataSource.beginTransaction({
       isolationLevel: 'READ COMMITTED' as any,
     });
 
     try {
       // ── Lines that stay or arrive ──────────────────────────────────────────
+      const removableGarmentIds = new Set(
+        removableGarments.map(garment => String(garment.id)),
+      );
       for (const [key, desired] of desiredByKey) {
         const pricing = await this.resolvePricing(
           order.storeId!,
@@ -2484,9 +2548,30 @@ export class OrderService {
           desired.itemId,
         );
 
-        let additionalServicesUnitPrice = 0;
-        const resolvedAdditionalServices: Array<{serviceId: string; amount: number}> = [];
-        for (const addlServiceId of desired.additionalServiceIds ?? []) {
+        const quantity = Number(desired.quantity);
+        const units = desired.units;
+        const existing = existingByKey.get(key);
+
+        // Garments that survive this edit, oldest tag first, paired with the unit
+        // slot each one describes (by garment id, else by position).
+        const keptGarments = existing
+          ? (
+              await this.garmentRepo.find({
+                where: {orderItemId: existing.id, isDeleted: false} as any,
+                order: ['garmentTagNumber ASC'],
+              })
+            ).filter(garment => !removableGarmentIds.has(String(garment.id)))
+          : [];
+        const slotPlan = planEditUnitSlots(quantity, units, keptGarments);
+
+        // Per-unit additional services — a unit's own list wins, else the line list.
+        const unitServiceIds = resolveEditUnitServiceIds(
+          quantity,
+          units,
+          desired.additionalServiceIds,
+        );
+        const servicePriceById = new Map<string, number>();
+        for (const addlServiceId of new Set(unitServiceIds.flat())) {
           const addl = await this.resolvePricing(
             order.storeId!,
             addlServiceId,
@@ -2495,19 +2580,92 @@ export class OrderService {
               additional: true,
             },
           );
-          additionalServicesUnitPrice += addl.resolvedPrice;
-          resolvedAdditionalServices.push({serviceId: addlServiceId, amount: addl.resolvedPrice});
+          servicePriceById.set(addlServiceId, addl.resolvedPrice);
         }
+        const unitServiceRows = (slot: number | undefined) =>
+          (slot === undefined
+            ? (desired.additionalServiceIds ?? [])
+            : unitServiceIds[slot]
+          ).map(serviceId => ({
+            serviceId,
+            amount: servicePriceById.get(serviceId) ?? 0,
+          }));
 
-        const unitPrice = parseFloat(
-          (
-            (pricing.resolvedPrice + additionalServicesUnitPrice) *
-            deliveryMultiplier
-          ).toFixed(2),
+        // Measurement items are billed per unit area, exactly as at creation.
+        const catalogItem = await this.itemRepo.findById(desired.itemId);
+        const measurement = catalogItem?.isMeasurement
+          ? resolveEditUnitAreas(
+              quantity,
+              units,
+              slotPlan.garmentBySlot,
+              desired.itemId,
+            )
+          : null;
+
+        const {unitPrice, totalPrice} = priceEditedLine({
+          resolvedPrice: pricing.resolvedPrice,
+          deliveryMultiplier,
+          unitServiceIds,
+          servicePrice: serviceId => servicePriceById.get(serviceId) ?? 0,
+          unitAreas: measurement?.areas,
+        });
+
+        // Additional charges: garment-wise selections are authoritative when any
+        // unit sends them; otherwise the legacy line-level selection applies.
+        const perUnitCharges = hasEditUnitCharges(units);
+        const unitChargeSelections = Array.from({length: quantity}, (_, slot) =>
+          this.normalizeAdditionalCharges(units?.[slot]?.additionalChargeIds),
         );
-        const totalPrice = parseFloat(
-          (unitPrice * desired.quantity).toFixed(2),
-        );
+        const billingChargeSelections = perUnitCharges
+          ? this.normalizeAdditionalCharges(unitChargeSelections.flat())
+          : this.normalizeAdditionalCharges(desired.additionalChargeIds);
+        const chargeUnitAmountById = new Map<string, number>();
+        for (const {additionalChargeId: chargeId} of billingChargeSelections) {
+          const charge = await this.additionalChargeRepo.findById(chargeId);
+          chargeUnitAmountById.set(
+            chargeId,
+            this.applyAdditionalChargeUplift(
+              Number(charge.defaultAmount),
+              additionalChargePercentage,
+            ),
+          );
+        }
+        const chargeRows = (
+          selections: {additionalChargeId: string; quantity: number}[],
+        ) =>
+          selections.map(({additionalChargeId, quantity: chargeQuantity}) => ({
+            additionalChargeId,
+            quantity: chargeQuantity,
+            amount: parseFloat(
+              (
+                (chargeUnitAmountById.get(additionalChargeId) ?? 0) *
+                chargeQuantity
+              ).toFixed(2),
+            ),
+          }));
+        const lineChargeRows = chargeRows(billingChargeSelections);
+        const garmentChargeRows = (slot: number | undefined) => {
+          if (!perUnitCharges) return lineChargeRows;
+          return slot === undefined ? [] : chargeRows(unitChargeSelections[slot]);
+        };
+
+        // Selections for garments not created yet, in the order autoCreateGarments
+        // will create them (position = existing garment count + i): slots that
+        // already have a garment first, then the new pieces.
+        const assignedSlots = slotPlan.garmentBySlot
+          .map((garment, slot) => (garment ? slot : -1))
+          .filter(slot => slot >= 0);
+        const pendingSlotOrder = [...assignedSlots, ...slotPlan.newSlots];
+        const pendingFields = units
+          ? {
+              pendingUnitAdditionalServices: pendingSlotOrder.map(slot =>
+                unitServiceRows(slot),
+              ),
+              pendingUnitAdditionalCharges: pendingSlotOrder.map(slot =>
+                perUnitCharges ? chargeRows(unitChargeSelections[slot]) : [],
+              ),
+            }
+          : {};
 
         // Note: estimatedDurationInDays is deliberately not stored — OrderItem
         // has no such column. Creation only uses it in memory to derive the
@@ -2524,9 +2682,9 @@ export class OrderService {
           specialInstructionMediaIds: desired.specialInstructionMediaIds,
           remarks: desired.remarks,
           additionalServiceIds: desired.additionalServiceIds,
+          ...pendingFields,
         };
 
-        const existing = existingByKey.get(key);
         const orderItemId = existing
           ? (await this.orderItemRepo.updateById(existing.id, fields, {
               transaction: tx,
@@ -2549,65 +2707,78 @@ export class OrderService {
         await this.orderItemChargeRepo.deleteAll({orderItemId} as any, {
           transaction: tx,
         });
-        const resolvedAdditionalCharges: Array<{
-          additionalChargeId: string;
-          quantity: number;
-          amount: number;
-        }> = [];
-        for (const {
-          additionalChargeId: chargeId,
-          quantity,
-        } of this.normalizeAdditionalCharges(desired.additionalChargeIds)) {
-          const charge = await this.additionalChargeRepo.findById(chargeId);
-          const unitAmount = this.applyAdditionalChargeUplift(
-            Number(charge.defaultAmount),
-            additionalChargePercentage,
-          );
-          const amount = parseFloat((unitAmount * quantity).toFixed(2));
+        for (const row of lineChargeRows) {
           await this.orderItemChargeRepo.create(
-            {orderItemId, additionalChargeId: chargeId, amount, quantity},
+            {
+              orderItemId,
+              additionalChargeId: row.additionalChargeId,
+              amount: row.amount,
+              quantity: row.quantity,
+            },
             {transaction: tx},
           );
-          resolvedAdditionalCharges.push({additionalChargeId: chargeId, quantity, amount});
         }
 
-        // Garments already created for this line (before this edit) are never
-        // touched elsewhere in this method — only autoCreateGarments, below,
-        // creates NEW ones for added quantity. Without this, an existing
-        // garment keeps whatever additional services/charges it had at
-        // creation time forever, even though the order item's own list just
-        // changed — the item-level fields above would update, but nothing
-        // in the UI actually reads them; it reads the (now stale) per-
-        // garment rows. This endpoint has no per-unit selection (see
-        // buildOrderItemsForUpdate on the frontend, which already collapses
-        // units into this same line-level union before sending), so every
-        // existing garment on the line gets the identical resolved set.
-        if (existing) {
-          const lineGarments = await this.garmentRepo.find({
-            where: {orderItemId: existing.id, isDeleted: false} as any,
-          });
-          for (const garment of lineGarments) {
-            await this.garmentAdditionalServiceRepo.deleteAll(
-              {garmentId: garment.id} as any,
+        // Existing garments get their OWN unit's services/charges (and, for a
+        // measurement item, its measurements) — never one shared set for the
+        // whole line. A caller sending no units keeps the old behaviour: every
+        // garment gets the line-level lists.
+        const garmentSlots = [
+          ...slotPlan.garmentBySlot.flatMap((garment, slot) =>
+            garment ? [{garment, slot: slot as number | undefined}] : [],
+          ),
+          ...slotPlan.unassignedGarments.map(garment => ({
+            garment,
+            slot: undefined as number | undefined,
+          })),
+        ];
+        for (const {garment, slot} of garmentSlots) {
+          await this.garmentAdditionalServiceRepo.deleteAll(
+            {garmentId: garment.id} as any,
+            {transaction: tx},
+          );
+          for (const {serviceId, amount} of unitServiceRows(slot)) {
+            await this.garmentAdditionalServiceRepo.create(
+              {id: v4(), garmentId: garment.id, serviceId, amount},
               {transaction: tx},
             );
-            for (const {serviceId, amount} of resolvedAdditionalServices) {
-              await this.garmentAdditionalServiceRepo.create(
-                {id: v4(), garmentId: garment.id, serviceId, amount},
-                {transaction: tx},
-              );
-            }
-            await this.garmentAdditionalChargeRepo.deleteAll(
-              {garmentId: garment.id} as any,
-              {transaction: tx},
-            );
-            for (const {additionalChargeId, quantity, amount} of resolvedAdditionalCharges) {
-              await this.garmentAdditionalChargeRepo.create(
-                {id: v4(), garmentId: garment.id, additionalChargeId, quantity, amount},
-                {transaction: tx},
-              );
-            }
           }
+          await this.garmentAdditionalChargeRepo.deleteAll(
+            {garmentId: garment.id} as any,
+            {transaction: tx},
+          );
+          for (const row of garmentChargeRows(slot)) {
+            await this.garmentAdditionalChargeRepo.create(
+              {
+                id: v4(),
+                garmentId: garment.id,
+                additionalChargeId: row.additionalChargeId,
+                quantity: row.quantity,
+                amount: row.amount,
+              },
+              {transaction: tx},
+            );
+          }
+          const dims =
+            slot === undefined ? undefined : measurement?.dimensions[slot];
+          if (
+            dims &&
+            (Number(garment.length) !== dims.length ||
+              Number(garment.width) !== dims.width)
+          ) {
+            await this.garmentRepo.updateById(
+              garment.id,
+              {length: dims.length, width: dims.width},
+              {transaction: tx},
+            );
+          }
+        }
+
+        if (measurement && slotPlan.newSlots.length) {
+          newGarmentDimensions.set(
+            String(orderItemId),
+            slotPlan.newSlots.map(slot => measurement.dimensions[slot]),
+          );
         }
       }
 
@@ -2646,8 +2817,27 @@ export class OrderService {
       order.status !== OrderStatus.DRAFT &&
       order.status !== OrderStatus.CONFIRMED
     ) {
-      garmentsCreated = (await this.autoCreateGarments(orderId, changedBy, v4))
-        .length;
+      const createdGarments = (await this.autoCreateGarments(
+        orderId,
+        changedBy,
+        v4,
+      )) as Array<{id: string; orderItemId: string}>;
+      garmentsCreated = createdGarments.length;
+      // autoCreateGarments creates a line's new pieces in slot order, so the
+      // i-th new garment of a line is its i-th new measured unit.
+      const createdIndexByLine = new Map<string, number>();
+      for (const garment of createdGarments) {
+        const lineId = String(garment.orderItemId);
+        const index = createdIndexByLine.get(lineId) ?? 0;
+        createdIndexByLine.set(lineId, index + 1);
+        const dims = newGarmentDimensions.get(lineId)?.[index];
+        if (dims) {
+          await this.garmentRepo.updateById(garment.id, {
+            length: dims.length,
+            width: dims.width,
+          });
+        }
+      }
     }
 
     const totals = await this.recalculateOrderTotals(orderId);
@@ -2683,21 +2873,28 @@ export class OrderService {
       itemId: string;
       quantity: number;
     }[],
-    desiredByKey: Map<string, {quantity: number}>,
+    desiredByKey: Map<
+      string,
+      {quantity: number; units?: EditOrderUnitInput[]}
+    >,
     lineKey: (serviceId: string, itemId: string) => string,
   ) {
     const shrinking = existingItems
       .map(oi => {
         const desired = desiredByKey.get(lineKey(oi.serviceId, oi.itemId));
         const targetQty = desired ? Number(desired.quantity) : 0;
-        return {orderItem: oi, drop: oi.quantity - targetQty};
+        return {
+          orderItem: oi,
+          drop: oi.quantity - targetQty,
+          units: desired?.units,
+        };
       })
       .filter(row => row.drop > 0);
 
     if (!shrinking.length) return [];
 
     const doomed: {id: string; garmentTagNumber?: string}[] = [];
-    for (const {orderItem, drop} of shrinking) {
+    for (const {orderItem, drop, units} of shrinking) {
       const garments = await this.garmentRepo.find({
         where: {orderItemId: orderItem.id, isDeleted: false} as any,
         order: ['garmentTagNumber DESC'],
@@ -2716,7 +2913,8 @@ export class OrderService {
         );
       }
 
-      doomed.push(...garments.slice(0, drop));
+      // Pieces the caller no longer lists go first, then newest tag first.
+      doomed.push(...orderGarmentsForRemoval(garments, units).slice(0, drop));
     }
 
     return doomed;

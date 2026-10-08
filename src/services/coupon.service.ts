@@ -54,6 +54,21 @@ export interface CouponEvaluationFailure {
 
 export type CouponEvaluationResult = CouponEvaluationSuccess | CouponEvaluationFailure;
 
+export interface MultiCouponEvaluationInput {
+  couponCodes: string[];
+  customerId: string;
+  storeId: string;
+  items: CouponEvaluationItem[];
+}
+
+export interface MultiCouponEvaluationSuccess {
+  valid: true;
+  coupons: CouponEvaluationSuccess[];
+  totalDiscountAmount: number;
+}
+
+export type MultiCouponEvaluationResult = MultiCouponEvaluationSuccess | CouponEvaluationFailure;
+
 // Light DTO for the home-screen "active offers" list — no cart exists yet,
 // so none of evaluate()'s item-scope/discount-amount fields apply.
 export interface EligibleCouponDisplay {
@@ -226,6 +241,56 @@ export class CouponService {
       eligibleSubtotal,
       discountAmount,
       qualifyingItemIndexes,
+    };
+  }
+
+  /**
+   * Several coupon codes on one order — each coupon is evaluated
+   * independently via evaluate() (own validity/usage/geo/audience checks,
+   * own qualifying items against the FULL item list), then every pair's
+   * qualifying-item sets is checked for overlap. Two coupons both
+   * discounting the same item would double-discount it, so any overlap
+   * hard-fails the whole request rather than silently resolving it —
+   * same "hard-fail rather than silently adjust" posture evaluate()
+   * itself already uses for an invalid code. No cap on how many codes may
+   * be combined, beyond what actually fits the order without overlapping.
+   */
+  async evaluateMultiple(input: MultiCouponEvaluationInput): Promise<MultiCouponEvaluationResult> {
+    const normalizedCodes = input.couponCodes.map(c => c.trim().toUpperCase());
+    if (new Set(normalizedCodes).size !== normalizedCodes.length) {
+      return fail('The same coupon code was entered more than once.');
+    }
+
+    const results: CouponEvaluationSuccess[] = [];
+    for (const couponCode of input.couponCodes) {
+      // eslint-disable-next-line no-await-in-loop
+      const evaluation = await this.evaluate({
+        couponCode,
+        customerId: input.customerId,
+        storeId: input.storeId,
+        items: input.items,
+      });
+      if (!evaluation.valid) return fail(`${couponCode.trim().toUpperCase()}: ${evaluation.reason}`);
+      results.push(evaluation);
+    }
+
+    for (let i = 0; i < results.length; i++) {
+      for (let j = i + 1; j < results.length; j++) {
+        const overlaps = results[i].qualifyingItemIndexes.some(idx =>
+          results[j].qualifyingItemIndexes.includes(idx),
+        );
+        if (overlaps) {
+          return fail(
+            `${results[i].code} and ${results[j].code} both apply to the same item(s) — coupons can only combine when their items don't overlap.`,
+          );
+        }
+      }
+    }
+
+    return {
+      valid: true,
+      coupons: results,
+      totalDiscountAmount: roundRupee(results.reduce((sum, r) => sum + r.discountAmount, 0)),
     };
   }
 
