@@ -180,6 +180,53 @@ export class NotificationService {
     }
   }
 
+  /**
+   * FCM error codes worth one retry — transient/network-level failures
+   * (a momentary DNS lookup failure for fcm.googleapis.com, a brief FCM
+   * outage) rather than a permanently invalid token. Seen live:
+   * 'messaging/unknown-error' wrapping "getaddrinfo EAI_AGAIN
+   * fcm.googleapis.com" — a DNS blip on this server, gone a moment later.
+   * Retrying registration-token-not-registered/invalid-registration-token
+   * would be pointless; those tokens are actually dead.
+   */
+  private static readonly RETRYABLE_SEND_CODES = new Set([
+    'messaging/unknown-error',
+    'messaging/internal-error',
+    'messaging/server-unavailable',
+  ]);
+
+  private sendToTokens(
+    app: App,
+    tokens: string[],
+    data: Record<string, string>,
+  ): Promise<SendResponse[]> {
+    const message: MulticastMessage = {
+      tokens,
+      data,
+      // Without this, FCM defaults a data-only message to normal
+      // priority — Android is then free to delay or drop it once the
+      // app is backgrounded/killed or the device is in Doze, especially
+      // on the battery-aggressive OEM skins (MIUI, ColorOS, FunTouch)
+      // most rider-tier phones run. FCM still reports success either
+      // way (that only means it accepted the message, not that the
+      // device actually got it promptly) — this is the likely cause of
+      // "sometimes it arrives, sometimes it doesn't" with no matching
+      // failure in our own delivery-status tracking.
+      android: {priority: 'high'},
+      // iOS equivalent: a silent/background push (content-available,
+      // no alert/sound/badge — matches this being data-only) is
+      // REQUIRED by Apple to use apns-priority 5, not 10; 10 is only
+      // for a user-visible alert and can get a silent push rejected.
+      apns: {
+        headers: {'apns-priority': '5'},
+        payload: {aps: {contentAvailable: true}},
+      },
+    };
+    return getMessaging(app)
+      .sendEachForMulticast(message)
+      .then(response => response.responses);
+  }
+
   /** The actual FCM send — split out so notifyRider can record history regardless of outcome. */
   private async sendPush(
     riderId: string,
@@ -201,31 +248,29 @@ export class NotificationService {
         if (value !== undefined && value !== null) data[key] = String(value);
       });
 
-      const message: MulticastMessage = {
-        tokens: devices.map(d => d.fcmToken),
-        data,
-        // Without this, FCM defaults a data-only message to normal
-        // priority — Android is then free to delay or drop it once the
-        // app is backgrounded/killed or the device is in Doze, especially
-        // on the battery-aggressive OEM skins (MIUI, ColorOS, FunTouch)
-        // most rider-tier phones run. FCM still reports success either
-        // way (that only means it accepted the message, not that the
-        // device actually got it promptly) — this is the likely cause of
-        // "sometimes it arrives, sometimes it doesn't" with no matching
-        // failure in our own delivery-status tracking.
-        android: {priority: 'high'},
-        // iOS equivalent: a silent/background push (content-available,
-        // no alert/sound/badge — matches this being data-only) is
-        // REQUIRED by Apple to use apns-priority 5, not 10; 10 is only
-        // for a user-visible alert and can get a silent push rejected.
-        apns: {
-          headers: {'apns-priority': '5'},
-          payload: {aps: {contentAvailable: true}},
-        },
-      };
-      const response = await getMessaging(app).sendEachForMulticast(message);
+      const responses = await this.sendToTokens(app, devices.map(d => d.fcmToken), data);
+
+      const retryIndexes = responses
+        .map((r, i) => (!r.success && NotificationService.RETRYABLE_SEND_CODES.has(r.error?.code ?? '') ? i : -1))
+        .filter(i => i >= 0);
+      if (retryIndexes.length) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        try {
+          const retryTokens = retryIndexes.map(i => devices[i].fcmToken);
+          const retryResponses = await this.sendToTokens(app, retryTokens, data);
+          retryIndexes.forEach((originalIndex, retryPos) => {
+            responses[originalIndex] = retryResponses[retryPos];
+          });
+        } catch (retryError) {
+          // Best-effort — keep the first attempt's responses and let the
+          // per-token handling below log/record them as they were.
+          // eslint-disable-next-line no-console
+          console.error(`[NotificationService] Retry send failed for rider ${riderId}.`, retryError);
+        }
+      }
+
       await Promise.all(
-        response.responses.map(async (result: SendResponse, index: number) => {
+        responses.map(async (result: SendResponse, index: number) => {
           if (result.success) return;
           const code = result.error?.code;
           // A per-token failure inside a successful API response is not an
@@ -244,7 +289,7 @@ export class NotificationService {
           }
         }),
       );
-      return response.successCount > 0 ? 'sent' : 'failed';
+      return responses.some(r => r.success) ? 'sent' : 'failed';
     } catch (error) {
       // Whole method is guarded, not just the Firebase call — a DB error
       // resolving devices must not throw either, so this can be called

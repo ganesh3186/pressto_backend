@@ -361,19 +361,17 @@ export class RiderDeliveryController {
       );
     }
 
-    // Record who received it before anything else mutates — same ordering
-    // as OrderService.handoverInStore (handover record, then the
-    // status/completion effects). Optional: an app that hasn't been
-    // updated to send this yet can still call deliver() as before.
-    if (body.deliverTo) {
-      await this.orderService.recordDeliveryHandover({
-        orderId,
-        ...body.deliverTo,
-        remarks: body.remarks,
-        handedOverBy: rider.userId,
-      });
-    }
-
+    // Payment first, THEN the handover record — recordDeliveryHandover
+    // guards against being called twice by throwing 409 once a handover
+    // row exists for this order, and nothing here rolls that row back on
+    // a later failure. With payment validated first, a rejected amount
+    // (over/under the balance due, or whatever addPayment itself checks)
+    // never leaves a handover record behind for a retry with the correct
+    // amount to collide with — this used to run in the opposite order and
+    // did exactly that: a rider who first sent too much got a clean 400,
+    // then got permanently stuck on every retry with 409 "already handed
+    // over", since the handover record from the failed first attempt was
+    // already committed with nothing to undo it.
     if (!order.isOnAccount) {
       const {due} = await this.orderService.computeBalanceDue(order);
       const thisTotal = Number(body.amount ?? 0) + Number(body.walletAmount ?? 0);
@@ -396,6 +394,17 @@ export class RiderDeliveryController {
           rider.id,
         );
       }
+    }
+
+    // Optional: an app that hasn't been updated to send this yet can
+    // still call deliver() as before.
+    if (body.deliverTo) {
+      await this.orderService.recordDeliveryHandover({
+        orderId,
+        ...body.deliverTo,
+        remarks: body.remarks,
+        handedOverBy: rider.userId,
+      });
     }
 
     await this.orderService.changeStatus(orderId, OrderStatus.DELIVERED, rider.userId, body.remarks);

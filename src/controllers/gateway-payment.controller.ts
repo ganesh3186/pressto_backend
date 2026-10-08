@@ -18,6 +18,19 @@ interface CreateGatewayLinkBody {
   customerContact?: string;
 }
 
+// Reads the exact bytes Razorpay signed. LoopBack's body parsers would
+// decode the JSON first, and the signature has to be checked over the
+// original text, so this route deliberately bypasses them.
+function readRawBody(request: Request): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    request.setEncoding('utf8');
+    request.on('data', chunk => (data += chunk));
+    request.on('end', () => resolve(data));
+    request.on('error', reject);
+  });
+}
+
 export class GatewayPaymentController {
   constructor(
     @repository(GatewayPaymentLinkRepository)
@@ -77,6 +90,52 @@ export class GatewayPaymentController {
     return {...(link.toJSON() as object), razorpayKeyId: process.env.RAZORPAY_KEY_ID};
   }
 
+  // ─── Create (shareable Payment Link) ────────────────────────────────────────
+  // Order payment only (Tax Invoice / Create Order) — the one PGLink
+  // surface that sends staff a link to share over WhatsApp instead of
+  // opening Razorpay's Checkout themselves. Same auth rationale as
+  // create() above; no razorpayKeyId in the response since nothing opens
+  // Checkout here, just shortUrl to hand to WhatsAppService.
+  @authenticate('jwt')
+  @post('/payments/gateway-links/shareable')
+  @response(200, {description: 'Shareable Razorpay payment link created'})
+  async createShareable(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['referenceId', 'amount', 'customerName'],
+            properties: {
+              referenceId: {type: 'string', format: 'uuid'},
+              amount: {type: 'number'},
+              description: {type: 'string'},
+              customerName: {type: 'string'},
+              customerEmail: {type: 'string'},
+              customerContact: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: Omit<CreateGatewayLinkBody, 'referenceType'>,
+  ): Promise<object> {
+    const link = await this.razorpayService.createPaymentLink({
+      referenceType: GatewayPaymentReferenceType.ORDER_PAYMENT,
+      referenceId: body.referenceId,
+      amount: body.amount,
+      description: body.description ?? 'Pressto payment',
+      customer: {
+        name: body.customerName,
+        email: body.customerEmail,
+        contact: body.customerContact,
+      },
+      createdBy: currentUser[securityId],
+    });
+    return link.toJSON() as object;
+  }
+
   // ─── Verify (Checkout popup's `handler` callback) ──────────────────────────
   // Called by the frontend the instant Razorpay's own popup reports
   // success — the primary confirmation path. Same auth as create(); the
@@ -131,9 +190,8 @@ export class GatewayPaymentController {
   @response(200, {description: 'Webhook acknowledged'})
   async webhook(
     @inject(RestBindings.Http.REQUEST) request: Request,
-    @requestBody({content: {'application/json': {'x-parser': 'text', schema: {type: 'string'}}}})
-    rawBody: string,
   ): Promise<{received: boolean}> {
+    const rawBody = await readRawBody(request);
     const signature = request.headers['x-razorpay-signature'] as string | undefined;
     if (!this.razorpayService.verifyWebhookSignature(rawBody, signature)) {
       throw new HttpErrors.BadRequest('Invalid webhook signature.');
@@ -145,6 +203,20 @@ export class GatewayPaymentController {
       if (paymentEntity?.order_id && paymentEntity?.id) {
         await this.razorpayService.handlePaymentCaptured({
           razorpayOrderId: paymentEntity.order_id,
+          razorpayPaymentId: paymentEntity.id,
+          rawPayload: payload,
+        });
+      }
+    } else if (payload?.event === 'payment_link.paid') {
+      // Payment Link webhooks nest both entities under their own keys —
+      // the link itself (payload.payment_link.entity) and the payment
+      // that paid it (payload.payment.entity), siblings of each other,
+      // not nested the way payment.captured nests payment under payload.
+      const linkEntity = payload?.payload?.payment_link?.entity;
+      const paymentEntity = payload?.payload?.payment?.entity;
+      if (linkEntity?.id && paymentEntity?.id) {
+        await this.razorpayService.handlePaymentLinkPaid({
+          razorpayPaymentLinkId: linkEntity.id,
           razorpayPaymentId: paymentEntity.id,
           rawPayload: payload,
         });

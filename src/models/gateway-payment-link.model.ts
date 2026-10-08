@@ -3,21 +3,29 @@ import {GatewayPaymentLinkStatus} from './gateway-payment-link-status.enum';
 import {GatewayPaymentReferenceType} from './gateway-payment-reference-type.enum';
 
 /**
- * One row per Razorpay order created from any of the "PGLink" entry
+ * One row per Razorpay payment created from any of the "PGLink" entry
  * points (order payment, wallet top-up, security deposit top-up — see
- * GatewayPaymentReferenceType), backing an inline Razorpay Checkout
- * popup (not a shareable payment link — no separate URL/short_url is
- * ever generated). Created in `created` status when the order is
- * created; flipped to `paid` either by RazorpayService.verifyAndApply-
- * Payment() (the frontend's Checkout `handler` callback, signature-
- * verified) or by RazorpayService.handlePaymentCaptured() (the
- * signature-verified `payment.captured` webhook, a fallback for when the
- * browser never gets to call the handler — e.g. a UPI intent completes
- * after the popup was dismissed). Either path applies the underlying
- * payment via whichever existing service already owns that flow
- * (OrderService.addPayment, WalletService.confirmRecharge,
- * SecurityDepositService.confirmTopup) and is idempotent against the
- * other one also firing.
+ * GatewayPaymentReferenceType). Two shapes, by which fields are set:
+ *
+ * - razorpayOrderId set, razorpayPaymentLinkId/shortUrl empty: the
+ *   original inline Razorpay Checkout popup (Orders API) — still used by
+ *   Wallet/Security Deposit top-up (hidden from the admin panel for now,
+ *   code kept). Flipped to `paid` by RazorpayService.verifyAndApply-
+ *   Payment() (the popup's own `handler` callback, signature-verified)
+ *   or handlePaymentCaptured() (the `payment.captured` webhook, a
+ *   fallback for when the browser never gets to call the handler).
+ * - razorpayPaymentLinkId/shortUrl set, razorpayOrderId empty: a real
+ *   shareable Razorpay Payment Link (Payment Links API) — order payment
+ *   only, shared to the customer over WhatsApp instead of opened on
+ *   staff's own screen. The customer pays it on their own device,
+ *   whenever; flipped to `paid` by handlePaymentLinkPaid() (the
+ *   `payment_link.paid` webhook — the only confirmation path here, there
+ *   is no popup/handler callback since staff never see Razorpay's UI).
+ *
+ * Either flow applies the underlying payment via whichever existing
+ * service already owns that reference type (OrderService.addPayment,
+ * WalletService.confirmRecharge, SecurityDepositService.confirmTopup)
+ * and is idempotent against a second confirmation path also firing.
  */
 @model({
   settings: {
@@ -28,8 +36,19 @@ export class GatewayPaymentLink extends Entity {
   @property({type: 'string', id: true, generated: false, postgresql: {dataType: 'uuid'}})
   id: string;
 
-  @property({type: 'string', required: true})
-  razorpayOrderId: string;
+  @property({type: 'string'})
+  razorpayOrderId?: string;
+
+  // Payment Links API fields — see the class doc above for which shape a
+  // given row uses.
+  @property({type: 'string'})
+  razorpayPaymentLinkId?: string;
+
+  @property({type: 'string'})
+  shortUrl?: string;
+
+  @property({type: 'date'})
+  expiresAt?: Date;
 
   @property({type: 'number', required: true, postgresql: {dataType: 'numeric'}})
   amount: number;

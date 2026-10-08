@@ -243,6 +243,23 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
     permission: 'dashboard:read',
     description: 'View the store dashboard summary',
   },
+  // System Notification (see SystemNotificationController)
+  {
+    permission: 'system_notification:create',
+    description: 'Create and broadcast system notifications',
+  },
+  {
+    permission: 'system_notification:read',
+    description: 'View system notifications',
+  },
+  {
+    permission: 'system_notification:update',
+    description: 'Update system notifications',
+  },
+  {
+    permission: 'system_notification:delete',
+    description: 'Delete system notifications',
+  },
   // Reports (see ReportsController) — one permission PER report rather
   // than a single blanket report:read, so a role can be granted the
   // payment report without also seeing on-account billing or pending
@@ -350,6 +367,10 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'coupon:delete',
       // Store dashboard: the landing screen for anyone working a store.
       'dashboard:read',
+      // System Notification: view and update notification alerts for their store
+      'system_notification:create',
+      'system_notification:read',
+      'system_notification:update',
       // Reports: a manager owns their store's numbers outright, so the
       // full set. Individual reports can still be revoked per role in the
       // role-permission matrix.
@@ -407,6 +428,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'petty_cash_register:delete',
       // Store dashboard: the landing screen for anyone working a store.
       'dashboard:read',
+      // System Notification: view and update notification alerts for their store
+      'system_notification:read',
+      'system_notification:update',
       // Reports: the two the front desk actually works from — what is
       // still owed and what is still in the plant. The money-reconciliation
       // reports stay with manager/finance.
@@ -432,6 +456,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'petty_cash_register:delete',
       // Store dashboard: the landing screen for anyone working a store.
       'dashboard:read',
+      // System Notification: view and update notification alerts for their store
+      'system_notification:read',
+      'system_notification:update',
     ],
   },
   {

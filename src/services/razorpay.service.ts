@@ -9,12 +9,15 @@ import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-t
 import {PaymentMode} from '../models/payment-mode.enum';
 import {
   GatewayPaymentLinkRepository,
+  OrderRepository,
   SecurityDepositTopupRequestRepository,
   WalletRechargeRequestRepository,
 } from '../repositories';
 import {OrderService} from './order.service';
 import {SecurityDepositService} from './security-deposit.service';
 import {WalletService} from './wallet.service';
+
+const PAYMENT_LINK_VALIDITY_MS = 24 * 60 * 60 * 1000;
 
 export interface CreateGatewayOrderInput {
   amount: number;
@@ -61,6 +64,7 @@ export class RazorpayService {
     private walletRechargeRequestRepo: WalletRechargeRequestRepository,
     @repository(SecurityDepositTopupRequestRepository)
     private securityDepositTopupRequestRepo: SecurityDepositTopupRequestRepository,
+    @repository(OrderRepository) private orderRepo: OrderRepository,
     @inject('services.order') private orderService: OrderService,
     @inject('services.wallet') private walletService: WalletService,
     @inject('services.security-deposit') private securityDepositService: SecurityDepositService,
@@ -101,6 +105,115 @@ export class RazorpayService {
       referenceType: input.referenceType,
       referenceId: input.referenceId,
       createdBy: input.createdBy,
+    });
+  }
+
+  /**
+   * A real, shareable Razorpay Payment Link (short_url) — order payment
+   * only, for sending to the customer over WhatsApp rather than opening
+   * Razorpay's Checkout on staff's own screen. No popup, no `handler`
+   * callback: handlePaymentLinkPaid() (the `payment_link.paid` webhook)
+   * is the only confirmation path, so this can be created and the admin
+   * panel can move on immediately — the order gets marked paid whenever
+   * the customer actually pays, not synchronously here.
+   */
+  /**
+   * Returns the single open payment link for this reference if it's still
+   * valid for the same amount — otherwise cancels any open ones and issues
+   * a fresh link. Repeated clicks on PGLink therefore never leave several
+   * live links for one balance (a second payment against it would fail to
+   * apply and need manual reconciliation).
+   */
+  async createPaymentLink(input: CreateGatewayOrderInput): Promise<GatewayPaymentLink> {
+    if (!(input.amount > 0)) {
+      throw new HttpErrors.BadRequest('Amount must be greater than zero.');
+    }
+
+    // Checked before reusing any open link: a ticket paid in cash since the
+    // last link was issued must not get a link for money it no longer owes.
+    if (input.referenceType === GatewayPaymentReferenceType.ORDER_PAYMENT) {
+      const order = await this.orderRepo.findById(input.referenceId);
+      const {due} = await this.orderService.computeBalanceDue(order);
+      if (due <= 0) {
+        throw new HttpErrors.Conflict('Nothing is due on this ticket.');
+      }
+      if (input.amount > due + 0.005) {
+        throw new HttpErrors.BadRequest(
+          `Requested amount ₹${input.amount} is more than the ₹${due} still due on this ticket.`,
+        );
+      }
+    }
+
+    const now = new Date();
+    const openLinks = await this.gatewayPaymentLinkRepo.find({
+      where: {
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        status: GatewayPaymentLinkStatus.CREATED,
+        razorpayPaymentLinkId: {neq: null},
+      } as object,
+      order: ['createdAt DESC'],
+    });
+
+    const reusable = openLinks.find(
+      link =>
+        Number(link.amount) === Number(input.amount) &&
+        !!link.expiresAt &&
+        new Date(link.expiresAt).getTime() > now.getTime(),
+    );
+    if (reusable) return reusable;
+
+    for (const stale of openLinks) {
+      try {
+        await this.client.paymentLink.cancel(stale.razorpayPaymentLinkId as string);
+      } catch (err) {
+        // Razorpay refuses to cancel a link that has already been paid —
+        // stop here rather than issuing a second link for the same balance.
+        throw new HttpErrors.Conflict(
+          'The previous payment link could not be cancelled, so it may already have been paid. ' +
+            'Check the ticket before sharing a new link.',
+        );
+      }
+      await this.gatewayPaymentLinkRepo.updateById(stale.id, {
+        status: GatewayPaymentLinkStatus.CANCELLED,
+      });
+    }
+
+    const {v4} = await import('uuid');
+    const id = v4();
+    const expiresAt = new Date(now.getTime() + PAYMENT_LINK_VALIDITY_MS);
+
+    // reference_id is Razorpay's own field name — mirrors the same
+    // suppress-comment pattern already used above for key_id/key_secret.
+    /* eslint-disable @typescript-eslint/naming-convention */
+    const link = await this.client.paymentLink.create({
+      amount: Math.round(input.amount * 100),
+      currency: 'INR',
+      description: input.description,
+      customer: {
+        name: input.customer.name,
+        email: input.customer.email,
+        contact: input.customer.contact,
+      },
+      // Phone/email prompts aren't useful here — the link itself is the
+      // notification (sent over WhatsApp separately), not Razorpay's own.
+      notify: {sms: false, email: false},
+      reference_id: id,
+      expire_by: Math.floor(expiresAt.getTime() / 1000),
+      notes: {referenceType: input.referenceType, referenceId: input.referenceId},
+    });
+    /* eslint-enable @typescript-eslint/naming-convention */
+
+    return this.gatewayPaymentLinkRepo.create({
+      id,
+      razorpayPaymentLinkId: link.id,
+      shortUrl: link.short_url,
+      amount: input.amount,
+      status: GatewayPaymentLinkStatus.CREATED,
+      referenceType: input.referenceType,
+      referenceId: input.referenceId,
+      createdBy: input.createdBy,
+      expiresAt,
     });
   }
 
@@ -164,6 +277,33 @@ export class RazorpayService {
       // Not one of ours (or already deleted) — nothing to apply. Not an
       // error: Razorpay sends this webhook for every order on the
       // account, including ones this service didn't create.
+      return;
+    }
+    if (link.status === GatewayPaymentLinkStatus.PAID) return;
+
+    await this.markPaidAndApply(link, payload.razorpayPaymentId, payload.rawPayload);
+  }
+
+  /**
+   * Called only after the webhook's signature has already been verified —
+   * the ONLY confirmation path for a shareable Payment Link (createPaymentLink()).
+   * There's no Checkout popup/`handler` callback here (staff never see
+   * Razorpay's UI, the customer pays the link on their own device
+   * whenever), so unlike handlePaymentCaptured() above this isn't a
+   * fallback for anything — it's the one place a Payment Link ever gets
+   * marked paid. Idempotent against a redelivered webhook the same way.
+   */
+  async handlePaymentLinkPaid(payload: {
+    razorpayPaymentLinkId: string;
+    razorpayPaymentId: string;
+    rawPayload: object;
+  }): Promise<void> {
+    const link = await this.gatewayPaymentLinkRepo.findOne({
+      where: {razorpayPaymentLinkId: payload.razorpayPaymentLinkId} as object,
+    });
+    if (!link) {
+      // Not one of ours — nothing to apply. Not an error: Razorpay sends
+      // this webhook for every payment link on the account.
       return;
     }
     if (link.status === GatewayPaymentLinkStatus.PAID) return;
