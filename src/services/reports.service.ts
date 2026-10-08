@@ -841,9 +841,12 @@ export class ReportsService {
     // because the order set differs: an order created weeks ago but paid
     // inside this window belongs here even though its createdAt falls
     // outside [earliestOpen, latestClose].
+    // Not filtered to riderId: null — rider-collected COD is still real
+    // revenue, just not yet in the store's till (see resolveRevenue()'s own
+    // comment on this exact point); excluding it here would under-count
+    // P2D specifically, since home delivery is where COD happens.
     const revenuePayments = await this.paymentTransactionRepo.find({
       where: {
-        riderId: null,
         transactionType: {neq: 'refund'},
         paymentDate: {between: [earliestOpen, latestClose]},
       } as object,

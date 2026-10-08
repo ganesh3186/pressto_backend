@@ -817,9 +817,15 @@ export class ShiftController {
     // Bounded by the window alone, regardless of how far back the orders
     // behind these payments were created — never a store-wide, unbounded
     // order scan.
+    //
+    // Deliberately NOT filtered to riderId: null (unlike collected()'s own
+    // `collections` bucket above) — a rider collecting COD cash at the
+    // door is still the business actually getting paid for that order, it
+    // just hasn't physically reached the store's till yet (that's what
+    // Rider Cash Handover is for). Revenue recognition cares about the
+    // former, not the latter, so rider-collected payments count here.
     const windowPayments = await this.paymentTransactionRepository.find({
       where: {
-        riderId: null,
         transactionType: {neq: 'refund'},
         paymentDate: {between: [from, to]},
       } as object,
@@ -858,7 +864,6 @@ export class ShiftController {
     const historyPayments = await this.paymentTransactionRepository.find({
       where: {
         orderId: {inq: touchedOrderIds},
-        riderId: null,
         transactionType: {neq: 'refund'},
       } as object,
       fields: {orderId: true, amount: true, paymentDate: true} as object,
