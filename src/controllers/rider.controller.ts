@@ -4,7 +4,7 @@ import { Filter, IsolationLevel, repository } from '@loopback/repository';
 import { del, get, getModelSchemaRef, HttpErrors, param, patch, post, requestBody, response } from '@loopback/rest';
 import { authorize } from '../authorization';
 import { PresstoDataSource } from '../datasources';
-import { Rider } from '../models';
+import { Rider, RiderWithRelations } from '../models';
 import { RiderType } from '../models/rider-type.enum';
 import {
   RiderRepository,
@@ -277,6 +277,39 @@ export class RiderController {
       ...filter,
       where: this.combineRiderWhere(filter?.where as object | undefined, searchWhere),
       include: [{ relation: 'user' }],
+    });
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['rider:read']})
+  @get('/riders/export')
+  @response(200, {description: 'All matching rider profiles for Excel export'})
+  async exportRiders(
+    @param.filter(Rider) filter?: Filter<Rider>,
+    @param.query.string('search') search?: string,
+  ): Promise<object[]> {
+    // Reuse the listing filters/search, but deliberately exclude pagination and projection.
+    const riders = await this.find({
+      where: filter?.where,
+      order: filter?.order ?? ['createdAt DESC', 'id DESC'],
+    }, search);
+    return riders.map(rider => {
+      const user = (rider as RiderWithRelations).user;
+      return {
+        id: rider.id,
+        riderCode: rider.riderCode,
+        riderType: rider.riderType,
+        firstName: rider.firstName,
+        lastName: rider.lastName,
+        phone: user?.phone ?? '',
+        countryCode: user?.countryCode ?? '+91',
+        emailId: user?.email ?? '',
+        alternateNumber: rider.alternateNumber ?? '',
+        address: rider.address,
+        doorFloorFlat: rider.doorFloorFlat ?? '',
+        landmark: rider.landmark ?? '',
+        isActive: rider.isActive,
+      };
     });
   }
 

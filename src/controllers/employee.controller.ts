@@ -630,6 +630,10 @@ export class EmployeeController {
               pincode: {type: 'string'},
               // role management
               roleValues: {type: 'array', items: {type: 'string'}},
+              linkExistingAccount: {
+                type: 'boolean',
+                description: 'Explicit confirmation to link this employee to an existing login.',
+              },
             },
           },
         },
@@ -663,6 +667,7 @@ export class EmployeeController {
       state?: string;
       pincode?: string;
       roleValues?: string[];
+      linkExistingAccount?: boolean;
     },
   ): Promise<void> {
     // super_admin must never be grantable — or revocable — through employee
@@ -675,7 +680,7 @@ export class EmployeeController {
 
     const employee = await this.employeeRepository.findById(id);
 
-    const {roleValues, password, ...rest} = body;
+    const {roleValues, password, linkExistingAccount, ...rest} = body;
 
     const userFields: Record<string, unknown> = {};
     const employeeFields: Record<string, unknown> = {};
@@ -703,24 +708,77 @@ export class EmployeeController {
     // isActive must be kept in sync on both tables
     if (rest.isActive !== undefined) employeeFields.isActive = rest.isActive;
 
-    // Create() checks phone/email uniqueness up front; edits must too, or a
-    // typo silently gives two different logins the same phone/email — which
-    // is exactly how the earlier incident's duplicate-phone accounts happened.
+    // Keep the current login unless the operator explicitly confirms a contact match.
+    const currentUser = await this.usersRepository.findById(employee.userId, {
+      include: [{relation: 'roles'}],
+    });
+    let linkedUser: Users | undefined;
     if (userFields.phone || userFields.email) {
       const orConditions: object[] = [];
       if (userFields.phone) orConditions.push({phone: userFields.phone});
       if (userFields.email) orConditions.push({email: userFields.email});
-      const collision = await this.usersRepository.findOne({
+      const collisions = await this.usersRepository.find({
         where: {and: [{or: orConditions}, {id: {neq: employee.userId}}]},
+        include: [{relation: 'roles'}],
       });
+      if (collisions.length > 1) {
+        throw new HttpErrors.Conflict(
+          'The phone and email belong to different accounts. Use contacts from the same account before linking.',
+        );
+      }
+      const collision = collisions[0];
       if (collision) {
-        throw new HttpErrors.Conflict('That phone or email is already used by another account.');
+        const existingRoleValues = (collision.roles ?? []).map(r => r.value);
+        if (PROTECTED_ROLES.some(r => existingRoleValues.includes(r)) ||
+          (currentUser.roles ?? []).some(r => PROTECTED_ROLES.includes(r.value))) {
+          throw new HttpErrors.Conflict(
+            'A protected system account cannot be linked through employee management.',
+          );
+        }
+        const alreadyEmployee = await this.employeeRepository.findOne({
+          where: {userId: collision.id, isDeleted: false, id: {neq: id}},
+        });
+        if (alreadyEmployee) {
+          throw new HttpErrors.Conflict(
+            `That phone or email already belongs to employee ${alreadyEmployee.employeeCode}.`,
+          );
+        }
+        if (!linkExistingAccount) {
+          throw new HttpErrors.Conflict(JSON.stringify({
+            code: 'EXISTING_ACCOUNT_MATCH',
+            message: 'That phone or email already belongs to an existing account. ' +
+              'Resend with linkExistingAccount: true to attach this employee profile to it.',
+            existingAccount: {
+              fullName: collision.fullName,
+              email: collision.email,
+              phone: collision.phone,
+              roles: existingRoleValues,
+            },
+          }));
+        }
+        linkedUser = collision;
+        employeeFields.userId = collision.id;
+        // Linking preserves the target account's identity, password and active status.
+        employeeFields.isActive = collision.isActive !== false;
       }
     }
 
+    const targetUserId = linkedUser?.id ?? employee.userId;
+    const staffRoles = (currentUser.roles ?? []).filter(
+      r => !NON_STAFF_ROLES.includes(r.value) && !PROTECTED_ROLES.includes(r.value),
+    );
+    const requestedRoleValues = roleValues?.length
+      ? roleValues
+      : linkedUser ? staffRoles.map(r => r.value) : [];
+    const roles = await Promise.all(requestedRoleValues.map(async value => {
+      const role = await this.rolesRepository.findOne({where: {value}});
+      if (!role) throw new HttpErrors.BadRequest(`Role not found: ${value}`);
+      return role;
+    }));
+
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
-      if (Object.keys(userFields).length > 0) {
+      if (!linkedUser && Object.keys(userFields).length > 0) {
         await this.usersRepository.updateById(employee.userId, userFields, {transaction: tx});
       }
 
@@ -728,23 +786,26 @@ export class EmployeeController {
         await this.employeeRepository.updateById(id, employeeFields, {transaction: tx});
       }
 
-      if (roleValues?.length) {
-        const roles = await Promise.all(
-          roleValues.map(async v => {
-            const role = await this.rolesRepository.findOne({where: {value: v}});
-            if (!role) throw new HttpErrors.BadRequest(`Role not found: ${v}`);
-            return role;
-          }),
-        );
-        await this.userRolesRepository.deleteAll(
-          {usersId: employee.userId},
-          {transaction: tx},
-        );
-        for (const role of roles) {
-          await this.userRolesRepository.create(
+      if (Boolean(linkedUser) || Boolean(roleValues?.length)) {
+        // Replace only employee roles; rider/customer roles stay on the old login.
+        for (const role of staffRoles) {
+          await this.userRolesRepository.deleteAll(
             {usersId: employee.userId, rolesId: role.id},
             {transaction: tx},
           );
+        }
+        // Existing roles on the linked login are preserved, just as in create().
+        for (const role of roles) {
+          const alreadyAssigned = await this.userRolesRepository.findOne(
+            {where: {usersId: targetUserId, rolesId: role.id}},
+            {transaction: tx},
+          );
+          if (!alreadyAssigned) {
+            await this.userRolesRepository.create(
+              {usersId: targetUserId, rolesId: role.id},
+              {transaction: tx},
+            );
+          }
         }
       }
 
