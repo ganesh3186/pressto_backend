@@ -897,11 +897,12 @@ export class TransferController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
   @get('/transfers')
-  @response(200, {description: 'Transfers, filtered by direction/status/store/date'})
+  @response(200, {description: 'Transfers, filtered by direction/status/rider/store/date'})
   async find(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('direction') direction?: string,
     @param.query.string('status') status?: TransferStatus,
+    @param.query.string('riderId') riderId?: string,
     @param.query.string('storeId') storeId?: string,
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
@@ -911,6 +912,7 @@ export class TransferController {
 
     const and: object[] = [{isDeleted: false}];
     if (status) and.push({status});
+    if (riderId) and.push({riderId});
     if (dateFrom ?? dateTo) {
       and.push({
         createdAt: {
