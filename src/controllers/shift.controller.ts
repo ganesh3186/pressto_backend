@@ -11,12 +11,12 @@ import {
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
-import {Shift} from '../models/shift.model';
-import {ShiftStatus} from '../models/shift-status.enum';
+import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
-import {OrderStatus} from '../models/order-status.enum';
 import {SalesReturnStatus} from '../models/sales-return.model';
+import {ShiftStatus} from '../models/shift-status.enum';
+import {Shift} from '../models/shift.model';
 import {
   EmployeeRepository,
   GstTaxConfigurationRepository,
@@ -169,7 +169,10 @@ export class ShiftController {
       where: {userId, isDeleted: false} as object,
     });
 
-    const storeId = await this.storeScopeService.resolveCallerStoreId(userId, requestedStoreId);
+    const storeId = await this.storeScopeService.resolveCallerStoreId(
+      userId,
+      requestedStoreId,
+    );
 
     const store = await this.storeRepository.findOne({where: {id: storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
@@ -326,7 +329,8 @@ export class ShiftController {
       );
 
     const actualCashInTillDifference =
-      Number(input.actualCashInTill.actual || 0) - currSupCashInTill;
+      Math.round(Number(input.actualCashInTill.actual || 0)) -
+      currSupCashInTill;
 
     return {
       collections: {...input.collections, total: collectionsTotal},
@@ -660,7 +664,14 @@ export class ShiftController {
     }
 
     const windowEnd = shift.closedAt ?? new Date();
-    const collections = {cash: 0, card: 0, cheque: 0, pgLink: 0, upi: 0, wallet: 0};
+    const collections = {
+      cash: 0,
+      card: 0,
+      cheque: 0,
+      pgLink: 0,
+      upi: 0,
+      wallet: 0,
+    };
     let cashReimbursement = 0;
 
     const orders = await this.orderRepository.find({
