@@ -1773,17 +1773,27 @@ export class OrderService {
       // rule itself, so the New Order screen's own preview call
       // (CouponController.referralPreview) can never disagree with what
       // actually gets applied here.
-      const referral = await this.couponService.evaluateReferralCoupon(
-        customer,
-        input.storeId,
-        itemPricings.map(p => ({
-          serviceId: p.serviceId,
-          itemId: p.itemId,
-          quantity: p.quantity,
-          totalPrice: p.totalPrice,
-        })),
-      );
-      if (referral) couponResults = [referral];
+      const couponItems = itemPricings.map(p => ({
+        serviceId: p.serviceId,
+        itemId: p.itemId,
+        quantity: p.quantity,
+        totalPrice: p.totalPrice,
+      }));
+      const referral = await this.couponService.evaluateReferralCoupon(customer, input.storeId, couponItems);
+      if (referral) {
+        couponResults = [referral];
+      } else {
+        // No referral either — try any standing "new customer" coupon
+        // (Coupon.newCustomerOrderLimit), same "owns its own eligibility
+        // rule, preview can't disagree with what applies" reasoning as
+        // referral above (see CouponController.newCustomerPreview).
+        const newCustomer = await this.couponService.evaluateNewCustomerCoupon(
+          input.customerId,
+          input.storeId,
+          couponItems,
+        );
+        if (newCustomer) couponResults = [newCustomer];
+      }
     }
 
     let {discountAmount, discountType} = couponResults.length

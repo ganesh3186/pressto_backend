@@ -84,6 +84,26 @@ export class Coupon extends Entity {
   @property({type: 'number', postgresql: {dataType: 'numeric'}})
   minRequirementValue?: number;
 
+  // "New customer" coupon — usable only through the customer's Nth order
+  // (order #1 = their very first ever; unset means no such restriction,
+  // the normal case for every coupon that isn't one of these). Counts
+  // EVERY order ever placed for this customer regardless of status
+  // (draft/cancelled included) — same precedent as the referral-coupon
+  // "first order only" check (see CouponService.evaluateReferralCoupon).
+  //
+  // Unlike a referral coupon (isReferralCode — tied 1:1 to one customer
+  // via Customer.referredByCouponId, attached only at registration),
+  // this is a standing, store-wide coupon: any customer within their
+  // first N orders qualifies, no code to type in required. It auto-
+  // applies at order creation the same way a referral coupon does (see
+  // OrderService.createOrder — referral takes priority if both would
+  // apply) via CouponService.evaluateNewCustomerCoupon, picking whichever
+  // qualifying coupon gives the largest discount if more than one does.
+  // Still also enforced inside evaluate() itself, so a manually-entered
+  // code for a customer past their Nth order is rejected the same way.
+  @property({type: 'number'})
+  newCustomerOrderLimit?: number;
+
   @property({type: 'date', required: true})
   startDate: string;
 

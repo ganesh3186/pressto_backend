@@ -29,6 +29,7 @@ interface CouponBody {
   minQualifyingItems?: number;
   minRequirementType?: CouponMinRequirementType;
   minRequirementValue?: number;
+  newCustomerOrderLimit?: number;
   isReferralCode?: boolean;
   startDate: string;
   endDate: string;
@@ -683,6 +684,61 @@ export class CouponController {
     if (!customer) return {applicable: false};
 
     const evaluation = await this.couponService.evaluateReferralCoupon(customer, body.storeId, body.items ?? []);
+    if (!evaluation) return {applicable: false};
+    return {applicable: true, coupon: evaluation};
+  }
+
+  // Mirrors referralPreview above exactly, for a "new customer" coupon
+  // (Coupon.newCustomerOrderLimit) instead of a referral one — same
+  // reasoning: it auto-applies with no code at order creation
+  // (OrderService.createOrder), so the New Order screen needs a way to
+  // price it into the running total before submission. Never accepts an
+  // arbitrary coupon code — only ever resolves whichever standing "new
+  // customer" coupon(s) this customer actually qualifies for right now.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['coupon:read']})
+  @post('/coupons/new-customer-preview')
+  @response(200, {description: "Preview of a standing new-customer coupon, if any applies"})
+  async newCustomerPreview(
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['customerId', 'storeId'],
+            properties: {
+              customerId: {type: 'string', format: 'uuid'},
+              storeId: {type: 'string', format: 'uuid'},
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  required: ['serviceId', 'itemId', 'quantity', 'totalPrice'],
+                  properties: {
+                    serviceId: {type: 'string'},
+                    itemId: {type: 'string'},
+                    quantity: {type: 'number'},
+                    totalPrice: {type: 'number'},
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+    body: {
+      customerId: string;
+      storeId: string;
+      items?: {serviceId: string; itemId: string; quantity: number; totalPrice: number}[];
+    },
+  ): Promise<object> {
+    const evaluation = await this.couponService.evaluateNewCustomerCoupon(
+      body.customerId,
+      body.storeId,
+      body.items ?? [],
+    );
     if (!evaluation) return {applicable: false};
     return {applicable: true, coupon: evaluation};
   }

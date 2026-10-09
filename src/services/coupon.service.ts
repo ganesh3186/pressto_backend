@@ -84,6 +84,7 @@ export interface EligibleCouponDisplay {
   minQualifyingItems?: number;
   minRequirementType?: CouponMinRequirementType;
   minRequirementValue?: number;
+  newCustomerOrderLimit?: number;
   endDate: string;
 }
 
@@ -152,6 +153,16 @@ export class CouponService {
 
     const audienceReason = await this.audienceScopeReason(coupon, input.customerId);
     if (audienceReason) return fail(audienceReason);
+
+    if (coupon.newCustomerOrderLimit != null) {
+      const priorOrderCount = await this.orderRepo.count({
+        customerId: input.customerId,
+        isDeleted: false,
+      } as object);
+      if (priorOrderCount.count >= coupon.newCustomerOrderLimit) {
+        return fail(`This coupon is only available for a customer's first ${coupon.newCustomerOrderLimit} order(s).`);
+      }
+    }
 
     // Service/item scope — filter order lines to the ones this coupon
     // actually applies to; discount is computed only against those.
@@ -391,6 +402,54 @@ export class CouponService {
   }
 
   /**
+   * Auto-applies a standing "new customer" coupon (Coupon.
+   * newCustomerOrderLimit) — called by OrderService.createOrder, only when
+   * no explicit code was given AND the customer has no referral coupon
+   * that applied (referral takes priority — see createOrder's own
+   * precedence comment), and by CouponController.newCustomerPreview for
+   * the New Order screen's live preview, same "both callers must agree"
+   * reasoning as evaluateReferralCoupon above.
+   *
+   * Unlike a referral coupon, this isn't tied to one specific customer —
+   * any number of "new customer" coupons could theoretically be active
+   * (and in scope for this store/audience) at once, so every candidate is
+   * actually evaluated and the one giving the LARGEST discount wins,
+   * rather than picking by creation order or some other incidental
+   * tie-break. Returns undefined when nothing qualifies — the caller
+   * falls back to the customer's standing discount, same as referral.
+   */
+  async evaluateNewCustomerCoupon(
+    customerId: string,
+    storeId: string,
+    items: CouponEvaluationItem[],
+  ): Promise<CouponEvaluationSuccess | undefined> {
+    const candidates = await this.couponRepo.find({
+      where: {
+        isActive: true,
+        isDeleted: false,
+        isReferralCode: false,
+        newCustomerOrderLimit: {neq: null},
+      } as object,
+    });
+    if (!candidates.length) return undefined;
+
+    let best: CouponEvaluationSuccess | undefined;
+    for (const coupon of candidates) {
+      if (!this.isWithinValidityWindow(coupon)) continue;
+      const evaluation = await this.evaluate({
+        couponCode: coupon.code,
+        customerId,
+        storeId,
+        items,
+      });
+      if (evaluation.valid && (!best || evaluation.discountAmount > best.discountAmount)) {
+        best = evaluation;
+      }
+    }
+    return best;
+  }
+
+  /**
    * Home-screen "active offers" list — every currently active, date-valid,
    * usage-available, audience-eligible coupon for this customer. No cart
    * exists yet, so item/service scope and discount amount are irrelevant
@@ -401,6 +460,14 @@ export class CouponService {
   async listEligibleForDisplay(customerId: string, storeId?: string): Promise<EligibleCouponDisplay[]> {
     const candidates = await this.couponRepo.find({where: {isActive: true, isDeleted: false} as object});
 
+    // Computed once, not per-candidate — this customer's own order count
+    // never changes mid-call, and most coupons don't even need it (only
+    // ones with newCustomerOrderLimit set do, checked below).
+    const needsOrderCount = candidates.some(c => c.newCustomerOrderLimit != null);
+    const priorOrderCount = needsOrderCount
+      ? (await this.orderRepo.count({customerId, isDeleted: false} as object)).count
+      : 0;
+
     const eligible: EligibleCouponDisplay[] = [];
     for (const coupon of candidates) {
       // Referral coupons are never browsable/manually-appliable — they only
@@ -409,6 +476,7 @@ export class CouponService {
       if (coupon.isReferralCode) continue;
       if (!this.isWithinValidityWindow(coupon)) continue;
       if (await this.usageCapacityReason(coupon, customerId)) continue;
+      if (coupon.newCustomerOrderLimit != null && priorOrderCount >= coupon.newCustomerOrderLimit) continue;
 
       const hasGeoScope =
         (coupon.storeIds?.length ?? 0) > 0 ||
@@ -433,6 +501,7 @@ export class CouponService {
         minQualifyingItems: coupon.minQualifyingItems,
         minRequirementType: coupon.minRequirementType,
         minRequirementValue: coupon.minRequirementValue,
+        newCustomerOrderLimit: coupon.newCustomerOrderLimit,
         endDate: coupon.endDate,
       });
     }
