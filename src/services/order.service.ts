@@ -1,6 +1,7 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
+import {collectOrderExportRows, OrderExportFilters} from '../utils/order-export';
 import {
   EditOrderUnitInput,
   hasEditUnitCharges,
@@ -3937,6 +3938,23 @@ export class OrderService {
 
   // ─── List Orders (enriched) ───────────────────────────────────────────────
 
+  async exportOrders(
+    filters: OrderExportFilters,
+    storeIds?: string[] | null,
+  ): Promise<{rows: object[]; total: number}> {
+    return collectOrderExportRows(
+      (skip, limit) => this.listOrders({
+        dateFrom: filters.dateFrom,
+        dateTo: filters.dateTo,
+        status: filters.status && filters.status !== 'all' ? filters.status : undefined,
+        storeIds,
+        skip,
+        limit,
+      }),
+      filters,
+    );
+  }
+
   async listOrders(params: {
     search?: string;
     dateFrom?: string;
@@ -4076,7 +4094,7 @@ export class OrderService {
     const [orders, countResult] = await Promise.all([
       this.orderRepo.find({
         where: where as any,
-        order: ['createdAt DESC'],
+        order: ['createdAt DESC', 'id DESC'],
         limit,
         skip,
       }),

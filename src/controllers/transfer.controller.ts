@@ -917,7 +917,8 @@ export class TransferController {
       and.push({
         createdAt: {
           ...(dateFrom ? {gte: new Date(dateFrom)} : {}),
-          ...(dateTo ? {lte: new Date(dateTo)} : {}),
+          ...(dateTo ? {lte: new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo)
+            ? dateTo + 'T23:59:59.999Z' : dateTo)} : {}),
         },
       });
     }
@@ -941,6 +942,22 @@ export class TransferController {
   // broader business decision, not specific to Transfer). Scoped the same
   // way as find(): store-scoped callers see only transfers touching their
   // stores.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
+  @get('/transfers/export')
+  @response(200, {description: 'All matching transfers for Excel export, within the caller store scope'})
+  async exportTransfers(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('direction') direction?: string,
+    @param.query.string('status') status?: TransferStatus,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+  ): Promise<object> {
+    // Reuse the unpaginated listing query so filters, enrichment, and access stay identical.
+    return this.find(currentUser, direction, status, storeId, dateFrom, dateTo);
+  }
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
@@ -1461,7 +1478,8 @@ export class TransferController {
         and.push({
           createdAt: {
             ...(dateFrom ? {gte: new Date(dateFrom)} : {}),
-            ...(dateTo ? {lte: new Date(dateTo)} : {}),
+            ...(dateTo ? {lte: new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo)
+            ? dateTo + 'T23:59:59.999Z' : dateTo)} : {}),
           },
         });
       }

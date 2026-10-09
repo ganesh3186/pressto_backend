@@ -1,3 +1,4 @@
+import {OrderExportFilters} from '../utils/order-export';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
@@ -360,6 +361,39 @@ export class OrderController {
       storeIds,
       transferGrantedOrderIds,
     });
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:read']})
+  @get('/orders/export')
+  @response(200, {description: 'All matching Manage Ticket records within the caller store scope'})
+  async exportOrders(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.object('filter', {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        customerName: {type: 'string'},
+        orderId: {type: 'string'},
+        placedBy: {type: 'string'},
+        source: {type: 'string'},
+        orderType: {type: 'string'},
+        status: {type: 'string'},
+        paymentStatus: {type: 'string'},
+        dateFrom: {type: 'string', format: 'date'},
+        dateTo: {type: 'string', format: 'date'},
+        storeId: {type: 'string'},
+        clusterId: {type: 'string'},
+      },
+    }) filter: OrderExportFilters = {},
+  ): Promise<object> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
+      storeId: filter.storeId && filter.storeId !== 'all' ? filter.storeId : undefined,
+      clusterId: filter.clusterId && filter.clusterId !== 'all' ? filter.clusterId : undefined,
+    });
+    // Manage Ticket exports only orders owned by accessible stores, not transfer grants.
+    return this.orderService.exportOrders(filter, storeIds);
   }
 
   // The customer's security deposit doubles as their on-account credit limit
