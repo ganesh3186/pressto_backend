@@ -4,7 +4,7 @@ import {Filter, repository} from '@loopback/repository';
 import {del, get, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
-import {Coupon, CouponDiscountType} from '../models';
+import {Coupon, CouponDiscountType, CouponMinRequirementType} from '../models';
 import {
   CouponCustomerRepository,
   CouponPriceOverrideRepository,
@@ -27,6 +27,8 @@ interface CouponBody {
   discountValue: number;
   maxDiscountAmount?: number;
   minQualifyingItems?: number;
+  minRequirementType?: CouponMinRequirementType;
+  minRequirementValue?: number;
   isReferralCode?: boolean;
   startDate: string;
   endDate: string;
@@ -57,6 +59,20 @@ export class CouponController {
     @inject('services.coupon') private couponService: CouponService,
   ) {}
 
+  // minRequirementValue only means anything alongside a minRequirementType —
+  // enforced here too, not just by the admin panel's form, so a direct API
+  // call can't leave a coupon in a half-configured state (a type with no
+  // value, or a value with no type to apply it against).
+  private assertValidMinRequirement(type?: CouponMinRequirementType | null, value?: number | null) {
+    if (!type) return;
+    if (!Object.values(CouponMinRequirementType).includes(type)) {
+      throw new HttpErrors.BadRequest(`Invalid minRequirementType: ${type}`);
+    }
+    if (value == null || Number(value) <= 0) {
+      throw new HttpErrors.BadRequest('minRequirementValue must be a positive number when minRequirementType is set.');
+    }
+  }
+
   // ─── Create ─────────────────────────────────────────────────────────────
 
   @authenticate('jwt')
@@ -71,6 +87,7 @@ export class CouponController {
     if (!code) throw new HttpErrors.BadRequest('Coupon code is required.');
     const existing = await this.couponRepository.findOne({where: {code} as object});
     if (existing) throw new HttpErrors.Conflict(`Coupon code ${code} already exists.`);
+    this.assertValidMinRequirement(body.minRequirementType, body.minRequirementValue);
 
     const {v4} = await import('uuid');
     const coupon = await this.couponRepository.create({
@@ -128,6 +145,16 @@ export class CouponController {
   ): Promise<object> {
     const existing = await this.couponRepository.findOne({where: {id, isDeleted: false}});
     if (!existing) throw new HttpErrors.NotFound('Coupon not found.');
+
+    // Validate the EFFECTIVE pair post-patch, not just whatever this one
+    // request happens to touch — a patch that only sends minRequirementValue
+    // must still be checked against whatever minRequirementType the coupon
+    // already has (or is also being set to in this same request).
+    let effectiveMinRequirementType = existing.minRequirementType;
+    if (body.minRequirementType !== undefined) effectiveMinRequirementType = body.minRequirementType;
+    let effectiveMinRequirementValue = existing.minRequirementValue;
+    if (body.minRequirementValue !== undefined) effectiveMinRequirementValue = body.minRequirementValue;
+    this.assertValidMinRequirement(effectiveMinRequirementType, effectiveMinRequirementValue);
 
     if (body.code !== undefined) {
       const newCode = body.code.trim().toUpperCase();

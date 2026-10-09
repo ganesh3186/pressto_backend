@@ -1,5 +1,6 @@
 import {Entity, model, property} from '@loopback/repository';
 import {CouponDiscountType} from './coupon-discount-type.enum';
+import {CouponMinRequirementType} from './coupon-min-requirement-type.enum';
 
 /**
  * A discount coupon — code + discount shape + validity window + usage
@@ -62,6 +63,26 @@ export class Coupon extends Entity {
   // gets freed) — see CouponService.evaluate().
   @property({type: 'number'})
   minQualifyingItems?: number;
+
+  // General usability gate, checked against the order's QUALIFYING items
+  // only (the same scoped subset CouponService.evaluate() computes the
+  // discount against, not the whole cart) — unset means no minimum
+  // requirement at all. Applies to every discountType, unlike
+  // minQualifyingItems above (cheapest_item_free only). At most one of
+  // amount/quantity applies per coupon — the admin panel's create/edit
+  // form only lets one be configured at a time, never both.
+  @property({
+    type: 'string',
+    jsonSchema: {enum: Object.values(CouponMinRequirementType)},
+  })
+  minRequirementType?: CouponMinRequirementType;
+
+  // 'amount': compared against the qualifying items' eligible subtotal.
+  // 'quantity': compared against their total unit count (by quantity,
+  // not by line — same granularity as minQualifyingItems). Meaningless
+  // when minRequirementType is unset.
+  @property({type: 'number', postgresql: {dataType: 'numeric'}})
+  minRequirementValue?: number;
 
   @property({type: 'date', required: true})
   startDate: string;

@@ -2,6 +2,7 @@ import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {Coupon} from '../models/coupon.model';
 import {CouponDiscountType} from '../models/coupon-discount-type.enum';
+import {CouponMinRequirementType} from '../models/coupon-min-requirement-type.enum';
 import {Customer} from '../models/customer.model';
 import {
   ClusterRepository,
@@ -81,6 +82,8 @@ export interface EligibleCouponDisplay {
   discountValue: number;
   maxDiscountAmount?: number;
   minQualifyingItems?: number;
+  minRequirementType?: CouponMinRequirementType;
+  minRequirementValue?: number;
   endDate: string;
 }
 
@@ -193,6 +196,28 @@ export class CouponService {
     const eligibleSubtotal = roundRupee(
       qualifyingItemIndexes.reduce((sum, idx) => sum + (Number(input.items[idx].totalPrice) || 0), 0),
     );
+
+    // General minimum-order gate — checked against the qualifying items
+    // only (the same scoped subset the discount itself is computed
+    // against), not the whole cart. Separate from, and checked before,
+    // the cheapest_item_free-specific minQualifyingItems gate further
+    // down, which shapes that discount's size rather than gating
+    // whether the coupon applies at all.
+    if (coupon.minRequirementType === CouponMinRequirementType.AMOUNT) {
+      const minAmount = Number(coupon.minRequirementValue) || 0;
+      if (minAmount > 0 && eligibleSubtotal < minAmount) {
+        return fail(`This coupon needs a minimum order amount of ₹${minAmount} on qualifying items.`);
+      }
+    } else if (coupon.minRequirementType === CouponMinRequirementType.QUANTITY) {
+      const minQuantity = Number(coupon.minRequirementValue) || 0;
+      const qualifyingQuantity = qualifyingItemIndexes.reduce(
+        (sum, idx) => sum + (Number(input.items[idx].quantity) || 0),
+        0,
+      );
+      if (minQuantity > 0 && qualifyingQuantity < minQuantity) {
+        return fail(`This coupon needs at least ${minQuantity} qualifying item(s) in the order.`);
+      }
+    }
 
     let discountAmount: number;
     if (coupon.discountType === CouponDiscountType.PERCENTAGE) {
@@ -406,6 +431,8 @@ export class CouponService {
         discountValue: coupon.discountValue,
         maxDiscountAmount: coupon.maxDiscountAmount,
         minQualifyingItems: coupon.minQualifyingItems,
+        minRequirementType: coupon.minRequirementType,
+        minRequirementValue: coupon.minRequirementValue,
         endDate: coupon.endDate,
       });
     }

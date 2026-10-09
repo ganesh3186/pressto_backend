@@ -143,6 +143,7 @@ export * from './approval-action.model';
 export * from './approval-audit-log.model';
 export * from './audit-log.model';
 export * from './coupon-discount-type.enum';
+export * from './coupon-min-requirement-type.enum';
 export * from './coupon.model';
 export * from './coupon-customer.model';
 export * from './coupon-redemption.model';
