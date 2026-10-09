@@ -323,7 +323,24 @@ call.
   and the new Slot Master screen already do.
 - **Still out of scope, deferred**: `attempted`/`failed`/`rescheduled`
   delivery states have no UI trigger at all today (not even local/mock) —
-  not built. OTP/signature/photo proof-of-delivery — not built, no ETA yet.
+  not built. Delivery Management has no OTP/signature/photo capture; the
+  read API below can show an existing rider handover photo when available.
+
+### 3.4 Delivery Management popup — one read API
+
+`GET /orders/{id}/delivery-management` (JWT, `delivery:read`) takes the
+order ID from the selected ticket row and returns all popup data in one
+response: `ticketNumber`, `currentDeliveryStatus`, `customerName`, `address`,
+`assignedRiderName`, `deliverySpeed`, `deliveryType`, `estimatedDeliveryAt`,
+`deliverySlot`, `actualDeliveryAt`, `totalAmount`, `collectedAmount`,
+`balanceDue`, `paymentMode`, `paymentStatus`, and `deliveryRemarks`.
+
+It also returns `remarkImages: [{id, fileUrl}]` from the order's existing
+special-instruction media and `proofImage: {id, fileUrl} | null` from the
+existing handover photo. Missing or inactive images are omitted. Dates are
+returned as timestamps and enum values are returned as stored; the frontend
+formats the labels shown in the popup. No new upload or schema change is
+required.
 
 ---
 

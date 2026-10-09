@@ -31,9 +31,12 @@ import {
   DeliveryCustodyEventRepository,
   DeliveryOrderRepository,
   DeliveryRepository,
+  MediaRepository,
   OrderLabelAssignmentRepository,
+  OrderHandoverRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
+  PaymentTransactionRepository,
   RiderRepository,
   StoreRepository,
 } from '../repositories';
@@ -141,8 +144,14 @@ export class OrderController {
   constructor(
     @repository(OrderRepository)
     private orderRepository: OrderRepository,
+    @repository(OrderHandoverRepository)
+    private orderHandoverRepository: OrderHandoverRepository,
+    @repository(MediaRepository)
+    private mediaRepository: MediaRepository,
     @repository(OrderStatusHistoryRepository)
     private statusHistoryRepository: OrderStatusHistoryRepository,
+    @repository(PaymentTransactionRepository)
+    private paymentTransactionRepository: PaymentTransactionRepository,
     @repository(OrderLabelAssignmentRepository)
     private orderLabelAssignmentRepository: OrderLabelAssignmentRepository,
     @inject('services.order')
@@ -381,6 +390,92 @@ export class OrderController {
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser!);
     return this.orderService.getOrderDetails(id);
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['delivery:read']})
+  @get('/orders/{id}/delivery-management')
+  @response(200, {description: 'Delivery Management ticket detail with images'})
+  async deliveryManagementDetail(
+    @param.path.string('id') id: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
+    const order = await this.orderRepository.findOne({
+      where: {id, isDeleted: false},
+    });
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const [customer, delivered, payments, handover, balance] = await Promise.all([
+      this.customerRepository.findOne({
+        where: {id: order.customerId, isDeleted: false},
+      }),
+      this.statusHistoryRepository.findOne({
+        where: {orderId: id, status: OrderStatus.DELIVERED},
+        order: ['changedAt DESC'],
+      }),
+      this.paymentTransactionRepository.find({
+        where: {orderId: id},
+        order: ['paymentDate DESC'],
+      }),
+      this.orderHandoverRepository.findOne({
+        where: {orderId: id, isDeleted: false} as object,
+        order: ['handedOverAt DESC'],
+      }),
+      this.orderService.computeBalanceDue(order),
+    ]);
+    const mediaIds = [...new Set([
+      ...(order.specialInstructionMediaIds ?? []),
+      ...(handover?.photoMediaId ? [handover.photoMediaId] : []),
+    ])];
+    const media = mediaIds.length
+      ? await this.mediaRepository.find({
+          where: {id: {inq: mediaIds}, isActive: true} as object,
+        })
+      : [];
+    const mediaById = new Map(
+      media
+        .filter(file => file.fileType.startsWith('image/'))
+        .map(file => [file.id, {id: file.id, fileUrl: file.fileUrl}]),
+    );
+
+    return {
+      orderId: id,
+      ticketNumber: order.orderNumber,
+      currentDeliveryStatus: order.status ?? null,
+      customerName: customer
+        ? `${customer.firstName} ${customer.lastName ?? ''}`.trim()
+        : null,
+      address: order.deliveryAddress ?? null,
+      assignedRiderName: order.assignedRiderName ?? null,
+      deliverySpeed: order.deliveryType ?? null,
+      deliveryType: order.deliveryMethod ?? (
+        order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY ||
+        order.orderType === OrderType.STORE_DROPOFF_HOME_DELIVERY
+          ? OrderDeliveryMethod.HOME_DELIVERY
+          : OrderDeliveryMethod.STORE_PICKUP
+      ),
+      estimatedDeliveryAt: order.deliveryDate ?? null,
+      deliverySlot: order.deliverySlot ?? null,
+      actualDeliveryAt: delivered?.changedAt ?? handover?.handedOverAt ?? null,
+      totalAmount: Number(order.totalAmount ?? 0),
+      collectedAmount: balance.alreadyPaid,
+      balanceDue: balance.due,
+      paymentMode:
+        payments.find(payment => payment.transactionType !== 'refund')
+          ?.paymentMode ?? null,
+      paymentStatus:
+        balance.due === 0
+          ? 'paid'
+          : balance.alreadyPaid > 0
+            ? 'partial'
+            : 'pending',
+      deliveryRemarks: delivered?.remarks ?? null,
+      remarkImages: (order.specialInstructionMediaIds ?? [])
+        .map(mediaId => mediaById.get(mediaId))
+        .filter((file): file is {id: string; fileUrl: string} => !!file),
+      proofImage: mediaById.get(handover?.photoMediaId ?? '') ?? null,
+    };
   }
 
   // ─── Update Order Metadata ────────────────────────────────────────────────
