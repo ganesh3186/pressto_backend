@@ -7,6 +7,7 @@ import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {ShiftRepository} from '../repositories';
+import {DashboardAccess} from '../utils/dashboard-access';
 import {BUCKET_OF, isTodayWindow} from './dashboard.service';
 
 /** Lists that ignore the date range — a live position of the store. */
@@ -245,96 +246,117 @@ export class StoreDashboardService {
   // ─── Payloads ─────────────────────────────────────────────────────────────
 
   /** Everything that ignores the date range: counts plus first pages. */
-  async live(storeIds: string[], limit: number) {
-    if (!storeIds.length) {
-      return {
-        counts: {
-          overdue: 0,
-          ready: 0,
-          inStore: 0,
-          pickups: 0,
-          missedPickups: 0,
-          riders: 0,
-        },
-        handover: {pending: 0},
-        lists: {
-          overdue: EMPTY_PAGE,
-          ready: EMPTY_PAGE,
-          inStore: EMPTY_PAGE,
-          pickups: EMPTY_PAGE,
-          riders: EMPTY_PAGE,
-        },
-      };
-    }
-
+  async live(storeIds: string[], limit: number, access: DashboardAccess) {
     const today = startOfToday();
+    const scoped = storeIds.length > 0;
     const [aggregates, overdue, ready, inStore, pickups, riders] =
       await Promise.all([
-        this.liveAggregates(storeIds, today),
-        this.overduePage(storeIds, today, null, limit),
-        this.statusPage(storeIds, READY_ORDER_STATUSES, null, limit),
-        this.statusPage(storeIds, IN_STORE_ORDER_STATUSES, null, limit),
-        this.pickupPage(storeIds, today, null, limit),
-        this.riderPage(storeIds, null, limit),
+        scoped &&
+        (access.tickets || access.pickups || access.riders || access.handover)
+          ? this.liveAggregates(storeIds, today, access)
+          : {},
+        scoped && access.tickets
+          ? this.overduePage(storeIds, today, null, limit)
+          : EMPTY_PAGE,
+        scoped && access.tickets
+          ? this.statusPage(storeIds, READY_ORDER_STATUSES, null, limit)
+          : EMPTY_PAGE,
+        scoped && access.tickets
+          ? this.statusPage(storeIds, IN_STORE_ORDER_STATUSES, null, limit)
+          : EMPTY_PAGE,
+        scoped && access.pickups
+          ? this.pickupPage(storeIds, today, null, limit)
+          : EMPTY_PAGE,
+        scoped && access.riders
+          ? this.riderPage(storeIds, null, limit)
+          : EMPTY_PAGE,
       ]);
-
+    const totals = aggregates as Row;
     return {
+      access,
       counts: {
-        overdue: num(aggregates.overdue),
-        ready: num(aggregates.ready),
-        inStore: num(aggregates.instore),
-        pickups: num(aggregates.pickups),
-        missedPickups: num(aggregates.missedpickups),
-        riders: num(aggregates.riders),
+        ...(access.tickets
+          ? {
+              overdue: num(totals.overdue),
+              ready: num(totals.ready),
+              inStore: num(totals.instore),
+            }
+          : {}),
+        ...(access.pickups
+          ? {
+              pickups: num(totals.pickups),
+              missedPickups: num(totals.missedpickups),
+            }
+          : {}),
+        ...(access.riders ? {riders: num(totals.riders)} : {}),
       },
-      handover: {pending: num(aggregates.handoverpending)},
-      lists: {overdue, ready, inStore, pickups, riders},
+      ...(access.handover
+        ? {handover: {pending: num(totals.handoverpending)}}
+        : {}),
+      lists: {
+        ...(access.tickets ? {overdue, ready, inStore} : {}),
+        ...(access.pickups ? {pickups} : {}),
+        ...(access.riders ? {riders} : {}),
+      },
     };
   }
 
   /** Everything scoped to the selected date range. */
-  async window(storeIds: string[], window: DashboardWindow, limit: number) {
-    if (!storeIds.length) {
-      return {
-        cashBasis: 'day' as const,
-        kpis: {collected: 0, tickets: 0},
-        counts: {pending: 0, deliveries: 0},
-        handover: {accepted: 0},
-        lists: {pending: EMPTY_PAGE, deliveries: EMPTY_PAGE},
-      };
-    }
-
-    // Same rule as DashboardService: only the live "today" view aligns
-    // cash to the open shift, so it quotes what the closing form will.
-    const activeShift = isTodayWindow(window.from, window.to)
-      ? await this.shiftRepo.findOne({
-          where: {storeId: {inq: storeIds}, status: ShiftStatus.OPEN} as object,
-          order: ['openedAt DESC'],
-          fields: {openedAt: true} as object,
-        })
-      : null;
+  async window(
+    storeIds: string[],
+    window: DashboardWindow,
+    limit: number,
+    access: DashboardAccess,
+  ) {
+    const scoped = storeIds.length > 0;
+    const activeShift =
+      scoped && access.collected && isTodayWindow(window.from, window.to)
+        ? await this.shiftRepo.findOne({
+            where: {
+              storeId: {inq: storeIds},
+              status: ShiftStatus.OPEN,
+            } as object,
+            order: ['openedAt DESC'],
+            fields: {openedAt: true} as object,
+          })
+        : null;
     const cashFrom = activeShift?.openedAt
       ? new Date(activeShift.openedAt)
       : window.from;
-
     const [aggregates, pending, deliveries] = await Promise.all([
-      this.windowAggregates(storeIds, window, cashFrom),
-      this.pendingPage(storeIds, window, null, limit),
-      this.deliveryPage(storeIds, window, null, limit),
+      scoped &&
+      (access.collected ||
+        access.tickets ||
+        access.deliveries ||
+        access.handover)
+        ? this.windowAggregates(storeIds, window, cashFrom, access)
+        : {},
+      scoped && access.tickets
+        ? this.pendingPage(storeIds, window, null, limit)
+        : EMPTY_PAGE,
+      scoped && access.deliveries
+        ? this.deliveryPage(storeIds, window, null, limit)
+        : EMPTY_PAGE,
     ]);
-
+    const totals = aggregates as Row;
     return {
-      cashBasis: activeShift ? ('shift' as const) : ('day' as const),
+      access,
+      ...(access.collected
+        ? {cashBasis: activeShift ? ('shift' as const) : ('day' as const)}
+        : {}),
       kpis: {
-        collected: num(aggregates.collected),
-        tickets: num(aggregates.tickets),
+        ...(access.collected ? {collected: num(totals.collected)} : {}),
+        ...(access.tickets ? {tickets: num(totals.tickets)} : {}),
       },
       counts: {
-        pending: num(aggregates.pending),
-        deliveries: num(aggregates.deliveries),
+        ...(access.tickets ? {pending: num(totals.pending)} : {}),
+        ...(access.deliveries ? {deliveries: num(totals.deliveries)} : {}),
       },
-      handover: {accepted: num(aggregates.accepted)},
-      lists: {pending, deliveries},
+      ...(access.handover ? {handover: {accepted: num(totals.accepted)}} : {}),
+      lists: {
+        ...(access.tickets ? {pending} : {}),
+        ...(access.deliveries ? {deliveries} : {}),
+      },
     };
   }
 
@@ -402,7 +424,11 @@ export class StoreDashboardService {
 
   // ─── Aggregates ───────────────────────────────────────────────────────────
 
-  private async liveAggregates(storeIds: string[], today: Date): Promise<Row> {
+  private async liveAggregates(
+    storeIds: string[],
+    today: Date,
+    access: DashboardAccess,
+  ): Promise<Row> {
     const q = new SqlParams();
     const stores = q.add(storeIds);
     const open = q.add(OPEN_ORDER_STATUSES);
@@ -416,7 +442,7 @@ export class StoreDashboardService {
            COUNT(*) FILTER (WHERE o.status = ANY(${q.add(READY_ORDER_STATUSES)}::text[]))::int AS ready,
            COUNT(*) FILTER (WHERE o.status = ANY(${q.add(IN_STORE_ORDER_STATUSES)}::text[]))::int AS instore
          FROM orders o
-         WHERE ${ticketScopeSql(q, storeIds)}
+         WHERE ${access.tickets ? 'TRUE' : 'FALSE'} AND ${ticketScopeSql(q, storeIds)}
            AND o.isdeleted IS NOT TRUE
            AND o.status = ANY(${open}::text[])
        ),
@@ -425,7 +451,7 @@ export class StoreDashboardService {
            COUNT(*)::int AS pickups,
            COUNT(*) FILTER (WHERE pr.requesteddate < ${todayParam})::int AS missedpickups
          FROM pickup_request pr
-         WHERE pr.storeid = ANY(${q.add(storeIds)}::text[])
+         WHERE ${access.pickups ? 'TRUE' : 'FALSE'} AND pr.storeid = ANY(${q.add(storeIds)}::text[])
            AND pr.isdeleted IS NOT TRUE
            AND pr.status = ANY(${q.add(OPEN_PICKUP_STATUSES)}::text[])
        ),
@@ -433,12 +459,12 @@ export class StoreDashboardService {
          SELECT COALESCE(SUM(pt.amount), 0) AS handoverpending
          FROM payment_transaction pt
          JOIN orders o ON o.id = pt.orderid
-         WHERE o.storeid = ANY(${stores}::uuid[])
+         WHERE ${access.handover ? 'TRUE' : 'FALSE'} AND o.storeid = ANY(${stores}::uuid[])
            AND pt.riderid IS NOT NULL
            AND pt.riderhandoverstatus = ANY(${q.add(PENDING_HANDOVER_STATUSES)}::text[])
        ),
        riders AS (
-         SELECT COUNT(DISTINCT riderid)::int AS riders FROM (${loads}) loads
+         SELECT COUNT(DISTINCT riderid)::int AS riders FROM (${loads}) loads WHERE ${access.riders ? 'TRUE' : 'FALSE'}
        )
        SELECT * FROM tickets, pickups, handover, riders`,
       q.values,
@@ -450,6 +476,7 @@ export class StoreDashboardService {
     storeIds: string[],
     window: DashboardWindow,
     cashFrom: Date,
+    access: DashboardAccess,
   ): Promise<Row> {
     const q = new SqlParams();
     const stores = q.add(storeIds);
@@ -465,31 +492,31 @@ export class StoreDashboardService {
          (SELECT COALESCE(SUM(pt.amount), 0)
             FROM payment_transaction pt
             JOIN orders o ON o.id = pt.orderid
-           WHERE o.storeid = ANY(${stores}::uuid[])
+           WHERE ${access.collected ? 'TRUE' : 'FALSE'} AND o.storeid = ANY(${stores}::uuid[])
              AND pt.riderid IS NULL
              AND pt.transactiontype <> 'refund'
              AND pt.paymentmode = ANY(${q.add(COLLECTED_PAYMENT_MODES)}::text[])
              AND pt.paymentdate BETWEEN ${q.add(cashFrom)} AND ${to}) AS collected,
          (SELECT COUNT(*)
             FROM orders o
-           WHERE o.storeid = ANY(${stores}::uuid[])
+           WHERE ${access.tickets ? 'TRUE' : 'FALSE'} AND o.storeid = ANY(${stores}::uuid[])
              AND o.status <> ${q.add(OrderStatus.CANCELLED)}
              AND o.createdat BETWEEN ${from} AND ${to})::int AS tickets,
          (SELECT COUNT(*)
             FROM orders o
-           WHERE ${ticketScopeSql(q, storeIds)}
+           WHERE ${access.tickets ? 'TRUE' : 'FALSE'} AND ${ticketScopeSql(q, storeIds)}
              AND o.isdeleted IS NOT TRUE
              AND o.status = ANY(${q.add(OPEN_ORDER_STATUSES)}::text[])
              AND o.deliverydate BETWEEN ${from} AND ${to})::int AS pending,
          (SELECT COUNT(*)
             FROM delivery d
             JOIN delivery_order dor ON dor.deliveryid = d.id
-           WHERE d.storeid = ANY(${stores}::uuid[])
+           WHERE ${access.deliveries ? 'TRUE' : 'FALSE'} AND d.storeid = ANY(${stores}::uuid[])
              AND d.isdeleted IS NOT TRUE
              AND d.startedat BETWEEN ${from} AND ${to})::int AS deliveries,
          (SELECT COALESCE(SUM(h.totalamount), 0)
             FROM rider_cash_handover h
-           WHERE h.handovertostoreid = ANY(${stores}::uuid[])
+           WHERE ${access.handover ? 'TRUE' : 'FALSE'} AND h.handovertostoreid = ANY(${stores}::uuid[])
              AND h.status = ${q.add(RiderCashHandoverStatus.CONFIRMED)}
              AND h.isdeleted IS NOT TRUE
              AND h.confirmedat BETWEEN ${from} AND ${to}) AS accepted`,

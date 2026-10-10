@@ -1,5 +1,7 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
+import {UserProfile} from '@loopback/security';
+import {dashboardAccess} from '../utils/dashboard-access';
 import {GarmentStatus} from '../models/garment-status.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -73,12 +75,16 @@ export function isTodayWindow(from: Date, to: Date): boolean {
   const endOfToday = new Date();
   endOfToday.setHours(23, 59, 59, 999);
   return (
-    from.getTime() === startOfToday.getTime() && to.getTime() === endOfToday.getTime()
+    from.getTime() === startOfToday.getTime() &&
+    to.getTime() === endOfToday.getTime()
   );
 }
 
 /** Statuses that still count as moving through the plant. */
-const IN_PROCESS_STATUSES = [GarmentStatus.IN_PROCESS, GarmentStatus.QUALITY_CHECK];
+const IN_PROCESS_STATUSES = [
+  GarmentStatus.IN_PROCESS,
+  GarmentStatus.QUALITY_CHECK,
+];
 
 /** A transfer that has left its origin but has not been booked in yet. */
 const IN_FLIGHT_TRANSFER_STATUSES = [
@@ -92,7 +98,11 @@ const IN_FLIGHT_TRANSFER_STATUSES = [
  * card. Anything not listed rolls up under the trailing "Unpaid / other"
  * row so the rows always re-add to the orders-today KPI.
  */
-const ORDER_PAYMENT_LABELS: {key: string; label: string; modes: PaymentMode[]}[] = [
+const ORDER_PAYMENT_LABELS: {
+  key: string;
+  label: string;
+  modes: PaymentMode[];
+}[] = [
   {key: 'prepaidCash', label: 'Prepaid cash', modes: [PaymentMode.CASH]},
   {
     key: 'cardPg',
@@ -106,7 +116,11 @@ const ORDER_PAYMENT_LABELS: {key: string; label: string; modes: PaymentMode[]}[]
     ],
   },
   {key: 'wallet', label: 'Wallet', modes: [PaymentMode.WALLET]},
-  {key: 'payLater', label: 'Pay later', modes: [PaymentMode.PAY_LATER, PaymentMode.ON_ACCOUNT]},
+  {
+    key: 'payLater',
+    label: 'Pay later',
+    modes: [PaymentMode.PAY_LATER, PaymentMode.ON_ACCOUNT],
+  },
 ];
 
 export type StoreDashboardSummary = {
@@ -114,11 +128,11 @@ export type StoreDashboardSummary = {
   window: {from: string; to: string};
   cashBasis: 'shift' | 'day';
   kpis: object;
-  pipeline: object;
-  ordersToday: object[];
-  pettyRider: object;
-  dispatched: object[];
-  transfers: object;
+  pipeline?: object;
+  ordersToday?: object[];
+  pettyRider?: object;
+  dispatched?: object[];
+  transfers?: object;
 };
 
 /**
@@ -136,9 +150,11 @@ export class DashboardService {
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(TransferRepository) private transferRepo: TransferRepository,
-    @repository(TransferItemRepository) private transferItemRepo: TransferItemRepository,
+    @repository(TransferItemRepository)
+    private transferItemRepo: TransferItemRepository,
     @repository(DeliveryRepository) private deliveryRepo: DeliveryRepository,
-    @repository(DeliveryOrderRepository) private deliveryOrderRepo: DeliveryOrderRepository,
+    @repository(DeliveryOrderRepository)
+    private deliveryOrderRepo: DeliveryOrderRepository,
     @repository(PaymentTransactionRepository)
     private paymentTransactionRepo: PaymentTransactionRepository,
     @repository(RiderCashHandoverRepository)
@@ -151,7 +167,15 @@ export class DashboardService {
     storeIds: string[],
     from: Date,
     to: Date,
+    currentUser: UserProfile,
   ): Promise<StoreDashboardSummary> {
+    const access = dashboardAccess(currentUser);
+    const has = (permission: string) =>
+      currentUser.roles?.includes('super_admin') ||
+      currentUser.permissions?.includes(permission);
+    const canTransfer = has('transfer:read');
+    const canPipeline = access.tickets && canTransfer;
+    const canPettyRider = access.handover && has('petty_cash:read');
     const window = {from: from.toISOString(), to: to.toISOString()};
 
     if (!storeIds.length) return this.emptySummary(window);
@@ -166,48 +190,76 @@ export class DashboardService {
     // every other KPI on the same card covered the full range, so one row
     // would be reporting two different windows. Any explicit past range
     // therefore uses exactly the window asked for.
-    const activeShift = isTodayWindow(from, to) ? await this.findActiveShift(storeIds) : null;
+    const activeShift =
+      access.collected && isTodayWindow(from, to)
+        ? await this.findActiveShift(storeIds)
+        : null;
     const cashFrom = activeShift?.openedAt ?? from;
 
-    const [cashBreakdown, orderStats, pipeline, dispatched, transfers, pettyRider] =
-      await Promise.all([
-        this.computeOrderCollections(storeIds, cashFrom, to),
-        this.computeOrderStats(storeIds, from, to),
-        this.computePipeline(storeIds),
-        this.computeDispatched(storeIds, from, to),
-        this.computeTransfers(storeIds, from, to),
-        this.computePettyRider(storeIds, from, to),
-      ]);
+    const [
+      cashBreakdown,
+      orderStats,
+      pipeline,
+      dispatched,
+      transfers,
+      pettyRider,
+    ] = await Promise.all([
+      access.collected
+        ? this.computeOrderCollections(storeIds, cashFrom, to)
+        : emptyCollections(),
+      access.tickets
+        ? this.computeOrderStats(storeIds, from, to)
+        : {orderCount: 0, itemCount: 0, rows: []},
+      canPipeline ? this.computePipeline(storeIds) : {},
+      access.deliveries ? this.computeDispatched(storeIds, from, to) : [],
+      canTransfer
+        ? this.computeTransfers(storeIds, from, to)
+        : {sent: 0, received: 0, items: 0, discrepancy: 0, rows: []},
+      canPettyRider ? this.computePettyRider(storeIds, from, to) : {},
+    ]);
 
-    const cashCollected = Object.values(cashBreakdown).reduce((sum, v) => sum + v, 0);
+    const cashCollected = Object.values(cashBreakdown).reduce(
+      (sum, v) => sum + v,
+      0,
+    );
 
     return {
       storeIds,
       window,
       cashBasis: activeShift ? 'shift' : 'day',
       kpis: {
-        cashCollected,
-        cashBreakdown,
-        ordersToday: orderStats.orderCount,
-        itemsToday: orderStats.itemCount,
-        dispatchedToday: dispatched.length,
-        transfersToday: {
-          sent: transfers.sent,
-          received: transfers.received,
-          items: transfers.items,
-          discrepancy: transfers.discrepancy,
-        },
+        ...(access.collected ? {cashCollected, cashBreakdown} : {}),
+        ...(access.tickets
+          ? {
+              ordersToday: orderStats.orderCount,
+              itemsToday: orderStats.itemCount,
+            }
+          : {}),
+        ...(access.deliveries ? {dispatchedToday: dispatched.length} : {}),
+        ...(canTransfer
+          ? {
+              transfersToday: {
+                sent: transfers.sent,
+                received: transfers.received,
+                items: transfers.items,
+                discrepancy: transfers.discrepancy,
+              },
+            }
+          : {}),
       },
-      pipeline,
-      ordersToday: orderStats.rows,
-      pettyRider,
-      dispatched,
-      transfers,
+      ...(canPipeline ? {pipeline} : {}),
+      ...(access.tickets ? {ordersToday: orderStats.rows} : {}),
+      ...(canPettyRider ? {pettyRider} : {}),
+      ...(access.deliveries ? {dispatched} : {}),
+      ...(canTransfer ? {transfers} : {}),
     };
   }
 
   /** Zeroed payload — a caller scoped to no store sees nothing, not everything. */
-  private emptySummary(window: {from: string; to: string}): StoreDashboardSummary {
+  private emptySummary(window: {
+    from: string;
+    to: string;
+  }): StoreDashboardSummary {
     return {
       storeIds: [],
       window,
@@ -306,7 +358,10 @@ export class DashboardService {
         fields: {id: true} as object,
       }),
       this.paymentTransactionRepo.find({
-        where: {orderId: {inq: orderIds}, transactionType: {neq: 'refund'}} as object,
+        where: {
+          orderId: {inq: orderIds},
+          transactionType: {neq: 'refund'},
+        } as object,
         fields: {orderId: true, paymentMode: true, amount: true} as object,
       }),
     ]);
@@ -326,8 +381,12 @@ export class DashboardService {
     const modeByOrder = new Map<string, PaymentMode>();
     const amountByOrder = new Map<string, number>();
     for (const t of transactions) {
-      if (!modeByOrder.has(t.orderId)) modeByOrder.set(t.orderId, t.paymentMode);
-      amountByOrder.set(t.orderId, (amountByOrder.get(t.orderId) ?? 0) + (Number(t.amount) || 0));
+      if (!modeByOrder.has(t.orderId))
+        modeByOrder.set(t.orderId, t.paymentMode);
+      amountByOrder.set(
+        t.orderId,
+        (amountByOrder.get(t.orderId) ?? 0) + (Number(t.amount) || 0),
+      );
     }
 
     // `?? 0` would not catch this: Number(undefined) is NaN, and NaN is
@@ -347,7 +406,10 @@ export class DashboardService {
         key,
         label,
         count: matching.length,
-        amount: matching.reduce((sum, o) => sum + amountOf(o.id, o.totalAmount), 0),
+        amount: matching.reduce(
+          (sum, o) => sum + amountOf(o.id, o.totalAmount),
+          0,
+        ),
       };
     }).filter(row => row.count > 0);
 
@@ -361,7 +423,10 @@ export class DashboardService {
         key: 'other',
         label: 'Unpaid / other',
         count: unlabelled.length,
-        amount: unlabelled.reduce((sum, o) => sum + amountOf(o.id, o.totalAmount), 0),
+        amount: unlabelled.reduce(
+          (sum, o) => sum + amountOf(o.id, o.totalAmount),
+          0,
+        ),
       });
     }
 
@@ -419,8 +484,11 @@ export class DashboardService {
       fields: {id: true} as object,
     });
     const pendingReceive = inbound.length
-      ? (await this.transferItemRepo.count({transferId: {inq: inbound.map(t => t.id)}} as object))
-          .count
+      ? (
+          await this.transferItemRepo.count({
+            transferId: {inq: inbound.map(t => t.id)},
+          } as object)
+        ).count
       : 0;
 
     return {ready, inProcess, pendingReceive};
@@ -465,22 +533,34 @@ export class DashboardService {
       where: {
         and: [
           {or: [{fromStoreId: {inq: storeIds}}, {toStoreId: {inq: storeIds}}]},
-          {or: [{sentAt: {between: [from, to]}}, {receivedAt: {between: [from, to]}}]},
+          {
+            or: [
+              {sentAt: {between: [from, to]}},
+              {receivedAt: {between: [from, to]}},
+            ],
+          },
           {isDeleted: false},
         ],
       } as object,
       order: ['sentAt DESC'],
     });
 
-    const inWindow = (d?: Date | null) => Boolean(d && new Date(d) >= from && new Date(d) <= to);
-    const sent = transfers.filter(t => storeIds.includes(t.fromStoreId) && inWindow(t.sentAt));
-    const received = transfers.filter(t => storeIds.includes(t.toStoreId) && inWindow(t.receivedAt));
+    const inWindow = (d?: Date | null) =>
+      Boolean(d && new Date(d) >= from && new Date(d) <= to);
+    const sent = transfers.filter(
+      t => storeIds.includes(t.fromStoreId) && inWindow(t.sentAt),
+    );
+    const received = transfers.filter(
+      t => storeIds.includes(t.toStoreId) && inWindow(t.receivedAt),
+    );
 
     return {
       sent: sent.length,
       received: received.length,
       items: transfers.reduce((sum, t) => sum + (Number(t.itemCount) || 0), 0),
-      discrepancy: transfers.filter(t => t.status === TransferStatus.DISCREPANCY).length,
+      discrepancy: transfers.filter(
+        t => t.status === TransferStatus.DISCREPANCY,
+      ).length,
       rows: transfers.slice(0, 10).map(t => ({
         id: t.id,
         transitId: t.transitId,
@@ -501,7 +581,11 @@ export class DashboardService {
   private async computePettyRider(storeIds: string[], from: Date, to: Date) {
     const [windowActivity, balances, orders] = await Promise.all([
       // Both petty-cash helpers are per-store; sum across the caller stores.
-      Promise.all(storeIds.map(id => this.pettyCashService.computeWindowActivity(id, from, to))),
+      Promise.all(
+        storeIds.map(id =>
+          this.pettyCashService.computeWindowActivity(id, from, to),
+        ),
+      ),
       Promise.all(storeIds.map(id => this.pettyCashService.computeBalance(id))),
       this.orderRepo.find({
         where: {storeId: {inq: storeIds}} as object,
@@ -509,7 +593,10 @@ export class DashboardService {
       }),
     ]);
 
-    const pettyUsedToday = windowActivity.reduce((sum, a) => sum + (Number(a.used) || 0), 0);
+    const pettyUsedToday = windowActivity.reduce(
+      (sum, a) => sum + (Number(a.used) || 0),
+      0,
+    );
     const pettyBalance = balances.reduce((sum, b) => sum + (Number(b) || 0), 0);
 
     let riderChangePending = 0;
@@ -523,7 +610,10 @@ export class DashboardService {
         } as object,
         fields: {amount: true} as object,
       });
-      riderChangePending = withRider.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+      riderChangePending = withRider.reduce(
+        (sum, t) => sum + (Number(t.amount) || 0),
+        0,
+      );
     }
 
     const confirmed = await this.riderCashHandoverRepo.find({

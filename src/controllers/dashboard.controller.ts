@@ -3,6 +3,7 @@ import {inject} from '@loopback/core';
 import {get, HttpErrors, param, response} from '@loopback/rest';
 import {UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
+import {dashboardAccess} from '../utils/dashboard-access';
 import {DashboardService} from '../services/dashboard.service';
 import {StoreScopeService} from '../services/store-scope.service';
 import {
@@ -30,8 +31,10 @@ const MAX_RANGE_DAYS = 31;
 export class DashboardController {
   constructor(
     @inject('services.dashboard') private dashboardService: DashboardService,
-    @inject('services.store-scope') private storeScopeService: StoreScopeService,
-    @inject('services.store-dashboard') private storeDashboardService: StoreDashboardService,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
+    @inject('services.store-dashboard')
+    private storeDashboardService: StoreDashboardService,
   ) {}
 
   @authenticate('jwt')
@@ -47,7 +50,9 @@ export class DashboardController {
     const {from, to} = resolveWindow(dateFrom, dateTo);
 
     const scope = await this.storeScopeService.resolve(currentUser);
-    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
+    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
+      storeId,
+    });
 
     // narrowStoreIds returns null only for a global caller who asked for
     // no particular store. Aggregating every store in the business is not
@@ -59,7 +64,12 @@ export class DashboardController {
       );
     }
 
-    const summary = await this.dashboardService.buildStoreSummary(storeIds, from, to);
+    const summary = await this.dashboardService.buildStoreSummary(
+      storeIds,
+      from,
+      to,
+      currentUser,
+    );
     return {summary};
   }
 
@@ -74,20 +84,28 @@ export class DashboardController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['dashboard:read']})
   @get('/dashboard/live')
-  @response(200, {description: 'Live store figures and first page of each live list'})
+  @response(200, {
+    description: 'Live store figures and first page of each live list',
+  })
   async live(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
     @param.query.number('limit') limit?: number,
   ): Promise<object> {
     const storeIds = await this.resolveStoreIds(currentUser, storeId);
-    return this.storeDashboardService.live(storeIds, resolveLimit(limit));
+    return this.storeDashboardService.live(
+      storeIds,
+      resolveLimit(limit),
+      dashboardAccess(currentUser),
+    );
   }
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['dashboard:read']})
   @get('/dashboard/window')
-  @response(200, {description: 'Date-range store figures and first page of each range list'})
+  @response(200, {
+    description: 'Date-range store figures and first page of each range list',
+  })
   async window(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
@@ -97,7 +115,12 @@ export class DashboardController {
   ): Promise<object> {
     const window = resolveWindow(dateFrom, dateTo);
     const storeIds = await this.resolveStoreIds(currentUser, storeId);
-    return this.storeDashboardService.window(storeIds, window, resolveLimit(limit));
+    return this.storeDashboardService.window(
+      storeIds,
+      window,
+      resolveLimit(limit),
+      dashboardAccess(currentUser),
+    );
   }
 
   @authenticate('jwt')
@@ -116,6 +139,20 @@ export class DashboardController {
     if (!DASHBOARD_LISTS.includes(list)) {
       throw new HttpErrors.NotFound(`Unknown dashboard list "${list}".`);
     }
+    const access = dashboardAccess(currentUser);
+    const section =
+      list === 'pickups'
+        ? 'pickups'
+        : list === 'deliveries'
+          ? 'deliveries'
+          : list === 'riders'
+            ? 'riders'
+            : 'tickets';
+    if (!access[section]) {
+      throw new HttpErrors.Forbidden(
+        'You do not have permission to view this dashboard list.',
+      );
+    }
     // Only the range lists read the window, but validating it for every
     // list keeps a malformed date a 400 regardless of which card asked.
     const window = resolveWindow(dateFrom, dateTo);
@@ -130,14 +167,19 @@ export class DashboardController {
   }
 
   /** Same scoping rule as storeSummary: a global caller must pick a store. */
-  private async resolveStoreIds(currentUser: UserProfile, storeId?: string): Promise<string[]> {
+  private async resolveStoreIds(
+    currentUser: UserProfile,
+    storeId?: string,
+  ): Promise<string[]> {
     // The ids end up in a ::uuid[] cast; reject a malformed one as a 400
     // here rather than letting Postgres fail the query with a 500.
     if (storeId && !UUID.test(storeId)) {
       throw new HttpErrors.BadRequest('storeId is not a valid id.');
     }
     const scope = await this.storeScopeService.resolve(currentUser);
-    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
+    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
+      storeId,
+    });
     if (storeIds === null) {
       throw new HttpErrors.BadRequest(
         'Select a store — storeId is required for accounts that can see every store.',
@@ -165,7 +207,10 @@ function resolveLimit(limit?: number): number {
  * of its local day, so a single-day range covers that whole day rather
  * than collapsing to one instant at midnight.
  */
-function resolveWindow(dateFrom?: string, dateTo?: string): {from: Date; to: Date} {
+function resolveWindow(
+  dateFrom?: string,
+  dateTo?: string,
+): {from: Date; to: Date} {
   const from = dateFrom ? startOfLocalDay(dateFrom) : startOfToday();
   if (Number.isNaN(from.getTime())) {
     throw new HttpErrors.BadRequest('dateFrom is not a valid date.');
@@ -177,12 +222,16 @@ function resolveWindow(dateFrom?: string, dateTo?: string): {from: Date; to: Dat
   }
 
   if (to < from) {
-    throw new HttpErrors.BadRequest('dateTo must not be earlier than dateFrom.');
+    throw new HttpErrors.BadRequest(
+      'dateTo must not be earlier than dateFrom.',
+    );
   }
 
   const days = (to.getTime() - from.getTime()) / 86_400_000;
   if (days > MAX_RANGE_DAYS) {
-    throw new HttpErrors.BadRequest(`Date range must not exceed ${MAX_RANGE_DAYS} days.`);
+    throw new HttpErrors.BadRequest(
+      `Date range must not exceed ${MAX_RANGE_DAYS} days.`,
+    );
   }
 
   return {from, to};
@@ -199,7 +248,15 @@ const CALENDAR_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 function parseLocal(value: string): Date {
   const match = CALENDAR_DATE.exec(value);
   if (!match) return new Date(value);
-  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0);
+  return new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    0,
+    0,
+    0,
+    0,
+  );
 }
 
 function startOfLocalDay(value: string): Date {
