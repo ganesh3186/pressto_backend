@@ -367,10 +367,12 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'coupon:delete',
       // Store dashboard: the landing screen for anyone working a store.
       'dashboard:read',
-      // System Notification: view and update notification alerts for their store
+      // System Notification: full control for their store — create, view,
+      // update, and remove a notification alert, same posture as Coupon.
       'system_notification:create',
       'system_notification:read',
       'system_notification:update',
+      'system_notification:delete',
       // Reports: a manager owns their store's numbers outright, so the
       // full set. Individual reports can still be revoked per role in the
       // role-permission matrix.
