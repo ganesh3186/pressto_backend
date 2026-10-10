@@ -11,6 +11,7 @@ import {
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
+import {InvoiceStatus} from '../models/invoice.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
@@ -20,6 +21,8 @@ import {Shift} from '../models/shift.model';
 import {
   EmployeeRepository,
   GstTaxConfigurationRepository,
+  InvoiceOrderLinkRepository,
+  InvoiceRepository,
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
@@ -144,6 +147,9 @@ export class ShiftController {
     private walletRechargeRequestRepository: WalletRechargeRequestRepository,
     @repository(PettyCashFinanceEntryRepository)
     private pettyCashFinanceRepository: PettyCashFinanceEntryRepository,
+    @repository(InvoiceRepository) private invoiceRepository: InvoiceRepository,
+    @repository(InvoiceOrderLinkRepository)
+    private invoiceOrderLinkRepository: InvoiceOrderLinkRepository,
     @inject('services.store-scope')
     private storeScopeService: StoreScopeService,
     @inject('services.petty-cash') private pettyCashService: PettyCashService,
@@ -790,25 +796,33 @@ export class ShiftController {
     };
   }
 
-  // Today's revenue — keyed by when PAYMENT was actually RECEIVED against
-  // an order, not when the order was created. An order placed 1 Oct but
-  // paid at delivery on 7 Oct books its revenue on 7 Oct's shift, not 1
-  // Oct's — otherwise this figure can show revenue for money that hasn't
-  // actually come in yet, which is exactly the mismatch this report
-  // exists to prevent (see buildConsolidatedDailySales' own doc comment).
+  // Today's revenue — per the finance team's own definition (confirmed
+  // directly with them): revenue books on the day the INVOICE is
+  // generated, never on the day the order was placed or the day payment
+  // comes in. An order placed 1 Oct, invoiced 3 Oct, paid 8 Oct books its
+  // revenue on 3 Oct's shift — not 1 Oct's (too early, nothing invoiced
+  // yet) and not 8 Oct's (that's Collection, a separate figure — see
+  // register.cashReceived/collections above and Total Receipts in the
+  // Daily Sales report, both already keyed by payment date and otherwise
+  // untouched by this function).
   //
-  // A split order — paid across more than one shift (an advance now, the
-  // balance at delivery) — has its revenue/discount/taxes PRORATED by how
-  // much of the order's total that shift's payment actually represents,
-  // so the two shifts' revenue always adds up to exactly the order's full
-  // amount: nothing lost, nothing double-counted. totalSales is simply the
-  // sum of what was actually collected this window — by definition already
-  // correct with no proration needed.
+  // Unlike payment (which can genuinely split across several
+  // PaymentTransaction events on different days), an order is invoiced
+  // exactly ONCE — see InvoiceOrderLink's own doc comment: every normal
+  // invoice has exactly one link row mirroring its own orderId, a
+  // consolidated (On Account) invoice has one row per order it bills, and
+  // nothing here ever re-invoices an order already linked elsewhere. So
+  // there is no proration-across-shifts case to handle, and no
+  // settle-once bookkeeping needed for tickets/items/services — each
+  // order contributes exactly once, in the one shift window its one
+  // invoice falls into.
   //
-  // tickets/items/services are NOT prorated — a half-paid ticket isn't half
-  // a ticket. Each one books exactly once, on whichever shift's payment
-  // first brings its balance to zero (never again on a later top-up of an
-  // order already fully settled, e.g. a correction).
+  // A consolidated invoice's own subtotal/discount/tax are the SUM across
+  // every order it covers (per InvoiceOrderLink's doc comment) with no
+  // per-order split stored — so for one of those, each linked order's
+  // share is prorated by its own orderTotal ÷ the invoice's totalAmount.
+  // A normal (non-consolidated) invoice already belongs to exactly one
+  // order, so its figures apply directly, no proration needed.
   // Shape matches SHIFT_REVENUE_COLUMNS (one column today: 'pressto').
   private async resolveRevenue(
     storeId: string,
@@ -826,85 +840,73 @@ export class ShiftController {
     };
 
     // Bounded by the window alone, regardless of how far back the orders
-    // behind these payments were created — never a store-wide, unbounded
-    // order scan.
-    //
-    // Deliberately NOT filtered to riderId: null (unlike collected()'s own
-    // `collections` bucket above) — a rider collecting COD cash at the
-    // door is still the business actually getting paid for that order, it
-    // just hasn't physically reached the store's till yet (that's what
-    // Rider Cash Handover is for). Revenue recognition cares about the
-    // former, not the latter, so rider-collected payments count here.
-    const windowPayments = await this.paymentTransactionRepository.find({
+    // behind these invoices were created or paid — never a store-wide,
+    // unbounded order scan.
+    const invoices = await this.invoiceRepository.find({
       where: {
-        transactionType: {neq: 'refund'},
-        paymentDate: {between: [from, to]},
-      } as object,
-      fields: {orderId: true, amount: true} as object,
-    });
-    if (!windowPayments.length) return {pressto: cell};
-
-    const windowAmountByOrder = new Map<string, number>();
-    for (const payment of windowPayments) {
-      windowAmountByOrder.set(
-        payment.orderId,
-        (windowAmountByOrder.get(payment.orderId) ?? 0) + (Number(payment.amount) || 0),
-      );
-    }
-
-    const orders = await this.orderRepository.find({
-      where: {
-        id: {inq: [...windowAmountByOrder.keys()]},
-        storeId,
-        status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
+        status: InvoiceStatus.ISSUED,
+        createdAt: {between: [from, to]},
       } as object,
       fields: {
         id: true,
         subtotal: true,
-        discountAmount: true,
-        taxAmount: true,
+        discount: true,
+        cgst: true,
+        sgst: true,
         totalAmount: true,
+        isConsolidated: true,
       } as object,
+    });
+    if (!invoices.length) return {pressto: cell};
+    const invoiceById = new Map(invoices.map(invoice => [invoice.id, invoice]));
+
+    const links = await this.invoiceOrderLinkRepository.find({
+      where: {invoiceId: {inq: invoices.map(invoice => invoice.id)}} as object,
+      fields: {invoiceId: true, orderId: true, orderTotal: true} as object,
+    });
+    if (!links.length) return {pressto: cell};
+
+    // Scopes down to orders actually belonging to this store — a
+    // consolidated invoice's linked orders aren't assumed to share one
+    // store, so each is checked individually.
+    const orders = await this.orderRepository.find({
+      where: {
+        id: {inq: links.map(link => link.orderId)},
+        storeId,
+        status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
+      } as object,
+      fields: {id: true} as object,
     });
     if (!orders.length) return {pressto: cell};
-    const touchedOrderIds = orders.map(o => o.id);
-
-    // Full payment history of just these touched orders (any date) — the
-    // only way to tell a payment that newly settles an order apart from a
-    // top-up on one already fully paid before this shift opened.
-    const historyPayments = await this.paymentTransactionRepository.find({
-      where: {
-        orderId: {inq: touchedOrderIds},
-        transactionType: {neq: 'refund'},
-      } as object,
-      fields: {orderId: true, amount: true, paymentDate: true} as object,
-    });
-    const paidBeforeWindow = new Map<string, number>();
-    for (const payment of historyPayments) {
-      if (new Date(payment.paymentDate as Date).getTime() < from.getTime()) {
-        paidBeforeWindow.set(
-          payment.orderId,
-          (paidBeforeWindow.get(payment.orderId) ?? 0) + (Number(payment.amount) || 0),
-        );
-      }
-    }
+    const validOrderIds = new Set(orders.map(order => order.id));
 
     const settledOrderIds: string[] = [];
-    for (const order of orders) {
-      const windowAmount = windowAmountByOrder.get(order.id) ?? 0;
-      if (windowAmount <= 0) continue;
-      const total = Number(order.totalAmount) || 0;
-      const fraction = total > 0 ? Math.min(1, windowAmount / total) : 0;
+    for (const link of links) {
+      if (!validOrderIds.has(link.orderId)) continue;
+      const invoice = invoiceById.get(link.invoiceId);
+      if (!invoice) continue;
 
-      cell.totalSales += windowAmount;
-      cell.revenue += (Number(order.subtotal) || 0) * fraction;
-      cell.discount += (Number(order.discountAmount) || 0) * fraction;
-      cell.taxes += (Number(order.taxAmount) || 0) * fraction;
-
-      const before = paidBeforeWindow.get(order.id) ?? 0;
-      if (total > 0 && before < total - 0.005 && before + windowAmount >= total - 0.005) {
-        settledOrderIds.push(order.id);
+      const orderTotal = Number(link.orderTotal) || 0;
+      let revenueContribution: number;
+      let discountContribution: number;
+      let taxContribution: number;
+      if (invoice.isConsolidated) {
+        const invoiceTotal = Number(invoice.totalAmount) || 0;
+        const fraction = invoiceTotal > 0 ? Math.min(1, orderTotal / invoiceTotal) : 0;
+        revenueContribution = (Number(invoice.subtotal) || 0) * fraction;
+        discountContribution = (Number(invoice.discount) || 0) * fraction;
+        taxContribution = ((Number(invoice.cgst) || 0) + (Number(invoice.sgst) || 0)) * fraction;
+      } else {
+        revenueContribution = Number(invoice.subtotal) || 0;
+        discountContribution = Number(invoice.discount) || 0;
+        taxContribution = (Number(invoice.cgst) || 0) + (Number(invoice.sgst) || 0);
       }
+
+      cell.revenue += revenueContribution;
+      cell.discount += discountContribution;
+      cell.taxes += taxContribution;
+      cell.totalSales += orderTotal;
+      settledOrderIds.push(link.orderId);
     }
 
     cell.tickets = settledOrderIds.length;

@@ -1,9 +1,11 @@
 // One-off backfill: recomputes Shift.closing.revenue for already-CLOSED
-// shifts using the payment-date + proration logic that ShiftController.
-// resolveRevenue() now uses — revenue books on the shift a payment was
-// actually RECEIVED in, not the shift the order happened to be created in
-// (an order placed 1 Oct but paid at delivery on 7 Oct now books its
-// revenue on 7 Oct's shift). Needed because Shift.closing is a one-time
+// shifts using the invoice-generation-date logic that ShiftController.
+// resolveRevenue() now uses — revenue books on the shift the INVOICE was
+// generated in (confirmed directly with the finance team), never the
+// shift the order was created in, and never the shift payment came in
+// either (that's Collection — see Total Receipts, already correct and
+// untouched). An order placed 1 Oct, invoiced 3 Oct, paid 8 Oct books its
+// revenue on 3 Oct's shift. Needed because Shift.closing is a one-time
 // snapshot: fixing resolveRevenue() only changes shifts closed AFTER the
 // fix deployed — it can never retroactively touch history on its own.
 //
@@ -13,10 +15,13 @@
 // denominations, remarks, register, actualCashInTill, etc.) is left
 // completely untouched, exactly as the cashier submitted it.
 //
-// This mirrors ShiftController.resolveRevenue() exactly (same proration-by-
-// amount-paid, same settle-once-for-tickets/items/services rule). If that
-// function's logic ever changes, mirror the change here too, or this
-// backfill drifts from what the live code actually does.
+// This mirrors ShiftController.resolveRevenue() exactly (same per-invoice
+// proration for a consolidated/On Account invoice, same one-invoice-per-
+// order assumption for tickets/items/services — see that function's own
+// doc comment for why no settle-across-shifts logic is needed here, unlike
+// the old payment-based version this replaced). If that function's logic
+// ever changes, mirror the change here too, or this backfill drifts from
+// what the live code actually does.
 //
 // SAFE BY DEFAULT — dry-run unless --apply is passed. Dry-run prints a full
 // before/after table for every shift whose revenue would change, and writes
@@ -26,10 +31,10 @@
 // wrong afterward.
 //
 // Usage:
-//   node scripts/backfill-shift-revenue-by-payment-date.js                    (dry run, default — 60 days)
-//   node scripts/backfill-shift-revenue-by-payment-date.js --apply            (writes changes — 60 days)
-//   node scripts/backfill-shift-revenue-by-payment-date.js --apply --since-days=90
-//   node scripts/backfill-shift-revenue-by-payment-date.js --apply --shift-ids=<uuid>,<uuid>
+//   node scripts/backfill-shift-revenue-by-invoice-date.js                    (dry run, default — 60 days)
+//   node scripts/backfill-shift-revenue-by-invoice-date.js --apply            (writes changes — 60 days)
+//   node scripts/backfill-shift-revenue-by-invoice-date.js --apply --since-days=90
+//   node scripts/backfill-shift-revenue-by-invoice-date.js --apply --shift-ids=<uuid>,<uuid>
 //
 // --shift-ids narrows to exactly those shifts (ignores --since-days entirely)
 // — use this for a small, already-verified pilot run before trusting a wide
@@ -88,57 +93,55 @@ function round2(value) {
 async function computeRevenueCell(client, storeId, from, to) {
   const cell = emptyCell();
 
-  // Not filtered to riderid is null — rider-collected COD is still real
-  // revenue, just not yet in the store's physical till.
-  const { rows: windowPayments } = await client.query(
-    `select orderid, amount from payment_transaction
-     where transactiontype != 'refund'
-       and paymentdate between $1 and $2`,
+  const { rows: invoices } = await client.query(
+    `select id, subtotal, discount, cgst, sgst, totalamount, isconsolidated from invoice
+     where status = 'issued' and createdat between $1 and $2`,
     [from, to]
   );
-  if (!windowPayments.length) return cell;
+  if (!invoices.length) return cell;
+  const invoiceById = new Map(invoices.map((i) => [i.id, i]));
 
-  const windowAmountByOrder = new Map();
-  for (const p of windowPayments) {
-    windowAmountByOrder.set(p.orderid, (windowAmountByOrder.get(p.orderid) || 0) + Number(p.amount));
-  }
+  const { rows: links } = await client.query(
+    `select invoiceid, orderid, ordertotal from invoice_order_link where invoiceid = any($1::uuid[])`,
+    [invoices.map((i) => i.id)]
+  );
+  if (!links.length) return cell;
 
   const { rows: orders } = await client.query(
-    `select id, subtotal, discountamount, taxamount, totalamount from orders
+    `select id from orders
      where id = any($1::uuid[]) and storeid = $2 and status not in ('draft', 'cancelled')`,
-    [[...windowAmountByOrder.keys()], storeId]
+    [links.map((l) => l.orderid), storeId]
   );
   if (!orders.length) return cell;
-  const touchedOrderIds = orders.map((o) => o.id);
-
-  const { rows: historyPayments } = await client.query(
-    `select orderid, amount, paymentdate from payment_transaction
-     where orderid = any($1::uuid[]) and transactiontype != 'refund'`,
-    [touchedOrderIds]
-  );
-  const paidBeforeWindow = new Map();
-  for (const p of historyPayments) {
-    if (new Date(p.paymentdate).getTime() < from.getTime()) {
-      paidBeforeWindow.set(p.orderid, (paidBeforeWindow.get(p.orderid) || 0) + Number(p.amount));
-    }
-  }
+  const validOrderIds = new Set(orders.map((o) => o.id));
 
   const settledOrderIds = [];
-  for (const order of orders) {
-    const windowAmount = windowAmountByOrder.get(order.id) || 0;
-    if (windowAmount <= 0) continue;
-    const total = Number(order.totalamount) || 0;
-    const fraction = total > 0 ? Math.min(1, windowAmount / total) : 0;
+  for (const link of links) {
+    if (!validOrderIds.has(link.orderid)) continue;
+    const invoice = invoiceById.get(link.invoiceid);
+    if (!invoice) continue;
 
-    cell.totalSales += windowAmount;
-    cell.revenue += (Number(order.subtotal) || 0) * fraction;
-    cell.discount += (Number(order.discountamount) || 0) * fraction;
-    cell.taxes += (Number(order.taxamount) || 0) * fraction;
-
-    const before = paidBeforeWindow.get(order.id) || 0;
-    if (total > 0 && before < total - 0.005 && before + windowAmount >= total - 0.005) {
-      settledOrderIds.push(order.id);
+    const orderTotal = Number(link.ordertotal) || 0;
+    let revenueContribution;
+    let discountContribution;
+    let taxContribution;
+    if (invoice.isconsolidated) {
+      const invoiceTotal = Number(invoice.totalamount) || 0;
+      const fraction = invoiceTotal > 0 ? Math.min(1, orderTotal / invoiceTotal) : 0;
+      revenueContribution = (Number(invoice.subtotal) || 0) * fraction;
+      discountContribution = (Number(invoice.discount) || 0) * fraction;
+      taxContribution = ((Number(invoice.cgst) || 0) + (Number(invoice.sgst) || 0)) * fraction;
+    } else {
+      revenueContribution = Number(invoice.subtotal) || 0;
+      discountContribution = Number(invoice.discount) || 0;
+      taxContribution = (Number(invoice.cgst) || 0) + (Number(invoice.sgst) || 0);
     }
+
+    cell.revenue += revenueContribution;
+    cell.discount += discountContribution;
+    cell.taxes += taxContribution;
+    cell.totalSales += orderTotal;
+    settledOrderIds.push(link.orderid);
   }
 
   cell.tickets = settledOrderIds.length;

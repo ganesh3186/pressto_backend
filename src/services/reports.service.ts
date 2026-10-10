@@ -1,5 +1,6 @@
 import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
+import {InvoiceStatus} from '../models/invoice.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -12,6 +13,8 @@ import {
   CustomerRepository,
   DeliveryOrderRepository,
   GarmentRepository,
+  InvoiceOrderLinkRepository,
+  InvoiceRepository,
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
@@ -248,6 +251,9 @@ export class ReportsService {
     private pettyCashRegisterRepo: PettyCashRegisterEntryRepository,
     @repository(WalletRechargeRequestRepository)
     private walletRechargeRequestRepo: WalletRechargeRequestRepository,
+    @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
+    @repository(InvoiceOrderLinkRepository)
+    private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
   ) {}
 
   /**
@@ -752,12 +758,12 @@ export class ReportsService {
    * PSB vs P2D revenue is the one figure closing time never split out —
    * resolveRevenue() sums every order into a single `pressto` bucket
    * regardless of channel. Recomputed here keyed and prorated exactly like
-   * resolveRevenue() itself (by payment date, split by how much of each
-   * order's total that shift's payment represents — never by order
-   * createdAt, see resolveRevenue()'s own doc comment for why), split by
-   * orderType, so PSB + PMU(always 0 — see OTHER_PAYMENT_MODES's
-   * neighboring comment, nothing in the schema records a PMU channel) +
-   * P2D reconciles exactly against the shift's own stored `revenue` total.
+   * resolveRevenue() itself (by invoice generation date, never order
+   * createdAt or payment date — see resolveRevenue()'s own doc comment,
+   * confirmed directly with the finance team), split by orderType, so
+   * PSB + PMU(always 0 — see OTHER_PAYMENT_MODES's neighboring comment,
+   * nothing in the schema records a PMU channel) + P2D reconciles exactly
+   * against the shift's own stored `revenue` total.
    *
    * "Other Payment Mode" is the other figure the stored snapshot can't
    * answer — Shift.closing.collections only ever buckets cash/card/UPI/
@@ -834,25 +840,38 @@ export class ReportsService {
     const orderById = new Map(orders.map(o => [o.id, o]));
 
     // PSB/P2D must be keyed and prorated exactly like ShiftController's own
-    // resolveRevenue() (payment-date, not order createdAt; split by amount
-    // actually paid this window ÷ the order's total) or these two stop
+    // resolveRevenue() (invoice generation date, not order createdAt or
+    // payment date; a consolidated invoice's figures split by each linked
+    // order's orderTotal ÷ the invoice's totalAmount) or these two stop
     // reconciling against the shift's stored revenue total — see this
     // method's doc comment. A separate fetch from `orders`/`payments` above
-    // because the order set differs: an order created weeks ago but paid
-    // inside this window belongs here even though its createdAt falls
-    // outside [earliestOpen, latestClose].
-    // Not filtered to riderId: null — rider-collected COD is still real
-    // revenue, just not yet in the store's till (see resolveRevenue()'s own
-    // comment on this exact point); excluding it here would under-count
-    // P2D specifically, since home delivery is where COD happens.
-    const revenuePayments = await this.paymentTransactionRepo.find({
+    // because the order set differs: an order created (and paid) weeks ago
+    // but invoiced inside this window belongs here even though its
+    // createdAt falls outside [earliestOpen, latestClose].
+    const revenueInvoices = await this.invoiceRepo.find({
       where: {
-        transactionType: {neq: 'refund'},
-        paymentDate: {between: [earliestOpen, latestClose]},
+        status: InvoiceStatus.ISSUED,
+        createdAt: {between: [earliestOpen, latestClose]},
       } as object,
-      fields: {orderId: true, amount: true, paymentDate: true} as object,
+      fields: {
+        id: true,
+        subtotal: true,
+        discount: true,
+        cgst: true,
+        sgst: true,
+        totalAmount: true,
+        isConsolidated: true,
+        createdAt: true,
+      } as object,
     });
-    const revenueOrderIds = [...new Set(revenuePayments.map(p => p.orderId))];
+    const revenueInvoiceById = new Map(revenueInvoices.map(invoice => [invoice.id, invoice]));
+    const revenueLinks = revenueInvoices.length
+      ? await this.invoiceOrderLinkRepo.find({
+          where: {invoiceId: {inq: revenueInvoices.map(invoice => invoice.id)}} as object,
+          fields: {invoiceId: true, orderId: true, orderTotal: true} as object,
+        })
+      : [];
+    const revenueOrderIds = [...new Set(revenueLinks.map(link => link.orderId))];
     const revenueOrders = revenueOrderIds.length
       ? await this.orderRepo.find({
           where: {
@@ -860,13 +879,7 @@ export class ReportsService {
             storeId: {inq: storeIds},
             status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
           } as object,
-          fields: {
-            id: true,
-            storeId: true,
-            orderType: true,
-            subtotal: true,
-            totalAmount: true,
-          } as object,
+          fields: {id: true, storeId: true, orderType: true} as object,
         })
       : [];
     const revenueOrderById = new Map(revenueOrders.map(o => [o.id, o]));
@@ -894,15 +907,27 @@ export class ReportsService {
 
       let psbRevenue = 0;
       let p2dRevenue = 0;
-      for (const payment of revenuePayments) {
-        const order = revenueOrderById.get(payment.orderId);
+      for (const link of revenueLinks) {
+        const order = revenueOrderById.get(link.orderId);
         if (!order || order.storeId !== shift.storeId) continue;
-        const paidAt = payment.paymentDate ? new Date(payment.paymentDate).getTime() : null;
-        if (paidAt == null || paidAt < windowStart || paidAt > windowEnd) continue;
-        const total = Number(order.totalAmount) || 0;
-        if (total <= 0) continue;
-        const fraction = Math.min(1, (Number(payment.amount) || 0) / total);
-        const value = (Number(order.subtotal) || 0) * fraction;
+        const invoice = revenueInvoiceById.get(link.invoiceId);
+        if (!invoice) continue;
+        // Every invoice linked to this order falls somewhere in
+        // [earliestOpen, latestClose] already (that's how revenueInvoices
+        // was fetched) — still need its own createdAt to know which
+        // specific shift's window it lands in, same as the store check above.
+        const invoiceCreatedAt = invoice.createdAt ? new Date(invoice.createdAt).getTime() : null;
+        if (invoiceCreatedAt == null || invoiceCreatedAt < windowStart || invoiceCreatedAt > windowEnd) continue;
+
+        const orderTotal = Number(link.orderTotal) || 0;
+        let value: number;
+        if (invoice.isConsolidated) {
+          const invoiceTotal = Number(invoice.totalAmount) || 0;
+          const fraction = invoiceTotal > 0 ? Math.min(1, orderTotal / invoiceTotal) : 0;
+          value = (Number(invoice.subtotal) || 0) * fraction;
+        } else {
+          value = Number(invoice.subtotal) || 0;
+        }
         if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
         else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
       }
