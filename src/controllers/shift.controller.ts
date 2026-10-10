@@ -769,8 +769,15 @@ export class ShiftController {
         | {banking?: {supposed?: number; actual?: number}}
         | undefined
     )?.banking;
+    // Use the cashier's CONFIRMED opening figure, not the system's
+    // pre-adjustment chained value: if the cashier moved a till shortfall
+    // into banking at opening (actual > supposed), that adjustment must
+    // carry into the closing screen's "Supposed Bank Deposit" — otherwise
+    // it silently reverts to the stale pre-adjustment number every time.
+    // `.supposed` only remains as a fallback for legacy shifts opened
+    // before `.actual` was captured.
     const bankingSupposed =
-      Number(openingBanking?.supposed ?? openingBanking?.actual) || 0;
+      Number(openingBanking?.actual ?? openingBanking?.supposed) || 0;
 
     const pettyCash = await this.pettyCashService.computeWindowActivity(
       shift.storeId,
