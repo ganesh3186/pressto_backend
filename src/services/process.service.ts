@@ -19,6 +19,7 @@ import {
   StoreRepository,
   TransferRepository,
 } from '../repositories';
+import {OrderService} from './order.service';
 import {SystemNotificationService} from './system-notification.service';
 
 @injectable({scope: BindingScope.TRANSIENT})
@@ -44,6 +45,7 @@ export class ProcessService {
     @repository(StoreRepository) private storeRepo: StoreRepository,
     @repository(TransferRepository) private transferRepo: TransferRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
+    @inject('services.order') private orderService: OrderService,
     @inject('services.system-notification', {optional: true})
     private systemNotificationService?: SystemNotificationService,
   ) {
@@ -706,6 +708,7 @@ export class ProcessService {
         changedBy,
         remarks,
       });
+      this.orderService.notifyStatusChange(order.id, status, order.status);
       if (status === OrderStatus.READY && this.systemNotificationService) {
         this.systemNotificationService
           .notifyOrderReady(order)

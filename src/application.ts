@@ -25,6 +25,8 @@ import { OtpService } from './services/otp.service';
 import { CustomerAddressService } from './services/customer-address.service';
 import { CustomerContactService } from './services/customer-contact.service';
 import { CustomerPhoneService } from './services/customer-phone.service';
+import { PaymentService } from './services/payment.service';
+import { PickupRequestService } from './services/pickup-request.service';
 import { OrderService } from './services/order.service';
 import { ProcessService } from './services/process.service';
 import { ApprovalService } from './services/approval.service';
@@ -98,6 +100,8 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.customer-contact').toClass(CustomerContactService);
     this.bind('services.customer-phone').toClass(CustomerPhoneService);
     this.bind('services.order').toClass(OrderService);
+    this.bind('services.payment').toClass(PaymentService);
+    this.bind('services.pickup-request').toClass(PickupRequestService);
     this.bind('services.process').toClass(ProcessService);
     this.bind('services.approval').toClass(ApprovalService);
     this.bind('services.reprocess').toClass(ReprocessService);

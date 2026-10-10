@@ -1,3 +1,4 @@
+import {PickupRequestService} from '../services/pickup-request.service';
 import { authenticate, AuthenticationBindings } from '@loopback/authentication';
 import { inject } from '@loopback/core';
 import { IsolationLevel, repository } from '@loopback/repository';
@@ -55,6 +56,8 @@ import { SystemNotificationService } from '../services/system-notification.servi
 
 export class CustomerProfileController {
   constructor(
+    @inject('services.pickup-request')
+    private pickupRequestService: PickupRequestService,
     @repository(UsersRepository)
     private usersRepository: UsersRepository,
     @repository(CustomerRepository)
@@ -739,7 +742,7 @@ export class CustomerProfileController {
     const { v4 } = await import('uuid');
     const count = await this.pickupRequestRepository.count();
     const pickupNumber = `PU${String(count.count + 1).padStart(6, '0')}`;
-    const pickupRequest = await this.pickupRequestRepository.create({
+    const pickupRequest = await this.pickupRequestService.createRequest({
       id: v4(),
       pickupNumber,
       customerId: customer.id,

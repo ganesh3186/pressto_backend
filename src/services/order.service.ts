@@ -1,3 +1,5 @@
+import {afterWhatsAppCommit, WhatsAppService} from './whatsapp.service';
+import {PaymentService} from './payment.service';
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
@@ -317,6 +319,8 @@ export class OrderService {
     private deliveryCustodyEventRepo: DeliveryCustodyEventRepository,
     @repository(PickupRequestRepository)
     private pickupRequestRepo: PickupRequestRepository,
+    @inject('services.whatsapp') private whatsAppService: WhatsAppService,
+    @inject('services.payment') private paymentService: PaymentService,
     @inject('services.coupon') private couponService: CouponService,
     @inject('services.notification') private notificationService: NotificationService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
@@ -2133,7 +2137,7 @@ export class OrderService {
       // actually collected, so no transaction record is created for them.
       const createdPayments = [];
       for (const payment of collectablePayments) {
-        const pt = await this.paymentTransactionRepo.create(
+        const pt = await this.paymentService.recordPayment(
           {
             orderId: order.id,
             paymentMode: payment.paymentMode,
@@ -2180,7 +2184,7 @@ export class OrderService {
           {transaction: tx},
         );
         // Record wallet payment in payment_transaction so totalCollected queries stay consistent
-        const walletPt = await this.paymentTransactionRepo.create(
+        const walletPt = await this.paymentService.recordPayment(
           {
             orderId: order.id,
             paymentMode: PaymentMode.WALLET,
@@ -2209,6 +2213,9 @@ export class OrderService {
       );
 
       await tx.commit();
+      afterWhatsAppCommit(undefined, () =>
+        this.whatsAppService.notifyOrder(order.id, 'created'),
+      );
 
       return {
         order: {...order, status: orderInitialStatus},
@@ -2228,6 +2235,23 @@ export class OrderService {
   }
 
   // ─── Status Transition ────────────────────────────────────────────────────
+
+  /** Called only after a business flow has successfully persisted the status. */
+  notifyStatusChange(
+    orderId: string,
+    status: OrderStatus,
+    previousStatus: OrderStatus | undefined,
+    completion: 'delivered' | 'collected' = 'delivered',
+  ): void {
+    if (status === previousStatus) return;
+    if (status !== OrderStatus.READY && status !== OrderStatus.DELIVERED) return;
+    afterWhatsAppCommit(undefined, () =>
+      this.whatsAppService.notifyOrder(
+        orderId,
+        status === OrderStatus.READY ? 'ready' : completion,
+      ),
+    );
+  }
 
   async changeStatus(
     orderId: string,
@@ -2257,6 +2281,8 @@ export class OrderService {
       changedBy,
       remarks,
     });
+
+    this.notifyStatusChange(orderId, newStatus, order.status);
 
     // Not awaited — a slow/unreachable FCM call must never delay or block
     // the status change (NotificationService already swallows its own
@@ -3385,6 +3411,13 @@ export class OrderService {
       v4,
     );
 
+    this.notifyStatusChange(
+      params.orderId,
+      OrderStatus.DELIVERED,
+      order.status,
+      'collected',
+    );
+
     return {
       message: 'Order handed over.',
       handover,
@@ -3637,6 +3670,7 @@ export class OrderService {
       remarks: `Delivery attempt failed — returned to store: ${params.remarks.trim()}${reasonSuffix}`,
     });
 
+    this.notifyStatusChange(params.orderId, OrderStatus.READY, order.status);
     return this.orderRepo.findById(params.orderId);
   }
 
@@ -5884,7 +5918,7 @@ export class OrderService {
 
       let createdPayment = null;
       if (thisPayment > 0 && payment && !isPendingApproval) {
-        createdPayment = await this.paymentTransactionRepo.create(
+        createdPayment = await this.paymentService.recordPayment(
           {
             orderId,
             paymentMode: payment.paymentMode,
@@ -5921,7 +5955,7 @@ export class OrderService {
           },
           {transaction: tx},
         );
-        walletPayment = await this.paymentTransactionRepo.create(
+        walletPayment = await this.paymentService.recordPayment(
           {
             orderId,
             paymentMode: PaymentMode.WALLET,

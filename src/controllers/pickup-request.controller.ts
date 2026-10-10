@@ -1,3 +1,4 @@
+import {PickupRequestService} from '../services/pickup-request.service';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {Filter, IsolationLevel, repository} from '@loopback/repository';
@@ -69,6 +70,8 @@ interface UpdateBody {
 
 export class PickupRequestController {
   constructor(
+    @inject('services.pickup-request')
+    private pickupRequestService: PickupRequestService,
     @repository(PickupRequestRepository)
     private pickupRequestRepository: PickupRequestRepository,
     @repository(RiderRepository)
@@ -291,7 +294,7 @@ export class PickupRequestController {
     const {v4} = await import('uuid');
     const count = await this.pickupRequestRepository.count();
     const pickupNumber = `PU${String(count.count + 1).padStart(6, '0')}`;
-    const pickupRequest = await this.pickupRequestRepository.create({
+    const pickupRequest = await this.pickupRequestService.createRequest({
       id: v4(),
       pickupNumber,
       ...rest,
@@ -623,8 +626,8 @@ export class PickupRequestController {
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
       for (const req of requests) {
-        await this.pickupRequestRepository.updateById(
-          req.id,
+        await this.pickupRequestService.assignRider(
+          req,
           {
             assignedRiderId: body.riderId,
             assignedRiderName,

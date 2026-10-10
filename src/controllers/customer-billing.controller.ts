@@ -5,6 +5,7 @@ import {get, HttpErrors, param, patch, post, requestBody, response} from '@loopb
 import {securityId, UserProfile} from '@loopback/security';
 import {PresstoDataSource} from '../datasources';
 import {authorize} from '../authorization';
+import {PaymentService} from '../services/payment.service';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {
@@ -33,6 +34,7 @@ export class CustomerBillingController {
     @repository(InvoiceOrderLinkRepository) private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
     @repository(OnAccountConfigurationRepository) private onAccountConfigRepo: OnAccountConfigurationRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
+    @inject('services.payment') private paymentService: PaymentService,
   ) {}
 
   /**
@@ -233,7 +235,7 @@ export class CustomerBillingController {
         // — the model has no remarks/recordedBy column at all, so the Club & Pay
         // note is folded into gatewayResponse (a free-text field) instead of
         // being silently dropped.
-        await this.paymentRepo.create(
+        await this.paymentService.recordPayment(
           {
             id: v4(),
             orderId: inv.orderId,

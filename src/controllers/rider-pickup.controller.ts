@@ -1,3 +1,4 @@
+import {PickupRequestService} from '../services/pickup-request.service';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
@@ -70,6 +71,8 @@ const RIDER_STATUS_TRANSITIONS: PickupRequestStatus[] = [
  */
 export class RiderPickupController {
   constructor(
+    @inject('services.pickup-request')
+    private pickupRequestService: PickupRequestService,
     @repository(UsersRepository)
     private usersRepository: UsersRepository,
     @repository(RiderRepository)
@@ -811,7 +814,7 @@ export class RiderPickupController {
         order: ['assignedAt DESC'],
       });
       if (currentRun) {
-        const pickupRequest = await this.pickupRequestRepository.create({
+        const pickupRequest = await this.pickupRequestService.createRequest({
           ...base,
           ...selfAssignFields,
           storeId: currentRun.storeId,
@@ -833,7 +836,7 @@ export class RiderPickupController {
     const store = await this.storeRepository.findOne({where: {id: body.storeId}});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
 
-    const pickupRequest = await this.pickupRequestRepository.create({
+    const pickupRequest = await this.pickupRequestService.createRequest({
       ...base,
       ...selfAssignFields,
       storeId: body.storeId,
