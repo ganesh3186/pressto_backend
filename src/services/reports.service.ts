@@ -22,6 +22,7 @@ import {
   RegionRepository,
   ShiftRepository,
   StoreRepository,
+  UsersRepository,
   WalletRechargeRequestRepository,
 } from '../repositories';
 
@@ -254,6 +255,7 @@ export class ReportsService {
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(InvoiceOrderLinkRepository)
     private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
+    @repository(UsersRepository) private usersRepo: UsersRepository,
   ) {}
 
   /**
@@ -277,6 +279,15 @@ export class ReportsService {
    * `Wallet Recharge`. Note that a top-up AND the wallet-mode
    * payment it later funds both appear: this report lists tenders taken,
    * so summing every row double-counts wallet money by design.
+   *
+   * On Account invoices work the same way, for the same reason — see
+   * buildOnAccountInvoiceRows: the invoice GENERATION event shows up as
+   * its own row (paymentMode 'On Account', nothing actually collected
+   * yet), and the eventual real payment against it shows up later, on
+   * whichever day it's actually paid, as a normal payment row — just
+   * with its ticket cell overridden to the same `On Account -
+   * <invoiceNumber>` label (see the ticketNo override in the main
+   * payment-row map below) instead of the underlying order's own number.
    */
   async buildModeOfPayment(params: {
     storeIds: string[];
@@ -297,7 +308,7 @@ export class ReportsService {
     // Payments carry no storeId — they reach a store through their order,
     // and an order raised months ago can still be paid inside this
     // window, so the order set deliberately is NOT date-filtered.
-    const [orders, walletRows] = await Promise.all([
+    const [orders, walletRows, onAccountInvoiceRows] = await Promise.all([
       this.orderRepo.find({
         where: {storeId: {inq: storeIds}} as object,
         fields: {
@@ -310,31 +321,38 @@ export class ReportsService {
         } as object,
       }),
       this.buildWalletTopUpRows(storeIds, from, to),
+      this.buildOnAccountInvoiceRows(storeIds, from, to),
     ]);
 
     const orderById = new Map(orders.map(o => [o.id, o]));
-    const payments = orders.length
-      ? await this.paymentTransactionRepo.find({
-          where: {
-            orderId: {inq: orders.map(o => o.id)},
-            paymentDate: {between: [from, to]},
-          } as object,
-          order: ['paymentDate DESC'],
-        })
-      : [];
+    const [payments, onAccountInvoiceNumberByOrderId] = await Promise.all([
+      orders.length
+        ? this.paymentTransactionRepo.find({
+            where: {
+              orderId: {inq: orders.map(o => o.id)},
+              paymentDate: {between: [from, to]},
+            } as object,
+            order: ['paymentDate DESC'],
+          })
+        : [],
+      this.mapOnAccountInvoiceNumbers(orders.map(o => o.id)),
+    ]);
 
-    if (!payments.length && !walletRows.length) return empty;
+    if (!payments.length && !walletRows.length && !onAccountInvoiceRows.length) return empty;
 
-    // The two ledgers are paged as one list, so the whole merged set has
+    // The three ledgers are paged as one list, so the whole merged set has
     // to be ordered in memory before slicing: a DB-side limit/skip on the
-    // payments alone would drop the top-ups that belong on the same page.
+    // payments alone would drop the top-ups/invoices that belong on the
+    // same page.
     type Entry =
-      | {date: Date | null; payment: (typeof payments)[number]; wallet?: undefined}
-      | {date: Date | null; wallet: ModeOfPaymentRow; payment?: undefined};
+      | {date: Date | null; payment: (typeof payments)[number]; wallet?: undefined; onAccountInvoice?: undefined}
+      | {date: Date | null; wallet: ModeOfPaymentRow; payment?: undefined; onAccountInvoice?: undefined}
+      | {date: Date | null; onAccountInvoice: ModeOfPaymentRow; payment?: undefined; wallet?: undefined};
 
     const entries: Entry[] = [
       ...payments.map(payment => ({date: payment.paymentDate ?? null, payment})),
       ...walletRows.map(wallet => ({date: wallet.date, wallet})),
+      ...onAccountInvoiceRows.map(onAccountInvoice => ({date: onAccountInvoice.date, onAccountInvoice})),
     ].sort((a, b) => timeOf(b.date) - timeOf(a.date));
 
     // Count and totals come from the whole matching set, never just the
@@ -348,6 +366,14 @@ export class ReportsService {
           const label =
             PAYMENT_MODE_LABELS[entry.wallet.paymentMode] ?? entry.wallet.paymentModeLabel;
           totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + entry.wallet.amount);
+          return acc;
+        }
+        if (entry.onAccountInvoice) {
+          acc.amount += entry.onAccountInvoice.amount;
+          const label =
+            PAYMENT_MODE_LABELS[entry.onAccountInvoice.paymentMode] ??
+            entry.onAccountInvoice.paymentModeLabel;
+          totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + entry.onAccountInvoice.amount);
           return acc;
         }
         const txn = entry.payment;
@@ -377,6 +403,7 @@ export class ReportsService {
 
     const rows: ModeOfPaymentRow[] = pageEntries.map(entry => {
       if (entry.wallet) return entry.wallet;
+      if (entry.onAccountInvoice) return entry.onAccountInvoice;
 
       const txn = entry.payment;
       const order = orderById.get(txn.orderId);
@@ -384,6 +411,12 @@ export class ReportsService {
       const value = Number(txn.amount) || 0;
       const shift = order?.shiftId ? shiftById.get(String(order.shiftId)) : undefined;
       const customer = order?.customerId ? customerById.get(String(order.customerId)) : undefined;
+      // This order was billed through a consolidated On Account invoice —
+      // show the same `On Account - <invoiceNumber>` label the billing-
+      // event row above used, instead of the order's own number, so the
+      // two rows (invoice raised, then eventually paid) read as one
+      // story rather than two unrelated-looking lines.
+      const onAccountInvoiceNumber = onAccountInvoiceNumberByOrderId.get(txn.orderId);
 
       return {
         id: String(txn.id),
@@ -392,7 +425,9 @@ export class ReportsService {
         // closureNo exists only once a shift has been closed; an open
         // shift has no closure number yet, which is not missing data.
         shiftClosureNo: shift?.closureNo != null ? String(shift.closureNo) : '—',
-        ticketNo: order?.orderNumber ?? '—',
+        ticketNo: onAccountInvoiceNumber
+          ? `On Account - ${onAccountInvoiceNumber}`
+          : order?.orderNumber ?? '—',
         // The staff member who placed the ticket — never the customer, even
         // when placedByName is blank. Who bought it is its own column.
         userName: order?.placedByName ?? '—',
@@ -487,6 +522,168 @@ export class ReportsService {
           PAYMENT_MODE_LABELS[request.paymentMode] ?? String(request.paymentMode ?? '—'),
       };
     });
+  }
+
+  /**
+   * On Account invoice GENERATION events, as Mode Of Payment rows — shown
+   * the moment a consolidated invoice is raised, with paymentMode 'On
+   * Account' and no money actually collected yet. The eventual real
+   * payment against this same invoice (cash/card/UPI/whatever the
+   * customer actually pays with) shows up separately, on whichever day
+   * it's actually collected — see buildModeOfPayment's own ticketNo
+   * override for that row, which shares this one's `On Account -
+   * <invoiceNumber>` label so the two read as one story.
+   *
+   * A consolidated invoice can span more than one store (its linked
+   * orders aren't required to share one) — split per store by each
+   * store's own share of the invoice's total, same proration
+   * ShiftController.resolveRevenue() already uses for Revenue, so a
+   * store-scoped run of this report never shows money belonging to a
+   * different store.
+   */
+  private async buildOnAccountInvoiceRows(
+    storeIds: string[],
+    from: Date,
+    to: Date,
+  ): Promise<ModeOfPaymentRow[]> {
+    const invoices = await this.invoiceRepo.find({
+      where: {
+        status: InvoiceStatus.ISSUED,
+        isConsolidated: true,
+        createdAt: {between: [from, to]},
+      } as object,
+      fields: {
+        id: true,
+        invoiceNumber: true,
+        orderId: true,
+        generatedBy: true,
+        createdAt: true,
+      } as object,
+    });
+    if (!invoices.length) return [];
+
+    const links = await this.invoiceOrderLinkRepo.find({
+      where: {invoiceId: {inq: invoices.map(i => i.id)}} as object,
+      fields: {invoiceId: true, orderId: true, orderTotal: true} as object,
+    });
+    if (!links.length) return [];
+
+    const linkedOrders = await this.orderRepo.find({
+      where: {id: {inq: links.map(l => l.orderId)}} as object,
+      fields: {id: true, storeId: true} as object,
+    });
+    const storeIdByOrderId = new Map(linkedOrders.map(o => [o.id, o.storeId]));
+
+    // Each invoice's share per store: invoiceId -> (storeId -> summed orderTotal).
+    const shareByInvoiceAndStore = new Map<string, Map<string, number>>();
+    for (const link of links) {
+      const orderStoreId = storeIdByOrderId.get(link.orderId);
+      if (!orderStoreId || !storeIds.includes(orderStoreId)) continue;
+      const byStore = shareByInvoiceAndStore.get(link.invoiceId) ?? new Map<string, number>();
+      byStore.set(orderStoreId, (byStore.get(orderStoreId) ?? 0) + (Number(link.orderTotal) || 0));
+      shareByInvoiceAndStore.set(link.invoiceId, byStore);
+    }
+    if (!shareByInvoiceAndStore.size) return [];
+
+    // Invoice.orderId is the representative order — used here only to
+    // resolve which customer this consolidated invoice bills, same
+    // precedent as every other single-order read path that falls back
+    // to it (see Invoice model's own doc comment).
+    const representativeOrderIds = [...new Set(invoices.map(i => i.orderId))];
+    const generatedByIds = [...new Set(invoices.map(i => i.generatedBy).filter(Boolean))];
+    const [representativeOrders, generators, stores] = await Promise.all([
+      this.orderRepo.find({
+        where: {id: {inq: representativeOrderIds}} as object,
+        fields: {id: true, customerId: true} as object,
+      }),
+      generatedByIds.length
+        ? this.usersRepo.find({
+            where: {id: {inq: generatedByIds}} as object,
+            fields: {id: true, fullName: true} as object,
+          })
+        : [],
+      this.storeRepo.find({
+        where: {id: {inq: storeIds}} as object,
+        fields: {id: true, name: true, code: true} as object,
+      }),
+    ]);
+    const customerIdByRepOrderId = new Map(representativeOrders.map(o => [o.id, o.customerId]));
+    const customerIds = [...new Set(representativeOrders.map(o => o.customerId).filter(Boolean))];
+    const customers = customerIds.length
+      ? await this.customerRepo.find({
+          where: {id: {inq: customerIds}} as object,
+          fields: {id: true, firstName: true, lastName: true, customerCode: true} as object,
+        })
+      : [];
+    const customerById = new Map(customers.map(c => [String(c.id), c]));
+    const userNameById = new Map(generators.map(u => [String(u.id), u.fullName ?? '—']));
+    const storeNameById = new Map(
+      stores.map(store => [String(store.id), store.name ?? String(store.code ?? '—')]),
+    );
+
+    const rows: ModeOfPaymentRow[] = [];
+    for (const invoice of invoices) {
+      const byStore = shareByInvoiceAndStore.get(invoice.id);
+      if (!byStore) continue;
+      const customerId = customerIdByRepOrderId.get(invoice.orderId);
+      const customer = customerId ? customerById.get(String(customerId)) : undefined;
+
+      for (const [storeId, share] of byStore) {
+        if (share <= 0) continue;
+        rows.push({
+          // Namespaced per (invoice, store) so a multi-store consolidated
+          // invoice's two rows can never collide, and so this can never
+          // collide with a payment transaction id in the merged list.
+          id: `on-account-invoice:${invoice.id}:${storeId}`,
+          storeName: storeNameById.get(storeId) ?? '—',
+          date: invoice.createdAt ?? null,
+          // Generating an invoice isn't tied to a till/shift session —
+          // same '—' convention as a wallet top-up's shiftClosureNo.
+          shiftClosureNo: '—',
+          ticketNo: `On Account - ${invoice.invoiceNumber}`,
+          userName: invoice.generatedBy
+            ? (userNameById.get(String(invoice.generatedBy)) ?? '—')
+            : '—',
+          customerNameWithCode: this.formatCustomerNameWithCode(customer),
+          amount: roundRupees(share),
+          reimbursement: 0,
+          paymentMode: PaymentMode.ON_ACCOUNT,
+          paymentModeLabel: PAYMENT_MODE_LABELS[PaymentMode.ON_ACCOUNT],
+        });
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * orderId -> invoiceNumber, for every given order that was billed
+   * through a consolidated On Account invoice — used by
+   * buildModeOfPayment to relabel that order's own payment row(s) as
+   * `On Account - <invoiceNumber>` instead of the order's own number,
+   * once the actual payment against that invoice comes in.
+   */
+  private async mapOnAccountInvoiceNumbers(orderIds: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (!orderIds.length) return result;
+
+    const links = await this.invoiceOrderLinkRepo.find({
+      where: {orderId: {inq: orderIds}} as object,
+      fields: {invoiceId: true, orderId: true} as object,
+    });
+    if (!links.length) return result;
+
+    const invoices = await this.invoiceRepo.find({
+      where: {id: {inq: [...new Set(links.map(l => l.invoiceId))]}, isConsolidated: true} as object,
+      fields: {id: true, invoiceNumber: true} as object,
+    });
+    if (!invoices.length) return result;
+
+    const invoiceNumberById = new Map(invoices.map(i => [i.id, i.invoiceNumber]));
+    for (const link of links) {
+      const invoiceNumber = invoiceNumberById.get(link.invoiceId);
+      if (invoiceNumber) result.set(link.orderId, invoiceNumber);
+    }
+    return result;
   }
 
   /**
