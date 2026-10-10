@@ -294,6 +294,10 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
     permission: 'report_petty_cash_expense:read',
     description: 'View the Petty Cash Expense report',
   },
+  {
+    permission: 'report_sales_gst:read',
+    description: 'View the Sales Report of GST',
+  },
 ];
 
 // Which of the permissions above each role should get. Mirrors the access
@@ -382,6 +386,7 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'report_pending_payments:read',
       'report_pending_tickets:read',
       'report_petty_cash_expense:read',
+      'report_sales_gst:read',
     ],
   },
   {
@@ -480,6 +485,7 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'report_pending_payments:read',
       'report_pending_tickets:read',
       'report_petty_cash_expense:read',
+      'report_sales_gst:read',
     ],
   },
   {
@@ -510,6 +516,7 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'report_on_account_billing:read',
       'report_pending_payments:read',
       'report_petty_cash_expense:read',
+      'report_sales_gst:read',
     ],
   },
 ];

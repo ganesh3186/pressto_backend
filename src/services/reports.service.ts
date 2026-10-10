@@ -8,18 +8,22 @@ import {PaymentRequestStatus} from '../models/payment-request-status.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {
   ClusterRepository,
+  CustomerAddressRepository,
   CustomerLabelAssignmentRepository,
   CustomerLabelRepository,
   CustomerRepository,
   DeliveryOrderRepository,
   GarmentRepository,
+  GstTaxConfigurationRepository,
   InvoiceOrderLinkRepository,
   InvoiceRepository,
+  ItemRepository,
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
   PettyCashRegisterEntryRepository,
   RegionRepository,
+  ServiceRepository,
   ShiftRepository,
   StoreRepository,
   UsersRepository,
@@ -28,6 +32,71 @@ import {
 
 /** Fixed business-unit label; the schema carries no BU dimension yet. */
 const BUSINESS_UNIT = 'Pressto';
+
+// Sales Report of GST: the business files GST under one single registered
+// entity/address, not a separate GSTIN per store, so the "Seller" block is
+// the same fixed constant on every row (confirmed with the client).
+const SALES_GST_SELLER = {
+  gstin: '27AAECP3228Q2ZX',
+  legalName: 'PRESS2 DRYCLEANING AND LAUNDRY PRIVATE LIMITED',
+  addr1: 'Shop No 7 Kenwood Chs Ground Floor 89, Ambedkar Rd Zig Zag Road',
+  addr2: 'Junction Bandra -W, Bandra (West), Mumbai, Maharashtra - 400050',
+  locationName: 'MUMBAI',
+  pincode: '400050',
+  stateCode: '27',
+};
+
+// One SAC code for every line — dry cleaning/laundry services all file
+// under the same code, confirmed with the client (not per-item/service).
+const SALES_GST_SAC_CODE = '999712';
+
+/** GST state codes (the 2-digit prefix of every GSTIN), keyed by lowercase state name. */
+const GST_STATE_CODE_BY_NAME: Record<string, string> = {
+  'jammu and kashmir': '01',
+  'himachal pradesh': '02',
+  punjab: '03',
+  chandigarh: '04',
+  uttarakhand: '05',
+  haryana: '06',
+  delhi: '07',
+  rajasthan: '08',
+  'uttar pradesh': '09',
+  bihar: '10',
+  sikkim: '11',
+  'arunachal pradesh': '12',
+  nagaland: '13',
+  manipur: '14',
+  mizoram: '15',
+  tripura: '16',
+  meghalaya: '17',
+  assam: '18',
+  'west bengal': '19',
+  jharkhand: '20',
+  odisha: '21',
+  chhattisgarh: '22',
+  'madhya pradesh': '23',
+  gujarat: '24',
+  'daman and diu': '25',
+  'dadra and nagar haveli': '26',
+  maharashtra: '27',
+  karnataka: '29',
+  goa: '30',
+  lakshadweep: '31',
+  kerala: '32',
+  'tamil nadu': '33',
+  puducherry: '34',
+  'andaman and nicobar islands': '35',
+  telangana: '36',
+  'andhra pradesh': '37',
+  ladakh: '38',
+};
+
+/** Buyer's GST state code: prefer the 2-digit prefix of their own GSTIN (authoritative for a B2B buyer), else look up their address's state name. */
+function resolveBuyerStateCode(gstNumber?: string, stateName?: string): string {
+  if (gstNumber && gstNumber.length >= 2) return gstNumber.slice(0, 2);
+  const key = (stateName ?? '').trim().toLowerCase();
+  return GST_STATE_CODE_BY_NAME[key] ?? '—';
+}
 
 /**
  * Order types that originate as a home pickup — the "P2D" filter on the
@@ -256,6 +325,12 @@ export class ReportsService {
     @repository(InvoiceOrderLinkRepository)
     private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
     @repository(UsersRepository) private usersRepo: UsersRepository,
+    @repository(CustomerAddressRepository)
+    private customerAddressRepo: CustomerAddressRepository,
+    @repository(ItemRepository) private itemRepo: ItemRepository,
+    @repository(ServiceRepository) private serviceRepo: ServiceRepository,
+    @repository(GstTaxConfigurationRepository)
+    private gstTaxConfigurationRepo: GstTaxConfigurationRepository,
   ) {}
 
   /**
@@ -932,6 +1007,200 @@ export class ReportsService {
     });
 
     return {rows, totalCount: enriched.length, totals};
+  }
+
+  /**
+   * Sales Report of GST — one row per INVOICE LINE ITEM, matching the
+   * client's own GST sales register format (Sr No / BU / Region / ... /
+   * Buyer_State_Code).
+   *
+   * Keyed by invoice generation date, same as Revenue elsewhere in this
+   * file — a ticket only has something taxable to report once it's
+   * actually invoiced.
+   *
+   * Only plain, single-order invoices contribute: a consolidated
+   * (On Account) invoice never gets a CGST/SGST split or an item
+   * snapshot written to it (see CustomerBillingController.generate...
+   * invoice — subtotal is just the combined balance due, tax fields stay
+   * at their 0 default), so there is nothing GST-relevant to report for
+   * it. This is a real gap in the on-account billing flow, not something
+   * this report can paper over — flagged separately, not silently
+   * skipped.
+   *
+   * Each line's Taxable Value/CGST/SGST is that item's proportional
+   * share of its invoice's totals (`item.totalPrice ÷ invoice.subtotal`),
+   * the same proration technique used for a consolidated invoice's
+   * per-order split elsewhere in this file — here applied per-item
+   * instead, since the invoice stores only aggregate tax figures, never
+   * a per-item breakdown.
+   */
+  async buildSalesGst(params: OrderReportParams): Promise<PagedReport<object>> {
+    const {storeIds, from, to, limit, skip} = params;
+    if (!storeIds.length) return emptyPaged();
+
+    const orders = await this.orderRepo.find({
+      where: {storeId: {inq: storeIds}} as object,
+      fields: {
+        id: true,
+        storeId: true,
+        customerId: true,
+        orderNumber: true,
+        deliveryAddressId: true,
+      } as object,
+    });
+    if (!orders.length) return emptyPaged();
+    const orderById = new Map(orders.map(o => [String(o.id), o]));
+
+    const invoices = await this.invoiceRepo.find({
+      where: {
+        orderId: {inq: orders.map(o => o.id)},
+        status: InvoiceStatus.ISSUED,
+        isConsolidated: false,
+        createdAt: {between: [from, to]},
+      } as object,
+    });
+    if (!invoices.length) return emptyPaged();
+
+    const customerIds = [...new Set(orders.map(o => String(o.customerId)))];
+    const addressIds = [...new Set(orders.map(o => o.deliveryAddressId).filter(Boolean))] as string[];
+
+    const [gstConfig, storeCtx, customers, addresses, defaultAddresses] = await Promise.all([
+      this.gstTaxConfigurationRepo.findOne({
+        where: {isActive: true, isDeleted: false} as object,
+      }),
+      this.buildStoreContext(storeIds),
+      this.customerRepo.find({where: {id: {inq: customerIds}} as object}),
+      addressIds.length
+        ? this.customerAddressRepo.find({where: {id: {inq: addressIds}} as object})
+        : Promise.resolve([]),
+      this.customerAddressRepo.find({
+        where: {customerId: {inq: customerIds}, isDefault: true} as object,
+      }),
+    ]);
+    const cgstRatePct = Number(gstConfig?.cgstPercentage) || 0;
+    const sgstRatePct = Number(gstConfig?.sgstPercentage) || 0;
+    const customerById = new Map(customers.map(c => [String(c.id), c]));
+    const addressById = new Map(addresses.map(a => [String(a.id), a]));
+    const defaultAddressByCustomer = new Map(defaultAddresses.map(a => [String(a.customerId), a]));
+
+    const itemIds = new Set<string>();
+    const serviceIds = new Set<string>();
+    for (const invoice of invoices) {
+      for (const line of (invoice.items ?? []) as Array<{itemId?: string; serviceId?: string}>) {
+        if (line.itemId) itemIds.add(line.itemId);
+        if (line.serviceId) serviceIds.add(line.serviceId);
+      }
+    }
+    const [items, services] = await Promise.all([
+      itemIds.size
+        ? this.itemRepo.find({
+            where: {id: {inq: [...itemIds]}} as object,
+            fields: {id: true, name: true} as object,
+          })
+        : Promise.resolve([]),
+      serviceIds.size
+        ? this.serviceRepo.find({
+            where: {id: {inq: [...serviceIds]}} as object,
+            fields: {id: true, name: true} as object,
+          })
+        : Promise.resolve([]),
+    ]);
+    const itemNameById = new Map(items.map(i => [String(i.id), i.name]));
+    const serviceNameById = new Map(services.map(s => [String(s.id), s.name]));
+
+    const allRows: object[] = [];
+    let srNo = 0;
+    for (const invoice of invoices) {
+      const order = orderById.get(invoice.orderId);
+      if (!order) continue;
+      const store = storeCtx.get(String(order.storeId));
+      const customer = customerById.get(String(order.customerId));
+      const isBusiness = customer?.customerEntityType === 'business';
+
+      const lineItems = (
+        (invoice.items ?? []) as Array<{
+          itemId?: string;
+          serviceId?: string;
+          totalPrice?: number;
+        }>
+      ).filter(line => (Number(line.totalPrice) || 0) > 0);
+      if (!lineItems.length) continue;
+
+      const invoiceSubtotal = Number(invoice.subtotal) || 0;
+      const taxableSubtotal = Math.max(0, invoiceSubtotal - (Number(invoice.discount) || 0));
+      const invoiceCgst = Number(invoice.cgst) || 0;
+      const invoiceSgst = Number(invoice.sgst) || 0;
+
+      const address =
+        (order.deliveryAddressId ? addressById.get(order.deliveryAddressId) : undefined) ??
+        defaultAddressByCustomer.get(String(order.customerId));
+      const customerName = isBusiness
+        ? customer?.companyName ?? [customer?.firstName, customer?.lastName].filter(Boolean).join(' ')
+        : [customer?.firstName, customer?.lastName].filter(Boolean).join(' ');
+
+      for (const line of lineItems) {
+        const fraction = invoiceSubtotal > 0 ? (Number(line.totalPrice) || 0) / invoiceSubtotal : 0;
+        const taxableValue = roundRupees(taxableSubtotal * fraction);
+        const cgstAmount = roundRupees(invoiceCgst * fraction);
+        const sgstAmount = roundRupees(invoiceSgst * fraction);
+        const totalTax = roundRupees(cgstAmount + sgstAmount);
+        const itemName = line.itemId ? itemNameById.get(line.itemId) : undefined;
+        const serviceName = line.serviceId ? serviceNameById.get(line.serviceId) : undefined;
+
+        srNo += 1;
+        allRows.push({
+          id: `${invoice.id}:${srNo}`,
+          srNo,
+          bu: BUSINESS_UNIT,
+          region: store?.regionName ?? '—',
+          cluster: store?.clusterName ?? '—',
+          storeName: store?.name ?? '—',
+          customerGstin: isBusiness ? customer?.gstNumber ?? '' : '',
+          customerName: customerName || '—',
+          ticketNo: `${store?.code ?? '—'}/${order.orderNumber ?? '—'}`,
+          ticketDate: invoice.createdAt ?? null,
+          ticketValue: roundRupees(taxableValue + totalTax),
+          description: [itemName, serviceName].filter(Boolean).join(' /') || '—',
+          sacHsn: SALES_GST_SAC_CODE,
+          taxableValue,
+          totalTax,
+          cgstRate: cgstRatePct,
+          cgstAmount,
+          sgstRate: sgstRatePct,
+          sgstAmount,
+          sellerGstin: SALES_GST_SELLER.gstin,
+          sellerLegalName: SALES_GST_SELLER.legalName,
+          sellerAddr1: SALES_GST_SELLER.addr1,
+          sellerAddr2: SALES_GST_SELLER.addr2,
+          sellerLocationName: SALES_GST_SELLER.locationName,
+          sellerPincode: SALES_GST_SELLER.pincode,
+          sellerStateCode: SALES_GST_SELLER.stateCode,
+          buyerAddr1: address?.addressLine1 ?? '—',
+          buyerAddr2: address?.addressLine2 ?? '—',
+          buyerLocationName: address?.city ?? '—',
+          buyerPincode: address?.pincode ?? '—',
+          buyerStateCode: resolveBuyerStateCode(customer?.gstNumber, address?.state),
+        });
+      }
+    }
+
+    const totals = {
+      taxableValue: roundRupees(
+        allRows.reduce((sum, row) => sum + ((row as {taxableValue: number}).taxableValue || 0), 0),
+      ),
+      totalTax: roundRupees(
+        allRows.reduce((sum, row) => sum + ((row as {totalTax: number}).totalTax || 0), 0),
+      ),
+      ticketValue: roundRupees(
+        allRows.reduce((sum, row) => sum + ((row as {ticketValue: number}).ticketValue || 0), 0),
+      ),
+    };
+
+    return {
+      rows: allRows.slice(skip, skip + limit),
+      totalCount: allRows.length,
+      totals,
+    };
   }
 
   /**

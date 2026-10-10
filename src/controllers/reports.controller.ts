@@ -149,6 +149,29 @@ export class ReportsController {
   }
 
   @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['report_sales_gst:read']})
+  @get('/reports/sales-gst')
+  @response(200, {description: 'Sales Report of GST — one row per invoiced line item'})
+  async salesGst(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+  ): Promise<object> {
+    const {from, to} = resolveWindow(dateFrom, dateTo);
+    const report = await this.reportsService.buildSalesGst({
+      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      from,
+      to,
+      limit: clampLimit(limit),
+      skip: clampSkip(skip),
+    });
+    return {report};
+  }
+
+  @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['report_consolidated_daily_sales:read']})
   @get('/reports/consolidated-daily-sales')
   @response(200, {description: 'Consolidated Daily Sales — closing collections per store per day'})
