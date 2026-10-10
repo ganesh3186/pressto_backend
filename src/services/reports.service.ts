@@ -144,7 +144,7 @@ type ShiftClosingSnapshot = {
   collections?: {
     cash?: number;
     card?: number;
-    UPI?: number;
+    upi?: number;
     cheque?: number;
     pgLink?: number;
     wallet?: number;
@@ -998,7 +998,7 @@ export class ReportsService {
       row.otherPaymentMode += otherPaymentMode;
       row.ppVouchers += Number(collections.ppVoucher) || 0;
       row.cash += Number(collections.cash) || 0;
-      row.cardsUpi += (Number(collections.card) || 0) + (Number(collections.UPI) || 0);
+      row.cardsUpi += (Number(collections.card) || 0) + (Number(collections.upi) || 0);
       row.chequesReceived += Number(collections.cheque) || 0;
       row.reimbursed += Number(closing.register?.reimbursement) || 0;
       row.pgLink += Number(collections.pgLink) || 0;
