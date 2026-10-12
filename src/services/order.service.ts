@@ -182,10 +182,8 @@ export interface CreateOrderInput {
   payments?: OrderPaymentInput[];
   walletAmount?: number;
   orderLabelIds?: string[];
-  // Whether THIS order is being paid on account — drives the credit-limit
-  // gate below. Distinct from the customer's general on-account eligibility:
-  // an eligible customer paying cash/UPI/card/wallet for this particular
-  // order should never be blocked by it.
+  // Whether THIS order is billed on account, distinct from the customer's
+  // general eligibility. Persists as Order.isOnAccount for deferred billing.
   paymentIsOnAccount?: boolean;
   // When supplied, replaces the customer's default discount for this order
   // (CouponService.evaluate() — see the discount computation below). An
@@ -1880,25 +1878,9 @@ export class OrderService {
       );
     }
 
-    // ── On-account credit-limit gate ──
-    // The security deposit doubles as the credit limit for on-account
-    // customers — checked before the transaction opens, same posture as the
-    // wallet-balance check above. Only applies when THIS order is actually
-    // being paid on account — an eligible customer paying cash/UPI/card/
-    // wallet for this particular order must never be blocked by it.
     const isOnAccountCustomer =
       customer.customerEntityType === 'business' ||
       customer.isOnAccountEligible === true;
-    if (isOnAccountCustomer && input.paymentIsOnAccount) {
-      const creditStatus = await this.computeOnAccountCreditStatus(
-        input.customerId,
-      );
-      if (totalAmount > creditStatus.remaining) {
-        throw new HttpErrors.BadRequest(
-          `On-account credit limit exceeded. Available: ₹${creditStatus.remaining}, Order total: ₹${totalAmount}`,
-        );
-      }
-    }
 
     // Attribution only — not enforced. An order can still be created with
     // no open shift; this just attaches one when the creating cashier

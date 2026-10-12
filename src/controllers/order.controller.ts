@@ -269,6 +269,10 @@ export class OrderController {
                 minimum: 0,
                 description: 'Amount to deduct from customer wallet',
               },
+              paymentIsOnAccount: {
+                type: 'boolean',
+                description: 'Bill this order on account when the customer is eligible.',
+              },
             },
           },
         },
@@ -406,8 +410,7 @@ export class OrderController {
   }
 
   // The customer's security deposit doubles as their on-account credit limit
-  // — read-only preview of the same computation createOrder() gates on, so
-  // the frontend can warn before submitting without duplicating the logic.
+  // — read-only status for billing, independent of order creation.
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/on-account-credit/{customerId}')

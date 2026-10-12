@@ -24,6 +24,15 @@ function money(value: unknown): number {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
+function isBillableOnAccountOrder(order: Order): boolean {
+  // Keep delivered legacy orders billable. A ticket still in progress must
+  // explicitly use On Account billing; drafts and terminal failures never do.
+  return order.status === OrderStatus.DELIVERED || (
+    order.isOnAccount === true &&
+    ![OrderStatus.DRAFT, OrderStatus.CANCELLED, OrderStatus.RETURNED].includes(order.status!)
+  );
+}
+
 export class CustomerBillingController {
   constructor(
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
@@ -312,7 +321,7 @@ export class CustomerBillingController {
   }
 
   // ─── On Account: Billable Orders ──────────────────────────────────────────
-  // Delivered orders for a business (on-account) customer that haven't been
+  // Active On Account orders and delivered legacy orders that haven't been
   // invoiced yet — individually, or as part of an earlier consolidated batch.
   // These customers skip the usual "must be paid before handover" rule
   // (see OrderService.handoverInStore), so this is how the debt actually
@@ -321,7 +330,7 @@ export class CustomerBillingController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['on_account:read']})
   @get('/customers/{customerId}/on-account/billable-orders')
-  @response(200, {description: 'Delivered, not-yet-invoiced orders for an on-account customer'})
+  @response(200, {description: 'Billable, not-yet-invoiced orders for an on-account customer'})
   async billableOrders(
     @param.path.string('customerId') customerId: string,
     @param.query.string('from') from?: string,
@@ -340,7 +349,17 @@ export class CustomerBillingController {
     if (!customer) throw new HttpErrors.NotFound('Customer not found.');
 
     const orders = await this.orderRepo.find({
-      where: {customerId, isDeleted: false, status: OrderStatus.DELIVERED} as any,
+      where: {
+        customerId,
+        isDeleted: false,
+        or: [
+          {status: OrderStatus.DELIVERED},
+          {
+            isOnAccount: true,
+            status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED, OrderStatus.RETURNED]},
+          },
+        ],
+      } as any,
       order: ['createdAt ASC'],
     });
     if (!orders.length) return {billableOrders: [], totalDue: 0};
@@ -354,13 +373,12 @@ export class CustomerBillingController {
       ...individualInvoices.map(i => i.orderId),
       ...links.map(l => l.orderId),
     ]);
-    // Delivered date when recorded, otherwise the order's own date, so an
-    // order is never silently unfilterable.
+    // Creation date applies to both in-progress and delivered tickets.
     const inRange = (o: Order) => {
-      const when = new Date(((o as any).deliveryDate ?? o.createdAt) as Date).getTime();
+      const when = new Date(o.createdAt as Date).getTime();
       return when >= fromTime && when <= toTime;
     };
-    const billable = orders.filter(o => !invoicedOrderIds.has(o.id) && inRange(o));
+    const billable = orders.filter(o => isBillableOnAccountOrder(o) && !invoicedOrderIds.has(o.id) && inRange(o));
     if (!billable.length) return {billableOrders: [], totalDue: 0};
 
     const payments = await this.paymentRepo.find({
@@ -381,6 +399,7 @@ export class CustomerBillingController {
         return {
           orderId: o.id,
           orderNumber: (o as any).orderNumber,
+          status: o.status,
           createdAt: o.createdAt,
           deliveryDate: (o as any).deliveryDate ?? null,
           totalAmount: total,
@@ -388,7 +407,7 @@ export class CustomerBillingController {
           amountDue,
         };
       })
-      // A delivered, un-invoiced order that's already fully paid needs no
+      // An un-invoiced order that's already fully paid needs no
       // billing at all — offering it here would let staff bundle it into a
       // consolidated invoice for ₹0 and permanently mark it "invoiced".
       .filter(o => o.amountDue > 0);
@@ -397,7 +416,7 @@ export class CustomerBillingController {
   }
 
   // ─── On Account: Generate Consolidated Invoice ────────────────────────────
-  // Bills several delivered orders as ONE invoice, not one per order — the
+  // Bills several On Account orders as ONE invoice, not one per order — the
   // whole point of on-account billing. Amounts owed are summed as-is (each
   // order was already priced/taxed individually at creation); this doesn't
   // re-tax anything, it just totals up what's still due across the batch.
@@ -439,10 +458,10 @@ export class CustomerBillingController {
     if (orders.length !== orderIds.length) {
       throw new HttpErrors.BadRequest('One or more orders were not found for this customer.');
     }
-    const notDelivered = orders.filter(o => o.status !== OrderStatus.DELIVERED);
-    if (notDelivered.length) {
+    const notBillable = orders.filter(o => !isBillableOnAccountOrder(o));
+    if (notBillable.length) {
       throw new HttpErrors.BadRequest(
-        `Only delivered orders can be billed. Not delivered: ${notDelivered.map(o => (o as any).orderNumber).join(', ')}`,
+        `Only delivered or active On Account orders can be billed. Not eligible: ${notBillable.map(o => (o as any).orderNumber).join(', ')}`,
       );
     }
 
