@@ -24,7 +24,7 @@ const MAX_LIMIT = 500;
  * without also seeing, say, on-account billing.
  *
  * Every report is store-scoped through StoreScopeService on the same
- * terms as the rest of the app: `storeId` narrows within what the caller
+ * terms as the rest of the app: store filters narrow within what the caller
  * can already see and can never widen it.
  */
 export class ReportsController {
@@ -47,16 +47,21 @@ export class ReportsController {
   async modeOfPayment(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
+    @param.query.string('storeIds') storeIds?: string,
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
     @param.query.number('limit') limit?: number,
     @param.query.number('skip') skip?: number,
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
-    const storeIds = await this.resolveStoreIds(currentUser, storeId);
+    const selectedStoreIds = await this.resolveReportStoreIds(
+      currentUser,
+      storeId,
+      storeIds,
+    );
 
     const report = await this.reportsService.buildModeOfPayment({
-      storeIds,
+      storeIds: selectedStoreIds,
       from,
       to,
       limit: clampLimit(limit),
@@ -242,7 +247,7 @@ export class ReportsController {
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
     const report = await this.reportsService.buildPettyCashExpense({
-      storeIds: await this.resolvePettyCashStoreIds(
+      storeIds: await this.resolveReportStoreIds(
         currentUser,
         storeId,
         storeIds,
@@ -255,7 +260,7 @@ export class ReportsController {
     return {report};
   }
 
-  private async resolvePettyCashStoreIds(
+  private async resolveReportStoreIds(
     currentUser: UserProfile,
     storeId?: string,
     storeIds?: string,

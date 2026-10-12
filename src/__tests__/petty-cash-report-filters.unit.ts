@@ -2,12 +2,16 @@ import {expect} from '@loopback/testlab';
 import {UserProfile} from '@loopback/security';
 import {ReportsController} from '../controllers/reports.controller';
 
-describe('petty cash report store filters', () => {
+describe('report store filters', () => {
   const user = {} as UserProfile;
   const captured: string[][] = [];
   let global = false;
   const controller = Object.assign(Object.create(ReportsController.prototype), {
     reportsService: {
+      buildModeOfPayment: async ({storeIds}: {storeIds: string[]}) => {
+        captured.push(storeIds);
+        return {rows: [], totalCount: 0, totals: {}, totalsByMode: {}};
+      },
       buildPettyCashExpense: async ({storeIds}: {storeIds: string[]}) => {
         captured.push(storeIds);
         return {rows: [], totalCount: 0, totals: {}};
@@ -31,6 +35,33 @@ describe('petty cash report store filters', () => {
       '2026-10-01',
       '2026-10-02',
     );
+
+  const requestMode = (storeId?: string, storeIds?: string) =>
+    controller.modeOfPayment(
+      user,
+      storeId,
+      storeIds,
+      '2026-10-01',
+      '2026-10-02',
+    );
+
+  it('uses the same All Stores and selected-store rules for mode of payment', async () => {
+    global = false;
+    await requestMode();
+    await requestMode(undefined, 'store-b, store-c');
+    expect(captured.slice(-2)).to.deepEqual([
+      ['store-a', 'store-b'],
+      ['store-b'],
+    ]);
+
+    global = true;
+    await requestMode();
+    await requestMode('store-a');
+    expect(captured.slice(-2)).to.deepEqual([
+      ['store-a', 'store-b', 'store-c'],
+      ['store-a'],
+    ]);
+  });
 
   it('uses the caller scope for All Stores and intersects selected stores', async () => {
     global = false;
