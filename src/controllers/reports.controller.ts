@@ -30,14 +30,20 @@ const MAX_LIMIT = 500;
 export class ReportsController {
   constructor(
     @inject('services.reports') private reportsService: ReportsService,
-    @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
     @repository(StoreRepository) private storeRepo: StoreRepository,
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['report_mode_of_payment:read']})
+  @authorize({
+    roles: ['super_admin'],
+    permissions: ['report_mode_of_payment:read'],
+  })
   @get('/reports/mode-of-payment')
-  @response(200, {description: 'Mode Of Payment report — one row per payment taken'})
+  @response(200, {
+    description: 'Mode Of Payment report — one row per payment taken',
+  })
   async modeOfPayment(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
@@ -60,9 +66,14 @@ export class ReportsController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['report_pending_payments:read']})
+  @authorize({
+    roles: ['super_admin'],
+    permissions: ['report_pending_payments:read'],
+  })
   @get('/reports/pending-payments')
-  @response(200, {description: 'Pending Payments report — orders still owing money'})
+  @response(200, {
+    description: 'Pending Payments report — orders still owing money',
+  })
   async pendingPayments(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
@@ -93,9 +104,14 @@ export class ReportsController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['report_pending_tickets:read']})
+  @authorize({
+    roles: ['super_admin'],
+    permissions: ['report_pending_tickets:read'],
+  })
   @get('/reports/pending-tickets')
-  @response(200, {description: 'Pending Tickets report — orders not yet delivered'})
+  @response(200, {
+    description: 'Pending Tickets report — orders not yet delivered',
+  })
   async pendingTickets(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
@@ -120,9 +136,14 @@ export class ReportsController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['report_on_account_billing:read']})
+  @authorize({
+    roles: ['super_admin'],
+    permissions: ['report_on_account_billing:read'],
+  })
   @get('/reports/on-account-billing')
-  @response(200, {description: 'On Account Billing report — orders billed on account'})
+  @response(200, {
+    description: 'On Account Billing report — orders billed on account',
+  })
   async onAccountBilling(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
@@ -151,7 +172,9 @@ export class ReportsController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['report_sales_gst:read']})
   @get('/reports/sales-gst')
-  @response(200, {description: 'Sales Report of GST — one row per invoiced line item'})
+  @response(200, {
+    description: 'Sales Report of GST — one row per invoiced line item',
+  })
   async salesGst(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
@@ -172,9 +195,15 @@ export class ReportsController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['report_consolidated_daily_sales:read']})
+  @authorize({
+    roles: ['super_admin'],
+    permissions: ['report_consolidated_daily_sales:read'],
+  })
   @get('/reports/consolidated-daily-sales')
-  @response(200, {description: 'Consolidated Daily Sales — closing collections per store per day'})
+  @response(200, {
+    description:
+      'Consolidated Daily Sales — closing collections per store per day',
+  })
   async consolidatedDailySales(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
@@ -194,12 +223,18 @@ export class ReportsController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['report_petty_cash_expense:read']})
+  @authorize({
+    roles: ['super_admin'],
+    permissions: ['report_petty_cash_expense:read'],
+  })
   @get('/reports/petty-cash-expense')
-  @response(200, {description: 'Petty Cash Expense report — one row per shift closure'})
+  @response(200, {
+    description: 'Petty Cash Expense report — one row per shift closure',
+  })
   async pettyCashExpense(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
+    @param.query.string('storeIds') storeIds?: string,
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
     @param.query.number('limit') limit?: number,
@@ -207,7 +242,11 @@ export class ReportsController {
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
     const report = await this.reportsService.buildPettyCashExpense({
-      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      storeIds: await this.resolvePettyCashStoreIds(
+        currentUser,
+        storeId,
+        storeIds,
+      ),
       from,
       to,
       limit: clampLimit(limit),
@@ -216,14 +255,33 @@ export class ReportsController {
     return {report};
   }
 
-  /**
-   * Narrow the caller's scope to the requested store.
-   *
-   * `narrowStoreIds` returns null only for a global caller who named no
-   * store. Reports are per-store documents (the store name is a column,
-   * and the totals are meant to reconcile against one till), so make the
-   * client pick one rather than silently blending every store together.
-   */
+  private async resolvePettyCashStoreIds(
+    currentUser: UserProfile,
+    storeId?: string,
+    storeIds?: string,
+  ): Promise<string[]> {
+    if (storeIds === undefined) {
+      return this.resolveStoreIdsAllowingAll(currentUser, storeId);
+    }
+    if (storeId !== undefined) {
+      throw new HttpErrors.BadRequest(
+        'Use either storeId or storeIds, not both.',
+      );
+    }
+
+    const selected = [...new Set(storeIds.split(',').map(id => id.trim()))];
+    if (selected.some(id => !id)) {
+      throw new HttpErrors.BadRequest(
+        'storeIds must be a comma-separated list of store IDs.',
+      );
+    }
+
+    const scope = await this.storeScopeService.resolve(currentUser);
+    return scope.global
+      ? selected
+      : selected.filter(id => scope.storeIds.includes(id));
+  }
+
   /**
    * Same narrowing, but a global caller who named no store gets every
    * active store rather than a 400. Only for genuinely cross-store
@@ -234,7 +292,9 @@ export class ReportsController {
     storeId?: string,
   ): Promise<string[]> {
     const scope = await this.storeScopeService.resolve(currentUser);
-    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
+    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
+      storeId,
+    });
     if (storeIds !== null) return storeIds;
 
     const stores = await this.storeRepo.find({
@@ -244,12 +304,22 @@ export class ReportsController {
     return stores.map(s => String(s.id));
   }
 
+  /**
+   * Narrow the caller's scope to the requested store.
+   *
+   * `narrowStoreIds` returns null only for a global caller who named no
+   * store. Reports are per-store documents (the store name is a column,
+   * and the totals are meant to reconcile against one till), so make the
+   * client pick one rather than silently blending every store together.
+   */
   private async resolveStoreIds(
     currentUser: UserProfile,
     storeId?: string,
   ): Promise<string[]> {
     const scope = await this.storeScopeService.resolve(currentUser);
-    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
+    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
+      storeId,
+    });
     if (storeIds === null) {
       throw new HttpErrors.BadRequest(
         'Select a store — storeId is required for accounts that can see every store.',
@@ -277,7 +347,10 @@ function clampLimit(limit?: number): number {
  * `dateTo` is pushed to the end of its local day so a single-day range
  * covers that whole day instead of one instant at midnight.
  */
-function resolveWindow(dateFrom?: string, dateTo?: string): {from: Date; to: Date} {
+function resolveWindow(
+  dateFrom?: string,
+  dateTo?: string,
+): {from: Date; to: Date} {
   if (!dateFrom || !dateTo) {
     throw new HttpErrors.BadRequest('dateFrom and dateTo are required.');
   }
@@ -298,11 +371,15 @@ function resolveWindow(dateFrom?: string, dateTo?: string): {from: Date; to: Dat
   }
 
   if (to < from) {
-    throw new HttpErrors.BadRequest('dateTo must not be earlier than dateFrom.');
+    throw new HttpErrors.BadRequest(
+      'dateTo must not be earlier than dateFrom.',
+    );
   }
 
   if ((to.getTime() - from.getTime()) / 86_400_000 > MAX_RANGE_DAYS) {
-    throw new HttpErrors.BadRequest(`Date range must not exceed ${MAX_RANGE_DAYS} days.`);
+    throw new HttpErrors.BadRequest(
+      `Date range must not exceed ${MAX_RANGE_DAYS} days.`,
+    );
   }
 
   return {from, to};
@@ -314,7 +391,15 @@ const CALENDAR_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 function parseLocal(value: string): Date {
   const match = CALENDAR_DATE.exec(value);
   if (!match) return new Date(value);
-  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 0, 0, 0, 0);
+  return new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    0,
+    0,
+    0,
+    0,
+  );
 }
 
 function endOfDay(d: Date): Date {
