@@ -1,7 +1,10 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
-import {collectOrderExportRows, OrderExportFilters} from '../utils/order-export';
+import {
+  collectOrderExportRows,
+  OrderExportFilters,
+} from '../utils/order-export';
 import {
   EditOrderUnitInput,
   hasEditUnitCharges,
@@ -13,6 +16,7 @@ import {
 } from './order-item-edit-units';
 import {PresstoDataSource} from '../datasources';
 import {Order} from '../models/order.model';
+import {OrderItem} from '../models/order-item.model';
 import {Customer} from '../models/customer.model';
 import {Challan, ChallanStatus} from '../models/challan.model';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -96,9 +100,16 @@ import {
   WalletTransactionRepository,
 } from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
+import {
+  canChangeSplitTier,
+  resolveSplitDeliveryTier,
+} from './split-delivery-tier';
 import {GarmentImageType} from '../models/garment-image-type.enum';
 import {CouponEvaluationSuccess, CouponService} from './coupon.service';
-import {NotificationService, RIDER_NOTIFICATION_TYPES} from './notification.service';
+import {
+  NotificationService,
+  RIDER_NOTIFICATION_TYPES,
+} from './notification.service';
 
 export interface OrderPaymentInput {
   paymentMode: PaymentMode;
@@ -316,7 +327,8 @@ export class OrderService {
     @repository(PickupRequestRepository)
     private pickupRequestRepo: PickupRequestRepository,
     @inject('services.coupon') private couponService: CouponService,
-    @inject('services.notification') private notificationService: NotificationService,
+    @inject('services.notification')
+    private notificationService: NotificationService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -465,8 +477,10 @@ export class OrderService {
       const coupon = await this.couponRepo.findOne({
         where: {id: row.couponId, isActive: true, isDeleted: false},
       });
-      if (!coupon || coupon.discountType !== CouponDiscountType.PRICE_OVERRIDE) continue;
-      if (now < new Date(coupon.startDate) || now > new Date(coupon.endDate)) continue;
+      if (!coupon || coupon.discountType !== CouponDiscountType.PRICE_OVERRIDE)
+        continue;
+      if (now < new Date(coupon.startDate) || now > new Date(coupon.endDate))
+        continue;
 
       const hasGeoScope =
         (coupon.storeIds?.length ?? 0) > 0 ||
@@ -474,7 +488,11 @@ export class OrderService {
         (coupon.regionIds?.length ?? 0) > 0;
       if (hasGeoScope) {
         if (store === null) store = await this.storeRepo.findById(storeId);
-        if ((coupon.storeIds?.length ?? 0) > 0 && !coupon.storeIds!.includes(store.id)) continue;
+        if (
+          (coupon.storeIds?.length ?? 0) > 0 &&
+          !coupon.storeIds!.includes(store.id)
+        )
+          continue;
         if (
           (coupon.clusterIds?.length ?? 0) > 0 &&
           !(store.clusterId && coupon.clusterIds!.includes(store.clusterId))
@@ -485,7 +503,8 @@ export class OrderService {
           if (cluster === null && store.clusterId) {
             cluster = await this.clusterRepo.findById(store.clusterId);
           }
-          if (!cluster || !coupon.regionIds!.includes(cluster.regionId)) continue;
+          if (!cluster || !coupon.regionIds!.includes(cluster.regionId))
+            continue;
         }
       }
 
@@ -705,7 +724,9 @@ export class OrderService {
       // a real per-unit selection would false-positive this error.
       const hasAdditionalService =
         Boolean(item.additionalServiceIds?.length) ||
-        (item.units ?? []).some(unit => Boolean(unit.additionalServiceIds?.length));
+        (item.units ?? []).some(unit =>
+          Boolean(unit.additionalServiceIds?.length),
+        );
       if (service?.hasOwnProcess === false && !hasAdditionalService) {
         throw new HttpErrors.BadRequest(
           `"${service.name}" has no process of its own — select at least one additional service for this item.`,
@@ -768,7 +789,9 @@ export class OrderService {
     const cgst = parseFloat((taxAmount / 2).toFixed(2));
     const sgst = parseFloat((taxAmount - cgst).toFixed(2));
     const discount = Number(order.discountAmount) || 0;
-    const totalAmount = Math.round(Number(order.totalAmount) || subtotal - discount + taxAmount);
+    const totalAmount = Math.round(
+      Number(order.totalAmount) || subtotal - discount + taxAmount,
+    );
 
     const totalCount = await this.challanRepo.count();
     const challanNumber = `CHL-${String(totalCount.count + 1).padStart(6, '0')}`;
@@ -805,10 +828,7 @@ export class OrderService {
   ): Promise<Challan> {
     const txOpt = tx ? {transaction: tx} : undefined;
     const [order, challan] = await Promise.all([
-      this.orderRepo.findOne(
-        {where: {id: orderId, isDeleted: false}},
-        txOpt,
-      ),
+      this.orderRepo.findOne({where: {id: orderId, isDeleted: false}}, txOpt),
       existingChallan
         ? Promise.resolve(existingChallan)
         : this.challanRepo.findOne(
@@ -826,7 +846,12 @@ export class OrderService {
     const [orderGarments, itemCharges, orderCharges] = await Promise.all([
       orderItemIds.length
         ? this.garmentRepo.find(
-            {where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any},
+            {
+              where: {
+                orderItemId: {inq: orderItemIds},
+                isDeleted: false,
+              } as any,
+            },
             txOpt,
           )
         : Promise.resolve([]),
@@ -967,8 +992,7 @@ export class OrderService {
             explicitLineCharges
               .filter(charge => activeGarmentIds.has(charge.garmentId))
               .reduce(
-                (chargeSum, charge) =>
-                  chargeSum + Number(charge.amount ?? 0),
+                (chargeSum, charge) => chargeSum + Number(charge.amount ?? 0),
                 0,
               )
           );
@@ -982,8 +1006,7 @@ export class OrderService {
         const lineLegacyCharges = itemCharges
           .filter(charge => charge.orderItemId === orderItem.id)
           .reduce(
-            (chargeSum, charge) =>
-              chargeSum + Number(charge.amount ?? 0),
+            (chargeSum, charge) => chargeSum + Number(charge.amount ?? 0),
             0,
           );
         return (
@@ -997,7 +1020,10 @@ export class OrderService {
         (
           activeItemsTotal +
           activeItemChargesTotal +
-          orderCharges.reduce((sum, charge) => sum + Number(charge.amount ?? 0), 0)
+          orderCharges.reduce(
+            (sum, charge) => sum + Number(charge.amount ?? 0),
+            0,
+          )
         ).toFixed(2),
       );
     }
@@ -1101,11 +1127,10 @@ export class OrderService {
       totalAmount,
     };
 
-    const changed = Object.entries(patch).some(
-      ([key, value]) =>
-        key === 'items'
-          ? JSON.stringify(challan.items ?? []) !== JSON.stringify(value)
-          : Number((challan as any)[key] ?? 0) !== Number(value),
+    const changed = Object.entries(patch).some(([key, value]) =>
+      key === 'items'
+        ? JSON.stringify(challan.items ?? []) !== JSON.stringify(value)
+        : Number((challan as any)[key] ?? 0) !== Number(value),
     );
     if (changed) {
       patch.updatedAt = new Date();
@@ -1778,7 +1803,11 @@ export class OrderService {
         quantity: p.quantity,
         totalPrice: p.totalPrice,
       }));
-      const referral = await this.couponService.evaluateReferralCoupon(customer, input.storeId, couponItems);
+      const referral = await this.couponService.evaluateReferralCoupon(
+        customer,
+        input.storeId,
+        couponItems,
+      );
       if (referral) {
         couponResults = [referral];
       } else {
@@ -1797,12 +1826,17 @@ export class OrderService {
 
     let {discountAmount, discountType} = couponResults.length
       ? {
-          discountAmount: roundRupee(couponResults.reduce((sum, r) => sum + r.discountAmount, 0)),
+          discountAmount: roundRupee(
+            couponResults.reduce((sum, r) => sum + r.discountAmount, 0),
+          ),
           // A single coupon keeps its own discountType (percentage/flat/
           // cheapest_item_free) for backward-compatible display; several
           // mixed-type coupons have no one type to report, so this
           // becomes the generic 'coupon' marker instead.
-          discountType: couponResults.length === 1 ? couponResults[0].discountType : 'coupon',
+          discountType:
+            couponResults.length === 1
+              ? couponResults[0].discountType
+              : 'coupon',
         }
       : await this.resolveCustomerAutoDiscount(subtotal, customer);
 
@@ -1832,7 +1866,10 @@ export class OrderService {
       walletAmount > 0 &&
       (input.payments ?? []).every(p => !Number(p.amount ?? 0));
     if (isWalletOnlyAttempt) {
-      const candidate = await this.resolveWalletFullPaymentDiscount(subtotal, discountAmount);
+      const candidate = await this.resolveWalletFullPaymentDiscount(
+        subtotal,
+        discountAmount,
+      );
       if (candidate && roundRupee(walletAmount) >= candidate.totalAmount) {
         discountAmount = candidate.discountAmount;
         discountType = 'wallet_full_payment';
@@ -2535,9 +2572,12 @@ export class OrderService {
     // IS the approved application itself (see
     // ApprovalService._applyOrderItemsDowngrade).
     const isPlacedOrder =
-      order.status !== OrderStatus.DRAFT && order.status !== OrderStatus.CONFIRMED;
+      order.status !== OrderStatus.DRAFT &&
+      order.status !== OrderStatus.CONFIRMED;
     if (!options.skipDowngradeGate && isPlacedOrder) {
-      const removableGarmentIds = new Set(removableGarments.map(g => String(g.id)));
+      const removableGarmentIds = new Set(
+        removableGarments.map(g => String(g.id)),
+      );
       const removedLineRows = existingItems.filter(
         oi => !desiredByKey.has(lineKey(oi.serviceId, oi.itemId)),
       );
@@ -2547,7 +2587,9 @@ export class OrderService {
         serviceId: string;
       }> = [];
       for (const existing of existingItems) {
-        const desired = desiredByKey.get(lineKey(existing.serviceId, existing.itemId));
+        const desired = desiredByKey.get(
+          lineKey(existing.serviceId, existing.itemId),
+        );
         if (!desired) continue; // whole-line removal — already captured above
 
         const keptGarments = (
@@ -2559,7 +2601,11 @@ export class OrderService {
         if (!keptGarments.length) continue;
 
         const quantity = Number(desired.quantity);
-        const slotPlan = planEditUnitSlots(quantity, desired.units, keptGarments);
+        const slotPlan = planEditUnitSlots(
+          quantity,
+          desired.units,
+          keptGarments,
+        );
         const unitServiceIds = resolveEditUnitServiceIds(
           quantity,
           desired.units,
@@ -2576,7 +2622,9 @@ export class OrderService {
         ];
         for (const {garment, slot} of slots) {
           const newIds = new Set(
-            slot === undefined ? (desired.additionalServiceIds ?? []) : (unitServiceIds[slot] ?? []),
+            slot === undefined
+              ? (desired.additionalServiceIds ?? [])
+              : (unitServiceIds[slot] ?? []),
           );
           const currentRows = await this.garmentAdditionalServiceRepo.find({
             where: {garmentId: garment.id, isDeleted: false} as any,
@@ -2609,8 +2657,12 @@ export class OrderService {
             ? this.itemRepo.find({where: {id: {inq: itemIds}} as any})
             : Promise.resolve([]),
         ]);
-        const serviceNameById = new Map(services.map(s => [s.id, (s as any).name as string]));
-        const itemNameById = new Map(items.map(i => [i.id, (i as any).name as string]));
+        const serviceNameById = new Map(
+          services.map(s => [s.id, (s as any).name as string]),
+        );
+        const itemNameById = new Map(
+          items.map(i => [i.id, (i as any).name as string]),
+        );
 
         const removedLines = removedLineRows.map(oi => ({
           serviceId: oi.serviceId,
@@ -2626,9 +2678,12 @@ export class OrderService {
         }));
 
         const summaryParts = [
-          ...removedLines.map(l => `removing "${l.serviceName}" (${l.itemName})`),
+          ...removedLines.map(
+            l => `removing "${l.serviceName}" (${l.itemName})`,
+          ),
           ...removedAddons.map(
-            a => `removing add-on "${a.serviceName}"${a.garmentTagNumber ? ` (tag ${a.garmentTagNumber})` : ''}`,
+            a =>
+              `removing add-on "${a.serviceName}"${a.garmentTagNumber ? ` (tag ${a.garmentTagNumber})` : ''}`,
           ),
         ];
 
@@ -2767,7 +2822,9 @@ export class OrderService {
         const lineChargeRows = chargeRows(billingChargeSelections);
         const garmentChargeRows = (slot: number | undefined) => {
           if (!perUnitCharges) return lineChargeRows;
-          return slot === undefined ? [] : chargeRows(unitChargeSelections[slot]);
+          return slot === undefined
+            ? []
+            : chargeRows(unitChargeSelections[slot]);
         };
 
         // Selections for garments not created yet, in the order autoCreateGarments
@@ -2994,10 +3051,7 @@ export class OrderService {
       itemId: string;
       quantity: number;
     }[],
-    desiredByKey: Map<
-      string,
-      {quantity: number; units?: EditOrderUnitInput[]}
-    >,
+    desiredByKey: Map<string, {quantity: number; units?: EditOrderUnitInput[]}>,
     lineKey: (serviceId: string, itemId: string) => string,
   ) {
     const shrinking = existingItems
@@ -3925,14 +3979,18 @@ export class OrderService {
     storeIds?: string[] | null,
   ): Promise<{rows: object[]; total: number}> {
     return collectOrderExportRows(
-      (skip, limit) => this.listOrders({
-        dateFrom: filters.dateFrom,
-        dateTo: filters.dateTo,
-        status: filters.status && filters.status !== 'all' ? filters.status : undefined,
-        storeIds,
-        skip,
-        limit,
-      }),
+      (skip, limit) =>
+        this.listOrders({
+          dateFrom: filters.dateFrom,
+          dateTo: filters.dateTo,
+          status:
+            filters.status && filters.status !== 'all'
+              ? filters.status
+              : undefined,
+          storeIds,
+          skip,
+          limit,
+        }),
       filters,
     );
   }
@@ -3990,11 +4048,15 @@ export class OrderService {
     // Scopes the list to a single customer (used by the customer-facing APIs).
     if (params.customerId) baseConditions.push({customerId: params.customerId});
     if (params.status === 'pending') {
-      baseConditions.push({status: {nin: ['draft', 'delivered', 'cancelled', 'returned']}});
+      baseConditions.push({
+        status: {nin: ['draft', 'delivered', 'cancelled', 'returned']},
+      });
     } else if (params.status === 'approval') {
       baseConditions.push({status: 'confirmed'});
     } else if (params.status === 'inspection') {
-      baseConditions.push({status: {inq: ['received_at_store', 'in_inspection']}});
+      baseConditions.push({
+        status: {inq: ['received_at_store', 'in_inspection']},
+      });
     } else if (params.status === 'processing') {
       baseConditions.push({
         status: {
@@ -4295,6 +4357,52 @@ export class OrderService {
 
   // ─── Get Order Details ────────────────────────────────────────────────────
 
+  private async getSplitStandardDays(
+    items: OrderItem[],
+  ): Promise<Map<string, number>> {
+    if (!items.length) return new Map();
+    const serviceIds = [
+      ...new Set(
+        items.flatMap(item => [
+          item.serviceId,
+          ...((item.additionalServiceIds as string[] | null) ?? []),
+          ...(item.pendingUnitAdditionalServices ?? [])
+            .flat()
+            .map(row => row.serviceId),
+        ]),
+      ),
+    ];
+    const mappings = await this.serviceItemMappingRepo.find({
+      where: {
+        serviceId: {inq: serviceIds},
+        itemId: {inq: [...new Set(items.map(item => item.itemId))]},
+      } as any,
+    });
+    const durations = new Map(
+      mappings.map(mapping => [
+        `${mapping.serviceId}:${mapping.itemId}`,
+        Number(mapping.estimatedDurationInDays) || 0,
+      ]),
+    );
+    return new Map(
+      items.map(item => {
+        const extras = new Set([
+          ...((item.additionalServiceIds as string[] | null) ?? []),
+          ...(item.pendingUnitAdditionalServices ?? [])
+            .flat()
+            .map(row => row.serviceId),
+        ]);
+        const days =
+          (durations.get(`${item.serviceId}:${item.itemId}`) || 0) +
+          [...extras].reduce(
+            (sum, id) => sum + (durations.get(`${id}:${item.itemId}`) || 0),
+            0,
+          );
+        return [item.id, days > 0 ? days : 3];
+      }),
+    );
+  }
+
   async getOrderDetails(orderId: string): Promise<object> {
     const order = await this.orderRepo.findOne({
       where: {id: orderId, isDeleted: false},
@@ -4344,9 +4452,11 @@ export class OrderService {
     const createdByUser = createdById
       ? await this.userRepo.findById(createdById).catch(() => null)
       : null;
-    const createdByName = createdByUser?.fullName || createdByUser?.username || null;
+    const createdByName =
+      createdByUser?.fullName || createdByUser?.username || null;
 
     const orderItemIds = orderItems.map(i => i.id);
+    const standardDaysByItem = await this.getSplitStandardDays(orderItems);
     const additionalSvcIds = orderItems.flatMap(
       i => (i.additionalServiceIds as string[] | null) ?? [],
     );
@@ -4415,7 +4525,9 @@ export class OrderService {
     const isHomePickup =
       order.orderType === OrderType.HOME_PICKUP ||
       order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY ||
-      String(order.orderType || '').toLowerCase().includes('home_pickup') ||
+      String(order.orderType || '')
+        .toLowerCase()
+        .includes('home_pickup') ||
       Boolean(order.pickupSource);
 
     let pickupRiderName: string | null = null;
@@ -4440,7 +4552,8 @@ export class OrderService {
               where: {id: rider.userId} as any,
               fields: {phone: true} as any,
             });
-            pickupRiderPhone = riderUser?.phone ?? rider.alternateNumber ?? null;
+            pickupRiderPhone =
+              riderUser?.phone ?? rider.alternateNumber ?? null;
           } else {
             pickupRiderPhone = rider.alternateNumber ?? null;
           }
@@ -4644,6 +4757,7 @@ export class OrderService {
         (garmentsByItem.get(oi.id) ?? []).map(g => g.status),
       ),
       serviceId: oi.serviceId,
+      standardTurnaroundDays: standardDaysByItem.get(oi.id) ?? 3,
       serviceName: serviceMap.get(oi.serviceId)?.name ?? null,
       itemId: oi.itemId,
       itemName: itemMap.get(oi.itemId)?.name ?? null,
@@ -4743,9 +4857,8 @@ export class OrderService {
     // rider-specific delivery record. Last rather than first, in case of a
     // return-then-redeliver cycle.
     const deliveredAt =
-      [...statusHistory]
-        .reverse()
-        .find(h => h.status === OrderStatus.DELIVERED)?.changedAt ?? null;
+      [...statusHistory].reverse().find(h => h.status === OrderStatus.DELIVERED)
+        ?.changedAt ?? null;
 
     return {
       order: {
@@ -5204,7 +5317,7 @@ export class OrderService {
     orderId: string,
     garmentIds: string[],
     deliveryDate: string | undefined,
-    deliveryType: DeliveryType | undefined,
+    applyDeliveryCharges: boolean | undefined,
     remarks: string | undefined,
     createdBy: string,
   ): Promise<object> {
@@ -5273,7 +5386,9 @@ export class OrderService {
         where: {garmentId: {inq: selectedGarmentIds}, isDeleted: false} as any,
       }),
       this.itemRepo.find({
-        where: {id: {inq: [...new Set(parentOrderItems.map(oi => oi.itemId))]}} as any,
+        where: {
+          id: {inq: [...new Set(parentOrderItems.map(oi => oi.itemId))]},
+        } as any,
       }),
     ]);
     const catalogItemMap = new Map(catalogItems.map(item => [item.id, item]));
@@ -5290,21 +5405,34 @@ export class OrderService {
       chargesByGarment.set(row.garmentId, list);
     }
 
-    // Sub-order delivery tier: a NEW tier can be chosen at split time (e.g. split
-    // an express garment out of a standard order). Otherwise inherit the parent's.
-    const subDeliveryType =
-      deliveryType ?? (order.deliveryType as DeliveryType | undefined);
-    const deliveryChanged =
-      deliveryType != null && deliveryType !== order.deliveryType;
+    // Pricing can change while every moved garment is still awaiting processing.
+    const canChangeTier = canChangeSplitTier(
+      order.status,
+      garments.map(g => g.status as GarmentStatus),
+    );
+    const originalTier = order.deliveryType ?? DeliveryType.STANDARD;
+    const standardDaysByItem =
+      await this.getSplitStandardDays(parentOrderItems);
+    const standardDays = Math.max(1, ...standardDaysByItem.values());
+    const subDeliveryType = resolveSplitDeliveryTier(
+      deliveryDate,
+      order.deliveryDate,
+      order.createdAt,
+      order.deliveryType,
+      standardDays,
+      applyDeliveryCharges !== false,
+      canChangeTier,
+    );
+    const deliveryChanged = subDeliveryType !== originalTier;
     let subDeliveryPercentage = Number(order.deliveryTypePercentage) || 0;
     if (deliveryChanged) {
       const dtConfig = await this.deliveryTypeConfigRepo.findOne({
         where: {isDeleted: false},
       });
       if (dtConfig) {
-        if (deliveryType === DeliveryType.EXPRESS)
+        if (subDeliveryType === DeliveryType.EXPRESS)
           subDeliveryPercentage = Number(dtConfig.expressPercentage);
-        else if (deliveryType === DeliveryType.LIGHTNING)
+        else if (subDeliveryType === DeliveryType.LIGHTNING)
           subDeliveryPercentage = Number(dtConfig.lightningPercentage);
         else subDeliveryPercentage = Number(dtConfig.standardPercentage);
       }
@@ -5353,13 +5481,16 @@ export class OrderService {
           : 1;
         const oldBase = Number(oi.unitPrice ?? 0) * area;
         const newBase = subUnitPriceFor(oi) * area;
-        const storedAdditionalServices = servicesByGarment.get(garment.id) ?? [];
+        const storedAdditionalServices =
+          servicesByGarment.get(garment.id) ?? [];
         const oldServices = storedAdditionalServices.reduce(
-          (sum, service) => sum + Number(service.amount ?? 0) * oldMultiplier * area,
+          (sum, service) =>
+            sum + Number(service.amount ?? 0) * oldMultiplier * area,
           0,
         );
         const newServices = storedAdditionalServices.reduce(
-          (sum, service) => sum + Number(service.amount ?? 0) * subDeliveryMultiplier * area,
+          (sum, service) =>
+            sum + Number(service.amount ?? 0) * subDeliveryMultiplier * area,
           0,
         );
         oldItemTotal += oldBase + oldServices;
@@ -5580,8 +5711,9 @@ export class OrderService {
         );
         createdSubItems.push(subOrderItem);
 
-        for (const [additionalChargeId, charge] of
-          movedChargesByItem.get(itemId) ?? []) {
+        for (const [additionalChargeId, charge] of movedChargesByItem.get(
+          itemId,
+        ) ?? []) {
           await this.orderItemChargeRepo.create(
             {
               orderItemId: subOrderItem.id,
@@ -5611,7 +5743,9 @@ export class OrderService {
           await this.orderItemRepo.deleteById(oi.id, {transaction: tx} as any);
         } else {
           const newTotal = parseFloat(
-            (Number(oi.totalPrice ?? 0) - (oldItemTotals.get(itemId) ?? 0)).toFixed(2),
+            (
+              Number(oi.totalPrice ?? 0) - (oldItemTotals.get(itemId) ?? 0)
+            ).toFixed(2),
           );
           await this.orderItemRepo.updateById(
             oi.id,
@@ -5734,9 +5868,7 @@ export class OrderService {
   // full-payment-required check use exactly one definition of "how much is
   // still due" — this exact formula was the source of a real bug once
   // already (see the split/express-uplift fix on this method).
-  async computeBalanceDue(
-    order: Order,
-  ): Promise<{
+  async computeBalanceDue(order: Order): Promise<{
     due: number;
     alreadyPaid: number;
     isChildOrder: boolean;
@@ -5792,7 +5924,11 @@ export class OrderService {
   private async resolveWalletFullPaymentDiscount(
     subtotal: number,
     existingDiscountAmount?: number,
-  ): Promise<{discountAmount: number; taxAmount: number; totalAmount: number} | null> {
+  ): Promise<{
+    discountAmount: number;
+    taxAmount: number;
+    totalAmount: number;
+  } | null> {
     if (Number(existingDiscountAmount) > 0) return null;
 
     const config = await this.walletConfigurationRepo.findOne({
@@ -5811,7 +5947,9 @@ export class OrderService {
       ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
       : 0;
     const taxAmount =
-      gstRate > 0 ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2)) : 0;
+      gstRate > 0
+        ? parseFloat(((taxableAmount * gstRate) / 100).toFixed(2))
+        : 0;
     const totalAmount = roundRupee(taxableAmount + taxAmount);
 
     return {discountAmount, taxAmount, totalAmount};
@@ -5846,7 +5984,10 @@ export class OrderService {
       walletAmountRequired: due,
     };
     if (alreadyPaid > 0) {
-      return {...undiscounted, reason: 'Some amount has already been collected on this order.'};
+      return {
+        ...undiscounted,
+        reason: 'Some amount has already been collected on this order.',
+      };
     }
 
     const candidate = await this.resolveWalletFullPaymentDiscount(
@@ -5856,7 +5997,8 @@ export class OrderService {
     if (!candidate) {
       return {
         ...undiscounted,
-        reason: 'Wallet full-payment discount is not configured, or another discount already applies.',
+        reason:
+          'Wallet full-payment discount is not configured, or another discount already applies.',
       };
     }
 
@@ -5880,12 +6022,21 @@ export class OrderService {
   async previewWalletFullPaymentDiscountForNewOrder(
     subtotal: number,
     existingDiscountAmount?: number,
-  ): Promise<{eligible: boolean; reason?: string; discountAmount: number; totalAmount: number}> {
-    const candidate = await this.resolveWalletFullPaymentDiscount(subtotal, existingDiscountAmount);
+  ): Promise<{
+    eligible: boolean;
+    reason?: string;
+    discountAmount: number;
+    totalAmount: number;
+  }> {
+    const candidate = await this.resolveWalletFullPaymentDiscount(
+      subtotal,
+      existingDiscountAmount,
+    );
     if (!candidate) {
       return {
         eligible: false,
-        reason: 'Wallet full-payment discount is not configured, or another discount already applies.',
+        reason:
+          'Wallet full-payment discount is not configured, or another discount already applies.',
         discountAmount: 0,
         totalAmount: roundRupee(subtotal),
       };
@@ -5946,7 +6097,11 @@ export class OrderService {
     // partial wallet payment that happens to be first. See
     // resolveWalletFullPaymentDiscount() for the config/precedence gate.
     let orderTotalAmount = Number(order.totalAmount);
-    let walletDiscount: {discountAmount: number; taxAmount: number; totalAmount: number} | null = null;
+    let walletDiscount: {
+      discountAmount: number;
+      taxAmount: number;
+      totalAmount: number;
+    } | null = null;
     if (alreadyPaid === 0 && thisPayment === 0 && thisWallet > 0) {
       const candidate = await this.resolveWalletFullPaymentDiscount(
         Number(order.subtotal ?? 0),
@@ -6097,7 +6252,9 @@ export class OrderService {
         walletAmountDeducted: thisWallet,
         totalCollected: newPaid,
         balanceDue: rupeeBalance(orderTotalAmount, newPaid),
-        walletDiscountApplied: walletDiscount ? walletDiscount.discountAmount : 0,
+        walletDiscountApplied: walletDiscount
+          ? walletDiscount.discountAmount
+          : 0,
         pendingApproval: isPendingApproval
           ? {
               paymentMode: payment.paymentMode,
