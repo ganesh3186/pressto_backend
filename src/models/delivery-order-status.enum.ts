@@ -1,9 +1,8 @@
-// Per-stop breadcrumb within a Delivery run — deliberately NOT the same
-// thing as Order.status (ready/out_for_delivery/delivered), which is the
-// authoritative record of whether this stop is actually done. This only
-// tracks whether the rider has physically reached this stop yet, which
-// Order.status has no room for without conflating "on the way" with "here".
+// Per-stop progress and outcome within a Delivery run, separate from Order.status.
 export enum DeliveryOrderStatus {
   PENDING = 'pending',
+  OUT_FOR_DELIVERY = 'out_for_delivery',
   ARRIVED = 'arrived',
+  DELIVERED = 'delivered',
+  RETURN_TO_STORE = 'return_to_store',
 }

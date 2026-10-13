@@ -126,9 +126,9 @@ POST /rider/deliveries/{id}/orders/{orderId}/delivery-unsuccessful
 ```json
 {"message": "Delivery marked unsuccessful — order returned to store.", "deliveryCompleted": false}
 ```
-The order reverts to `ready` (`deliveryAttemptCount` incremented) —
-someone redispatches it later, same as any other ready order. This
-order's own leg on *this* run is done either way.
+The delivery stop changes to `return_to_store`; `Order.status` becomes
+`ready`. Dispatch Management can assign a new run. This order's own leg
+on *this* run is done either way.
 
 ## 6 — Check `deliveryCompleted`
 
