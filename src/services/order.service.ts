@@ -104,6 +104,7 @@ import {
   canChangeSplitTier,
   resolveSplitDeliveryTier,
 } from './split-delivery-tier';
+import {calculateSplitDiscounts} from './split-order-discount';
 import {GarmentImageType} from '../models/garment-image-type.enum';
 import {CouponEvaluationSuccess, CouponService} from './coupon.service';
 import {
@@ -5521,11 +5522,18 @@ export class OrderService {
     subOrderSubtotal = parseFloat(subOrderSubtotal.toFixed(2));
     const originalSubtotal = Number(order.subtotal ?? 0) || 1;
     const ratio = oldSubOrderSubtotal / originalSubtotal;
-
-    // Discount follows the parent's original item share (negotiated on the
-    // original order, so it does not scale with an express uplift).
-    const subOrderDiscount = parseFloat(
-      (Number(order.discountAmount ?? 0) * ratio).toFixed(2),
+    // Keep the parent's original allocation, while a percentage discount on
+    // the child follows its new delivery-priced subtotal.
+    const {
+      originalShare: originalSubOrderDiscount,
+      childDiscount: subOrderDiscount,
+    } = calculateSplitDiscounts(
+      originalSubtotal,
+      Number(order.discountAmount ?? 0),
+      oldSubOrderSubtotal,
+      subOrderSubtotal,
+      order.discountType,
+      Boolean(order.appliedCouponId || order.couponCode),
     );
 
     // Effective GST rate the order was actually taxed at — derived from the
@@ -5565,7 +5573,9 @@ export class OrderService {
     // when the tier DID change, where the two totals are genuinely different
     // numbers by design.
     const oldSubOrderTotal = deliveryChanged
-      ? roundRupee(oldSubOrderSubtotal - subOrderDiscount + oldSubOrderTax)
+      ? roundRupee(
+          oldSubOrderSubtotal - originalSubOrderDiscount + oldSubOrderTax,
+        )
       : subOrderTotal;
 
     // Sub-order gets a normal order number, same store as the parent it split from
@@ -5787,7 +5797,9 @@ export class OrderService {
         (Number(order.subtotal ?? 0) - oldSubOrderSubtotal).toFixed(2),
       );
       const parentNewDiscount = parseFloat(
-        (Number(order.discountAmount ?? 0) - subOrderDiscount).toFixed(2),
+        (Number(order.discountAmount ?? 0) - originalSubOrderDiscount).toFixed(
+          2,
+        ),
       );
       const parentNewTax = parseFloat(
         (Number(order.taxAmount ?? 0) - oldSubOrderTax).toFixed(2),
