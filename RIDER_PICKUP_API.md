@@ -259,6 +259,7 @@ before.
     "slot": "9:00 AM - 11:00 AM",
     "storeId": "01ee37da-75db-41e2-a83a-97bbcfe2c4a4",
     "status": "rider_assigned",
+    "bagNumber": null,
     "itemCountEstimate": 4,
     "runId": "9f2c...",
     "assignedRiderId": "014e7f42-...",
@@ -266,6 +267,10 @@ before.
   }
 ]
 ```
+
+`bagNumber` is `null` until a bag is assigned. Completed pickups also return
+`actualItemsByService[].bagNumber` for each service line. This response does
+not expose bag IDs; the pickup confirmation request still uses `bagId`.
 
 ### `POST /rider/pickup-requests` — create
 

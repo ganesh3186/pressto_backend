@@ -10,6 +10,7 @@ import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.en
 import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
 import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
 import {DeliveryStatus} from '../models/delivery-status.enum';
+import {Delivery} from '../models/delivery.model';
 import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -26,6 +27,7 @@ import {
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
+  PickupDeliverySlotRepository,
   RiderCashHandoverItemRepository,
   RiderCashHandoverRepository,
   RiderRepository,
@@ -42,6 +44,8 @@ export class RiderDeliveryController {
   constructor(
     @repository(RiderRepository) private riderRepository: RiderRepository,
     @repository(DeliveryRepository) private deliveryRepository: DeliveryRepository,
+    @repository(PickupDeliverySlotRepository)
+    private pickupDeliverySlotRepository: PickupDeliverySlotRepository,
     @repository(DeliveryOrderRepository) private deliveryOrderRepository: DeliveryOrderRepository,
     @repository(DeliveryCustodyEventRepository)
     private custodyEventRepository: DeliveryCustodyEventRepository,
@@ -69,6 +73,30 @@ export class RiderDeliveryController {
     if (!rider) throw new HttpErrors.Forbidden('This account is not registered as a rider.');
     if (!rider.isActive) throw new HttpErrors.Forbidden('This rider account is inactive.');
     return rider;
+  }
+
+  private async enrichDeliveries(deliveries: Delivery[]) {
+    const slotIds = [...new Set(deliveries.map(d => d.deliverySlotId).filter((id): id is string => !!id))];
+    const bagIds = [...new Set(deliveries.map(d => d.bagId).filter((id): id is string => !!id))];
+    const [slots, bags] = await Promise.all([
+      slotIds.length ? this.pickupDeliverySlotRepository.find({where: {id: {inq: slotIds}}}) : [],
+      bagIds.length ? this.bagRepository.find({where: {id: {inq: bagIds}}}) : [],
+    ]);
+    const slotById = new Map(slots.map(slot => [slot.id, slot]));
+    const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
+    const formatTime = (time: string) => {
+      const [hours, minutes] = time.split(':').map(Number);
+      return `${hours % 12 || 12}:${String(minutes).padStart(2, '0')} ${hours >= 12 ? 'PM' : 'AM'}`;
+    };
+    return deliveries.map(delivery => {
+      const slot = slotById.get(delivery.deliverySlotId ?? '');
+      const {bagId, ...publicDelivery} = delivery;
+      return {
+        ...publicDelivery,
+        ...(slot ? {deliverySlot: `${formatTime(slot.startTime)} - ${formatTime(slot.endTime)}`} : {}),
+        bagNumber: bagId ? bagNumberById.get(bagId) ?? null : null,
+      };
+    });
   }
 
   // 6-digit numeric, unique among currently-PENDING batches only — same
@@ -114,7 +142,7 @@ export class RiderDeliveryController {
       } as object,
       order: ['assignedAt DESC'],
     });
-    return {deliveries};
+    return {deliveries: await this.enrichDeliveries(deliveries)};
   }
 
   // ─── Delivery detail ──────────────────────────────────────────────────────
@@ -170,7 +198,7 @@ export class RiderDeliveryController {
       }),
     );
 
-    return {delivery, orders: enrichedOrders};
+    return {delivery: (await this.enrichDeliveries([delivery]))[0], orders: enrichedOrders};
   }
 
   // ─── Start a delivery run ─────────────────────────────────────────────────

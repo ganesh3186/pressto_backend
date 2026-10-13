@@ -48,7 +48,7 @@ every matching delivery is returned regardless of date, same as before.
       "storeId": "uuid",
       "riderId": "uuid",
       "riderName": "Rohan Sharma",
-      "bagId": "uuid",
+      "bagNumber": 42,
       "deliverySlot": "2:00 PM - 5:00 PM",
       "deliverySlotId": "uuid",
       "deliveryDate": "2026-08-20T12:00:00.000Z",
@@ -64,6 +64,7 @@ every matching delivery is returned regardless of date, same as before.
 ```
 `orderCount` is the manifest size — use it for a badge/count without a
 separate call. Use §3 to get the actual orders in one.
+`bagNumber` is `null` when no bag is assigned.
 
 ---
 

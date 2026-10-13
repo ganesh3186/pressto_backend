@@ -29,7 +29,7 @@ Omit `status` for the working list (`assigned`/`out_for_delivery`).
       "deliveryNumber": "DL-STR1-2008-1",
       "status": "assigned",
       "storeId": "uuid",
-      "bagId": "uuid",
+      "bagNumber": 42,
       "deliverySlot": "2:00 PM - 5:00 PM",
       "orderCount": 4,
       "assignedAt": "2026-08-25T09:12:00.000Z"

@@ -203,6 +203,9 @@ status/tab, doesn't replace it.
 for the same split — see `RIDER_PICKUP_API.md` for the current, fuller
 reference on this and every other rider-pickup endpoint.)
 
+The response uses `bagNumber` (and `actualItemsByService[].bagNumber`) instead
+of bag IDs; unassigned bags have `bagNumber: null`.
+
 ---
 
 ## 4a. Pickup / delivery slots
