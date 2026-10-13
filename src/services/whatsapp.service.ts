@@ -6,6 +6,9 @@ import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {OrderDeliveryMethod} from '../models/order-delivery-method.enum';
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
+import {GatewayPaymentLink} from '../models/gateway-payment-link.model';
+import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-type.enum';
+import {GatewayPaymentLinkStatus} from '../models/gateway-payment-link-status.enum';
 import type {
   CustomerRepository,
   CustomerPhoneRepository,
@@ -29,6 +32,9 @@ const TEMPLATES = {
   pulse_readyforcollection: {parameters: 5, document: false},
   pulse_deliveredcomplete: {parameters: 6, document: true},
   pulse_collectedcomplete: {parameters: 5, document: true},
+  pulse_walletrecharge: {parameters: 4, document: false},
+  pulse_walletredeem: {parameters: 5, document: false},
+  pulse_paymentlink: {parameters: 4, document: false},
 } as const;
 /* eslint-enable @typescript-eslint/naming-convention */
 export type CustomerWhatsAppTemplate = keyof typeof TEMPLATES;
@@ -42,6 +48,15 @@ export interface SendWhatsAppTemplateInput {
   templateId: CustomerWhatsAppTemplate;
   bodyParams: string[];
   media?: WhatsAppTemplateMedia;
+}
+
+export interface WalletWhatsAppNotification {
+  transactionId: string;
+  customerId: string;
+  amount: number;
+  balance: number;
+  date: Date | string;
+  orderId?: string;
 }
 
 /** Business flows call this after their writes/transaction commit succeed. */
@@ -59,6 +74,7 @@ export function dispatchWhatsApp(task: () => Promise<unknown>): void {
 @injectable({scope: BindingScope.SINGLETON})
 export class WhatsAppService {
   private readonly sent = new Map<string, number>();
+  private readonly pending = new Map<string, Promise<boolean>>();
   private readonly warned = new Set<string>();
   constructor(
     @repository.getter('CustomerRepository')
@@ -316,7 +332,8 @@ export class WhatsAppService {
       const accepted =
         response.status >= 200 &&
         response.status < 300 &&
-        typeof (response.data as {id?: unknown})?.id === 'string';
+        typeof (response.data as {id?: unknown})?.id === 'string' &&
+        Boolean((response.data as {id: string}).id.trim());
       if (!accepted)
         console.error(
           '[WhatsAppService] Template ' +
@@ -337,24 +354,114 @@ export class WhatsAppService {
   private async once(
     key: string,
     prepare: () => Promise<SendWhatsAppTemplateInput | undefined>,
-  ) {
-    if (!this.configured()) return;
+  ): Promise<boolean> {
+    if (!this.configured()) return false;
     const cutoff = Date.now() - 86400000;
     for (const [id, time] of this.sent) if (time < cutoff) this.sent.delete(id);
-    if (this.sent.has(key)) return;
-    if (this.sent.size >= 10000)
-      this.sent.delete(this.sent.keys().next().value!);
-    this.sent.set(key, Date.now());
+    if (this.sent.has(key)) return true;
+    const pending = this.pending.get(key);
+    if (pending) return pending;
+    const task = Promise.resolve().then(async () => {
+      try {
+        const message = await prepare();
+        if (!message || !(await this.sendTemplateMessage(message)))
+          return false;
+        if (this.sent.size >= 10000)
+          this.sent.delete(this.sent.keys().next().value!);
+        this.sent.set(key, Date.now());
+        return true;
+      } catch {
+        console.error(
+          '[WhatsAppService] Could not prepare template notification.',
+        );
+        return false;
+      } finally {
+        this.pending.delete(key);
+      }
+    });
+    this.pending.set(key, task);
+    return task;
+  }
+
+  async notifyWalletRecharge(
+    input: WalletWhatsAppNotification,
+  ): Promise<boolean> {
+    if (!(input.amount > 0)) return false;
+    return this.once('wallet-recharge:' + input.transactionId, async () => {
+      const recipient = await this.customer(input.customerId);
+      if (!recipient) return undefined;
+      return {
+        to: recipient.to,
+        templateId: 'pulse_walletrecharge',
+        bodyParams: [
+          recipient.name,
+          this.money(input.amount),
+          this.date(input.date),
+          this.money(input.balance),
+        ],
+      };
+    });
+  }
+
+  async notifyWalletRedeemed(
+    input: WalletWhatsAppNotification,
+  ): Promise<boolean> {
+    // The approved wording is specifically for payment against a ticket.
+    if (!(input.amount > 0) || !input.orderId) return false;
+    return this.once('wallet-redeem:' + input.transactionId, async () => {
+      const order = await (
+        await this.getOrders()
+      ).findOne({where: {id: input.orderId, isDeleted: false}});
+      if (!order || order.customerId !== input.customerId) return undefined;
+      const recipient = await this.customer(input.customerId);
+      if (!recipient) return undefined;
+      return {
+        to: recipient.to,
+        templateId: 'pulse_walletredeem',
+        bodyParams: [
+          recipient.name,
+          order.orderNumber,
+          this.money(input.amount),
+          this.date(input.date),
+          this.money(input.balance),
+        ],
+      };
+    });
+  }
+
+  async notifyPaymentLink(link: GatewayPaymentLink): Promise<boolean> {
+    if (
+      link.referenceType !== GatewayPaymentReferenceType.ORDER_PAYMENT ||
+      link.status !== GatewayPaymentLinkStatus.CREATED ||
+      !(Number(link.amount) > 0) ||
+      !link.shortUrl ||
+      !link.expiresAt ||
+      !(new Date(link.expiresAt).getTime() > Date.now())
+    )
+      return false;
     try {
-      const message = await prepare();
-      if (!message || !(await this.sendTemplateMessage(message)))
-        this.sent.delete(key);
+      if (new URL(link.shortUrl).protocol !== 'https:') return false;
     } catch {
-      this.sent.delete(key);
-      console.error(
-        '[WhatsAppService] Could not prepare template notification.',
-      );
+      return false;
     }
+    return this.once('payment-link:' + link.id, async () => {
+      const order = await (
+        await this.getOrders()
+      ).findOne({where: {id: link.referenceId, isDeleted: false}});
+      if (!order || order.status === OrderStatus.CANCELLED) return undefined;
+      const recipient = await this.customer(order.customerId);
+      if (!recipient) return undefined;
+      return {
+        to: recipient.to,
+        templateId: 'pulse_paymentlink',
+        bodyParams: [
+          recipient.name,
+          order.orderNumber,
+          this.money(link.amount),
+          link.shortUrl!,
+        ],
+      };
+    });
   }
 
   async notifyOrder(
@@ -499,7 +606,9 @@ export class WhatsAppService {
           if (this.date(pickup.requestedDate) !== this.date(new Date()))
             return undefined;
           const slot = pickup.pickupSlotId
-            ? await (await this.getPickupSlots()).findOne({
+            ? await (
+                await this.getPickupSlots()
+              ).findOne({
                 where: {id: pickup.pickupSlotId, isDeleted: false},
               })
             : null;

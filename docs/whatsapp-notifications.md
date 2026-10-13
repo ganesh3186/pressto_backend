@@ -7,19 +7,35 @@ WHATSAPP_ENABLED=false disables sends. No real messages are sent by validation.
 
 ## Current rollout: notifications without attachments
 
-WHATSAPP_ATTACHMENTS_ENABLED defaults to false. Only these three approved templates send in this mode:
+WHATSAPP_ATTACHMENTS_ENABLED defaults to false. These approved templates send in this mode:
 - pulse_pickupreq: after a customer pickup request is saved successfully.
 - pulse_riderscheduled: after rider assignment commits, when the pickup date is today in Asia/Kolkata.
 - pulse_readyforcollection: after an order successfully changes to READY.
+- pulse_walletrecharge: after an admin recharge or a confirmed customer/gateway recharge succeeds. Parameters: customer name, recharge amount, date, available balance.
+- pulse_walletredeem: after wallet payment for a ticket commits, including checkout and later payments. Parameters: customer name, ticket number, amount redeemed, date, available balance.
+- pulse_paymentlink: after an order payment link is created/reused. Parameters: customer name, ticket number, requested payment amount, real Razorpay HTTPS payment URL.
 
-All three use body parameters only; no document/header component is sent.
+All six use body parameters only; no document/header component is sent.
 The rider-scheduled time-slot parameter uses the referenced PickupDeliverySlot startTime and endTime (for example, 14:00 - 15:00), rather than its label. Legacy requests without an available slot/time range show Not specified and log a generic warning.
 Existing admin/customer/rider entry points use the business services described below.
 No new public message-sending endpoint is introduced; existing business APIs trigger the notifications.
 The four attachment-based templates are skipped before loading their customer/document data, even if PDF URLs are configured.
 Direct sendTemplateMessage calls also enforce this restriction. Text-only templates reject unexpected media.
-Set WHATSAPP_ENABLED=true with a valid token to enable the three notifications, then restart the backend.
+Set WHATSAPP_ENABLED=true with a valid token to enable these notifications, then restart the backend.
 HTTP acceptance does not confirm delivery; confirm on the receiving phone or through provider delivery status.
+
+## Wallet and PG-link behavior
+
+Wallet recharge notifications run after the recharge has actually credited the wallet, not when a pending gateway recharge is initiated.
+Wallet redemption notifications run explicitly after the order/payment transaction commits. Rollbacks and insufficient-balance failures do not notify.
+Manual admin debit corrections have no ticket reference and are excluded because the approved redemption wording says the money was used for an order. Refund credits are not presented as recharges.
+Amounts and the remaining wallet balance are captured by the business operation; the message does not recompute an order wallet deduction from later transactions.
+The existing POST /payments/gateway-links/shareable endpoint now creates/reuses the real link and sends pulse_paymentlink from the backend. It requires the existing order:create permission and store visibility, matching ticket payment access.
+The response retains link fields and adds whatsappAccepted and message. The new-ticket PG Link, invoice PG Link and invoice balance-link button stay in the admin screen and use this result for success/error feedback.
+The selected customer must have an active saved WhatsApp number. Recipients are resolved from the ticket/customer records, not an arbitrary phone sent by the browser.
+If WhatsApp fails, the ticket/link is retained. Retrying uses the existing valid Razorpay link rather than creating another charge. Payment is still applied only through the existing verified Razorpay confirmation flow.
+Concurrent sends for the same event share the same pending request and result; successful sends are suppressed within this running instance. A provider-accepted result is not proof of delivery.
+The separate frontend-only Club & Pay/draft sharing helpers are not gateway-backed and are outside this PG Link payment-method change.
 
 ## Event hooks
 

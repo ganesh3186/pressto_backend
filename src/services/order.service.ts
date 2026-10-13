@@ -1,4 +1,4 @@
-import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
+import {dispatchWhatsApp, WalletWhatsAppNotification, WhatsAppService} from './whatsapp.service';
 import {PaymentService} from './payment.service';
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
@@ -2136,6 +2136,7 @@ export class OrderService {
       // deliberately excluded (see collectablePayments above): nothing was
       // actually collected, so no transaction record is created for them.
       const createdPayments = [];
+      let walletNotification: WalletWhatsAppNotification | undefined;
       for (const payment of collectablePayments) {
         const pt = await this.paymentService.recordPayment(
           {
@@ -2170,7 +2171,7 @@ export class OrderService {
           {currentBalance: newBalance},
           {transaction: tx},
         );
-        await this.walletTransactionRepo.create(
+        const walletTransaction = await this.walletTransactionRepo.create(
           {
             id: v4(),
             walletId: wallet.id,
@@ -2183,6 +2184,14 @@ export class OrderService {
           },
           {transaction: tx},
         );
+        walletNotification = {
+          transactionId: walletTransaction.id,
+          customerId: order.customerId,
+          orderId: order.id,
+          amount: walletAmount,
+          balance: newBalance,
+          date: walletTransaction.transactionDate,
+        };
         // Record wallet payment in payment_transaction so totalCollected queries stay consistent
         const walletPt = await this.paymentService.recordPayment(
           {
@@ -2213,6 +2222,10 @@ export class OrderService {
       );
 
       await tx.commit();
+      if (walletNotification) {
+        const notification = walletNotification;
+        dispatchWhatsApp(() => this.whatsAppService.notifyWalletRedeemed(notification));
+      }
       for (const payment of createdPayments) {
         this.paymentService.notifyPaymentReceived(payment);
       }
@@ -5938,6 +5951,7 @@ export class OrderService {
       }
 
       let walletPayment = null;
+      let walletNotification: WalletWhatsAppNotification | undefined;
       if (thisWallet > 0 && wallet) {
         const newBalance = wallet.currentBalance - thisWallet;
         await this.walletRepo.updateById(
@@ -5945,7 +5959,7 @@ export class OrderService {
           {currentBalance: newBalance},
           {transaction: tx},
         );
-        await this.walletTransactionRepo.create(
+        const walletTransaction = await this.walletTransactionRepo.create(
           {
             id: v4(),
             walletId: wallet.id,
@@ -5958,6 +5972,14 @@ export class OrderService {
           },
           {transaction: tx},
         );
+        walletNotification = {
+          transactionId: walletTransaction.id,
+          customerId: order.customerId,
+          orderId,
+          amount: thisWallet,
+          balance: newBalance,
+          date: walletTransaction.transactionDate,
+        };
         walletPayment = await this.paymentService.recordPayment(
           {
             orderId,
@@ -5996,6 +6018,10 @@ export class OrderService {
       }
 
       await tx.commit();
+      if (walletNotification) {
+        const notification = walletNotification;
+        dispatchWhatsApp(() => this.whatsAppService.notifyWalletRedeemed(notification));
+      }
       if (createdPayment) this.paymentService.notifyPaymentReceived(createdPayment);
       if (walletPayment) this.paymentService.notifyPaymentReceived(walletPayment);
 
