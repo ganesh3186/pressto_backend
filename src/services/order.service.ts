@@ -4149,6 +4149,21 @@ export class OrderService {
     if (!orders.length) return {rows: [], total: 0};
 
     const orderIds = orders.map(o => o.id);
+    const returnedOrderIds = orders
+      .filter(o => o.status === OrderStatus.READY && o.deliveryAttemptCount)
+      .map(o => o.id);
+    const readyHistory = returnedOrderIds.length
+      ? await this.statusHistoryRepo.find({
+          where: {orderId: {inq: returnedOrderIds}, status: OrderStatus.READY},
+          order: ['changedAt DESC'],
+        })
+      : [];
+    const latestReadyRemarks = new Map<string, string>();
+    for (const entry of readyHistory) {
+      if (!latestReadyRemarks.has(entry.orderId)) {
+        latestReadyRemarks.set(entry.orderId, entry.remarks ?? '');
+      }
+    }
     const customerIds = [...new Set(orders.map(o => o.customerId))];
     const parentOrderIds = [
       ...new Set(orders.map(o => (o as any).parentOrderId).filter(Boolean)),
@@ -4305,6 +4320,7 @@ export class OrderService {
         deliveryDate: order.deliveryDate,
         deliveryMethod: (order as any).deliveryMethod ?? null,
         deliveryStatus: (order as any).deliveryStatus ?? null,
+        deliveryReturnRemarks: latestReadyRemarks.get(order.id) ?? null,
         deliverySlot: (order as any).deliverySlot ?? null,
         deliverySlotId: (order as any).deliverySlotId ?? null,
         deliveryAddress: (order as any).deliveryAddress ?? null,

@@ -534,7 +534,7 @@ export class OrderController {
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
-    const [customer, delivered, payments, handover, balance] =
+    const [customer, delivered, returned, payments, handover, balance] =
       await Promise.all([
         this.customerRepository.findOne({
           where: {id: order.customerId, isDeleted: false},
@@ -543,6 +543,12 @@ export class OrderController {
           where: {orderId: id, status: OrderStatus.DELIVERED},
           order: ['changedAt DESC'],
         }),
+        order.status === OrderStatus.READY && order.deliveryAttemptCount
+          ? this.statusHistoryRepository.findOne({
+              where: {orderId: id, status: OrderStatus.READY},
+              order: ['changedAt DESC'],
+            })
+          : Promise.resolve(null),
         this.paymentTransactionRepository.find({
           where: {orderId: id},
           order: ['paymentDate DESC'],
@@ -602,6 +608,7 @@ export class OrderController {
             ? 'partial'
             : 'pending',
       deliveryRemarks: delivered?.remarks ?? null,
+      deliveryReturnRemarks: returned?.remarks ?? null,
       remarkImages: (order.specialInstructionMediaIds ?? [])
         .map(mediaId => mediaById.get(mediaId))
         .filter((file): file is {id: string; fileUrl: string} => !!file),

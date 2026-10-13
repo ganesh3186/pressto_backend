@@ -1,6 +1,7 @@
 import {UserProfile} from '@loopback/security';
 import {expect} from '@loopback/testlab';
 import {OrderController} from '../controllers/order.controller';
+import {OrderService} from '../services/order.service';
 
 describe('Delivery Management detail', () => {
   it('returns ticket details and existing images in one response', async () => {
@@ -98,12 +99,22 @@ describe('Delivery Management detail', () => {
           id: 'order-2',
           orderNumber: 'ST018-1026-0186',
           customerId: 'customer-2',
+          status: 'ready',
+          deliveryAttemptCount: 1,
           orderType: 'home_pickup_home_delivery',
           totalAmount: 461,
         }),
       },
       customerRepository: {findOne: async () => null},
-      statusHistoryRepository: {findOne: async () => null},
+      statusHistoryRepository: {
+        findOne: async (filter: {where: {status: string}}) =>
+          filter.where.status === 'ready'
+            ? {
+                remarks:
+                  'Delivery attempt failed — returned to store: Customer unavailable',
+              }
+            : null,
+      },
       paymentTransactionRepository: {find: async () => []},
       orderHandoverRepository: {findOne: async () => null},
       orderService: {
@@ -125,7 +136,59 @@ describe('Delivery Management detail', () => {
     expect(result.customerName).to.equal(null);
     expect(result.actualDeliveryAt).to.equal(null);
     expect(result.paymentStatus).to.equal('pending');
+    expect(result.deliveryReturnRemarks).to.equal(
+      'Delivery attempt failed — returned to store: Customer unavailable',
+    );
     expect(result.remarkImages).to.deepEqual([]);
     expect(result.proofImage).to.equal(null);
+  });
+});
+
+describe('Delivery Management list', () => {
+  it('includes the latest ready remarks for returned deliveries', async () => {
+    const orders = [
+      {
+        id: 'returned',
+        status: 'ready',
+        deliveryAttemptCount: 1,
+        totalAmount: 0,
+      },
+      {
+        id: 'ordinary',
+        status: 'ready',
+        deliveryAttemptCount: 0,
+        totalAmount: 0,
+      },
+    ];
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      orderRepo: {
+        find: async () => orders,
+        count: async () => ({count: orders.length}),
+      },
+      statusHistoryRepo: {
+        find: async () => [
+          {
+            orderId: 'returned',
+            remarks:
+              'Delivery attempt failed — returned to store: Customer unavailable',
+          },
+          {orderId: 'returned', remarks: 'Older ready remarks'},
+        ],
+      },
+      customerRepo: {find: async () => []},
+      paymentTransactionRepo: {find: async () => []},
+      orderItemRepo: {find: async () => []},
+      orderLabelAssignmentRepo: {find: async () => []},
+    }) as OrderService;
+
+    const result = await service.listOrders({});
+    expect(result.rows).to.containDeep([
+      {
+        id: 'returned',
+        deliveryReturnRemarks:
+          'Delivery attempt failed — returned to store: Customer unavailable',
+      },
+      {id: 'ordinary', deliveryReturnRemarks: null},
+    ]);
   });
 });
