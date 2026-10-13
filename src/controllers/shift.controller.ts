@@ -802,9 +802,10 @@ export class ShiftController {
       windowEnd,
     );
 
-    const [revenue, salesReturn] = await Promise.all([
+    const [revenue, salesReturn, orderSummary] = await Promise.all([
       this.resolveRevenue(shift.storeId, shift.openedAt, windowEnd),
       this.resolveSalesReturn(shift.storeId, shift.openedAt, windowEnd),
+      this.resolveOrderSummary(shift.storeId, shift.openedAt, windowEnd),
     ]);
 
     return {
@@ -817,6 +818,53 @@ export class ShiftController {
       pettyCash,
       revenue,
       salesReturn,
+      orderSummary,
+    };
+  }
+
+  private async resolveOrderSummary(storeId: string, from: Date, to: Date) {
+    const orders = await this.orderRepository.find({
+      where: {
+        storeId,
+        status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
+        createdAt: {between: [from, to]},
+      } as object,
+      fields: {id: true, totalAmount: true} as object,
+    });
+    if (!orders.length) return {orders: 0, items: 0, services: 0, value: 0};
+
+    const items = await this.orderItemRepository.find({
+      where: {orderId: {inq: orders.map(order => order.id)}} as object,
+      fields: {
+        quantity: true,
+        additionalServiceIds: true,
+        pendingUnitAdditionalServices: true,
+      } as object,
+    });
+    let itemCount = 0;
+    let serviceCount = 0;
+    for (const item of items) {
+      const quantity = Number(item.quantity) || 0;
+      itemCount += quantity;
+      serviceCount += quantity;
+      serviceCount += item.pendingUnitAdditionalServices
+        ? item.pendingUnitAdditionalServices.reduce(
+            (sum, services) => sum + (services?.length ?? 0),
+            0,
+          )
+        : quantity * (item.additionalServiceIds?.length ?? 0);
+    }
+    return {
+      orders: orders.length,
+      items: itemCount,
+      services: serviceCount,
+      value:
+        Math.round(
+          orders.reduce(
+            (sum, order) => sum + (Number(order.totalAmount) || 0),
+            0,
+          ) * 100,
+        ) / 100,
     };
   }
 
@@ -1118,6 +1166,11 @@ export class ShiftController {
       );
     }
     const now = new Date();
+    const orderSummary = await this.resolveOrderSummary(
+      shift.storeId,
+      shift.openedAt,
+      now,
+    );
 
     await this.shiftRepository.updateById(id, {
       status: ShiftStatus.CLOSED,
@@ -1125,7 +1178,7 @@ export class ShiftController {
       closureNo: shift.openingNo,
       closingUserId: userId,
       closingUserName,
-      closing,
+      closing: {...closing, orderSummary},
     });
 
     const updated = await this.shiftRepository.findById(id);

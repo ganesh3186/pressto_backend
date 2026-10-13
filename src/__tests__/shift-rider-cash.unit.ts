@@ -1,6 +1,7 @@
 import {expect} from '@loopback/testlab';
 import {UserProfile} from '@loopback/security';
 import {ShiftController} from '../controllers/shift.controller';
+import {OrderStatus} from '../models/order-status.enum';
 import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
 
 describe('shift collections from riders', () => {
@@ -9,18 +10,37 @@ describe('shift collections from riders', () => {
     const closedAt = new Date('2026-10-01T17:00:00Z');
     let handoverFilter: Record<string, unknown> | undefined;
     let paymentFilter: Record<string, unknown> | undefined;
+    let summaryFilter: Record<string, unknown> | undefined;
     const controller = Object.assign(Object.create(ShiftController.prototype), {
       shiftRepository: {
         findById: async () => ({storeId: 'store-a', openedAt, closedAt}),
       },
       resolveCallerStore: async () => ({storeId: 'store-a'}),
       orderRepository: {
-        find: async () => [{id: 'order-a', status: 'confirmed'}],
+        find: async ({where}: {where: Record<string, unknown>}) => {
+          if (where.createdAt) {
+            summaryFilter = where;
+            return [{id: 'order-a', totalAmount: 80.5}];
+          }
+          return [{id: 'order-a', status: 'confirmed'}];
+        },
+      },
+      orderItemRepository: {
+        find: async () => [
+          {
+            quantity: 2,
+            additionalServiceIds: ['extra-a'],
+            pendingUnitAdditionalServices: [[{serviceId: 'extra-a'}], []],
+          },
+          {quantity: 3, additionalServiceIds: ['extra-a', 'extra-b']},
+        ],
       },
       paymentTransactionRepository: {
         find: async ({where}: {where: Record<string, unknown>}) => {
           paymentFilter = where;
-          return [{paymentMode: 'cash', amount: 50, transactionType: 'payment'}];
+          return [
+            {paymentMode: 'cash', amount: 50, transactionType: 'payment'},
+          ];
         },
       },
       riderCashHandoverRepository: {
@@ -43,6 +63,12 @@ describe('shift collections from riders', () => {
     )) as {
       collections: {cash: number};
       cashReceived: number;
+      orderSummary: {
+        orders: number;
+        items: number;
+        services: number;
+        value: number;
+      };
     };
 
     expect(handoverFilter).to.deepEqual({
@@ -58,5 +84,16 @@ describe('shift collections from riders', () => {
     });
     expect(result.collections.cash).to.equal(170.5);
     expect(result.cashReceived).to.equal(195.5);
+    expect(summaryFilter).to.deepEqual({
+      storeId: 'store-a',
+      status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
+      createdAt: {between: [openedAt, closedAt]},
+    });
+    expect(result.orderSummary).to.deepEqual({
+      orders: 1,
+      items: 5,
+      services: 12,
+      value: 80.5,
+    });
   });
 });
