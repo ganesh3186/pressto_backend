@@ -63,6 +63,23 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
     permission: 'customer_phone:delete',
     description: 'Delete a customer phone number',
   },
+  // Customer Contact (see CustomerContactController)
+  {
+    permission: 'customer_contact:create',
+    description: 'Add a customer contact',
+  },
+  {
+    permission: 'customer_contact:read',
+    description: 'View customer contacts',
+  },
+  {
+    permission: 'customer_contact:update',
+    description: 'Update a customer contact',
+  },
+  {
+    permission: 'customer_contact:delete',
+    description: 'Delete a customer contact',
+  },
   // Finance Approvals screen UI-gate (approval:create/read/update already
   // exist — this is just the new nav/route visibility key for that screen)
   {
@@ -318,6 +335,10 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'customer_phone:read',
       'customer_phone:update',
       'customer_phone:delete',
+      'customer_contact:create',
+      'customer_contact:read',
+      'customer_contact:update',
+      'customer_contact:delete',
       // Pickup Request: managers run the day-to-day front-desk/call-center
       // intake + rider assignment, and can also remove a mistaken entry.
       'pickup_request:create',
@@ -398,6 +419,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'customer_phone:create',
       'customer_phone:read',
       'customer_phone:update',
+      'customer_contact:create',
+      'customer_contact:read',
+      'customer_contact:update',
       // Pickup Request: front-desk logs intake and assigns riders, but
       // deletion is reserved for a manager.
       'pickup_request:create',
@@ -454,6 +478,9 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'customer_phone:create',
       'customer_phone:read',
       'customer_phone:update',
+      'customer_contact:create',
+      'customer_contact:read',
+      'customer_contact:update',
       // Coupon: same reason as store_exec — validates a coupon code
       // during order creation, doesn't author coupons.
       'coupon:read',
@@ -473,6 +500,7 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
     permissions: [
       'customer_address:read',
       'customer_phone:read',
+      'customer_contact:read',
       'coupon:read',
       'petty_cash:read',
       // Store dashboard: an ASM oversees stores, so the summary is the
@@ -493,6 +521,7 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
     permissions: [
       'customer_address:read',
       'customer_phone:read',
+      'customer_contact:read',
       // Finance Approvals screen: cheque/PDC payment approvals (via the
       // generic ApprovalRequest system) and credit-note approvals (which
       // finance already reaches via order:update, granted in seed.ts).
