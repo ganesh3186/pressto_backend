@@ -32,6 +32,7 @@
     "migrate": "node ./dist/migrate",
     "migrate:customer-persona": "node scripts/add-customer-persona-column.cjs",
     "migrate:coupon-order-fields": "node scripts/add-coupon-order-fields.cjs",
+    "migrate:store-targets": "node scripts/add-store-targets.cjs",
     "migrate:dashboard-indexes": "node scripts/add-dashboard-indexes.cjs",
     "preseed": "npm run build",
     "seed": "node ./dist/seed",
