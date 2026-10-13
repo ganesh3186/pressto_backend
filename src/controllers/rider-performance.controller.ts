@@ -254,7 +254,7 @@ export class RiderPerformanceController {
     }
     const dayEnd = endOfDay(day);
 
-    const [pickups, deliveries, transfers, cashHandovers] = await Promise.all([
+    const [pickups, deliveries, transfers, pickedUpPickups, cashToHandover] = await Promise.all([
       this.pickupRequestRepository.find({
         where: {assignedRiderId: rider.id, isDeleted: false, requestedDate: {between: [day, day]}} as object,
         fields: {id: true, status: true} as object,
@@ -271,9 +271,13 @@ export class RiderPerformanceController {
         where: {riderId: rider.id, isDeleted: false, riderAssignedAt: {between: [day, dayEnd]}} as object,
         fields: {status: true} as object,
       }),
-      this.riderCashHandoverRepository.find({
-        where: {riderId: rider.id, isDeleted: false, submittedAt: {between: [day, dayEnd]}} as object,
-        fields: {itemCount: true} as object,
+      this.pickupRequestRepository.find({
+        where: {assignedRiderId: rider.id, isDeleted: false, status: PickupRequestStatus.PICKED_UP} as object,
+        fields: {id: true} as object,
+      }),
+      this.paymentTransactionRepository.count({
+        riderId: rider.id,
+        riderHandoverStatus: 'with_rider',
       }),
     ]);
 
@@ -294,15 +298,8 @@ export class RiderPerformanceController {
     ];
     const TRANSFER_PENDING: TransferStatus[] = [TransferStatus.RIDER_ASSIGNED, TransferStatus.IN_TRANSIT];
 
-    // "Handover count" is what the rider still needs to hand over, not what
-    // they already have — same PICKED_UP-minus-already-batched logic as
-    // GET /rider/pickup-requests/handover-eligible. It was previously "items
-    // in a batch submitted today", which is backwards from what a dashboard
-    // tile should show: 0 right after confirming a pickup (no batch exists
-    // yet), climbing to 1 only once the rider had already handed it over.
-    const pickedUpPickupIds = pickups
-      .filter(p => p.status === PickupRequestStatus.PICKED_UP)
-      .map(p => p.id);
+    // Match the handover-eligible list across scheduled dates.
+    const pickedUpPickupIds = pickedUpPickups.map(p => p.id);
     let handoverOrdersCount = 0;
     if (pickedUpPickupIds.length) {
       const pendingHandoverIds = (
@@ -336,13 +333,8 @@ export class RiderPerformanceController {
         .length,
       pendingStoreTransfersCount: transfers.filter(t => TRANSFER_PENDING.includes(t.status as TransferStatus))
         .length,
-      // Pickups this rider still needs to hand over (see comment above) —
-      // not batch/item counts, unlike handoverCashCount below.
       handoverOrdersCount,
-      // Each header is a batch that can contain several cash transactions.
-      // Cash handover isn't part of this complaint — left as "collected
-      // today", the same as before.
-      handoverCashCount: cashHandovers.reduce((count, handover) => count + (Number(handover.itemCount) || 0), 0),
+      handoverCashCount: cashToHandover.count,
     };
   }
 }
