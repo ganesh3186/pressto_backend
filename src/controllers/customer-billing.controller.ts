@@ -6,6 +6,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {PresstoDataSource} from '../datasources';
 import {authorize} from '../authorization';
 import {PaymentService} from '../services/payment.service';
+import {PaymentTransaction} from '../models/payment-transaction.model';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {
@@ -205,6 +206,7 @@ export class CustomerBillingController {
 
     const {v4} = await import('uuid');
     let remaining = paymentAmount;
+    const receivedPayments: PaymentTransaction[] = [];
     const allocations: Array<{invoiceId: string; invoiceNumber: string; orderId: string; allocated: number}> = [];
 
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED'} as any);
@@ -235,7 +237,7 @@ export class CustomerBillingController {
         // — the model has no remarks/recordedBy column at all, so the Club & Pay
         // note is folded into gatewayResponse (a free-text field) instead of
         // being silently dropped.
-        await this.paymentService.recordPayment(
+        const receivedPayment = await this.paymentService.recordPayment(
           {
             id: v4(),
             orderId: inv.orderId,
@@ -248,6 +250,7 @@ export class CustomerBillingController {
           {transaction: tx}
         );
 
+        receivedPayments.push(receivedPayment);
         allocations.push({
           invoiceId: inv.id,
           invoiceNumber: inv.invoiceNumber,
@@ -261,6 +264,8 @@ export class CustomerBillingController {
       await tx.rollback();
       throw err;
     }
+
+    for (const payment of receivedPayments) this.paymentService.notifyPaymentReceived(payment);
 
     return {
       message: 'Club & Pay applied.',

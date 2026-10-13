@@ -2,9 +2,9 @@ import {BindingScope, inject, injectable} from '@loopback/core';
 import {DataObject, Options, repository} from '@loopback/repository';
 import {PaymentTransaction} from '../models';
 import {PaymentTransactionRepository} from '../repositories';
-import {afterWhatsAppCommit, WhatsAppService} from './whatsapp.service';
+import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
 
-/** Records a collected payment and schedules its customer receipt after commit. */
+/** Payment writes and post-commit receipt notifications are explicit operations. */
 @injectable({scope: BindingScope.TRANSIENT})
 export class PaymentService {
   constructor(
@@ -17,12 +17,13 @@ export class PaymentService {
     data: DataObject<PaymentTransaction>,
     options?: Options,
   ): Promise<PaymentTransaction> {
-    const payment = await this.paymentRepository.create(data, options);
+    return this.paymentRepository.create(data, options);
+  }
+
+  /** The transaction owner calls this only after commit succeeds. */
+  notifyPaymentReceived(payment: PaymentTransaction): void {
     if (payment.transactionType !== 'refund' && Number(payment.amount) > 0) {
-      afterWhatsAppCommit(options, () =>
-        this.whatsAppService.notifyPayment(payment),
-      );
+      dispatchWhatsApp(() => this.whatsAppService.notifyPayment(payment));
     }
-    return payment;
   }
 }

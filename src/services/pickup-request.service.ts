@@ -1,9 +1,10 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
-import {DataObject, Options, repository} from '@loopback/repository';
+import {DataObject, IsolationLevel, repository} from '@loopback/repository';
+import {PresstoDataSource} from '../datasources';
 import {PickupRequest} from '../models';
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {PickupRequestRepository} from '../repositories';
-import {afterWhatsAppCommit, WhatsAppService} from './whatsapp.service';
+import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
 
 /** Shared customer/admin/rider pickup operations; repositories only persist data. */
 @injectable({scope: BindingScope.TRANSIENT})
@@ -12,25 +13,43 @@ export class PickupRequestService {
     @repository(PickupRequestRepository)
     private pickupRepository: PickupRequestRepository,
     @inject('services.whatsapp') private whatsAppService: WhatsAppService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
-  async createRequest(
-    data: DataObject<PickupRequest>,
-    options?: Options,
-  ): Promise<PickupRequest> {
-    const pickup = await this.pickupRepository.create(data, options);
-    afterWhatsAppCommit(options, () =>
+  async createRequest(data: DataObject<PickupRequest>): Promise<PickupRequest> {
+    const pickup = await this.pickupRepository.create(data);
+    dispatchWhatsApp(() =>
       this.whatsAppService.notifyPickup(pickup.id, 'created'),
     );
     return pickup;
   }
 
-  async assignRider(
+  async assignRiders(
+    requests: PickupRequest[],
+    assignment: DataObject<PickupRequest>,
+  ): Promise<void> {
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
+    try {
+      for (const request of requests) {
+        await this.pickupRepository.updateById(request.id, assignment, {
+          transaction: tx,
+        });
+      }
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+    for (const request of requests)
+      this.notifyRiderAssigned(request, assignment);
+  }
+
+  private notifyRiderAssigned(
     previous: PickupRequest,
     assignment: DataObject<PickupRequest>,
-    options?: Options,
-  ): Promise<void> {
-    await this.pickupRepository.updateById(previous.id, assignment, options);
+  ): void {
     if (
       assignment.status !== PickupRequestStatus.RIDER_ASSIGNED ||
       !assignment.assignedRiderId
@@ -49,7 +68,7 @@ export class PickupRequestService {
       dateKey(assignment.requestedDate),
       assignment.slot,
     ].join(':');
-    afterWhatsAppCommit(options, () =>
+    dispatchWhatsApp(() =>
       this.whatsAppService.notifyPickup(previous.id, 'scheduled', key),
     );
   }

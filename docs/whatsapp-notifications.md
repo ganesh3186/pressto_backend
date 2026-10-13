@@ -5,19 +5,36 @@ The existing Karix payload has been replaced; these are different provider APIs.
 Credentials belong only in the ignored backend .env. .env.example contains placeholders.
 WHATSAPP_ENABLED=false disables sends. No real messages are sent by validation.
 
+## Current rollout: notifications without attachments
+
+WHATSAPP_ATTACHMENTS_ENABLED defaults to false. Only these three approved templates send in this mode:
+- pulse_pickupreq: after a customer pickup request is saved successfully.
+- pulse_riderscheduled: after rider assignment commits, when the pickup date is today in Asia/Kolkata.
+- pulse_readyforcollection: after an order successfully changes to READY.
+
+All three use body parameters only; no document/header component is sent.
+The rider-scheduled time-slot parameter uses the referenced PickupDeliverySlot startTime and endTime (for example, 14:00 - 15:00), rather than its label. Legacy requests without an available slot/time range show Not specified and log a generic warning.
+Existing admin/customer/rider entry points use the business services described below.
+No new public message-sending endpoint is introduced; existing business APIs trigger the notifications.
+The four attachment-based templates are skipped before loading their customer/document data, even if PDF URLs are configured.
+Direct sendTemplateMessage calls also enforce this restriction. Text-only templates reject unexpected media.
+Set WHATSAPP_ENABLED=true with a valid token to enable the three notifications, then restart the backend.
+HTTP acceptance does not confirm delivery; confirm on the receiving phone or through provider delivery status.
+
 ## Event hooks
 
 OrderService.createOrder: pulse_ordercreated, after transaction commit.
 OrderService.notifyStatusChange: READY sends pulse_readyforcollection; DELIVERED sends pulse_deliveredcomplete.
 Counter handover explicitly selects pulse_collectedcomplete after the handover and garment updates succeed.
 OrderService status changes, delivery returns, ProcessService pipeline updates and GarmentController synchronization call that same business-service notification method after their writes succeed.
-PaymentService.recordPayment: pulse_paymentreceived after commit, excluding refunds and zero amounts.
+PaymentService.recordPayment persists the payment. The transaction owner explicitly calls PaymentService.notifyPaymentReceived after commit to send pulse_paymentreceived, excluding refunds and zero amounts.
 Order checkout, wallet payments, subsequent payments and Club & Pay use PaymentService; existing refund writes remain notification-free.
 PickupRequestService.createRequest: pulse_pickupreq, excluding cancelled/non-serviceable requests.
 Admin, customer-app and rider pickup creation use PickupRequestService.
-PickupRequestService.assignRider: pulse_riderscheduled after assignment commit, only for pickups scheduled today in Asia/Kolkata. Repeating the same rider/date/slot does not schedule another notification.
+PickupRequestService.assignRiders owns the batch assignment transaction and dispatches pulse_riderscheduled after commit, only for pickups scheduled today in Asia/Kolkata. Repeating the same rider/date/slot does not schedule another notification.
 Controllers keep their existing validation and permissions and delegate the shared operations to these services.
 Rolled-back transactions never dispatch. Notification failures do not undo business writes.
+Post-commit calls are explicit. PostgreSQL's transaction class comes from a different installed loopback-connector instance than the juggler observer implementation; it does not support the observe('after commit') hook. No transaction monkey-patching or observer hooks are used.
 Repositories contain no WhatsApp dependencies or notification overrides. Direct repository writes, imports, raw SQL and replaceById do not send messages automatically.
 New business flows must explicitly use the relevant service operation; adding a database write alone does not opt it into customer messaging.
 
@@ -34,7 +51,7 @@ New split/rework orders do not send a second order-created template.
 
 The provided documents list template bodies, but do not provide approved header metadata or PDF endpoints.
 The order-created, payment-received, delivered-complete and collected-complete bodies explicitly promise attachments.
-Those four notifications are deliberately skipped until a document URL is available, rather than promising a missing attachment.
+Those four notifications are deliberately disabled for the current rollout. Enabling them later requires WHATSAPP_ATTACHMENTS_ENABLED=true and a valid document URL, rather than promising a missing attachment.
 The service supports a WhatsApp Cloud-style document header; Tata Omni must confirm this format for the approved templates.
 Configure WHATSAPP_TICKET_DOCUMENT_URL_TEMPLATE, WHATSAPP_RECEIPT_DOCUMENT_URL_TEMPLATE and WHATSAPP_INVOICE_DOCUMENT_URL_TEMPLATE only with correct provider-accessible HTTPS PDFs.
 Supported placeholders: {orderId}, {paymentId}, {invoiceId}. No authenticated admin JSON endpoint or browser blob URL is a PDF attachment.

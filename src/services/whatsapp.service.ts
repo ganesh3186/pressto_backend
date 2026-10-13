@@ -1,5 +1,5 @@
 import {BindingScope, Getter, injectable} from '@loopback/core';
-import {Options, repository} from '@loopback/repository';
+import {repository} from '@loopback/repository';
 import axios from 'axios';
 import {Order, PaymentTransaction, PickupRequest} from '../models';
 import {OrderStatus} from '../models/order-status.enum';
@@ -15,6 +15,7 @@ import type {
   StoreRepository,
   PaymentTransactionRepository,
   PickupRequestRepository,
+  PickupDeliverySlotRepository,
   InvoiceRepository,
 } from '../repositories';
 
@@ -43,42 +44,15 @@ export interface SendWhatsAppTemplateInput {
   media?: WhatsAppTemplateMedia;
 }
 
-/** Defers notifications until commit; rollback never runs the callback. */
-export function afterWhatsAppCommit(
-  options: Options | undefined,
-  task: () => Promise<unknown>,
-): void {
-  const dispatch = () => {
-    Promise.resolve()
-      .then(task)
-      .catch(() => {
-        console.error(
-          '[WhatsAppService] Could not prepare customer notification.',
-        );
-      });
-  };
-  const transaction = options?.transaction as
-    | {
-        observe?: (
-          event: string,
-          listener: (context: unknown, next: () => void) => void,
-        ) => void;
-      }
-    | undefined;
-  if (!transaction) {
-    dispatch();
-    return;
-  }
-  if (typeof transaction.observe !== 'function') {
-    console.error(
-      '[WhatsAppService] Unsupported transaction; notification skipped.',
-    );
-    return;
-  }
-  transaction.observe('after commit', (_context, next) => {
-    dispatch();
-    next();
-  });
+/** Business flows call this after their writes/transaction commit succeed. */
+export function dispatchWhatsApp(task: () => Promise<unknown>): void {
+  Promise.resolve()
+    .then(task)
+    .catch(() => {
+      console.error(
+        '[WhatsAppService] Could not prepare customer notification.',
+      );
+    });
 }
 
 /** One customer-only Tata Omni transport and template preparation service. */
@@ -105,6 +79,8 @@ export class WhatsAppService {
     private getPickups: Getter<PickupRequestRepository>,
     @repository.getter('InvoiceRepository')
     private getInvoices: Getter<InvoiceRepository>,
+    @repository.getter('PickupDeliverySlotRepository')
+    private getPickupSlots: Getter<PickupDeliverySlotRepository>,
   ) {}
 
   private warnOnce(key: string, message: string) {
@@ -122,6 +98,10 @@ export class WhatsAppService {
       '[WhatsAppService] WHATSAPP_ACCESS_TOKEN missing; sends disabled.',
     );
     return false;
+  }
+
+  private attachmentsEnabled(): boolean {
+    return process.env.WHATSAPP_ATTACHMENTS_ENABLED === 'true';
   }
 
   private phone(number: string, countryCode = '+91'): string | undefined {
@@ -265,6 +245,10 @@ export class WhatsAppService {
       input.bodyParams.some(p => typeof p !== 'string' || !p.trim())
     )
       return false;
+    // Attachment templates remain off until provider headers and PDFs are confirmed.
+    if (spec.document && !this.attachmentsEnabled()) return false;
+    // Text-only approved templates must never receive an unexpected media header.
+    if (!spec.document && input.media) return false;
     if (spec.document && !input.media) {
       this.warnOnce(
         input.templateId,
@@ -377,6 +361,7 @@ export class WhatsAppService {
     orderId: string,
     event: 'created' | 'ready' | 'delivered' | 'collected',
   ) {
+    if (event !== 'ready' && !this.attachmentsEnabled()) return;
     await this.once(
       'order:' + orderId + ':' + (event === 'collected' ? 'delivered' : event),
       async () => {
@@ -458,6 +443,7 @@ export class WhatsAppService {
   }
 
   async notifyPayment(payment: PaymentTransaction) {
+    if (!this.attachmentsEnabled()) return;
     if (payment.transactionType === 'refund' || Number(payment.amount) <= 0)
       return;
     await this.once('payment:' + payment.id, async () => {
@@ -512,13 +498,28 @@ export class WhatsAppService {
           // Approved wording says "today"; don't send it for a future pickup.
           if (this.date(pickup.requestedDate) !== this.date(new Date()))
             return undefined;
+          const slot = pickup.pickupSlotId
+            ? await (await this.getPickupSlots()).findOne({
+                where: {id: pickup.pickupSlotId, isDeleted: false},
+              })
+            : null;
+          const timeSlot =
+            slot?.startTime?.trim() && slot?.endTime?.trim()
+              ? `${slot.startTime.trim()} - ${slot.endTime.trim()}`
+              : 'Not specified';
+          if (timeSlot === 'Not specified') {
+            this.warnOnce(
+              'pickup-slot-times',
+              '[WhatsAppService] Pickup slot start/end times unavailable.',
+            );
+          }
           return {
             to: recipient.to,
             templateId: 'pulse_riderscheduled',
             bodyParams: [
               recipient.name,
               pickup.pickupNumber ?? pickup.id,
-              pickup.slot,
+              timeSlot,
               pickup.assignedRiderName,
             ],
           };

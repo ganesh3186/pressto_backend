@@ -1,4 +1,4 @@
-import {afterWhatsAppCommit, WhatsAppService} from './whatsapp.service';
+import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
 import {PaymentService} from './payment.service';
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
@@ -2213,7 +2213,10 @@ export class OrderService {
       );
 
       await tx.commit();
-      afterWhatsAppCommit(undefined, () =>
+      for (const payment of createdPayments) {
+        this.paymentService.notifyPaymentReceived(payment);
+      }
+      dispatchWhatsApp(() =>
         this.whatsAppService.notifyOrder(order.id, 'created'),
       );
 
@@ -2245,7 +2248,7 @@ export class OrderService {
   ): void {
     if (status === previousStatus) return;
     if (status !== OrderStatus.READY && status !== OrderStatus.DELIVERED) return;
-    afterWhatsAppCommit(undefined, () =>
+    dispatchWhatsApp(() =>
       this.whatsAppService.notifyOrder(
         orderId,
         status === OrderStatus.READY ? 'ready' : completion,
@@ -5993,6 +5996,8 @@ export class OrderService {
       }
 
       await tx.commit();
+      if (createdPayment) this.paymentService.notifyPaymentReceived(createdPayment);
+      if (walletPayment) this.paymentService.notifyPaymentReceived(walletPayment);
 
       const newPaid = alreadyPaid + collectedTotal;
       return {
