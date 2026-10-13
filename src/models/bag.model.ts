@@ -49,7 +49,7 @@ export class Bag extends Entity {
   })
   status?: BagStatus;
 
-  @property({ type: 'number', default: 25 })
+  @property({ type: 'number', default: 500 })
   maxCapacity?: number;
 
   @property({ type: 'number', default: 0 })
