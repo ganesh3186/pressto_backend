@@ -7,6 +7,7 @@ import {
 } from '../utils/order-export';
 import {
   EditOrderUnitInput,
+  editedGarmentFields,
   hasEditUnitCharges,
   orderGarmentsForRemoval,
   planEditUnitSlots,
@@ -2504,6 +2505,44 @@ export class OrderService {
     OrderStatus.IN_PROCESS,
   ]);
 
+  private async getReprocessOriginalLines(order: Order) {
+    const lines = new Map<string, {quantity: number; additionalServiceIds: string[]}>();
+    if (!order.reprocessOfOrderId) return lines;
+
+    const requests = await this.approvalRequestRepo.find({
+      where: {
+        entityType: 'order',
+        entityId: order.reprocessOfOrderId,
+        type: ApprovalRequestType.REPROCESS,
+      },
+    });
+    const request = requests.find(row =>
+      String(row.metadata?.reworkOrderId ?? '') === String(order.id),
+    );
+    const garmentIds = Array.isArray(request?.metadata?.garmentIds)
+      ? (request?.metadata?.garmentIds as string[])
+      : [];
+    if (!garmentIds.length) return lines;
+
+    const [originalItems, originalGarments] = await Promise.all([
+      this.orderItemRepo.find({where: {orderId: order.reprocessOfOrderId}}),
+      this.garmentRepo.find({where: {id: {inq: garmentIds}}}),
+    ]);
+    const itemById = new Map(originalItems.map(item => [item.id, item]));
+    for (const garment of originalGarments) {
+      const item = itemById.get(garment.orderItemId);
+      if (!item) continue;
+      const key = `${item.serviceId}::${item.itemId}`;
+      const line = lines.get(key) ?? {
+        quantity: 0,
+        additionalServiceIds: item.additionalServiceIds ?? [],
+      };
+      line.quantity += 1;
+      lines.set(key, line);
+    }
+    return lines;
+  }
+
   async updateOrderItems(
     orderId: string,
     desiredItems: {
@@ -2571,6 +2610,12 @@ export class OrderService {
     const existingByKey = new Map(
       existingItems.map(oi => [lineKey(oi.serviceId, oi.itemId), oi]),
     );
+    const originalReprocessByKey = await this.getReprocessOriginalLines(order);
+    if (order.reprocessOfOrderId && !originalReprocessByKey.size) {
+      throw new HttpErrors.Conflict(
+        'Cannot verify the original free reprocess items for this order.',
+      );
+    }
 
     // Removals are only safe while every garment on the line is still untouched.
     const removableGarments = await this.collectRemovableGarments(
@@ -2578,6 +2623,20 @@ export class OrderService {
       desiredByKey,
       lineKey,
     );
+    if (order.reprocessOfOrderId && removableGarments.length) {
+      const removedIds = new Set(removableGarments.map(g => g.id));
+      for (const [key, original] of originalReprocessByKey) {
+        const existing = existingByKey.get(key);
+        if (!existing) continue;
+        const garments = await this.garmentRepo.find({
+          where: {orderItemId: existing.id, isDeleted: false},
+          order: ['garmentTagNumber ASC'],
+        });
+        if (garments.slice(0, original.quantity).some(g => removedIds.has(g.id))) {
+          throw new HttpErrors.Conflict('Original free reprocess pieces cannot be removed from this order.');
+        }
+      }
+    }
 
     // Once an order has actually been placed (past the staff's own cart —
     // draft/confirmed are still just composing it), a staff member dropping
@@ -2725,6 +2784,7 @@ export class OrderService {
       string,
       {length: number; width: number}[]
     >();
+    const newGarmentInstructions = new Map<string, (string | undefined)[]>();
     const tx = await this.dataSource.beginTransaction({
       isolationLevel: 'READ COMMITTED' as any,
     });
@@ -2744,6 +2804,11 @@ export class OrderService {
         const quantity = Number(desired.quantity);
         const units = desired.units;
         const existing = existingByKey.get(key);
+        const originalReprocessLine = originalReprocessByKey.get(key);
+        const freeReprocessLine =
+          Boolean(originalReprocessLine && existing) &&
+          Number(existing?.basePrice) === 0 &&
+          Number(existing?.resolvedPrice) === 0;
 
         // Garments that survive this edit, oldest tag first, paired with the unit
         // slot each one describes (by garment id, else by position).
@@ -2756,6 +2821,17 @@ export class OrderService {
             ).filter(garment => !removableGarmentIds.has(String(garment.id)))
           : [];
         const slotPlan = planEditUnitSlots(quantity, units, keptGarments);
+        // Rework garments were tagged first; later paid pieces have newer tags.
+        const freeGarmentIds = new Set(
+          freeReprocessLine
+            ? keptGarments.slice(0, originalReprocessLine!.quantity).map(g => g.id)
+            : [],
+        );
+        const freeSlots = new Set(
+          slotPlan.garmentBySlot.flatMap((garment, slot) =>
+            garment && freeGarmentIds.has(garment.id) ? [slot] : [],
+          ),
+        );
 
         // Per-unit additional services — a unit's own list wins, else the line list.
         const unitServiceIds = resolveEditUnitServiceIds(
@@ -2763,6 +2839,7 @@ export class OrderService {
           units,
           desired.additionalServiceIds,
         );
+        const originalServices = originalReprocessLine?.additionalServiceIds ?? [];
         const servicePriceById = new Map<string, number>();
         for (const addlServiceId of new Set(unitServiceIds.flat())) {
           const addl = await this.resolvePricing(
@@ -2775,13 +2852,19 @@ export class OrderService {
           );
           servicePriceById.set(addlServiceId, addl.resolvedPrice);
         }
+        const servicePrice = (serviceId: string, slot?: number) =>
+          slot !== undefined &&
+          freeSlots.has(slot) &&
+          originalServices.includes(serviceId)
+            ? 0
+            : servicePriceById.get(serviceId) ?? 0;
         const unitServiceRows = (slot: number | undefined) =>
           (slot === undefined
             ? (desired.additionalServiceIds ?? [])
             : unitServiceIds[slot]
           ).map(serviceId => ({
             serviceId,
-            amount: servicePriceById.get(serviceId) ?? 0,
+            amount: servicePrice(serviceId, slot),
           }));
 
         // Measurement items are billed per unit area, exactly as at creation.
@@ -2796,10 +2879,13 @@ export class OrderService {
           : null;
 
         const {unitPrice, totalPrice} = priceEditedLine({
-          resolvedPrice: pricing.resolvedPrice,
+          resolvedPrice: freeReprocessLine ? 0 : pricing.resolvedPrice,
           deliveryMultiplier,
           unitServiceIds,
-          servicePrice: serviceId => servicePriceById.get(serviceId) ?? 0,
+          servicePrice,
+          unitBasePrice: freeReprocessLine
+            ? slot => (freeSlots.has(slot) ? 0 : pricing.resolvedPrice)
+            : undefined,
           unitAreas: measurement?.areas,
         });
 
@@ -2867,10 +2953,10 @@ export class OrderService {
         // order's delivery date, which an edit leaves alone (see below).
         const fields = {
           quantity: desired.quantity,
-          basePrice: pricing.basePrice,
+          basePrice: freeReprocessLine ? 0 : pricing.basePrice,
           appliedPercentage: pricing.appliedPercentage ?? undefined,
           priceSource: pricing.priceSource,
-          resolvedPrice: pricing.resolvedPrice,
+          resolvedPrice: freeReprocessLine ? 0 : pricing.resolvedPrice,
           unitPrice,
           totalPrice,
           specialInstructions: desired.specialInstructions,
@@ -2956,19 +3042,24 @@ export class OrderService {
           }
           const dims =
             slot === undefined ? undefined : measurement?.dimensions[slot];
-          if (
-            dims &&
-            (Number(garment.length) !== dims.length ||
-              Number(garment.width) !== dims.width)
-          ) {
+          const instructions = slot === undefined ? undefined : units?.[slot]?.instructions;
+          const garmentPatch = editedGarmentFields(garment, instructions, dims);
+          if (Object.keys(garmentPatch).length) {
             await this.garmentRepo.updateById(
               garment.id,
-              {length: dims.length, width: dims.width},
+              garmentPatch,
               {transaction: tx},
             );
           }
         }
 
+        // shortcut: draft edits have no garments yet; persist per-unit remarks on OrderItem if needed there.
+        if (slotPlan.newSlots.length) {
+          newGarmentInstructions.set(
+            String(orderItemId),
+            slotPlan.newSlots.map(slot => units?.[slot]?.instructions),
+          );
+        }
         if (measurement && slotPlan.newSlots.length) {
           newGarmentDimensions.set(
             String(orderItemId),
@@ -3026,11 +3117,12 @@ export class OrderService {
         const index = createdIndexByLine.get(lineId) ?? 0;
         createdIndexByLine.set(lineId, index + 1);
         const dims = newGarmentDimensions.get(lineId)?.[index];
-        if (dims) {
-          await this.garmentRepo.updateById(garment.id, {
-            length: dims.length,
-            width: dims.width,
-          });
+        const instructions = newGarmentInstructions.get(lineId)?.[index];
+        if (dims || instructions !== undefined) {
+          await this.garmentRepo.updateById(
+            garment.id,
+            editedGarmentFields({}, instructions, dims),
+          );
         }
       }
     }
@@ -4822,6 +4914,7 @@ export class OrderService {
     };
 
     // ── Assemble enriched items ───────────────────────────────────────────────
+    const reprocessOriginalLines = await this.getReprocessOriginalLines(order);
     const enrichedItems = orderItems.map(oi => ({
       id: oi.id,
       // order_item has no status column — an item is exactly as far along as its
@@ -4838,6 +4931,7 @@ export class OrderService {
       // billed by area) — the frontend reads this straight off each item.
       isMeasurement: itemMap.get(oi.itemId)?.isMeasurement ?? false,
       quantity: oi.quantity,
+      reprocessOriginalQuantity: reprocessOriginalLines.get(`${oi.serviceId}::${oi.itemId}`)?.quantity ?? 0,
       // Declined at the counter — recorded, ₹0, no garments.
       rejectedAtIntake: oi.rejectedAtIntake ?? false,
       rejectionReason: oi.rejectionReason ?? null,
