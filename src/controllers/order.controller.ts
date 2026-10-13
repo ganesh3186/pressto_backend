@@ -32,9 +32,12 @@ import {
   DeliveryCustodyEventRepository,
   DeliveryOrderRepository,
   DeliveryRepository,
+  MediaRepository,
   OrderLabelAssignmentRepository,
+  OrderHandoverRepository,
   OrderRepository,
   OrderStatusHistoryRepository,
+  PaymentTransactionRepository,
   RiderRepository,
   StoreRepository,
 } from '../repositories';
@@ -45,9 +48,16 @@ import {
   ReprocessReason,
   reprocessWindowDays,
 } from '../models/reprocess-reason.enum';
-import {CreateOrderInput, OrderPaymentInput, OrderService} from '../services/order.service';
+import {
+  CreateOrderInput,
+  OrderPaymentInput,
+  OrderService,
+} from '../services/order.service';
 import {EditOrderUnitInput} from '../services/order-item-edit-units';
-import {ReprocessContactChannel, ReprocessService} from '../services/reprocess.service';
+import {
+  ReprocessContactChannel,
+  ReprocessService,
+} from '../services/reprocess.service';
 import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
@@ -55,7 +65,10 @@ import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
 import {CustomerAddressService} from '../services/customer-address.service';
 import {RiderAssignmentService} from '../services/rider-assignment.service';
-import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
+import {
+  NotificationService,
+  RIDER_NOTIFICATION_TYPES,
+} from '../services/notification.service';
 import {SystemNotificationService} from '../services/system-notification.service';
 import {PickupDeliverySlotRepository} from '../repositories/pickup-delivery-slot.repository';
 
@@ -115,7 +128,8 @@ const EDIT_ORDER_UNIT_SCHEMA = {
     ...ORDER_UNIT_SCHEMA.properties,
     id: {
       type: 'string' as const,
-      description: 'Garment id of an existing piece; omit for a piece added in this edit.',
+      description:
+        'Garment id of an existing piece; omit for a piece added in this edit.',
     },
   },
 };
@@ -128,14 +142,25 @@ const ORDER_ITEM_SCHEMA = {
     itemId: {type: 'string' as const, format: 'uuid'},
     quantity: {type: 'number' as const, minimum: 1},
     specialInstructions: {type: 'string' as const},
-    specialInstructionMediaIds: {type: 'array' as const, items: {type: 'string' as const}},
+    specialInstructionMediaIds: {
+      type: 'array' as const,
+      items: {type: 'string' as const},
+    },
     remarks: {type: 'string' as const},
-    additionalChargeIds: {type: 'array' as const, items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
-    additionalServiceIds: {type: 'array' as const, items: {type: 'string' as const, format: 'uuid'}, description: 'Additional services selected for this item'},
+    additionalChargeIds: {
+      type: 'array' as const,
+      items: ADDITIONAL_CHARGE_SELECTION_SCHEMA,
+    },
+    additionalServiceIds: {
+      type: 'array' as const,
+      items: {type: 'string' as const, format: 'uuid'},
+      description: 'Additional services selected for this item',
+    },
     units: {
       type: 'array' as const,
       items: ORDER_UNIT_SCHEMA,
-      description: 'Per-garment inspection, additional-service and additional-charge selections.',
+      description:
+        'Per-garment inspection, additional-service and additional-charge selections.',
     },
   },
 };
@@ -144,8 +169,14 @@ export class OrderController {
   constructor(
     @repository(OrderRepository)
     private orderRepository: OrderRepository,
+    @repository(OrderHandoverRepository)
+    private orderHandoverRepository: OrderHandoverRepository,
+    @repository(MediaRepository)
+    private mediaRepository: MediaRepository,
     @repository(OrderStatusHistoryRepository)
     private statusHistoryRepository: OrderStatusHistoryRepository,
+    @repository(PaymentTransactionRepository)
+    private paymentTransactionRepository: PaymentTransactionRepository,
     @repository(OrderLabelAssignmentRepository)
     private orderLabelAssignmentRepository: OrderLabelAssignmentRepository,
     @inject('services.order')
@@ -194,11 +225,18 @@ export class OrderController {
   // existing APPROVAL_ROLE_ROUTING table.
   private async _createPendingPaymentApprovalRequest(
     orderId: string,
-    leg: {amount: number; paymentMode: PaymentMode; transactionReference?: string},
+    leg: {
+      amount: number;
+      paymentMode: PaymentMode;
+      transactionReference?: string;
+    },
     requestedBy: string,
   ) {
     return this.approvalService.createRequest({
-      type: leg.paymentMode === PaymentMode.CHEQUE ? ApprovalRequestType.CHEQUE_PAYMENT : ApprovalRequestType.PDC_PAYMENT,
+      type:
+        leg.paymentMode === PaymentMode.CHEQUE
+          ? ApprovalRequestType.CHEQUE_PAYMENT
+          : ApprovalRequestType.PDC_PAYMENT,
       entityType: 'order',
       entityId: orderId,
       requestedBy,
@@ -209,7 +247,6 @@ export class OrderController {
       },
     });
   }
-
 
   // ─── Create Order ─────────────────────────────────────────────────────────
 
@@ -229,13 +266,27 @@ export class OrderController {
               customerId: {type: 'string', format: 'uuid'},
               storeId: {type: 'string', format: 'uuid'},
               orderType: {type: 'string', enum: Object.values(OrderType)},
-              isDraft: {type: 'boolean', description: 'Set true to save the order as a draft without confirming it.'},
-              deliveryType: {type: 'string', enum: Object.values(DeliveryType), description: 'Delivery speed: standard | express | lightning'},
-              customerContactId: {type: 'string', format: 'uuid', description: 'Customer contact (person coming on behalf of the customer)'},
+              isDraft: {
+                type: 'boolean',
+                description:
+                  'Set true to save the order as a draft without confirming it.',
+              },
+              deliveryType: {
+                type: 'string',
+                enum: Object.values(DeliveryType),
+                description: 'Delivery speed: standard | express | lightning',
+              },
+              customerContactId: {
+                type: 'string',
+                format: 'uuid',
+                description:
+                  'Customer contact (person coming on behalf of the customer)',
+              },
               expressMultiplier: {
                 type: 'number',
                 minimum: 1,
-                description: 'Urgency multiplier (1 = standard, 2 = 2x faster/costlier). Drives the calculated deliveryDate.',
+                description:
+                  'Urgency multiplier (1 = standard, 2 = 2x faster/costlier). Drives the calculated deliveryDate.',
               },
               deliveryDate: {
                 type: 'string',
@@ -245,20 +296,36 @@ export class OrderController {
                   'TATs and expressMultiplier. Omit to use that computed date.',
               },
               specialInstructions: {type: 'string'},
-              specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
+              specialInstructionMediaIds: {
+                type: 'array',
+                items: {type: 'string'},
+              },
               remarks: {type: 'string'},
-              additionalChargeIds: {type: 'array', items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
-              orderLabelIds: {type: 'array', items: {type: 'string', format: 'uuid'}, description: 'Order-level labels/tags'},
+              additionalChargeIds: {
+                type: 'array',
+                items: ADDITIONAL_CHARGE_SELECTION_SCHEMA,
+              },
+              orderLabelIds: {
+                type: 'array',
+                items: {type: 'string', format: 'uuid'},
+                description: 'Order-level labels/tags',
+              },
               items: {type: 'array', minItems: 1, items: ORDER_ITEM_SCHEMA},
               payments: {
                 type: 'array',
                 items: PAYMENT_ITEM_SCHEMA,
-                description: 'One or more payment transactions (cash, card, UPI, etc.)',
+                description:
+                  'One or more payment transactions (cash, card, UPI, etc.)',
               },
               walletAmount: {
                 type: 'number',
                 minimum: 0,
                 description: 'Amount to deduct from customer wallet',
+              },
+              paymentIsOnAccount: {
+                type: 'boolean',
+                description:
+                  'Bill this order on account when the customer is eligible.',
               },
             },
           },
@@ -270,12 +337,20 @@ export class OrderController {
     const createdBy = currentUser[securityId];
     const result = (await this.orderService.createOrder(body, createdBy)) as {
       order: {id: string};
-      pendingApprovalPayments: Array<{amount: number; paymentMode: PaymentMode; transactionReference?: string}>;
+      pendingApprovalPayments: Array<{
+        amount: number;
+        paymentMode: PaymentMode;
+        transactionReference?: string;
+      }>;
     };
     const approvalRequests = [];
     for (const leg of result.pendingApprovalPayments ?? []) {
       approvalRequests.push(
-        await this._createPendingPaymentApprovalRequest(result.order.id, leg, createdBy),
+        await this._createPendingPaymentApprovalRequest(
+          result.order.id,
+          leg,
+          createdBy,
+        ),
       );
     }
 
@@ -289,18 +364,28 @@ export class OrderController {
             if (customerId) {
               const cust = await this.customerRepository.findById(customerId);
               if (cust) {
-                customerName = [cust.firstName, cust.lastName].filter(Boolean).join(' ').trim();
+                customerName = [cust.firstName, cust.lastName]
+                  .filter(Boolean)
+                  .join(' ')
+                  .trim();
               }
             }
           } catch (_) {}
-          return this.systemNotificationService!.notifyOrderCreated(savedOrder, customerName);
+          return this.systemNotificationService!.notifyOrderCreated(
+            savedOrder,
+            customerName,
+          );
         })
         .catch(err => {
           console.error('Failed to notify super admin for created order:', err);
         });
     }
 
-    return {message: 'Order created successfully.', ...result, approvalRequests};
+    return {
+      message: 'Order created successfully.',
+      ...result,
+      approvalRequests,
+    };
   }
 
   // ─── List Orders ─────────────────────────────────────────────────────────
@@ -308,7 +393,10 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders')
-  @response(200, {description: 'Enriched order list with customer details, payment summary and filters'})
+  @response(200, {
+    description:
+      'Enriched order list with customer details, payment summary and filters',
+  })
   async listOrders(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('search') search?: string,
@@ -366,7 +454,10 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/export')
-  @response(200, {description: 'All matching Manage Ticket records within the caller store scope'})
+  @response(200, {
+    description:
+      'All matching Manage Ticket records within the caller store scope',
+  })
   async exportOrders(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.object('filter', {
@@ -385,24 +476,30 @@ export class OrderController {
         storeId: {type: 'string'},
         clusterId: {type: 'string'},
       },
-    }) filter: OrderExportFilters = {},
+    })
+    filter: OrderExportFilters = {},
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
-      storeId: filter.storeId && filter.storeId !== 'all' ? filter.storeId : undefined,
-      clusterId: filter.clusterId && filter.clusterId !== 'all' ? filter.clusterId : undefined,
+      storeId:
+        filter.storeId && filter.storeId !== 'all' ? filter.storeId : undefined,
+      clusterId:
+        filter.clusterId && filter.clusterId !== 'all'
+          ? filter.clusterId
+          : undefined,
     });
     // Manage Ticket exports only orders owned by accessible stores, not transfer grants.
     return this.orderService.exportOrders(filter, storeIds);
   }
 
   // The customer's security deposit doubles as their on-account credit limit
-  // — read-only preview of the same computation createOrder() gates on, so
-  // the frontend can warn before submitting without duplicating the logic.
+  // — read-only status for billing, independent of order creation.
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/on-account-credit/{customerId}')
-  @response(200, {description: 'On-account credit limit/used/remaining for a customer'})
+  @response(200, {
+    description: 'On-account credit limit/used/remaining for a customer',
+  })
   async onAccountCreditStatus(
     @param.path.string('customerId') customerId: string,
   ): Promise<object> {
@@ -412,13 +509,104 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}')
-  @response(200, {description: 'Order with items, charges, payments and status history'})
+  @response(200, {
+    description: 'Order with items, charges, payments and status history',
+  })
   async findById(
     @param.path.string('id') id: string,
     @inject(AuthenticationBindings.CURRENT_USER) currentUser?: UserProfile,
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser!);
     return this.orderService.getOrderDetails(id);
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['delivery:read']})
+  @get('/orders/{id}/delivery-management')
+  @response(200, {description: 'Delivery Management ticket detail with images'})
+  async deliveryManagementDetail(
+    @param.path.string('id') id: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
+    const order = await this.orderRepository.findOne({
+      where: {id, isDeleted: false},
+    });
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+    const [customer, delivered, payments, handover, balance] =
+      await Promise.all([
+        this.customerRepository.findOne({
+          where: {id: order.customerId, isDeleted: false},
+        }),
+        this.statusHistoryRepository.findOne({
+          where: {orderId: id, status: OrderStatus.DELIVERED},
+          order: ['changedAt DESC'],
+        }),
+        this.paymentTransactionRepository.find({
+          where: {orderId: id},
+          order: ['paymentDate DESC'],
+        }),
+        this.orderHandoverRepository.findOne({
+          where: {orderId: id, isDeleted: false} as object,
+          order: ['handedOverAt DESC'],
+        }),
+        this.orderService.computeBalanceDue(order),
+      ]);
+    const mediaIds = [
+      ...new Set([
+        ...(order.specialInstructionMediaIds ?? []),
+        ...(handover?.photoMediaId ? [handover.photoMediaId] : []),
+      ]),
+    ];
+    const media = mediaIds.length
+      ? await this.mediaRepository.find({
+          where: {id: {inq: mediaIds}, isActive: true} as object,
+        })
+      : [];
+    const mediaById = new Map(
+      media
+        .filter(file => file.fileType.startsWith('image/'))
+        .map(file => [file.id, {id: file.id, fileUrl: file.fileUrl}]),
+    );
+
+    return {
+      orderId: id,
+      ticketNumber: order.orderNumber,
+      currentDeliveryStatus: order.status ?? null,
+      customerName: customer
+        ? `${customer.firstName} ${customer.lastName ?? ''}`.trim()
+        : null,
+      address: order.deliveryAddress ?? null,
+      assignedRiderName: order.assignedRiderName ?? null,
+      deliverySpeed: order.deliveryType ?? null,
+      deliveryType:
+        order.deliveryMethod ??
+        (order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY ||
+        order.orderType === OrderType.STORE_DROPOFF_HOME_DELIVERY
+          ? OrderDeliveryMethod.HOME_DELIVERY
+          : OrderDeliveryMethod.STORE_PICKUP),
+      estimatedDeliveryAt: order.deliveryDate ?? null,
+      deliverySlot: order.deliverySlot ?? null,
+      actualDeliveryAt: delivered?.changedAt ?? handover?.handedOverAt ?? null,
+      totalAmount: Number(order.totalAmount ?? 0),
+      collectedAmount: balance.alreadyPaid,
+      balanceDue: balance.due,
+      paymentMode:
+        payments.find(payment => payment.transactionType !== 'refund')
+          ?.paymentMode ?? null,
+      paymentStatus:
+        balance.due === 0
+          ? 'paid'
+          : balance.alreadyPaid > 0
+            ? 'partial'
+            : 'pending',
+      deliveryRemarks: delivered?.remarks ?? null,
+      remarkImages: (order.specialInstructionMediaIds ?? [])
+        .map(mediaId => mediaById.get(mediaId))
+        .filter((file): file is {id: string; fileUrl: string} => !!file),
+      proofImage: mediaById.get(handover?.photoMediaId ?? '') ?? null,
+    };
   }
 
   // ─── Update Order Metadata ────────────────────────────────────────────────
@@ -437,13 +625,16 @@ export class OrderController {
             properties: {
               deliveryDate: {type: 'string', format: 'date-time'},
               specialInstructions: {type: 'string'},
-              specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
+              specialInstructionMediaIds: {
+                type: 'array',
+                items: {type: 'string'},
+              },
               remarks: {type: 'string'},
               orderLabelIds: {
                 type: 'array',
                 items: {type: 'string', format: 'uuid'},
                 description:
-                  'Replaces the order\'s labels wholesale. Omit to leave labels ' +
+                  "Replaces the order's labels wholesale. Omit to leave labels " +
                   'untouched; send [] to clear all of them.',
               },
               assignedRiderId: {
@@ -451,17 +642,22 @@ export class OrderController {
                 format: 'uuid',
                 description: 'Rider assigned for home delivery of this order.',
               },
-              deliveryMethod: {type: 'string', enum: Object.values(OrderDeliveryMethod)},
+              deliveryMethod: {
+                type: 'string',
+                enum: Object.values(OrderDeliveryMethod),
+              },
               deliverySlot: {type: 'string'},
               deliverySlotId: {
                 type: 'string',
                 format: 'uuid',
-                description: 'Resolved into a frozen deliverySlot text snapshot on save.',
+                description:
+                  'Resolved into a frozen deliverySlot text snapshot on save.',
               },
               deliveryAddressId: {
                 type: 'string',
                 format: 'uuid',
-                description: "Resolved into a frozen deliveryAddress text snapshot on save.",
+                description:
+                  'Resolved into a frozen deliveryAddress text snapshot on save.',
               },
               deliveryAddress: {
                 type: 'string',
@@ -489,22 +685,35 @@ export class OrderController {
       deliveryAddress?: string;
     },
   ): Promise<object> {
-    const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
+    const order = await this.orderRepository.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
     if (
       order.status === OrderStatus.DELIVERED ||
       order.status === OrderStatus.CANCELLED ||
       order.status === OrderStatus.RETURNED
     ) {
-      throw new HttpErrors.BadRequest('Cannot update a delivered, cancelled, or returned order.');
+      throw new HttpErrors.BadRequest(
+        'Cannot update a delivered, cancelled, or returned order.',
+      );
     }
 
-    const {orderLabelIds, assignedRiderId, deliveryAddressId, deliverySlotId, ...orderFields} = body;
+    const {
+      orderLabelIds,
+      assignedRiderId,
+      deliveryAddressId,
+      deliverySlotId,
+      ...orderFields
+    } = body;
 
     if (assignedRiderId !== undefined) {
-      const rider = await this.riderRepository.findOne({where: {id: assignedRiderId, isDeleted: false}});
+      const rider = await this.riderRepository.findOne({
+        where: {id: assignedRiderId, isDeleted: false},
+      });
       if (!rider) throw new HttpErrors.BadRequest('Assigned rider not found.');
-      if (!rider.isActive) throw new HttpErrors.BadRequest('Assigned rider is inactive.');
+      if (!rider.isActive)
+        throw new HttpErrors.BadRequest('Assigned rider is inactive.');
       Object.assign(orderFields, {
         assignedRiderId,
         assignedRiderName: `${rider.firstName} ${rider.lastName}`,
@@ -515,7 +724,8 @@ export class OrderController {
       const address = await this.customerAddressRepository.findOne({
         where: {id: deliveryAddressId, isDeleted: false} as object,
       });
-      if (!address) throw new HttpErrors.BadRequest('Delivery address not found.');
+      if (!address)
+        throw new HttpErrors.BadRequest('Delivery address not found.');
       Object.assign(orderFields, {
         deliveryAddressId,
         deliveryAddress: this.customerAddressService.toDisplaySnapshot(address),
@@ -543,7 +753,10 @@ export class OrderController {
     if (orderLabelIds !== undefined) {
       await this.orderLabelAssignmentRepository.deleteAll({orderId: id});
       for (const orderLabelId of orderLabelIds) {
-        await this.orderLabelAssignmentRepository.create({orderId: id, orderLabelId});
+        await this.orderLabelAssignmentRepository.create({
+          orderId: id,
+          orderLabelId,
+        });
       }
     }
 
@@ -551,7 +764,10 @@ export class OrderController {
     // assignDelivery() flow above — same notify-new/notify-old-if-changed
     // shape. Not awaited — a slow/unreachable FCM call must never delay
     // this response (notifyRider already swallows its own errors).
-    if (assignedRiderId !== undefined && assignedRiderId !== order.assignedRiderId) {
+    if (
+      assignedRiderId !== undefined &&
+      assignedRiderId !== order.assignedRiderId
+    ) {
       Promise.all([
         this.notificationService.notifyRider(assignedRiderId, {
           type: RIDER_NOTIFICATION_TYPES.DELIVERY_ASSIGNED,
@@ -594,13 +810,18 @@ export class OrderController {
             type: 'object',
             required: ['orderIds', 'riderId', 'deliverySlot', 'deliveryDate'],
             properties: {
-              orderIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
+              orderIds: {
+                type: 'array',
+                minItems: 1,
+                items: {type: 'string', format: 'uuid'},
+              },
               riderId: {type: 'string', format: 'uuid'},
               deliverySlot: {type: 'string'},
               deliverySlotId: {
                 type: 'string',
                 format: 'uuid',
-                description: 'If given, overrides deliverySlot with this slot\'s label.',
+                description:
+                  "If given, overrides deliverySlot with this slot's label.",
               },
               deliveryDate: {type: 'string', format: 'date-time'},
               remarks: {type: 'string'},
@@ -625,9 +846,12 @@ export class OrderController {
       bagId?: string;
     },
   ): Promise<object> {
-    const rider = await this.riderRepository.findOne({where: {id: body.riderId, isDeleted: false}});
+    const rider = await this.riderRepository.findOne({
+      where: {id: body.riderId, isDeleted: false},
+    });
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
-    if (!rider.isActive) throw new HttpErrors.BadRequest('This rider is inactive.');
+    if (!rider.isActive)
+      throw new HttpErrors.BadRequest('This rider is inactive.');
     // Roster is the only availability gate now — a rider with other active
     // pickups/deliveries is assignable without limit; only their roster for
     // this specific delivery's own scheduled window (not "right now") blocks
@@ -638,7 +862,10 @@ export class OrderController {
       body.deliverySlotId,
       new Date(body.deliveryDate).getTime(),
     );
-    await this.riderAssignmentService.assertRiderRostered(body.riderId, slotWindow);
+    await this.riderAssignmentService.assertRiderRostered(
+      body.riderId,
+      slotWindow,
+    );
 
     const orders = await this.orderRepository.find({
       where: {id: {inq: body.orderIds}, isDeleted: false} as object,
@@ -647,7 +874,9 @@ export class OrderController {
       throw new HttpErrors.NotFound('One or more orders were not found.');
     }
     const notDeliverable = orders.filter(
-      o => o.status !== OrderStatus.READY && o.status !== OrderStatus.PARTIALLY_DISPATCHED,
+      o =>
+        o.status !== OrderStatus.READY &&
+        o.status !== OrderStatus.PARTIALLY_DISPATCHED,
     );
     if (notDeliverable.length) {
       throw new HttpErrors.BadRequest(
@@ -658,7 +887,9 @@ export class OrderController {
     // Rider has no storeId relation today, so this is the closest available check.
     const storeIds = new Set(orders.map(o => o.storeId));
     if (storeIds.size > 1) {
-      throw new HttpErrors.BadRequest('All orders in one assignment must belong to the same store.');
+      throw new HttpErrors.BadRequest(
+        'All orders in one assignment must belong to the same store.',
+      );
     }
     // A garment can visit other stores for processing via interstore
     // transfer, but dispatch to the customer only happens from home —
@@ -671,7 +902,11 @@ export class OrderController {
     // deliveryAddressId, or address not found) skip the check rather than
     // being blocked by a data-quality gap unrelated to this feature.
     const addressIds = [
-      ...new Set(orders.map(o => o.deliveryAddressId).filter((id): id is string => Boolean(id))),
+      ...new Set(
+        orders
+          .map(o => o.deliveryAddressId)
+          .filter((id): id is string => Boolean(id)),
+      ),
     ];
     if (addressIds.length) {
       const addresses = await this.customerAddressRepository.find({
@@ -679,8 +914,13 @@ export class OrderController {
       });
       const pincodeByAddressId = new Map(addresses.map(a => [a.id, a.pincode]));
       for (const order of orders) {
-        const pincode = order.deliveryAddressId ? pincodeByAddressId.get(order.deliveryAddressId) : undefined;
-        await this.riderAssignmentService.assertRiderCoversPincode(body.riderId, pincode);
+        const pincode = order.deliveryAddressId
+          ? pincodeByAddressId.get(order.deliveryAddressId)
+          : undefined;
+        await this.riderAssignmentService.assertRiderCoversPincode(
+          body.riderId,
+          pincode,
+        );
       }
     }
 
@@ -698,9 +938,12 @@ export class OrderController {
     // Delivery created). Only Dispatch's newer bag-aware flow supplies it.
     let bag = null;
     if (body.bagId !== undefined) {
-      bag = await this.bagRepository.findOne({where: {id: body.bagId, isDeleted: false}});
+      bag = await this.bagRepository.findOne({
+        where: {id: body.bagId, isDeleted: false},
+      });
       if (!bag) throw new HttpErrors.NotFound('Bag not found.');
-      if (!bag.isActive) throw new HttpErrors.BadRequest('This bag is inactive.');
+      if (!bag.isActive)
+        throw new HttpErrors.BadRequest('This bag is inactive.');
       if (bag.status !== BagStatus.AVAILABLE) {
         throw new HttpErrors.Conflict(
           `Bag ${bag.bagNumber} is already ${bag.status === BagStatus.FULL ? 'full' : 'in use'}.`,
@@ -712,7 +955,9 @@ export class OrderController {
     const assignedRiderName = `${rider.firstName} ${rider.lastName}`;
     const deliveryDate = new Date(body.deliveryDate);
 
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
       for (const order of orders) {
         await this.orderRepository.updateById(
@@ -722,7 +967,9 @@ export class OrderController {
             assignedRiderId: body.riderId,
             assignedRiderName,
             deliverySlot,
-            ...(body.deliverySlotId !== undefined ? {deliverySlotId: body.deliverySlotId} : {}),
+            ...(body.deliverySlotId !== undefined
+              ? {deliverySlotId: body.deliverySlotId}
+              : {}),
             deliveryDate,
             ...(body.remarks ? {remarks: body.remarks} : {}),
           },
@@ -735,9 +982,13 @@ export class OrderController {
       // from this table, not Order.assignedRiderId directly, so without it
       // the rider would never see the delivery at all. bagId only adds
       // custody-bag tracking on top when one happens to be given.
-      const store = await this.storeRepository.findOne({where: {id: orders[0].storeId}});
+      const store = await this.storeRepository.findOne({
+        where: {id: orders[0].storeId},
+      });
       const customers = await this.customerRepository.find({
-        where: {id: {inq: [...new Set(orders.map(o => o.customerId))]}} as object,
+        where: {
+          id: {inq: [...new Set(orders.map(o => o.customerId))]},
+        } as object,
       });
       const customerById = new Map(customers.map(c => [c.id, c]));
 
@@ -775,7 +1026,9 @@ export class OrderController {
             deliveryId: delivery.id,
             orderId: order.id,
             orderNumber: order.orderNumber,
-            customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
+            customerName: customer
+              ? `${customer.firstName} ${customer.lastName}`
+              : 'Customer',
             balanceDueAtAssignment: due,
           },
           {transaction: tx},
@@ -800,7 +1053,11 @@ export class OrderController {
         // future per-garment accounting pass would have grounds to.
         await this.bagRepository.updateById(
           bag.id,
-          {status: BagStatus.IN_USE, currentDeliveryId: delivery.id, currentStoreId: orders[0].storeId},
+          {
+            status: BagStatus.IN_USE,
+            currentDeliveryId: delivery.id,
+            currentStoreId: orders[0].storeId,
+          },
           {transaction: tx},
         );
       }
@@ -812,7 +1069,10 @@ export class OrderController {
       const previousRiderIds = new Set(
         orders
           .map(o => o.assignedRiderId)
-          .filter((riderId): riderId is string => Boolean(riderId) && riderId !== body.riderId),
+          .filter(
+            (riderId): riderId is string =>
+              Boolean(riderId) && riderId !== body.riderId,
+          ),
       );
       Promise.all([
         this.notificationService.notifyRider(body.riderId, {
@@ -822,7 +1082,11 @@ export class OrderController {
             orders.length > 1
               ? `${orders.length} deliveries assigned to you for ${deliverySlot}.`
               : `A delivery has been assigned to you for ${deliverySlot}.`,
-          data: {deliveryId: delivery.id, deliveryNumber, orderIds: body.orderIds.join(',')},
+          data: {
+            deliveryId: delivery.id,
+            deliveryNumber,
+            orderIds: body.orderIds.join(','),
+          },
         }),
         ...[...previousRiderIds].map(oldRiderId =>
           this.notificationService.notifyRider(oldRiderId, {
@@ -871,7 +1135,12 @@ export class OrderController {
     body: {status: OrderStatus; remarks?: string},
   ): Promise<object> {
     const changedBy = currentUser[securityId];
-    const result = await this.orderService.changeStatus(id, body.status, changedBy, body.remarks);
+    const result = await this.orderService.changeStatus(
+      id,
+      body.status,
+      changedBy,
+      body.remarks,
+    );
 
     if (body.status === OrderStatus.READY && this.systemNotificationService) {
       this.orderRepository
@@ -880,20 +1149,30 @@ export class OrderController {
           let customerName: string | undefined;
           try {
             if (readyOrder?.customerId) {
-              const cust = await this.customerRepository.findById(readyOrder.customerId);
+              const cust = await this.customerRepository.findById(
+                readyOrder.customerId,
+              );
               if (cust) {
-                customerName = [cust.firstName, cust.lastName].filter(Boolean).join(' ').trim();
+                customerName = [cust.firstName, cust.lastName]
+                  .filter(Boolean)
+                  .join(' ')
+                  .trim();
               }
             }
           } catch (_) {}
-          return this.systemNotificationService!.notifyOrderReady(readyOrder, customerName);
+          return this.systemNotificationService!.notifyOrderReady(
+            readyOrder,
+            customerName,
+          );
         })
         .catch(err => {
           console.error('Failed to notify super admin for ready order:', err);
         });
     }
 
-    const response: Record<string, unknown> = {message: `Order status changed to '${body.status}'.`};
+    const response: Record<string, unknown> = {
+      message: `Order status changed to '${body.status}'.`,
+    };
     if ((result as any).garments?.length) {
       response.garments = (result as any).garments;
       response.note = `${(result as any).garments.length} garments auto-created. Add brand, color and inspection details to each.`;
@@ -916,7 +1195,10 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/{id}/delivery-return')
-  @response(200, {description: 'Delivery attempt reverted — order back to ready for redispatch'})
+  @response(200, {
+    description:
+      'Delivery attempt reverted — order back to ready for redispatch',
+  })
   async deliveryReturn(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -929,20 +1211,32 @@ export class OrderController {
             properties: {
               remarks: {
                 type: 'string',
-                description: 'Why the delivery attempt failed / the order came back to the store.',
+                description:
+                  'Why the delivery attempt failed / the order came back to the store.',
               },
               reasons: {
                 type: 'array',
-                description: 'Optional structured reasons, alongside remarks — see DeliveryFailureReason.',
-                items: {type: 'string', enum: Object.values(DeliveryFailureReason)},
+                description:
+                  'Optional structured reasons, alongside remarks — see DeliveryFailureReason.',
+                items: {
+                  type: 'string',
+                  enum: Object.values(DeliveryFailureReason),
+                },
               },
-              otherReason: {type: 'string', description: 'Required when reasons includes "other".'},
+              otherReason: {
+                type: 'string',
+                description: 'Required when reasons includes "other".',
+              },
             },
           },
         },
       },
     })
-    body: {remarks: string; reasons?: DeliveryFailureReason[]; otherReason?: string},
+    body: {
+      remarks: string;
+      reasons?: DeliveryFailureReason[];
+      otherReason?: string;
+    },
   ): Promise<object> {
     const updated = await this.orderService.returnDeliveryToStore({
       orderId: id,
@@ -951,7 +1245,10 @@ export class OrderController {
       otherReason: body.otherReason,
       changedBy: currentUser[securityId],
     });
-    return {message: 'Delivery returned to store. Order is ready for redispatch.', order: updated};
+    return {
+      message: 'Delivery returned to store. Order is ready for redispatch.',
+      order: updated,
+    };
   }
 
   // ─── Edit Order Items ─────────────────────────────────────────────────────
@@ -959,7 +1256,9 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:update']})
   @put('/orders/{id}/items')
-  @response(200, {description: 'Order items replaced, totals and garments reconciled'})
+  @response(200, {
+    description: 'Order items replaced, totals and garments reconciled',
+  })
   async updateOrderItems(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -982,10 +1281,19 @@ export class OrderController {
                     serviceId: {type: 'string', format: 'uuid'},
                     itemId: {type: 'string', format: 'uuid'},
                     quantity: {type: 'number', minimum: 1},
-                    additionalServiceIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
-                    additionalChargeIds: {type: 'array', items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
+                    additionalServiceIds: {
+                      type: 'array',
+                      items: {type: 'string', format: 'uuid'},
+                    },
+                    additionalChargeIds: {
+                      type: 'array',
+                      items: ADDITIONAL_CHARGE_SELECTION_SCHEMA,
+                    },
                     specialInstructions: {type: 'string'},
-                    specialInstructionMediaIds: {type: 'array', items: {type: 'string'}},
+                    specialInstructionMediaIds: {
+                      type: 'array',
+                      items: {type: 'string'},
+                    },
                     remarks: {type: 'string'},
                     units: {
                       type: 'array',
@@ -1009,7 +1317,9 @@ export class OrderController {
         itemId: string;
         quantity: number;
         additionalServiceIds?: string[];
-        additionalChargeIds?: Array<string | {additionalChargeId: string; quantity: number}>;
+        additionalChargeIds?: Array<
+          string | {additionalChargeId: string; quantity: number}
+        >;
         specialInstructions?: string;
         specialInstructionMediaIds?: string[];
         remarks?: string;
@@ -1069,7 +1379,9 @@ export class OrderController {
 
   @authenticate('jwt')
   @get('/reprocess-reasons')
-  @response(200, {description: 'Reason options and the claim window, for the reprocess form'})
+  @response(200, {
+    description: 'Reason options and the claim window, for the reprocess form',
+  })
   async reprocessReasons(): Promise<object> {
     return {
       // Served rather than hardcoded in each panel, so admin and customer app
@@ -1100,8 +1412,14 @@ export class OrderController {
             required: ['reason'],
             properties: {
               reason: {type: 'string', enum: Object.values(ReprocessReason)},
-              remarks: {type: 'string', description: 'Required when reason is "other"'},
-              mediaIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              remarks: {
+                type: 'string',
+                description: 'Required when reason is "other"',
+              },
+              mediaIds: {
+                type: 'array',
+                items: {type: 'string', format: 'uuid'},
+              },
               garmentIds: {
                 type: 'array',
                 items: {type: 'string', format: 'uuid'},
@@ -1146,19 +1464,27 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/{id}/inspection/complete')
-  @response(200, {description: 'All items inspected at the counter — order moved to processing'})
+  @response(200, {
+    description:
+      'All items inspected at the counter — order moved to processing',
+  })
   async completeCounterInspection(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser);
-    return this.orderService.completeCounterInspection(id, currentUser[securityId]);
+    return this.orderService.completeCounterInspection(
+      id,
+      currentUser[securityId],
+    );
   }
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/{id}/inspection/mark')
-  @response(200, {description: 'Record which units were inspected at the counter'})
+  @response(200, {
+    description: 'Record which units were inspected at the counter',
+  })
   async markUnitsInspected(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -1171,7 +1497,8 @@ export class OrderController {
             properties: {
               units: {
                 type: 'array',
-                description: 'Units inspected at the counter, identified by line and position',
+                description:
+                  'Units inspected at the counter, identified by line and position',
                 items: {
                   type: 'object',
                   required: ['serviceId', 'itemId', 'unitIndex'],
@@ -1190,7 +1517,11 @@ export class OrderController {
     body: {units: {serviceId: string; itemId: string; unitIndex: number}[]},
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser);
-    return this.orderService.markUnitsInspected(id, body.units, currentUser[securityId]);
+    return this.orderService.markUnitsInspected(
+      id,
+      body.units,
+      currentUser[securityId],
+    );
   }
 
   // ─── Split Order ─────────────────────────────────────────────────────────
@@ -1198,7 +1529,10 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/{id}/split')
-  @response(200, {description: 'Split ready garments into a new sub-order dispatched immediately'})
+  @response(200, {
+    description:
+      'Split ready garments into a new sub-order dispatched immediately',
+  })
   async splitOrder(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -1215,21 +1549,40 @@ export class OrderController {
                 items: {type: 'string', format: 'uuid'},
                 description: 'IDs of garments to split out into a sub-order',
               },
-              deliveryDate: {type: 'string', format: 'date-time', description: 'New delivery date for the sub-order'},
-              deliveryType: {type: 'string', enum: Object.values(DeliveryType), description: 'New delivery tier for the sub-order (e.g. split an express garment out of a standard order). Re-applies the tier uplift on the sub-order pricing.'},
+              deliveryDate: {
+                type: 'string',
+                format: 'date-time',
+                description: 'New delivery date for the sub-order',
+              },
+              deliveryType: {
+                type: 'string',
+                enum: Object.values(DeliveryType),
+                description: 'Legacy field; ignored for split pricing.',
+              },
+              applyDeliveryCharges: {
+                type: 'boolean',
+                description:
+                  'Set false to keep the original tier when splitting through inspection.',
+              },
               remarks: {type: 'string'},
             },
           },
         },
       },
     })
-    body: {garmentIds: string[]; deliveryDate?: string; deliveryType?: DeliveryType; remarks?: string},
+    body: {
+      garmentIds: string[];
+      deliveryDate?: string;
+      deliveryType?: DeliveryType;
+      applyDeliveryCharges?: boolean;
+      remarks?: string;
+    },
   ): Promise<object> {
     return this.orderService.splitOrder(
       id,
       body.garmentIds,
       body.deliveryDate,
-      body.deliveryType,
+      body.applyDeliveryCharges,
       body.remarks,
       currentUser[securityId],
     );
@@ -1244,8 +1597,13 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}/wallet-full-payment-preview')
-  @response(200, {description: 'Whether paying this order fully via wallet right now would get a discount'})
-  async walletFullPaymentPreview(@param.path.string('id') id: string): Promise<object> {
+  @response(200, {
+    description:
+      'Whether paying this order fully via wallet right now would get a discount',
+  })
+  async walletFullPaymentPreview(
+    @param.path.string('id') id: string,
+  ): Promise<object> {
     return this.orderService.previewWalletFullPaymentDiscount(id);
   }
 
@@ -1259,7 +1617,10 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/wallet-full-payment-preview')
-  @response(200, {description: 'Whether paying a new ticket fully via wallet would get a discount'})
+  @response(200, {
+    description:
+      'Whether paying a new ticket fully via wallet would get a discount',
+  })
   async walletFullPaymentPreviewForNewOrder(
     @requestBody({
       content: {
@@ -1275,7 +1636,10 @@ export class OrderController {
         },
       },
     })
-    body: {subtotal: number; discountAmount?: number},
+    body: {
+      subtotal: number;
+      discountAmount?: number;
+    },
   ): Promise<object> {
     return this.orderService.previewWalletFullPaymentDiscountForNewOrder(
       Number(body.subtotal ?? 0),
@@ -1308,7 +1672,9 @@ export class OrderController {
     body: {payment?: OrderPaymentInput; walletAmount?: number},
   ): Promise<object> {
     if (!body.payment && !body.walletAmount) {
-      throw new HttpErrors.BadRequest('Provide at least one of payment or walletAmount.');
+      throw new HttpErrors.BadRequest(
+        'Provide at least one of payment or walletAmount.',
+      );
     }
     const result = (await this.orderService.addPayment(
       id,
@@ -1316,10 +1682,18 @@ export class OrderController {
       Number(body.walletAmount ?? 0),
       currentUser[securityId],
     )) as {
-      pendingApproval: {amount: number; paymentMode: PaymentMode; transactionReference?: string} | null;
+      pendingApproval: {
+        amount: number;
+        paymentMode: PaymentMode;
+        transactionReference?: string;
+      } | null;
     };
     const approvalRequest = result.pendingApproval
-      ? await this._createPendingPaymentApprovalRequest(id, result.pendingApproval, currentUser[securityId])
+      ? await this._createPendingPaymentApprovalRequest(
+          id,
+          result.pendingApproval,
+          currentUser[securityId],
+        )
       : null;
     return {...result, approvalRequest};
   }
@@ -1329,7 +1703,9 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:update']})
   @post('/orders/{id}/handover')
-  @response(200, {description: 'Order handed over in store and marked delivered'})
+  @response(200, {
+    description: 'Order handed over in store and marked delivered',
+  })
   async handover(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -1340,7 +1716,10 @@ export class OrderController {
             type: 'object',
             required: ['collectorType'],
             properties: {
-              collectorType: {type: 'string', enum: Object.values(HandoverCollectorType)},
+              collectorType: {
+                type: 'string',
+                enum: Object.values(HandoverCollectorType),
+              },
               // Required when collectorType = 'contact'
               customerContactId: {type: 'string', format: 'uuid'},
               // Required when collectorType = 'family_member'
@@ -1348,7 +1727,10 @@ export class OrderController {
               // Required when collectorType = 'other'; snapshot for the others
               collectorName: {type: 'string'},
               collectorPhone: {type: 'string'},
-              collectorRelationship: {type: 'string', enum: Object.values(ContactRelationship)},
+              collectorRelationship: {
+                type: 'string',
+                enum: Object.values(ContactRelationship),
+              },
               // 'other' only: also persist the person as a reusable contact
               saveAsContact: {type: 'boolean'},
               remarks: {type: 'string'},
@@ -1385,7 +1767,9 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}/handover')
-  @response(200, {description: 'Handover record for an order (null if not handed over)'})
+  @response(200, {
+    description: 'Handover record for an order (null if not handed over)',
+  })
   async getHandover(@param.path.string('id') id: string): Promise<object> {
     const handover = await this.orderService.getHandover(id);
     return {handover};
@@ -1398,12 +1782,19 @@ export class OrderController {
   @get('/orders/{id}/payments')
   @response(200, {description: 'Payment transactions for an order'})
   async getPayments(@param.path.string('id') id: string): Promise<object> {
-    const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
+    const order = await this.orderRepository.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     const details = await this.orderService.getOrderDetails(id);
     const {paymentTransactions, totalCollected, balanceDue} = details as any;
-    return {paymentTransactions, totalCollected, balanceDue, totalAmount: order.totalAmount};
+    return {
+      paymentTransactions,
+      totalCollected,
+      balanceDue,
+      totalAmount: order.totalAmount,
+    };
   }
 
   // ─── Correct a Payment's Mode (finance) ────────────────────────────────────
@@ -1427,7 +1818,10 @@ export class OrderController {
             required: ['paymentMode', 'reason'],
             properties: {
               paymentMode: {type: 'string', enum: Object.values(PaymentMode)},
-              reason: {type: 'string', description: 'Required — why this payment is being corrected.'},
+              reason: {
+                type: 'string',
+                description: 'Required — why this payment is being corrected.',
+              },
             },
           },
         },
@@ -1436,7 +1830,8 @@ export class OrderController {
     body: {paymentMode: PaymentMode; reason: string},
   ): Promise<object> {
     const userLabel = currentUser as {name?: string; email?: string};
-    const performedByLabel = userLabel.name ?? userLabel.email ?? currentUser[securityId];
+    const performedByLabel =
+      userLabel.name ?? userLabel.email ?? currentUser[securityId];
     const payment = await this.orderService.correctPaymentMode(
       id,
       paymentId,
@@ -1470,7 +1865,9 @@ export class OrderController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}/activity-log')
-  @response(200, {description: 'Unified activity log for an order and its garments'})
+  @response(200, {
+    description: 'Unified activity log for an order and its garments',
+  })
   async activityLog(@param.path.string('id') id: string): Promise<object> {
     return this.orderService.getActivityLog(id);
   }
@@ -1485,10 +1882,17 @@ export class OrderController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
-    const order = await this.orderRepository.findOne({where: {id, isDeleted: false}});
+    const order = await this.orderRepository.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
-    if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.RETURNED) {
-      throw new HttpErrors.BadRequest('Cannot delete a delivered or returned order.');
+    if (
+      order.status === OrderStatus.DELIVERED ||
+      order.status === OrderStatus.RETURNED
+    ) {
+      throw new HttpErrors.BadRequest(
+        'Cannot delete a delivered or returned order.',
+      );
     }
     await this.orderRepository.updateById(id, {
       isDeleted: true,
