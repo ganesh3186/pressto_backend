@@ -1,4 +1,7 @@
 import {expect} from '@loopback/testlab';
+import {DeliveryType} from '../models/delivery-type.enum';
+import {OrderStatus} from '../models/order-status.enum';
+import {OrderService} from '../services/order.service';
 import {
   editedGarmentFields,
   hasEditUnitCharges,
@@ -15,6 +18,32 @@ const prices: Record<string, number> = {[STARCH]: 50, [FOLD]: 30};
 const servicePrice = (id: string) => prices[id] ?? 0;
 
 describe('editing order items per unit (PUT /orders/{id}/items)', () => {
+  it('rejects an incomplete or unconfigured Express charge', async () => {
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      orderRepo: {findOne: async () => ({status: OrderStatus.RECEIVED_AT_STORE, deliveryTypePercentage: 0})},
+      orderItemRepo: {find: async () => []},
+      deliveryTypeConfigRepo: {findOne: async () => ({expressPercentage: 20})},
+      assertItemsHaveRequiredAdditionalServices: async () => {},
+      getReprocessOriginalLines: async () => new Map(),
+      collectRemovableGarments: async () => [],
+    }) as OrderService;
+    let error: unknown;
+    try {
+      await service.updateOrderItems('order-1', [{serviceId: 'service-1', itemId: 'item-1', quantity: 1}],
+        'staff-1', {deliveryType: DeliveryType.EXPRESS, deliveryTypePercentage: 50});
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).to.match(/Delivery charges changed/);
+    try {
+      await service.updateOrderItems('order-1', [{serviceId: 'service-1', itemId: 'item-1', quantity: 1}],
+        'staff-1', {deliveryType: DeliveryType.EXPRESS});
+    } catch (caught) {
+      error = caught;
+    }
+    expect(String(error)).to.match(/Select a delivery charge/);
+  });
+
   it('updates the selected packaging on a garment without changing unrelated fields', () => {
     expect(
       editedGarmentFields(

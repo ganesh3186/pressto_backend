@@ -2634,7 +2634,13 @@ export class OrderService {
       units?: EditOrderUnitInput[];
     }[],
     changedBy: string,
-    options: {skipDowngradeGate?: boolean} = {},
+    options: {
+      skipDowngradeGate?: boolean;
+      deliveryType?: DeliveryType;
+      deliveryTypePercentage?: number;
+      expressMultiplier?: number;
+      deliveryDate?: string;
+    } = {},
   ): Promise<object> {
     const {v4} = await import('uuid');
 
@@ -2844,8 +2850,38 @@ export class OrderService {
       }
     }
 
-    const deliveryMultiplier =
-      1 + (Number(order.deliveryTypePercentage) || 0) / 100;
+    let deliveryTypePercentage = Number(order.deliveryTypePercentage ?? 0);
+    if (options.deliveryType && options.deliveryTypePercentage === undefined) {
+      throw new HttpErrors.BadRequest('Select a delivery charge with the delivery speed.');
+    }
+    if (options.deliveryTypePercentage !== undefined) {
+      if (!options.deliveryType || !Object.values(DeliveryType).includes(options.deliveryType) ||
+        !Number.isFinite(options.deliveryTypePercentage) || options.deliveryTypePercentage < 0) {
+        throw new HttpErrors.BadRequest('Select a valid delivery speed and charge.');
+      }
+      if (Math.abs(options.deliveryTypePercentage - deliveryTypePercentage) > 0.001) {
+        const config = await this.deliveryTypeConfigRepo.findOne({where: {isActive: true, isDeleted: false}});
+        const configuredPercentage = options.deliveryType === DeliveryType.EXPRESS
+          ? Number(config?.expressPercentage)
+          : options.deliveryType === DeliveryType.LIGHTNING
+            ? Number(config?.lightningPercentage)
+            : Number(config?.standardPercentage);
+        if (!Number.isFinite(configuredPercentage) ||
+          Math.abs(options.deliveryTypePercentage - configuredPercentage) > 0.001) {
+          throw new HttpErrors.Conflict('Delivery charges changed. Refresh and review the ticket.');
+        }
+      }
+      deliveryTypePercentage = options.deliveryTypePercentage;
+    }
+    if (options.expressMultiplier !== undefined &&
+      (!Number.isFinite(options.expressMultiplier) || options.expressMultiplier <= 0)) {
+      throw new HttpErrors.BadRequest('Express multiplier must be greater than zero.');
+    }
+    const promisedDeliveryDate = options.deliveryDate ? new Date(options.deliveryDate) : undefined;
+    if (promisedDeliveryDate && isNaN(promisedDeliveryDate.getTime())) {
+      throw new HttpErrors.BadRequest('deliveryDate is not a valid date.');
+    }
+    const deliveryMultiplier = 1 + deliveryTypePercentage / 100;
     // Resolved once for the whole edit — depends only on storeId, reused for
     // every item-level additional charge below.
     const additionalChargePercentage =
@@ -2861,6 +2897,15 @@ export class OrderService {
     });
 
     try {
+      if (options.deliveryType || options.deliveryTypePercentage !== undefined ||
+        options.expressMultiplier !== undefined || promisedDeliveryDate) {
+        await this.orderRepo.updateById(orderId, {
+          ...(options.deliveryType ? {deliveryType: options.deliveryType} : {}),
+          ...(options.deliveryTypePercentage !== undefined ? {deliveryTypePercentage} : {}),
+          ...(options.expressMultiplier !== undefined ? {expressMultiplier: options.expressMultiplier} : {}),
+          ...(promisedDeliveryDate ? {deliveryDate: promisedDeliveryDate} : {}),
+        }, {transaction: tx});
+      }
       // ── Lines that stay or arrive ──────────────────────────────────────────
       const removableGarmentIds = new Set(
         removableGarments.map(garment => String(garment.id)),
