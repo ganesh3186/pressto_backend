@@ -66,6 +66,7 @@ import {
   DeliveryCustodyEventRepository,
   DeliveryOrderRepository,
   DeliveryTypeConfigurationRepository,
+  InvoiceRepository,
   ItemRepository,
   PickupRequestRepository,
   ProcessStepRepository,
@@ -309,6 +310,7 @@ export class OrderService {
     @repository(ApprovalRequestRepository)
     private approvalRequestRepo: ApprovalRequestRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
+    @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(CouponRepository) private couponRepo: CouponRepository,
     @repository(CouponRedemptionRepository)
     private couponRedemptionRepo: CouponRedemptionRepository,
@@ -3400,6 +3402,38 @@ export class OrderService {
       taxAmount,
       totalAmount,
     });
+
+    // Keep an already-generated invoice/challan in sync with the same
+    // recompute — otherwise a tax invoice generated before this edit (e.g.
+    // a delivery-tier change) keeps showing its stale snapshot forever,
+    // even though the order's own totals just changed here. A consolidated
+    // (On Account) invoice's totals are the sum across every order it
+    // covers, not this order alone, so it's deliberately left untouched.
+    const cgst = parseFloat((taxAmount / 2).toFixed(2));
+    const sgst = parseFloat((taxAmount - cgst).toFixed(2));
+    const invoice = await this.invoiceRepo.findOne({where: {orderId} as object});
+    if (invoice && !invoice.isConsolidated) {
+      await this.invoiceRepo.updateById(invoice.id, {
+        subtotal,
+        discount: discountAmount,
+        cgst,
+        sgst,
+        totalAmount,
+        balanceDue: rupeeBalance(totalAmount, collected),
+        updatedAt: new Date(),
+      } as object);
+    }
+    const challan = await this.challanRepo.findOne({where: {orderId} as object});
+    if (challan) {
+      await this.challanRepo.updateById(challan.id, {
+        subtotal,
+        discount: discountAmount,
+        cgst,
+        sgst,
+        totalAmount,
+        updatedAt: new Date(),
+      } as object);
+    }
 
     return {
       subtotal,
