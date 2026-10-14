@@ -39,6 +39,7 @@ import {
   ServiceRepository,
   StoreRepository,
 } from '../repositories';
+import {OrderService} from '../services/order.service';
 import {StoreScopeService} from '../services/store-scope.service';
 
 // Shape returned when a garment's order item can't be resolved — keeps the
@@ -70,6 +71,7 @@ export class GarmentController {
     @repository(ColorRepository) private colorRepository: ColorRepository,
     @repository(StoreRepository) private storeRepository: StoreRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @inject('services.order') private orderService: OrderService,
   ) {}
 
   // ─── Store Scoping ────────────────────────────────────────────────────────
@@ -843,6 +845,7 @@ export class GarmentController {
       await this.orderStatusHistoryRepository.create({
         id: v4(), orderId: order.id, status, changedAt: now, changedBy, remarks,
       });
+      this.orderService.notifyStatusChange(order.id, status, order.status);
     };
 
     // All garments on hold = full return → cancel order

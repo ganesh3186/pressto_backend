@@ -1,9 +1,10 @@
-import {BindingScope, injectable} from '@loopback/core';
+import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {PaymentMode, PaymentRequestStatus, ReferenceType, WalletTransactionType} from '../models';
 import {WalletRechargeRequest} from '../models/wallet-recharge-request.model';
 import {WalletRechargeRequestRepository, WalletRepository, WalletTransactionRepository} from '../repositories';
+import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class WalletService {
@@ -11,6 +12,7 @@ export class WalletService {
     @repository(WalletRepository) private walletRepository: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepository: WalletTransactionRepository,
     @repository(WalletRechargeRequestRepository) private rechargeRequestRepository: WalletRechargeRequestRepository,
+    @inject('services.whatsapp') private whatsAppService: WhatsAppService,
   ) {}
 
   async createWallet(customerId: string, options?: object): Promise<any> {
@@ -104,7 +106,7 @@ export class WalletService {
       gatewayResponse,
     });
 
-    await this.credit(
+    const transaction = await this.credit(
       request.walletId,
       request.amount,
       ReferenceType.MANUAL,
@@ -114,6 +116,14 @@ export class WalletService {
 
     const wallet = await this.walletRepository.findById(request.walletId);
     const updatedRequest = await this.rechargeRequestRepository.findById(rechargeRequestId);
+
+    dispatchWhatsApp(() => this.whatsAppService.notifyWalletRecharge({
+      transactionId: transaction.id,
+      customerId,
+      amount: Number(request.amount),
+      balance: Number(wallet.currentBalance),
+      date: transaction.transactionDate,
+    }));
 
     return {rechargeRequest: updatedRequest, walletBalance: wallet.currentBalance!};
   }
@@ -196,7 +206,7 @@ export class WalletService {
       remarks,
     });
 
-    await this.credit(
+    const transaction = await this.credit(
       wallet.id,
       amount,
       ReferenceType.MANUAL,
@@ -205,6 +215,13 @@ export class WalletService {
     );
 
     const updatedWallet = await this.walletRepository.findById(wallet.id);
+    dispatchWhatsApp(() => this.whatsAppService.notifyWalletRecharge({
+      transactionId: transaction.id,
+      customerId,
+      amount: Number(amount),
+      balance: Number(updatedWallet.currentBalance),
+      date: transaction.transactionDate,
+    }));
     return {rechargeRequest, walletBalance: updatedWallet.currentBalance!};
   }
 

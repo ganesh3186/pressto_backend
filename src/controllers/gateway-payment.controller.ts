@@ -7,6 +7,8 @@ import {GatewayPaymentLink} from '../models/gateway-payment-link.model';
 import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-type.enum';
 import {GatewayPaymentLinkRepository} from '../repositories';
 import {RazorpayService} from '../services/razorpay.service';
+import {authorize} from '../authorization';
+import {StoreScopeService} from '../services/store-scope.service';
 
 interface CreateGatewayLinkBody {
   referenceType: GatewayPaymentReferenceType;
@@ -37,6 +39,7 @@ export class GatewayPaymentController {
     private gatewayPaymentLinkRepository: GatewayPaymentLinkRepository,
     @inject('services.razorpay')
     private razorpayService: RazorpayService,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
   // ─── Create ───────────────────────────────────────────────────────────────
@@ -97,6 +100,7 @@ export class GatewayPaymentController {
   // create() above; no razorpayKeyId in the response since nothing opens
   // Checkout here, just shortUrl to hand to WhatsAppService.
   @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/payments/gateway-links/shareable')
   @response(200, {description: 'Shareable Razorpay payment link created'})
   async createShareable(
@@ -121,7 +125,8 @@ export class GatewayPaymentController {
     })
     body: Omit<CreateGatewayLinkBody, 'referenceType'>,
   ): Promise<object> {
-    const link = await this.razorpayService.createPaymentLink({
+    await this.storeScopeService.assertOrderVisible(body.referenceId, currentUser);
+    const {link, whatsappAccepted} = await this.razorpayService.createAndSendPaymentLink({
       referenceType: GatewayPaymentReferenceType.ORDER_PAYMENT,
       referenceId: body.referenceId,
       amount: body.amount,
@@ -133,7 +138,13 @@ export class GatewayPaymentController {
       },
       createdBy: currentUser[securityId],
     });
-    return link.toJSON() as object;
+    return {
+      ...(link.toJSON() as object),
+      whatsappAccepted,
+      message: whatsappAccepted
+        ? "Payment link sent to the customer's WhatsApp number."
+        : 'Payment link created, but WhatsApp sending was not confirmed. Check the customer WhatsApp setting and provider status before retrying.',
+    };
   }
 
   // ─── Verify (Checkout popup's `handler` callback) ──────────────────────────

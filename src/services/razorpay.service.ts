@@ -16,6 +16,7 @@ import {
 import {OrderService} from './order.service';
 import {SecurityDepositService} from './security-deposit.service';
 import {WalletService} from './wallet.service';
+import {WhatsAppService} from './whatsapp.service';
 
 const PAYMENT_LINK_VALIDITY_MS = 24 * 60 * 60 * 1000;
 
@@ -68,6 +69,7 @@ export class RazorpayService {
     @inject('services.order') private orderService: OrderService,
     @inject('services.wallet') private walletService: WalletService,
     @inject('services.security-deposit') private securityDepositService: SecurityDepositService,
+    @inject('services.whatsapp') private whatsAppService: WhatsAppService,
   ) {
     this.client = new Razorpay({
       // Razorpay's own SDK field names — snake_case is their API's shape,
@@ -124,6 +126,12 @@ export class RazorpayService {
    * live links for one balance (a second payment against it would fail to
    * apply and need manual reconciliation).
    */
+  async createAndSendPaymentLink(input: CreateGatewayOrderInput): Promise<{link: GatewayPaymentLink; whatsappAccepted: boolean}> {
+    const link = await this.createPaymentLink(input);
+    const whatsappAccepted = await this.whatsAppService.notifyPaymentLink(link);
+    return {link, whatsappAccepted};
+  }
+
   async createPaymentLink(input: CreateGatewayOrderInput): Promise<GatewayPaymentLink> {
     if (!(input.amount > 0)) {
       throw new HttpErrors.BadRequest('Amount must be greater than zero.');

@@ -1,6 +1,7 @@
+import {PickupRequestService} from '../services/pickup-request.service';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {Filter, IsolationLevel, repository} from '@loopback/repository';
+import {Filter, repository} from '@loopback/repository';
 import {del, get, getModelSchemaRef, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
@@ -74,6 +75,8 @@ interface UpdateBody {
 
 export class PickupRequestController {
   constructor(
+    @inject('services.pickup-request')
+    private pickupRequestService: PickupRequestService,
     @repository(PickupRequestRepository)
     private pickupRequestRepository: PickupRequestRepository,
     @repository(RiderRepository)
@@ -306,7 +309,7 @@ export class PickupRequestController {
     const {v4} = await import('uuid');
     const count = await this.pickupRequestRepository.count();
     const pickupNumber = `PU${String(count.count + 1).padStart(6, '0')}`;
-    const pickupRequest = await this.pickupRequestRepository.create({
+    const pickupRequest = await this.pickupRequestService.createRequest({
       id: v4(),
       pickupNumber,
       ...rest,
@@ -729,33 +732,23 @@ export class PickupRequestController {
     const runNumber = `RUN${String(runSeq).padStart(6, '0')}`;
     const assignedRiderName = `${rider.firstName} ${rider.lastName}`;
 
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
-    try {
-      for (const req of requests) {
-        await this.pickupRequestRepository.updateById(
-          req.id,
-          {
-            assignedRiderId: body.riderId,
-            assignedRiderName,
-            assignedAt: now,
-            assignedBy: currentUser[securityId],
-            storeId: body.storeId,
-            requestedDate: body.scheduledDate,
-            slot,
-            ...(body.slotId !== undefined ? {pickupSlotId: body.slotId} : {}),
-            status: PickupRequestStatus.RIDER_ASSIGNED,
-            runId,
-            runNumber,
-            ...(body.remarks ? {remarks: body.remarks} : {}),
-          },
-          {transaction: tx},
-        );
-      }
-      await tx.commit();
-    } catch (error) {
-      await tx.rollback();
-      throw error;
-    }
+    await this.pickupRequestService.assignRiders(
+      requests,
+      {
+        assignedRiderId: body.riderId,
+        assignedRiderName,
+        assignedAt: now,
+        assignedBy: currentUser[securityId],
+        storeId: body.storeId,
+        requestedDate: body.scheduledDate,
+        slot,
+        ...(body.slotId !== undefined ? {pickupSlotId: body.slotId} : {}),
+        status: PickupRequestStatus.RIDER_ASSIGNED,
+        runId,
+        runNumber,
+        ...(body.remarks ? {remarks: body.remarks} : {}),
+      },
+    );
 
     // Not awaited — notifications never block or roll back the assignment
     // itself. NotificationService.notifyRider already swallows its own

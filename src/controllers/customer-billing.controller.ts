@@ -5,6 +5,8 @@ import {get, HttpErrors, param, patch, post, requestBody, response} from '@loopb
 import {securityId, UserProfile} from '@loopback/security';
 import {PresstoDataSource} from '../datasources';
 import {authorize} from '../authorization';
+import {PaymentService} from '../services/payment.service';
+import {PaymentTransaction} from '../models/payment-transaction.model';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
 import {Order} from '../models/order.model';
 import {OrderStatus} from '../models/order-status.enum';
@@ -43,6 +45,7 @@ export class CustomerBillingController {
     @repository(InvoiceOrderLinkRepository) private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
     @repository(OnAccountConfigurationRepository) private onAccountConfigRepo: OnAccountConfigurationRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
+    @inject('services.payment') private paymentService: PaymentService,
   ) {}
 
   /**
@@ -213,6 +216,7 @@ export class CustomerBillingController {
 
     const {v4} = await import('uuid');
     let remaining = paymentAmount;
+    const receivedPayments: PaymentTransaction[] = [];
     const allocations: Array<{invoiceId: string; invoiceNumber: string; orderId: string; allocated: number}> = [];
 
     // A consolidated invoice's own orderId is just one representative order, so
@@ -284,7 +288,7 @@ export class CustomerBillingController {
           const share = money(isLast ? left : Math.min(left, targets[i].due));
           if (share <= 0) continue;
           left = money(left - share);
-          await this.paymentRepo.create(
+          const receivedPayment = await this.paymentService.recordPayment(
             {
               id: v4(),
               orderId: targets[i].orderId,
@@ -296,6 +300,7 @@ export class CustomerBillingController {
             } as any,
             {transaction: tx}
           );
+          receivedPayments.push(receivedPayment);
         }
 
         allocations.push({
@@ -311,6 +316,8 @@ export class CustomerBillingController {
       await tx.rollback();
       throw err;
     }
+
+    for (const payment of receivedPayments) this.paymentService.notifyPaymentReceived(payment);
 
     return {
       message: 'Club & Pay applied.',
