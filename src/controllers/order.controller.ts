@@ -277,6 +277,7 @@ export class OrderController {
                 enum: Object.values(DeliveryType),
                 description: 'Delivery speed: standard | express | lightning',
               },
+              pickupRequestId: {type: 'string', format: 'uuid'},
               customerContactId: {
                 type: 'string',
                 format: 'uuid',
@@ -714,6 +715,10 @@ export class OrderController {
       throw new HttpErrors.BadRequest(
         'Cannot update a delivered, cancelled, or returned order.',
       );
+    }
+    if (['deliveryType', 'deliveryTypePercentage', 'expressMultiplier']
+      .some(key => Object.prototype.hasOwnProperty.call(body, key))) {
+      throw new HttpErrors.BadRequest('Update delivery charges with the order items so the ticket is repriced.');
     }
 
     const {
@@ -1319,6 +1324,10 @@ export class OrderController {
             type: 'object',
             required: ['items'],
             properties: {
+              deliveryType: {type: 'string', enum: Object.values(DeliveryType)},
+              deliveryTypePercentage: {type: 'number', minimum: 0},
+              expressMultiplier: {type: 'number', minimum: 0},
+              deliveryDate: {type: 'string', format: 'date-time'},
               items: {
                 type: 'array',
                 description:
@@ -1362,6 +1371,10 @@ export class OrderController {
       },
     })
     body: {
+      deliveryType?: DeliveryType;
+      deliveryTypePercentage?: number;
+      expressMultiplier?: number;
+      deliveryDate?: string;
       items: {
         serviceId: string;
         itemId: string;
@@ -1382,6 +1395,12 @@ export class OrderController {
       id,
       body.items,
       currentUser[securityId],
+      {
+        deliveryType: body.deliveryType,
+        deliveryTypePercentage: body.deliveryTypePercentage,
+        expressMultiplier: body.expressMultiplier,
+        deliveryDate: body.deliveryDate,
+      },
     )) as {
       status?: string;
       message?: string;
