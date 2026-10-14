@@ -7,11 +7,7 @@ import {DeliveryOrderStatus} from './delivery-order-status.enum';
  * order or batch, not per-garment), same "real, indexed lookup" reasoning
  * TransferItem already applies at garment granularity for Item Tracking.
  *
- * Completion is still always read live off Order.status, never duplicated
- * here — status/arrivedAt below are the one deliberate exception: a
- * "rider has physically reached this stop" breadcrumb that Order.status
- * has no room for, scoped per-stop since one Delivery run covers several
- * orders that are reached at different times.
+ * Status records each stop's progress and outcome independently of Order.status.
  */
 @model({
   settings: {
@@ -50,11 +46,7 @@ export class DeliveryOrder extends Entity {
   @property({type: 'number'})
   balanceDueAtAssignment?: number;
 
-  // Optional at the type level only so adding this column doesn't require
-  // a NOT NULL backfill migration for rows that predate this field — a
-  // null/missing value on an existing row reads as 'pending', same as the
-  // default new rows get. Set to 'arrived' via
-  // PATCH /rider/deliveries/{id}/orders/{orderId}/status.
+  // Existing rows without a status read as pending.
   @property({
     type: 'string',
     default: DeliveryOrderStatus.PENDING,
@@ -64,6 +56,9 @@ export class DeliveryOrder extends Entity {
 
   @property({type: 'date'})
   arrivedAt?: Date;
+
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  failureRemarks?: string;
 
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;

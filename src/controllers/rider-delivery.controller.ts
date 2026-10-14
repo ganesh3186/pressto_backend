@@ -10,6 +10,7 @@ import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.en
 import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
 import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
 import {DeliveryStatus} from '../models/delivery-status.enum';
+import {Delivery} from '../models/delivery.model';
 import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -26,6 +27,7 @@ import {
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
+  PickupDeliverySlotRepository,
   RiderCashHandoverItemRepository,
   RiderCashHandoverRepository,
   RiderRepository,
@@ -42,6 +44,8 @@ export class RiderDeliveryController {
   constructor(
     @repository(RiderRepository) private riderRepository: RiderRepository,
     @repository(DeliveryRepository) private deliveryRepository: DeliveryRepository,
+    @repository(PickupDeliverySlotRepository)
+    private pickupDeliverySlotRepository: PickupDeliverySlotRepository,
     @repository(DeliveryOrderRepository) private deliveryOrderRepository: DeliveryOrderRepository,
     @repository(DeliveryCustodyEventRepository)
     private custodyEventRepository: DeliveryCustodyEventRepository,
@@ -69,6 +73,30 @@ export class RiderDeliveryController {
     if (!rider) throw new HttpErrors.Forbidden('This account is not registered as a rider.');
     if (!rider.isActive) throw new HttpErrors.Forbidden('This rider account is inactive.');
     return rider;
+  }
+
+  private async enrichDeliveries(deliveries: Delivery[]) {
+    const slotIds = [...new Set(deliveries.map(d => d.deliverySlotId).filter((id): id is string => !!id))];
+    const bagIds = [...new Set(deliveries.map(d => d.bagId).filter((id): id is string => !!id))];
+    const [slots, bags] = await Promise.all([
+      slotIds.length ? this.pickupDeliverySlotRepository.find({where: {id: {inq: slotIds}}}) : [],
+      bagIds.length ? this.bagRepository.find({where: {id: {inq: bagIds}}}) : [],
+    ]);
+    const slotById = new Map(slots.map(slot => [slot.id, slot]));
+    const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
+    const formatTime = (time: string) => {
+      const [hours, minutes] = time.split(':').map(Number);
+      return `${hours % 12 || 12}:${String(minutes).padStart(2, '0')} ${hours >= 12 ? 'PM' : 'AM'}`;
+    };
+    return deliveries.map(delivery => {
+      const slot = slotById.get(delivery.deliverySlotId ?? '');
+      const {bagId, ...publicDelivery} = delivery;
+      return {
+        ...publicDelivery,
+        ...(slot ? {deliverySlot: `${formatTime(slot.startTime)} - ${formatTime(slot.endTime)}`} : {}),
+        bagNumber: bagId ? bagNumberById.get(bagId) ?? null : null,
+      };
+    });
   }
 
   // 6-digit numeric, unique among currently-PENDING batches only — same
@@ -114,7 +142,7 @@ export class RiderDeliveryController {
       } as object,
       order: ['assignedAt DESC'],
     });
-    return {deliveries};
+    return {deliveries: await this.enrichDeliveries(deliveries)};
   }
 
   // ─── Delivery detail ──────────────────────────────────────────────────────
@@ -170,7 +198,7 @@ export class RiderDeliveryController {
       }),
     );
 
-    return {delivery, orders: enrichedOrders};
+    return {delivery: (await this.enrichDeliveries([delivery]))[0], orders: enrichedOrders};
   }
 
   // ─── Start a delivery run ─────────────────────────────────────────────────
@@ -223,6 +251,13 @@ export class RiderDeliveryController {
       startedAt: new Date(),
       startedBy: currentUser[securityId],
     });
+    for (const stop of deliveryOrders) {
+      if (!stop.status || stop.status === DeliveryOrderStatus.PENDING) {
+        await this.deliveryOrderRepository.updateById(stop.id, {
+          status: DeliveryOrderStatus.OUT_FOR_DELIVERY,
+        });
+      }
+    }
 
     const {v4} = await import('uuid');
     await this.custodyEventRepository.create({
@@ -274,6 +309,9 @@ export class RiderDeliveryController {
       where: {deliveryId: id, orderId} as object,
     });
     if (!deliveryOrder) throw new HttpErrors.NotFound('This order is not on this delivery.');
+    if (deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE || deliveryOrder.status === DeliveryOrderStatus.DELIVERED) {
+      throw new HttpErrors.BadRequest('This delivery stop is already closed.');
+    }
 
     await this.deliveryOrderRepository.updateById(deliveryOrder.id, {
       status: DeliveryOrderStatus.ARRIVED,
@@ -354,6 +392,9 @@ export class RiderDeliveryController {
     if (!deliveryOrder) throw new HttpErrors.NotFound('This order is not on this delivery.');
 
     const order = await this.orderRepository.findOne({where: {id: orderId, isDeleted: false}});
+    if (deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE || deliveryOrder.status === DeliveryOrderStatus.DELIVERED) {
+      throw new HttpErrors.BadRequest('This delivery stop is already closed.');
+    }
     if (!order) throw new HttpErrors.NotFound('Order not found.');
     if (order.status !== OrderStatus.OUT_FOR_DELIVERY) {
       throw new HttpErrors.BadRequest(
@@ -427,19 +468,10 @@ export class RiderDeliveryController {
       const allDeliveryOrders = await this.deliveryOrderRepository.find({
         where: {deliveryId: id} as object,
       });
-      const allOrders = await this.orderRepository.find({
-        where: {id: {inq: allDeliveryOrders.map(o => o.orderId)}} as object,
-        fields: {id: true, status: true} as object,
-      });
-      const remaining = allOrders.filter(
-        o =>
-          o.id !== orderId &&
-          o.status !== OrderStatus.DELIVERED &&
-          o.status !== OrderStatus.RETURNED &&
-          // READY here means a sibling order on this same run was already
-          // sent back to the store via deliveryUnsuccessful below — that
-          // order's own leg is done too, just not successfully.
-          o.status !== OrderStatus.READY,
+      const remaining = allDeliveryOrders.filter(o =>
+        o.orderId !== orderId &&
+        o.status !== DeliveryOrderStatus.DELIVERED &&
+        o.status !== DeliveryOrderStatus.RETURN_TO_STORE,
       );
 
       let completed = false;
@@ -523,6 +555,7 @@ export class RiderDeliveryController {
     const trimmedRemarks = body.remarks?.trim();
     await this.orderService.returnDeliveryToStore({
       orderId,
+      deliveryId: id,
       remarks: trimmedRemarks?.length ? trimmedRemarks : body.reasons.join(', '),
       reasons: body.reasons,
       otherReason: body.otherReason,
@@ -532,29 +565,11 @@ export class RiderDeliveryController {
     const {v4} = await import('uuid');
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
-      await this.custodyEventRepository.create(
-        {
-          id: v4(),
-          deliveryId: id,
-          orderId,
-          eventType: DeliveryCustodyEventType.ORDER_DELIVERED,
-          remarks: `Delivery unsuccessful: ${body.reasons.join(', ')}`,
-          performedBy: currentUser[securityId],
-        },
-        {transaction: tx},
-      );
-
       const allDeliveryOrders = await this.deliveryOrderRepository.find({where: {deliveryId: id} as object});
-      const allOrders = await this.orderRepository.find({
-        where: {id: {inq: allDeliveryOrders.map(o => o.orderId)}} as object,
-        fields: {id: true, status: true} as object,
-      });
-      const remaining = allOrders.filter(
-        o =>
-          o.id !== orderId &&
-          o.status !== OrderStatus.DELIVERED &&
-          o.status !== OrderStatus.RETURNED &&
-          o.status !== OrderStatus.READY,
+      const remaining = allDeliveryOrders.filter(o =>
+        o.orderId !== orderId &&
+        o.status !== DeliveryOrderStatus.DELIVERED &&
+        o.status !== DeliveryOrderStatus.RETURN_TO_STORE,
       );
 
       let completed = false;

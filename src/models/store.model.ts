@@ -85,6 +85,27 @@ export class Store extends Entity {
   @property({type: 'string'})
   phone?: string;
 
+  @property({
+    type: 'number',
+    postgresql: {dataType: 'integer'},
+    jsonSchema: {nullable: true, minimum: 0, multipleOf: 1},
+  })
+  itemTarget?: number | null;
+
+  @property({
+    type: 'number',
+    postgresql: {dataType: 'integer'},
+    jsonSchema: {nullable: true, minimum: 0, multipleOf: 1},
+  })
+  serviceTarget?: number | null;
+
+  @property({
+    type: 'number',
+    postgresql: {dataType: 'decimal'},
+    jsonSchema: {nullable: true, minimum: 0, multipleOf: 1},
+  })
+  revenueTarget?: number | null;
+
   @property({type: 'boolean', default: true})
   isActive?: boolean;
 

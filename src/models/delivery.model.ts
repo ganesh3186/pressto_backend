@@ -17,9 +17,7 @@ import {DeliveryStatus} from './delivery-status.enum';
  * convention as Transfer's fromStoreId/toStoreId/bagId (batch-resolve
  * display names at read time rather than relying on auto `include`).
  *
- * Deliberately holds no per-order status — DeliveryOrder doesn't either.
- * "Is this delivery done" is always answered by reading the linked
- * Orders' own status directly, so the two state machines can't drift.
+ * Per-order results live on DeliveryOrder; this status describes the run.
  */
 @model({
   settings: {

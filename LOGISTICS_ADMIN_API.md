@@ -283,27 +283,19 @@ POST /orders/{id}/delivery-return
 ```
 Requires the order to currently be `out_for_delivery` (`400` naming the
 actual status otherwise — e.g. calling it twice in a row on the same order
-fails the second time). `remarks` is required — it's recorded in the
-order's status history as the reason.
+fails the second time). `remarks` is required and stored on the delivery stop.
 
-**What it does, atomically:**
-- `status` → `ready` (order re-enters the normal dispatch queue).
-- Clears `assignedRiderId`, `assignedRiderName`, `deliveryMethod`,
-  `deliveryDate`, `deliverySlot`, `deliverySlotId` — a clean slate for
-  redispatch (a new rider/slot/method needs to be picked again).
-- **Keeps** `deliveryAddress`/`deliveryAddressId` — no need to re-collect
-  the address for a retry.
-- Writes one `OrderStatusHistory` entry, remarks prefixed `"Delivery
-  attempt failed — returned to store: <your remarks>"` so it reads
-  distinctly from a normal ready transition.
+**What it does:**
+- Sets the latest `DeliveryOrder.status` to `return_to_store` and saves the reason.
+- Writes an `order_delivery_failed` custody event.
+- Sets `Order.status` to `ready`, clears the old rider and slot assignment,
+  and increments `deliveryAttemptCount`.
+- Records the ready transition in `OrderStatusHistory` and the failure in
+  the delivery custody trail.
+- Dispatch Management can assign a new delivery run while the failed stop
+  remains visible as `return_to_store`.
 
 **Response `200`**: `{ "message": "Delivery returned to store. Order is ready for redispatch.", "order": {...} }`
-
-**Known limitation, stated explicitly**: always reverts to `ready`, never
-back to `partially_dispatched` — `Order.status` only holds one value, so
-once it moved to `out_for_delivery` there's no way to recover whether it
-came from `ready` or `partially_dispatched` beforehand. Edge case (a split
-order whose remaining portion fails delivery), not handled specially.
 
 Wire this up to Delivery Management's existing "Return to origin store"
 button in place of the current `postOrderStatus(..., {status: 'returned'})`

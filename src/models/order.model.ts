@@ -212,9 +212,7 @@ export class Order extends Entity {
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   deliveryAddressId?: string;
 
-  // Bumped each time a delivery attempt fails and the order is returned to
-  // the store (POST /orders/{id}/delivery-return, admin or rider-triggered)
-  // — a "2nd attempt / 3rd attempt" display counter, doesn't gate anything.
+  // Incremented each time a failed delivery returns this order to ready.
   @property({type: 'number', default: 0})
   deliveryAttemptCount?: number;
 

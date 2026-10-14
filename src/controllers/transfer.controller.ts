@@ -586,11 +586,11 @@ export class TransferController {
         seenGarmentIds.add(gid);
       }
       const bag = await this.assertBagAvailable(input.bagId);
-      if (garmentIds.length > (bag.maxCapacity ?? 25)) {
-        throw new HttpErrors.BadRequest(`Bag ${bag.bagNumber} holds at most ${bag.maxCapacity} items.`);
+      if (garmentIds.length > (bag.maxCapacity ?? 500)) {
+        throw new HttpErrors.BadRequest(`Bag ${bag.bagNumber} holds at most ${bag.maxCapacity ?? 500} items.`);
       }
       bagNumberById.set(input.bagId, bag.bagNumber);
-      bags.push({bagId: input.bagId, garmentIds, maxCapacity: bag.maxCapacity ?? 25});
+      bags.push({bagId: input.bagId, garmentIds, maxCapacity: bag.maxCapacity ?? 500});
     }
 
     const garments = await this.assertGarmentsTransferable([...seenGarmentIds]);
@@ -866,8 +866,8 @@ export class TransferController {
     if (!fromStore || !toStore) throw new HttpErrors.NotFound('Store not found.');
 
     const bag = await this.assertBagAvailable(body.bagId);
-    if (garmentIds.length > (bag.maxCapacity ?? 25)) {
-      throw new HttpErrors.BadRequest(`This bag holds at most ${bag.maxCapacity} items.`);
+    if (garmentIds.length > (bag.maxCapacity ?? 500)) {
+      throw new HttpErrors.BadRequest(`This bag holds at most ${bag.maxCapacity ?? 500} items.`);
     }
     const garments = await this.garmentRepo.find({
       where: {id: {inq: garmentIds}, isDeleted: false} as object,
@@ -879,7 +879,7 @@ export class TransferController {
       toStoreId: original.fromStoreId,
       fromStoreCode: fromStore.code,
       toStoreCode: toStore.code,
-      bags: [{bagId: body.bagId, garmentIds, maxCapacity: bag.maxCapacity ?? 25}],
+      bags: [{bagId: body.bagId, garmentIds, maxCapacity: bag.maxCapacity ?? 500}],
       garments,
       reason: body.reason,
       remarks: body.remarks,

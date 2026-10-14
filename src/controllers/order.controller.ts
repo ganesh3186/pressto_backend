@@ -24,6 +24,7 @@ import {HandoverCollectorType} from '../models/order-handover.model';
 import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
 import {BagStatus} from '../models/bag-status.enum';
 import {DeliveryStatus} from '../models/delivery-status.enum';
+import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
 import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.enum';
 import {
   BagRepository,
@@ -534,7 +535,7 @@ export class OrderController {
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
-    const [customer, delivered, payments, handover, balance] =
+    const [customer, delivered, stops, payments, handover, balance, legacyReturn] =
       await Promise.all([
         this.customerRepository.findOne({
           where: {id: order.customerId, isDeleted: false},
@@ -542,6 +543,11 @@ export class OrderController {
         this.statusHistoryRepository.findOne({
           where: {orderId: id, status: OrderStatus.DELIVERED},
           order: ['changedAt DESC'],
+        }),
+        this.deliveryOrderRepository.find({
+          where: {orderId: id} as object,
+          order: ['createdAt DESC'],
+          limit: 1,
         }),
         this.paymentTransactionRepository.find({
           where: {orderId: id},
@@ -552,7 +558,17 @@ export class OrderController {
           order: ['handedOverAt DESC'],
         }),
         this.orderService.computeBalanceDue(order),
+        order.status === OrderStatus.READY && order.deliveryAttemptCount && !order.assignedRiderId
+          ? this.statusHistoryRepository.findOne({
+              where: {orderId: id, status: OrderStatus.READY},
+              order: ['changedAt DESC'],
+            })
+          : Promise.resolve(null),
       ]);
+    const legacyReason = stops[0]?.status !== DeliveryOrderStatus.RETURN_TO_STORE &&
+      legacyReturn?.remarks?.startsWith('Delivery attempt failed — returned to store: ')
+      ? legacyReturn.remarks.slice('Delivery attempt failed — returned to store: '.length)
+      : null;
     const mediaIds = [
       ...new Set([
         ...(order.specialInstructionMediaIds ?? []),
@@ -573,7 +589,7 @@ export class OrderController {
     return {
       orderId: id,
       ticketNumber: order.orderNumber,
-      currentDeliveryStatus: order.status ?? null,
+      currentDeliveryStatus: legacyReason ? DeliveryOrderStatus.RETURN_TO_STORE : stops[0]?.status ?? order.status ?? null,
       customerName: customer
         ? `${customer.firstName} ${customer.lastName ?? ''}`.trim()
         : null,
@@ -602,6 +618,7 @@ export class OrderController {
             ? 'partial'
             : 'pending',
       deliveryRemarks: delivered?.remarks ?? null,
+      deliveryReturnRemarks: legacyReason ?? stops[0]?.failureRemarks ?? null,
       remarkImages: (order.specialInstructionMediaIds ?? [])
         .map(mediaId => mediaById.get(mediaId))
         .filter((file): file is {id: string; fileUrl: string} => !!file),
@@ -1181,23 +1198,14 @@ export class OrderController {
   }
 
   // ─── Delivery Return (failed/undeliverable attempt) ────────────────────────
-  // Distinct from OrderStatus.RETURNED — that's the sales-return/refund
-  // flow, a permanent terminal state excluded from active-order queries.
-  // This is the opposite: a rider couldn't complete the customer delivery
-  // and brought the order back to the store, so it just reverts to READY
-  // with the delivery assignment cleared, ready to be redispatched like
-  // any other ready order. Always reverts to READY, never back to
-  // PARTIALLY_DISPATCHED — Order.status is single-valued, so once it moved
-  // to OUT_FOR_DELIVERY there's no cheap way to recover which state it came
-  // from. A rare edge case (a split order whose remainder fails delivery),
-  // not handled specially this pass.
+  // A failed stop remains return_to_store after its order returns to ready.
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:create']})
   @post('/orders/{id}/delivery-return')
   @response(200, {
     description:
-      'Delivery attempt reverted — order back to ready for redispatch',
+      'Order ready for redispatch; delivery stop marked return to store',
   })
   async deliveryReturn(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
@@ -1245,6 +1253,48 @@ export class OrderController {
       otherReason: body.otherReason,
       changedBy: currentUser[securityId],
     });
+    const stops = await this.deliveryOrderRepository.find({
+      where: {orderId: id} as object,
+      order: ['createdAt DESC'],
+      limit: 1,
+    });
+    const deliveryId = stops[0].deliveryId;
+    const runStops = await this.deliveryOrderRepository.find({where: {deliveryId} as object});
+    if (runStops.every(stop =>
+      stop.status === DeliveryOrderStatus.DELIVERED ||
+      stop.status === DeliveryOrderStatus.RETURN_TO_STORE,
+    )) {
+      const run = await this.deliveryRepository.findById(deliveryId);
+      if (run.status !== DeliveryStatus.COMPLETED) {
+        const {v4} = await import('uuid');
+        const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+        try {
+          await this.deliveryRepository.updateById(deliveryId, {
+            status: DeliveryStatus.COMPLETED,
+            completedAt: new Date(),
+            completedBy: currentUser[securityId],
+          }, {transaction: tx});
+          if (run.bagId) {
+            await this.bagRepository.updateById(run.bagId, {
+              status: BagStatus.AVAILABLE,
+              currentDeliveryId: null as unknown as string,
+            }, {transaction: tx});
+            await this.deliveryCustodyEventRepository.create({
+              id: v4(), deliveryId, eventType: DeliveryCustodyEventType.BAG_RELEASED,
+              performedBy: currentUser[securityId],
+            }, {transaction: tx});
+          }
+          await this.deliveryCustodyEventRepository.create({
+            id: v4(), deliveryId, eventType: DeliveryCustodyEventType.COMPLETED,
+            performedBy: currentUser[securityId],
+          }, {transaction: tx});
+          await tx.commit();
+        } catch (error) {
+          await tx.rollback();
+          throw error;
+        }
+      }
+    }
     return {
       message: 'Delivery returned to store. Order is ready for redispatch.',
       order: updated,

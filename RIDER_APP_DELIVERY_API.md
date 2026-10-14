@@ -18,12 +18,9 @@ gated purely by having the `rider` role — an inactive rider account gets a
 DeliveryStatus: assigned → out_for_delivery → completed
                               ↘ cancelled (from assigned only)
 ```
-A `Delivery` is one rider's bagged run of orders for delivery — created when
-a store assigns orders for delivery with a bag attached (Dispatch Management's
-"Assign rider" flow). It carries no per-order status of its own; whether an
-order is actually delivered is always read live off that **order's** own
-status (`ready`/`out_for_delivery`/`delivered`), never duplicated onto the
-delivery record — so the two can't drift apart.
+A `Delivery` is one rider's run of orders. Each `DeliveryOrder` records its
+stop status: `pending`, `out_for_delivery`, `arrived`, `delivered`, or
+`return_to_store`. A failed stop moves `Order.status` back to `ready`.
 
 ---
 
@@ -51,7 +48,7 @@ every matching delivery is returned regardless of date, same as before.
       "storeId": "uuid",
       "riderId": "uuid",
       "riderName": "Rohan Sharma",
-      "bagId": "uuid",
+      "bagNumber": 42,
       "deliverySlot": "2:00 PM - 5:00 PM",
       "deliverySlotId": "uuid",
       "deliveryDate": "2026-08-20T12:00:00.000Z",
@@ -67,6 +64,7 @@ every matching delivery is returned regardless of date, same as before.
 ```
 `orderCount` is the manifest size — use it for a badge/count without a
 separate call. Use §3 to get the actual orders in one.
+`bagNumber` is `null` when no bag is assigned.
 
 ---
 
@@ -224,8 +222,7 @@ naming the current status otherwise — call §4 first).
 `deliveryCompleted: true` means this was the last order on the run — the
 whole `Delivery` auto-completed and its bag was released, no separate
 "finish run" call needed. Keep calling this endpoint for each remaining
-order on the manifest until every one reports it's delivered (or was
-already `returned`, which also counts toward completion).
+order on the manifest until every stop is `delivered` or `return_to_store`.
 
 **Error cases:**
 | Status | Cause |
@@ -251,10 +248,10 @@ POST /rider/deliveries/{id}/orders/{orderId}/delivery-unsuccessful
 ```
 Use instead of §5's `deliver` when the attempt failed — `reasons` is
 required, multi-select from `customer_not_answering` | `not_approving_entry` |
-`other`. The order reverts to `ready` (assignment/delivery-slot cleared,
-`deliveryAttemptCount` incremented) — same "returned to store" state the
-admin panel's own "Send back to Store" action produces, just triggered
-from the rider app instead. `400` if the order isn't `out_for_delivery`.
+`other`. The delivery stop changes to `return_to_store`, with the reason
+saved on that stop. `Order.status` becomes `ready` and its old assignment
+is cleared. Dispatch Management can assign a new run. `400` if the order isn't
+`out_for_delivery`.
 
 **Response `200`**
 ```json

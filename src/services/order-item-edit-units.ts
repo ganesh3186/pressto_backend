@@ -13,6 +13,7 @@ export interface EditOrderUnitInput {
   id?: string;
   additionalServiceIds?: string[];
   additionalChargeIds?: EditAdditionalChargeSelection[];
+  instructions?: string;
   length?: number;
   width?: number;
 }
@@ -21,6 +22,23 @@ export interface EditLineGarment {
   id: string;
   length?: number | null;
   width?: number | null;
+}
+
+export function editedGarmentFields(
+  garment: {customerRemarks?: string | null; length?: number | null; width?: number | null},
+  instructions?: string,
+  dimensions?: {length: number; width: number},
+) {
+  return {
+    ...(dimensions &&
+    (Number(garment.length) !== dimensions.length ||
+      Number(garment.width) !== dimensions.width)
+      ? {length: dimensions.length, width: dimensions.width}
+      : {}),
+    ...(instructions !== undefined && instructions !== garment.customerRemarks
+      ? {customerRemarks: instructions}
+      : {}),
+  };
 }
 
 export interface EditUnitSlotPlan<G extends EditLineGarment> {
@@ -141,7 +159,8 @@ export function priceEditedLine(params: {
   resolvedPrice: number;
   deliveryMultiplier: number;
   unitServiceIds: string[][];
-  servicePrice: (serviceId: string) => number;
+  servicePrice: (serviceId: string, slot: number) => number;
+  unitBasePrice?: (slot: number) => number;
   unitAreas?: number[];
 }): {unitPrice: number; perUnitTotalPrices: number[]; totalPrice: number} {
   const {
@@ -149,16 +168,18 @@ export function priceEditedLine(params: {
     deliveryMultiplier,
     unitServiceIds,
     servicePrice,
+    unitBasePrice,
     unitAreas,
   } = params;
   const unitPrice = parseFloat((resolvedPrice * deliveryMultiplier).toFixed(2));
   const perUnitTotalPrices = unitServiceIds.map((ids, slot) => {
     const addlAmount = ids.reduce(
-      (sum, id) => sum + (servicePrice(id) ?? 0),
+      (sum, id) => sum + (servicePrice(id, slot) ?? 0),
       0,
     );
+    const basePrice = unitBasePrice?.(slot) ?? resolvedPrice;
     const perUnitPrice = parseFloat(
-      ((resolvedPrice + addlAmount) * deliveryMultiplier).toFixed(2),
+      ((basePrice + addlAmount) * deliveryMultiplier).toFixed(2),
     );
     return unitAreas ? perUnitPrice * (unitAreas[slot] ?? 0) : perUnitPrice;
   });

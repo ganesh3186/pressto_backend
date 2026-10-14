@@ -14,7 +14,6 @@ import {
   ItemCategory,
   PickupDeliverySlot,
   PickupHandoverBy,
-  PickupRequestWithRelations,
   Service,
   ServiceCategory,
   Store,
@@ -578,7 +577,7 @@ export class RiderPickupController {
     // (see rider-performance.controller.ts), so an exact/between-same-day
     // match is exact, no end-of-day boundary math needed.
     @param.query.string('date') date?: string,
-  ): Promise<PickupRequestWithRelations[]> {
+  ): Promise<object[]> {
     const rider = await this.resolveActiveRider(currentUser);
 
     let statusWhere: object;
@@ -606,7 +605,7 @@ export class RiderPickupController {
     // start/end time, not just text. Rows created without a pickupSlotId
     // (e.g. some admin/call-center intake) will still come back with
     // pickupSlot: null — that's a genuine data gap, not a bug here.
-    return this.pickupRequestRepository.find({
+    const requests = await this.pickupRequestRepository.find({
       where: {
         assignedRiderId: rider.id,
         isDeleted: false,
@@ -615,6 +614,25 @@ export class RiderPickupController {
       } as object,
       order: ['assignedAt DESC'],
       include: [{relation: 'pickupSlot'}],
+    });
+    const bagIds = [...new Set(requests.flatMap(request => [
+      request.bagId,
+      ...(request.actualItemsByService ?? []).map(line => line.bagId),
+    ]).filter((id): id is string => !!id))];
+    const bags = bagIds.length
+      ? await this.bagRepository.find({where: {id: {inq: bagIds}}})
+      : [];
+    const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
+    return requests.map(request => {
+      const {bagId, actualItemsByService, ...publicRequest} = request;
+      return {
+        ...publicRequest,
+        bagNumber: bagId ? bagNumberById.get(bagId) ?? null : null,
+        ...(actualItemsByService ? {actualItemsByService: actualItemsByService.map(line => {
+          const {bagId: lineBagId, ...publicLine} = line;
+          return {...publicLine, bagNumber: lineBagId ? bagNumberById.get(lineBagId) ?? null : null};
+        })} : {}),
+      };
     });
   }
 

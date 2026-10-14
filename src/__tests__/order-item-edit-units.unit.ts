@@ -1,5 +1,6 @@
 import {expect} from '@loopback/testlab';
 import {
+  editedGarmentFields,
   hasEditUnitCharges,
   orderGarmentsForRemoval,
   planEditUnitSlots,
@@ -14,6 +15,16 @@ const prices: Record<string, number> = {[STARCH]: 50, [FOLD]: 30};
 const servicePrice = (id: string) => prices[id] ?? 0;
 
 describe('editing order items per unit (PUT /orders/{id}/items)', () => {
+  it('updates the selected packaging on a garment without changing unrelated fields', () => {
+    expect(
+      editedGarmentFields(
+        {customerRemarks: 'Hanging — Handle with care', length: 1, width: 1},
+        'Packaging — Handle with care',
+      ),
+    ).to.eql({customerRemarks: 'Packaging — Handle with care'});
+    expect(editedGarmentFields({customerRemarks: 'Packaging'}, undefined)).to.eql({});
+  });
+
   describe('resolveEditUnitServiceIds', () => {
     it('keeps a service picked for one unit on that unit only', () => {
       expect(
@@ -45,6 +56,19 @@ describe('editing order items per unit (PUT /orders/{id}/items)', () => {
   });
 
   describe('priceEditedLine', () => {
+    it('charges a new reprocess piece while keeping the original piece free', () => {
+      const result = priceEditedLine({
+        resolvedPrice: 0,
+        deliveryMultiplier: 1,
+        unitServiceIds: [[STARCH, FOLD], [STARCH, FOLD]],
+        servicePrice: (id, slot) => (slot === 0 && id === STARCH ? 0 : servicePrice(id)),
+        unitBasePrice: slot => (slot === 0 ? 0 : 100),
+      });
+      expect(result.unitPrice).to.equal(0);
+      expect(result.perUnitTotalPrices).to.eql([30, 180]);
+      expect(result.totalPrice).to.equal(210);
+    });
+
     it('charges a unit-level service only on that unit', () => {
       const result = priceEditedLine({
         resolvedPrice: 100,

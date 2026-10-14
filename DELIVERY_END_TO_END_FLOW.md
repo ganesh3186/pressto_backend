@@ -29,7 +29,7 @@ Omit `status` for the working list (`assigned`/`out_for_delivery`).
       "deliveryNumber": "DL-STR1-2008-1",
       "status": "assigned",
       "storeId": "uuid",
-      "bagId": "uuid",
+      "bagNumber": 42,
       "deliverySlot": "2:00 PM - 5:00 PM",
       "orderCount": 4,
       "assignedAt": "2026-08-25T09:12:00.000Z"
@@ -126,9 +126,9 @@ POST /rider/deliveries/{id}/orders/{orderId}/delivery-unsuccessful
 ```json
 {"message": "Delivery marked unsuccessful — order returned to store.", "deliveryCompleted": false}
 ```
-The order reverts to `ready` (`deliveryAttemptCount` incremented) —
-someone redispatches it later, same as any other ready order. This
-order's own leg on *this* run is done either way.
+The delivery stop changes to `return_to_store`; `Order.status` becomes
+`ready`. Dispatch Management can assign a new run. This order's own leg
+on *this* run is done either way.
 
 ## 6 — Check `deliveryCompleted`
 

@@ -123,8 +123,9 @@ endpoints above this is a single day, not a range — built for a home-screen
   authors — `receivedAt` is set by the destination store, not the rider).
   `completed` = `received`/`discrepancy`/`resolved`; `pending` =
   `rider_assigned`/`in_transit`.
-- `handoverOrdersCount` — total pickup orders inside the rider's
-  `PickupHandover` batches submitted that day, by `submittedAt`.
-- `handoverCashCount` — total cash transactions inside the rider's
-  `RiderCashHandover` batches submitted that day. These are item counts;
-  the Work Summary fields above intentionally count submitted batches.
+- `handoverOrdersCount` — picked-up requests this rider can still hand over,
+  excluding items already in a pending handover batch. This follows
+  `/rider/pickup-requests/handover-eligible` across scheduled dates.
+- `handoverCashCount` — cash transactions still with this rider and ready to
+  submit, matching `/rider/cash-handovers/pending-items` across payment dates.
+  The Work Summary fields above count submitted batches separately.

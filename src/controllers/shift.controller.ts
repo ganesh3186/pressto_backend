@@ -15,6 +15,7 @@ import {InvoiceStatus} from '../models/invoice.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
+import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
 import {SalesReturnStatus} from '../models/sales-return.model';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {Shift} from '../models/shift.model';
@@ -27,6 +28,7 @@ import {
   OrderRepository,
   PaymentTransactionRepository,
   PettyCashFinanceEntryRepository,
+  RiderCashHandoverRepository,
   SalesReturnRepository,
   ShiftRepository,
   StoreRepository,
@@ -143,6 +145,8 @@ export class ShiftController {
     private gstConfigRepository: GstTaxConfigurationRepository,
     @repository(PaymentTransactionRepository)
     private paymentTransactionRepository: PaymentTransactionRepository,
+    @repository(RiderCashHandoverRepository)
+    private riderCashHandoverRepository: RiderCashHandoverRepository,
     @repository(WalletRechargeRequestRepository)
     private walletRechargeRequestRepository: WalletRechargeRequestRepository,
     @repository(PettyCashFinanceEntryRepository)
@@ -617,8 +621,8 @@ export class ShiftController {
   // the closing form's fields — a starting point the cashier can still
   // adjust, not a silent override of what they submit. Order payments are
   // scoped to this shift's store + [openedAt, now], counter-collected only
-  // (a rider's cash isn't in the till until they hand it over — tracked
-  // separately by Rider Cash Handover), payments only (never refunds).
+  // until rider cash is confirmed received by the store, payments only
+  // (never refunds).
   //
   // Wallet recharges (top-ups) have no store/shift field at all — only who
   // processed it and when — so they're scoped by performedBy = this
@@ -735,6 +739,20 @@ export class ShiftController {
         .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
     }
 
+    const receivedFromRiders = await this.riderCashHandoverRepository.find({
+      where: {
+        handoverToStoreId: shift.storeId,
+        status: RiderCashHandoverStatus.CONFIRMED,
+        confirmedAt: {between: [shift.openedAt, windowEnd]},
+        isDeleted: false,
+      } as object,
+      fields: {totalAmount: true} as object,
+    });
+    collections.cash += receivedFromRiders.reduce(
+      (sum, handover) => sum + (Number(handover.totalAmount) || 0),
+      0,
+    );
+
     const recharges = await this.walletRechargeRequestRepository.find({
       where: {
         performedBy: shift.userId,
@@ -758,9 +776,8 @@ export class ShiftController {
     }
 
     // Register cash is every rupee of physical cash that actually landed in
-    // the till this shift — order-payment cash AND cash-mode wallet
-    // recharges both count (a recharge paid in cash hands the cashier real
-    // notes exactly like a cash order payment does). Wallet recharge
+    // the till this shift — order-payment cash, confirmed rider handovers,
+    // and cash-mode wallet recharges all count. Wallet recharge
     // collections still show separately in their own section for that
     // breakdown, this is only the register's combined total.
     const cashReceived = collections.cash + walletCollections.cash;
@@ -785,9 +802,10 @@ export class ShiftController {
       windowEnd,
     );
 
-    const [revenue, salesReturn] = await Promise.all([
+    const [revenue, salesReturn, orderSummary] = await Promise.all([
       this.resolveRevenue(shift.storeId, shift.openedAt, windowEnd),
       this.resolveSalesReturn(shift.storeId, shift.openedAt, windowEnd),
+      this.resolveOrderSummary(shift.storeId, shift.openedAt, windowEnd),
     ]);
 
     return {
@@ -800,6 +818,53 @@ export class ShiftController {
       pettyCash,
       revenue,
       salesReturn,
+      orderSummary,
+    };
+  }
+
+  private async resolveOrderSummary(storeId: string, from: Date, to: Date) {
+    const orders = await this.orderRepository.find({
+      where: {
+        storeId,
+        status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
+        createdAt: {between: [from, to]},
+      } as object,
+      fields: {id: true, totalAmount: true} as object,
+    });
+    if (!orders.length) return {orders: 0, items: 0, services: 0, value: 0};
+
+    const items = await this.orderItemRepository.find({
+      where: {orderId: {inq: orders.map(order => order.id)}} as object,
+      fields: {
+        quantity: true,
+        additionalServiceIds: true,
+        pendingUnitAdditionalServices: true,
+      } as object,
+    });
+    let itemCount = 0;
+    let serviceCount = 0;
+    for (const item of items) {
+      const quantity = Number(item.quantity) || 0;
+      itemCount += quantity;
+      serviceCount += quantity;
+      serviceCount += item.pendingUnitAdditionalServices
+        ? item.pendingUnitAdditionalServices.reduce(
+            (sum, services) => sum + (services?.length ?? 0),
+            0,
+          )
+        : quantity * (item.additionalServiceIds?.length ?? 0);
+    }
+    return {
+      orders: orders.length,
+      items: itemCount,
+      services: serviceCount,
+      value:
+        Math.round(
+          orders.reduce(
+            (sum, order) => sum + (Number(order.totalAmount) || 0),
+            0,
+          ) * 100,
+        ) / 100,
     };
   }
 
@@ -1101,6 +1166,11 @@ export class ShiftController {
       );
     }
     const now = new Date();
+    const orderSummary = await this.resolveOrderSummary(
+      shift.storeId,
+      shift.openedAt,
+      now,
+    );
 
     await this.shiftRepository.updateById(id, {
       status: ShiftStatus.CLOSED,
@@ -1108,7 +1178,7 @@ export class ShiftController {
       closureNo: shift.openingNo,
       closingUserId: userId,
       closingUserName,
-      closing,
+      closing: {...closing, orderSummary},
     });
 
     const updated = await this.shiftRepository.findById(id);
