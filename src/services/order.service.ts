@@ -3,7 +3,6 @@ import {PaymentService} from './payment.service';
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
-import {collectOrderExportRows, OrderExportFilters} from '../utils/order-export';
 import {
   collectOrderExportRows,
   OrderExportFilters,
