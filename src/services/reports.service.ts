@@ -1155,6 +1155,7 @@ export class ReportsService {
           region: store?.regionName ?? '—',
           cluster: store?.clusterName ?? '—',
           storeName: store?.name ?? '—',
+          state: store?.state ?? '—',
           customerGstin: isBusiness ? customer?.gstNumber ?? '' : '',
           customerName: customerName || '—',
           ticketNo: `${store?.code ?? '—'}/${order.orderNumber ?? '—'}`,
@@ -1723,7 +1724,7 @@ export class ReportsService {
   private async buildStoreContext(storeIds: string[]) {
     const stores = await this.storeRepo.find({
       where: {id: {inq: storeIds}} as object,
-      fields: {id: true, name: true, code: true, clusterId: true} as object,
+      fields: {id: true, name: true, code: true, state: true, clusterId: true} as object,
     });
 
     const clusterIds = [...new Set(stores.map(s => s.clusterId).filter(Boolean))] as string[];
@@ -1758,6 +1759,7 @@ export class ReportsService {
           {
             name: s.name ?? String(s.code ?? '—'),
             code: s.code ?? '—',
+            state: s.state,
             clusterName: cluster?.name ?? '—',
             regionName: cluster?.regionName ?? '—',
           },
