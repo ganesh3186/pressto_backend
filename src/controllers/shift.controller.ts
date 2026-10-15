@@ -829,13 +829,16 @@ export class ShiftController {
         status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
         createdAt: {between: [from, to]},
       } as object,
-      fields: {id: true, totalAmount: true} as object,
+      fields: {id: true, totalAmount: true, discountAmount: true} as object,
     });
-    if (!orders.length) return {orders: 0, items: 0, services: 0, value: 0};
+    if (!orders.length)
+      return {orders: 0, items: 0, services: 0, value: 0, discount: 0};
 
+    const activeOrderIds = new Set(orders.map(order => order.id));
     const items = await this.orderItemRepository.find({
-      where: {orderId: {inq: orders.map(order => order.id)}} as object,
+      where: {orderId: {inq: [...activeOrderIds]}} as object,
       fields: {
+        orderId: true,
         quantity: true,
         additionalServiceIds: true,
         pendingUnitAdditionalServices: true,
@@ -844,6 +847,7 @@ export class ShiftController {
     let itemCount = 0;
     let serviceCount = 0;
     for (const item of items) {
+      if (!activeOrderIds.has(item.orderId)) continue;
       const quantity = Number(item.quantity) || 0;
       itemCount += quantity;
       serviceCount += quantity;
@@ -862,6 +866,13 @@ export class ShiftController {
         Math.round(
           orders.reduce(
             (sum, order) => sum + (Number(order.totalAmount) || 0),
+            0,
+          ) * 100,
+        ) / 100,
+      discount:
+        Math.round(
+          orders.reduce(
+            (sum, order) => sum + (Number(order.discountAmount) || 0),
             0,
           ) * 100,
         ) / 100,

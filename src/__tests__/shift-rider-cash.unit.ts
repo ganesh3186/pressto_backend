@@ -28,11 +28,12 @@ describe('shift collections from riders', () => {
       orderItemRepository: {
         find: async () => [
           {
+            orderId: 'order-a',
             quantity: 2,
             additionalServiceIds: ['extra-a'],
             pendingUnitAdditionalServices: [[{serviceId: 'extra-a'}], []],
           },
-          {quantity: 3, additionalServiceIds: ['extra-a', 'extra-b']},
+          {orderId: 'order-a', quantity: 3, additionalServiceIds: ['extra-a', 'extra-b']},
         ],
       },
       paymentTransactionRepository: {
@@ -68,6 +69,7 @@ describe('shift collections from riders', () => {
         items: number;
         services: number;
         value: number;
+        discount: number;
       };
     };
 
@@ -94,6 +96,46 @@ describe('shift collections from riders', () => {
       items: 5,
       services: 12,
       value: 80.5,
+      discount: 0,
+    });
+  });
+});
+
+describe('shift order summary', () => {
+  it('drops a cancelled ticket, its items, services, value and discount', async () => {
+    const orders = [
+      {id: 'active', status: OrderStatus.CONFIRMED, totalAmount: 80.5, discountAmount: 10},
+      {id: 'cancelled', status: OrderStatus.CANCELLED, totalAmount: 50, discountAmount: 5},
+    ];
+    const controller = Object.assign(Object.create(ShiftController.prototype), {
+      orderRepository: {
+        find: async () => orders.filter(order => order.status !== OrderStatus.CANCELLED),
+      },
+      orderItemRepository: {
+        find: async () => [
+          {orderId: 'active', quantity: 2, additionalServiceIds: ['extra-a']},
+          {orderId: 'cancelled', quantity: 3, additionalServiceIds: ['extra-a']},
+        ],
+      },
+    }) as ShiftController;
+
+    const summary = () => (
+      controller as unknown as {
+        resolveOrderSummary: (storeId: string, from: Date, to: Date) => Promise<object>;
+      }
+    ).resolveOrderSummary('store-a', new Date('2026-10-01'), new Date('2026-10-02'));
+
+    const result = await summary();
+    expect(result).to.deepEqual({orders: 1, items: 2, services: 4, value: 80.5, discount: 10});
+
+    orders[0].status = OrderStatus.CANCELLED;
+    const afterCancellation = await summary();
+    expect(afterCancellation).to.deepEqual({
+      orders: 0,
+      items: 0,
+      services: 0,
+      value: 0,
+      discount: 0,
     });
   });
 });
