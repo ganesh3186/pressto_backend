@@ -59,11 +59,16 @@ export class Order extends Entity {
   })
   pickupSource?: PickupRequestSource;
 
+  // Originating pickup for every order created from a multi-tier request.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  pickupRequestId?: string;
+
   // Urgency multiplier selected at order creation (1 = standard, 2 = 2x faster/costlier, etc.)
   @property({type: 'number', default: 1, postgresql: {dataType: 'numeric'}})
   expressMultiplier?: number;
 
-  // Delivery type selected at order creation (standard / express / lightning)
+  // Delivery type selected at order creation; it can differ from the pickup's requested tier.
+  // Do not enforce pickup uniqueness on this field: convertedOrders tracks the requested tiers.
   @property({type: 'string', jsonSchema: {enum: Object.values(DeliveryType)}})
   deliveryType?: DeliveryType;
 

@@ -192,6 +192,11 @@ export class PickupRequest extends Entity {
   @belongsTo(() => Order)
   convertedOrderId?: string;
 
+  // Each requested delivery tier gets its own order; convertedOrderId keeps
+  // the first order available to older callers.
+  @property({type: 'object', postgresql: {dataType: 'jsonb'}})
+  convertedOrders?: Partial<Record<DeliveryType, string>>;
+
   // This pickup exists to bring back a garment for a free rework, not a
   // fresh paid order — set at creation from the "Rework Order" toggle on
   // the Create Pickup screen. When true, confirming the pickup-handover

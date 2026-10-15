@@ -4557,6 +4557,7 @@ export class OrderService {
         orderType: order.orderType,
         status: order.status,
         deliveryType: order.deliveryType,
+        pickupRequestId: order.pickupRequestId ?? null,
         createdAt: order.createdAt,
         deliveryDate: order.deliveryDate,
         deliveryMethod: (order as any).deliveryMethod ?? null,
@@ -4795,7 +4796,9 @@ export class OrderService {
 
     if (isHomePickup) {
       const pickupRequest = await this.pickupRequestRepo.findOne({
-        where: {convertedOrderId: orderId, isDeleted: false} as any,
+        where: order.pickupRequestId
+          ? {id: order.pickupRequestId, isDeleted: false}
+          : {convertedOrderId: orderId, isDeleted: false},
         include: [{relation: 'assignedRider'}],
       });
 
@@ -5274,7 +5277,9 @@ export class OrderService {
       this.transferItemRepo.find({where: {orderId}}),
       this.deliveryOrderRepo.find({where: {orderId}}),
       this.orderHandoverRepo.find({where: {orderId}}),
-      this.pickupRequestRepo.find({where: {convertedOrderId: orderId}}),
+      this.pickupRequestRepo.find({where: order.pickupRequestId
+        ? {id: order.pickupRequestId}
+        : {convertedOrderId: orderId}}),
     ]);
 
     const approvalRequestIds = approvalRequests.map(a => a.id);

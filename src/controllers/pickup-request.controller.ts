@@ -71,6 +71,7 @@ interface UpdateBody {
   remarks?: string;
   status?: PickupRequestStatus;
   convertedOrderId?: string;
+  deliverySpeed?: DeliveryType;
 }
 
 export class PickupRequestController {
@@ -544,6 +545,7 @@ export class PickupRequestController {
               remarks: {type: 'string'},
               status: {type: 'string', enum: Object.values(PickupRequestStatus)},
               convertedOrderId: {type: 'string', format: 'uuid'},
+              deliverySpeed: {type: 'string', enum: Object.values(DeliveryType)},
             },
           },
         },
@@ -556,13 +558,27 @@ export class PickupRequestController {
     const scope = await this.storeScopeService.resolve(currentUser);
     this.assertPickupScopeVisible(scope, existing.storeId);
 
-    const {status, convertedOrderId, ...rest} = body;
+    const {status, convertedOrderId, deliverySpeed, ...rest} = body;
     if (status !== undefined && status !== existing.status) {
       this.assertTransition(existing.status ?? PickupRequestStatus.REQUESTED, status);
     }
 
     if (convertedOrderId !== undefined) {
-      if (existing.convertedOrderId) {
+      if (deliverySpeed) {
+        const items = existing.actualItemsByService?.length
+          ? existing.actualItemsByService
+          : existing.itemCategoryEstimate ?? [];
+        const requested = items.length
+          ? items.map(item => item.deliverySpeed ?? DeliveryType.STANDARD)
+          : [DeliveryType.STANDARD];
+        // shortcut: simultaneous staff links can race; use an atomic update if concurrent conversion is required.
+        const next = [DeliveryType.LIGHTNING, DeliveryType.EXPRESS, DeliveryType.STANDARD]
+          .filter(speed => requested.includes(speed))
+          .find((speed, index) => !existing.convertedOrders?.[speed] && !(index === 0 && existing.convertedOrderId));
+        if (deliverySpeed !== next) {
+          throw new HttpErrors.Conflict('This delivery type is not the next order for this pickup request.');
+        }
+      } else if (existing.convertedOrderId) {
         throw new HttpErrors.Conflict('This pickup request has already been converted to an order.');
       }
       const order = await this.orderRepository.findOne({where: {id: convertedOrderId, isDeleted: false}});
@@ -571,15 +587,19 @@ export class PickupRequestController {
       // assignedRiderName next to assignedRiderId — a home_pickup* order's
       // originating channel is always this pickup's own source, resolved
       // here rather than trusted from the client.
-      if (existing.source) {
-        await this.orderRepository.updateById(convertedOrderId, {pickupSource: existing.source});
-      }
+      await this.orderRepository.updateById(convertedOrderId, {
+        pickupRequestId: id,
+        ...(existing.source ? {pickupSource: existing.source} : {}),
+      });
     }
 
     await this.pickupRequestRepository.updateById(id, {
       ...rest,
       ...(status !== undefined ? {status} : {}),
-      ...(convertedOrderId !== undefined ? {convertedOrderId} : {}),
+      ...(convertedOrderId !== undefined && !existing.convertedOrderId ? {convertedOrderId} : {}),
+      ...(convertedOrderId !== undefined && deliverySpeed
+        ? {convertedOrders: {...existing.convertedOrders, [deliverySpeed]: convertedOrderId}}
+        : {}),
     });
 
     if (
