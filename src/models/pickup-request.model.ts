@@ -13,8 +13,8 @@ import {Store} from './store.model';
 /**
  * A request for a rider to collect a customer's items — BEFORE any Order
  * exists. Once the rider brings the items to the store, staff build the
- * real Order there (service/items/pricing/inspection). convertedOrderId
- * keeps the first order link for older callers; new orders also hold pickupRequestId.
+ * real Order there (service/items/pricing/inspection); convertedOrderId is
+ * a placeholder for that future link, nothing writes to it yet.
  *
  * One rider assignment can cover several pickup requests in a single trip —
  * runId groups whichever requests were assigned together in one
@@ -185,12 +185,17 @@ export class PickupRequest extends Entity {
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   assignedBy?: string;
 
-  // First linked order, kept for existing order-detail lookups.
+  // Set once the store exec creates the real Order from this pickup
+  // request (admin PATCH /pickup-requests/{id} {convertedOrderId}) — see
+  // pickup-request.controller.ts's updateById() guard against overwriting
+  // an already-set value.
   @belongsTo(() => Order)
   convertedOrderId?: string;
 
-  @property({type: 'array', itemType: 'object', postgresql: {dataType: 'jsonb'}})
-  conversionPlan?: Array<{deliveryType: DeliveryType; quantity: number; itemSignature: string}>;
+  // Each requested delivery tier gets its own order; convertedOrderId keeps
+  // the first order available to older callers.
+  @property({type: 'object', postgresql: {dataType: 'jsonb'}})
+  convertedOrders?: Partial<Record<DeliveryType, string>>;
 
   // This pickup exists to bring back a garment for a free rework, not a
   // fresh paid order — set at creation from the "Rework Order" toggle on
