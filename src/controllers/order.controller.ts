@@ -277,7 +277,6 @@ export class OrderController {
                 enum: Object.values(DeliveryType),
                 description: 'Delivery speed: standard | express | lightning',
               },
-              pickupRequestId: {type: 'string', format: 'uuid'},
               customerContactId: {
                 type: 'string',
                 format: 'uuid',

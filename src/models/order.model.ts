@@ -13,7 +13,6 @@ import {PickupRequestSource} from './pickup-request-source.enum';
     postgresql: {table: 'orders', schema: 'public'},
     indexes: {
       uniqueOrderNumber: {keys: ['orderNumber'], options: {unique: true}},
-      uniquePickupDeliveryType: {keys: ['pickupRequestId', 'deliveryType'], options: {unique: true}},
       // Store dashboard ticket lists (overdue / pending / ready / in store).
       orderStoreStatusDeliveryDate: {keys: ['storeId', 'status', 'deliveryDate']},
       // Store dashboard "tickets raised in window" count.
@@ -48,8 +47,9 @@ export class Order extends Entity {
   })
   status?: OrderStatus;
 
-  // Denormalized from PickupRequest.source when a pickup order is created
-  // or a legacy order is linked — set server-side, never client-supplied. Only ever
+  // Denormalized from PickupRequest.source the moment this order is linked
+  // as that pickup's convertedOrderId (see PickupRequestController
+  // .updateById) — set server-side, never client-supplied. Only ever
   // meaningful for home_pickup/home_pickup_home_delivery orders: a
   // store_dropoff* order never goes through a PickupRequest, so this stays
   // unset for those — that's a genuine "not applicable", not a missing value.
@@ -58,9 +58,6 @@ export class Order extends Entity {
     jsonSchema: {enum: Object.values(PickupRequestSource)},
   })
   pickupSource?: PickupRequestSource;
-
-  @property({type: 'string', postgresql: {dataType: 'uuid'}})
-  pickupRequestId?: string;
 
   // Urgency multiplier selected at order creation (1 = standard, 2 = 2x faster/costlier, etc.)
   @property({type: 'number', default: 1, postgresql: {dataType: 'numeric'}})

@@ -1,7 +1,7 @@
 import {PickupRequestService} from '../services/pickup-request.service';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {Filter, IsolationLevel, repository} from '@loopback/repository';
+import {Filter, repository} from '@loopback/repository';
 import {del, get, getModelSchemaRef, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
@@ -71,7 +71,6 @@ interface UpdateBody {
   remarks?: string;
   status?: PickupRequestStatus;
   convertedOrderId?: string;
-  conversionPlan?: Array<{deliveryType: DeliveryType; quantity: number; itemSignature: string}>;
 }
 
 export class PickupRequestController {
@@ -400,26 +399,7 @@ export class PickupRequestController {
       where: {...filter?.where, ...scopeWhere, isDeleted: false},
       order: filter?.order ?? ['createdAt DESC'],
     });
-    const enriched = await this.enrichWithReworkOrderNumber(await this.enrichWithSuggestedRider(requests));
-    const convertibleRequests = requests.filter(request => request.convertedOrderId || request.conversionPlan?.length);
-    const legacyIds = requests
-      .filter(request => request.convertedOrderId)
-      .map(request => request.convertedOrderId!);
-    const linkedOrders = convertibleRequests.length
-      ? await this.orderRepository.find({where: {or: [
-        {pickupRequestId: {inq: convertibleRequests.map(request => request.id)}},
-        ...(legacyIds.length ? [{id: {inq: legacyIds}}] : []),
-      ]} as object})
-      : [];
-    return enriched.map((entry, index) => {
-      const request = requests[index];
-      const orders = linkedOrders.filter(order => order.pickupRequestId === request.id || order.id === request.convertedOrderId);
-      return {
-        ...entry,
-        conversionPlan: request.conversionPlan?.map(({deliveryType, quantity}) => ({deliveryType, quantity})),
-        convertedOrders: orders.map(order => ({orderId: order.id, deliveryType: order.deliveryType ?? DeliveryType.STANDARD})),
-      };
-    });
+    return this.enrichWithReworkOrderNumber(await this.enrichWithSuggestedRider(requests));
   }
 
   @authenticate('jwt')
@@ -491,17 +471,14 @@ export class PickupRequestController {
       ...(pickupRequest.actualItemsByService ?? []).map(line => line.serviceId),
     ].filter((id): id is string => Boolean(id)))];
 
-    const [bags, media, itemCategories, services, linkedOrders, enriched] = await Promise.all([
+    const [bags, media, itemCategories, services, convertedOrder, enriched] = await Promise.all([
       bagIds.length ? this.bagRepository.find({where: {id: {inq: bagIds}} as object}) : [],
       mediaIds.length ? this.mediaRepository.find({where: {id: {inq: mediaIds}} as object}) : [],
       itemCategoryIds.length ? this.itemCategoryRepository.find({where: {id: {inq: itemCategoryIds}} as object}) : [],
       serviceIds.length ? this.serviceRepository.find({where: {id: {inq: serviceIds}} as object}) : [],
-      pickupRequest.conversionPlan?.length || pickupRequest.convertedOrderId
-        ? this.orderRepository.find({where: {or: [
-          {pickupRequestId: id},
-          ...(pickupRequest.convertedOrderId ? [{id: pickupRequest.convertedOrderId}] : []),
-        ]} as object, fields: {id: true, orderNumber: true, deliveryType: true} as object})
-        : [],
+      pickupRequest.convertedOrderId
+        ? this.orderRepository.findOne({where: {id: pickupRequest.convertedOrderId}, fields: {id: true, orderNumber: true} as object})
+        : null,
       this.enrichWithSuggestedRider([pickupRequest]).then(requests => this.enrichWithReworkOrderNumber(requests)),
     ]);
     const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
@@ -516,10 +493,8 @@ export class PickupRequestController {
     const serviceCategoryIdByServiceId = new Map(services.map(service => [service.id, service.serviceCategoryId]));
     const toUrls = (ids?: string[]) => (ids ?? []).map(id => mediaUrlById.get(id)).filter((url): url is string => Boolean(url));
 
-    const convertedOrder = linkedOrders.find(order => order.id === pickupRequest.convertedOrderId);
     return {
       ...enriched[0],
-      convertedOrders: linkedOrders.map(order => ({orderId: order.id, deliveryType: order.deliveryType ?? DeliveryType.STANDARD})),
       convertedOrderNumber: convertedOrder?.orderNumber ?? null,
       bagNumber: pickupRequest.bagId ? bagNumberById.get(pickupRequest.bagId) ?? null : null,
       mediaUrls: toUrls(pickupRequest.mediaIds),
@@ -569,12 +544,6 @@ export class PickupRequestController {
               remarks: {type: 'string'},
               status: {type: 'string', enum: Object.values(PickupRequestStatus)},
               convertedOrderId: {type: 'string', format: 'uuid'},
-              conversionPlan: {type: 'array', minItems: 1, items: {type: 'object',
-                required: ['deliveryType', 'quantity', 'itemSignature'], properties: {
-                  deliveryType: {type: 'string', enum: Object.values(DeliveryType)},
-                  quantity: {type: 'integer', minimum: 1},
-                  itemSignature: {type: 'string', minLength: 2},
-                }}},
             },
           },
         },
@@ -587,86 +556,31 @@ export class PickupRequestController {
     const scope = await this.storeScopeService.resolve(currentUser);
     this.assertPickupScopeVisible(scope, existing.storeId);
 
-    const {status, convertedOrderId, conversionPlan, ...rest} = body;
+    const {status, convertedOrderId, ...rest} = body;
     if (status !== undefined && status !== existing.status) {
       this.assertTransition(existing.status ?? PickupRequestStatus.REQUESTED, status);
     }
-    if (conversionPlan !== undefined) {
-      if (existing.status !== PickupRequestStatus.RECEIVED_AT_STORE) {
-        throw new HttpErrors.Conflict('The pickup must be received at the store before creating orders.');
-      }
-      const linked = await this.orderRepository.count({pickupRequestId: id} as object);
-      if ((existing.convertedOrderId || linked.count) && existing.conversionPlan &&
-        (existing.conversionPlan.length !== conversionPlan.length ||
-        conversionPlan.some(group => !existing.conversionPlan?.some(saved =>
-          saved.deliveryType === group.deliveryType && saved.quantity === group.quantity &&
-          saved.itemSignature === group.itemSignature)))) {
-        throw new HttpErrors.Conflict('A pickup order plan has already been confirmed.');
-      }
-      if ((existing.convertedOrderId || linked.count) && !existing.conversionPlan) {
-        throw new HttpErrors.Conflict('Orders already exist for this pickup.');
-      }
-      if (new Set(conversionPlan.map(group => group.deliveryType)).size !== conversionPlan.length) {
-        throw new HttpErrors.BadRequest('Delivery speeds must be distinct.');
-      }
-      if (conversionPlan.some(group => {
-        try {
-          const items = JSON.parse(group.itemSignature);
-          return !Array.isArray(items) || items.reduce((total: number, item: {quantity?: number}) =>
-            total + Number(item.quantity ?? 0), 0) !== group.quantity;
-        } catch {
-          return true;
-        }
-      })) {
-        throw new HttpErrors.BadRequest('Pickup order groups must contain their confirmed items.');
-      }
-    }
 
     if (convertedOrderId !== undefined) {
-      if (existing.conversionPlan?.length) {
-        throw new HttpErrors.Conflict('Pickup orders must be created from the confirmed delivery groups.');
-      }
       if (existing.convertedOrderId) {
         throw new HttpErrors.Conflict('This pickup request has already been converted to an order.');
       }
       const order = await this.orderRepository.findOne({where: {id: convertedOrderId, isDeleted: false}});
       if (!order) throw new HttpErrors.NotFound('Order not found.');
-      if (order.pickupRequestId && order.pickupRequestId !== id) {
-        throw new HttpErrors.Conflict('This order is linked to another pickup.');
-      }
-      if ((Boolean(existing.customerId) && order.customerId !== existing.customerId) ||
-        (Boolean(existing.storeId) && order.storeId !== existing.storeId)) {
-        throw new HttpErrors.BadRequest('Order customer and store must match the pickup.');
-      }
-      if (existing.status !== PickupRequestStatus.RECEIVED_AT_STORE) {
-        throw new HttpErrors.Conflict('The pickup must be received at the store before creating an order.');
+      // Denormalized at the moment the link is made, same convention as
+      // assignedRiderName next to assignedRiderId — a home_pickup* order's
+      // originating channel is always this pickup's own source, resolved
+      // here rather than trusted from the client.
+      if (existing.source) {
+        await this.orderRepository.updateById(convertedOrderId, {pickupSource: existing.source});
       }
     }
 
-    const changes = {
+    await this.pickupRequestRepository.updateById(id, {
       ...rest,
       ...(status !== undefined ? {status} : {}),
-      ...(conversionPlan !== undefined ? {conversionPlan} : {}),
-      ...(convertedOrderId !== undefined ? {
-        convertedOrderId,
-      } : {}),
-    };
-    if (convertedOrderId === undefined) {
-      await this.pickupRequestRepository.updateById(id, changes);
-    } else {
-      const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
-      try {
-        await this.pickupRequestRepository.updateById(id, changes, {transaction: tx});
-        await this.orderRepository.updateById(convertedOrderId, {
-          pickupRequestId: id,
-          ...(existing.source ? {pickupSource: existing.source} : {}),
-        }, {transaction: tx});
-        await tx.commit();
-      } catch (error) {
-        await tx.rollback();
-        throw error;
-      }
-    }
+      ...(convertedOrderId !== undefined ? {convertedOrderId} : {}),
+    });
 
     if (
       status === PickupRequestStatus.CANCELLED &&

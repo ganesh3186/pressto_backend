@@ -2,109 +2,8 @@ import {expect} from '@loopback/testlab';
 import {UserProfile} from '@loopback/security';
 import {PickupRequestController} from '../controllers/pickup-request.controller';
 import {PickupRequest} from '../models';
-import {DeliveryType} from '../models/delivery-type.enum';
-import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 
 describe('pickup request detail', () => {
-  it('allows a changed delivery plan until the first ticket exists', async () => {
-    const pickup = {id: 'pickup-1', status: PickupRequestStatus.RECEIVED_AT_STORE} as PickupRequest;
-    let linkedCount = 0;
-    const controller = Object.assign(Object.create(PickupRequestController.prototype), {
-      pickupRequestRepository: {
-        findOne: async () => pickup,
-        updateById: async (_id: string, changes: Partial<PickupRequest>) => Object.assign(pickup, changes),
-      },
-      orderRepository: {count: async () => ({count: linkedCount})},
-      storeScopeService: {resolve: async () => ({global: true})},
-    }) as PickupRequestController;
-    const first = [{deliveryType: DeliveryType.STANDARD, quantity: 1, itemSignature: '[{"quantity":1}]'}];
-    const changed = [{deliveryType: DeliveryType.EXPRESS, quantity: 1, itemSignature: '[{"quantity":1}]'}];
-
-    await controller.updateById({} as UserProfile, pickup.id, {conversionPlan: first});
-    await controller.updateById({} as UserProfile, pickup.id, {conversionPlan: changed});
-    expect(pickup.conversionPlan).to.deepEqual(changed);
-
-    linkedCount = 1;
-    let error: unknown;
-    try {
-      await controller.updateById({} as UserProfile, pickup.id, {conversionPlan: first});
-    } catch (caught) {
-      error = caught;
-    }
-    expect(String(error)).to.match(/already been confirmed/);
-  });
-
-  it('shows every generated ticket while keeping legacy rework links', async () => {
-    const pickups = [
-      {id: 'pickup-1', conversionPlan: [
-        {deliveryType: DeliveryType.EXPRESS, quantity: 2, itemSignature: '[private details]'},
-        {deliveryType: DeliveryType.STANDARD, quantity: 1, itemSignature: '[private details]'},
-      ]},
-      {id: 'pickup-2', convertedOrderId: 'rework-order'},
-    ] as PickupRequest[];
-    const controller = Object.assign(Object.create(PickupRequestController.prototype), {
-      pickupRequestRepository: {find: async () => pickups},
-      orderRepository: {find: async () => [
-        {id: 'express-order', pickupRequestId: 'pickup-1', deliveryType: DeliveryType.EXPRESS},
-        {id: 'standard-order', pickupRequestId: 'pickup-1', deliveryType: DeliveryType.STANDARD},
-        {id: 'rework-order', deliveryType: DeliveryType.STANDARD},
-      ]},
-      storeScopeService: {resolve: async () => ({global: true}), narrowStoreIds: async () => undefined},
-      enrichWithSuggestedRider: async (rows: PickupRequest[]) => rows,
-      enrichWithReworkOrderNumber: async (rows: PickupRequest[]) => rows,
-    }) as PickupRequestController;
-
-    const result = await controller.find({} as UserProfile) as Array<{
-      convertedOrders: Array<{orderId: string; deliveryType: DeliveryType}>;
-      conversionPlan: Array<{deliveryType: DeliveryType; quantity: number; itemSignature?: string}>;
-    }>;
-    expect(result[0].convertedOrders.map(order => order.orderId)).to.deepEqual(['express-order', 'standard-order']);
-    expect(result[1].convertedOrders.map(order => order.orderId)).to.deepEqual(['rework-order']);
-    expect(result[0].conversionPlan).to.deepEqual([
-      {deliveryType: DeliveryType.EXPRESS, quantity: 2},
-      {deliveryType: DeliveryType.STANDARD, quantity: 1},
-    ]);
-  });
-
-  it('keeps the legacy pickup link limited to one order', async () => {
-    const pickup = {
-      id: 'pickup-1',
-      status: PickupRequestStatus.RECEIVED_AT_STORE,
-      source: 'web',
-      actualItemsByService: [
-        {serviceId: 'a', quantity: 1, deliverySpeed: DeliveryType.LIGHTNING},
-        {serviceId: 'b', quantity: 1, deliverySpeed: DeliveryType.EXPRESS},
-        {serviceId: 'c', quantity: 1, deliverySpeed: DeliveryType.STANDARD},
-      ],
-    } as PickupRequest;
-    const orders = [{id: 'order-0', deliveryType: DeliveryType.LIGHTNING}];
-    const controller = Object.assign(Object.create(PickupRequestController.prototype), {
-      pickupRequestRepository: {
-        findOne: async () => pickup,
-        updateById: async (_id: string, changes: Partial<PickupRequest>) => Object.assign(pickup, changes),
-      },
-      storeScopeService: {resolve: async () => ({global: true})},
-      dataSource: {beginTransaction: async () => ({commit: async () => {}, rollback: async () => {}})},
-      orderRepository: {
-        findOne: async ({where}: {where: {id: string}}) => orders.find(order => order.id === where.id),
-        findById: async (id: string) => orders.find(order => order.id === id),
-        updateById: async () => {},
-      },
-    }) as PickupRequestController;
-
-    await controller.updateById({} as UserProfile, pickup.id, {convertedOrderId: orders[0].id});
-    expect(pickup.convertedOrderId).to.equal('order-0');
-    let duplicateError: unknown;
-    try {
-      await controller.updateById({} as UserProfile, pickup.id, {
-        convertedOrderId: orders[0].id,
-      });
-    } catch (error) {
-      duplicateError = error;
-    }
-    expect(String(duplicateError)).to.match(/already been converted/);
-  });
-
   it('returns display names, every bag number, and media URLs with rider notes', async () => {
     const pickup = {
       id: 'pickup-1',
@@ -124,9 +23,7 @@ describe('pickup request detail', () => {
       storeScopeService: {resolve: async () => ({global: true})},
       riderPincodeMappingRepository: {find: async () => [{pincode: '400001', riderId: 'rider-1', rider: {firstName: 'A', lastName: 'B'}}]},
       orderRepository: {
-        find: async ({where}: {where: {or?: Array<{pickupRequestId?: string}>}}) => where?.or
-          ? [{id: 'order-2', orderNumber: 'ORD000002', deliveryType: DeliveryType.EXPRESS}]
-          : [{id: 'order-1', orderNumber: 'ORD000001'}],
+        find: async () => [{id: 'order-1', orderNumber: 'ORD000001'}],
         findOne: async () => ({id: 'order-2', orderNumber: 'ORD000002'}),
       },
       bagRepository: {find: async () => [{id: 'bag-1', bagNumber: 101}, {id: 'bag-2', bagNumber: 102}]},
