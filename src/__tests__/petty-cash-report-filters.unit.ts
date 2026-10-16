@@ -16,6 +16,10 @@ describe('report store filters', () => {
         captured.push(storeIds);
         return {rows: [], totalCount: 0, totals: {}};
       },
+      buildConsolidatedDailySales: async ({storeIds}: {storeIds: string[]}) => {
+        captured.push(storeIds);
+        return {rows: [], totalCount: 0, totals: {}};
+      },
     },
     storeScopeService: {
       resolve: async () => ({global, storeIds: ['store-a', 'store-b']}),
@@ -44,6 +48,29 @@ describe('report store filters', () => {
       '2026-10-01',
       '2026-10-02',
     );
+
+  const requestDailySales = (storeId?: string, storeIds?: string) =>
+    controller.consolidatedDailySales(
+      user,
+      storeId,
+      storeIds,
+      '2026-10-01',
+      '2026-10-02',
+    );
+
+  it('applies the same scoped multi-store filter to consolidated daily sales', async () => {
+    global = false;
+    await requestDailySales();
+    await requestDailySales(undefined, 'store-b, store-c');
+    expect(captured.slice(-2)).to.deepEqual([
+      ['store-a', 'store-b'],
+      ['store-b'],
+    ]);
+
+    global = true;
+    await requestDailySales(undefined, 'store-c, store-a');
+    expect(captured[captured.length - 1]).to.deepEqual(['store-c', 'store-a']);
+  });
 
   it('uses the same All Stores and selected-store rules for mode of payment', async () => {
     global = false;

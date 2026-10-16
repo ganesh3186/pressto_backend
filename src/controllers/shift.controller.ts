@@ -637,17 +637,9 @@ export class ShiftController {
   // same [openedAt, windowEnd] window, for the closing form's
   // recvFromFinance/used/disapprovedAmt fields.
   //
-  // revenue/salesReturn are real too, and are the one pair here NOT scoped
-  // by the same window basis: revenue is today's NEW tickets (orders
-  // created within the window at this store), while salesReturn is today's
-  // RETURN activity (SalesReturn rows approved within the window,
-  // regardless of which day the original order was placed) — two
-  // independent views, not a subtraction of one from the other. An
-  // approved sales return already permanently reduces its order's own
-  // subtotal/taxAmount/totalAmount (see SalesReturnController.approve()),
-  // so a same-shift return on a same-shift ticket is already netted into
-  // revenue automatically; subtracting salesReturn from it again would
-  // double-count. See resolveRevenue()/resolveSalesReturn() below.
+  // Invoice revenue is already reduced when its invoice is updated by a
+  // return. Returns on invoices from an earlier shift reduce this shift's
+  // revenue separately; see resolveRevenue()/resolveSalesReturn() below.
   // No @authorize — every role needs this just to prefill their own
   // shift's closing form (see close()), and gating it behind shift:read
   // would force granting that permission broadly, which also unlocks the
@@ -802,9 +794,8 @@ export class ShiftController {
       windowEnd,
     );
 
-    const [revenue, salesReturn, orderSummary] = await Promise.all([
-      this.resolveRevenue(shift.storeId, shift.openedAt, windowEnd),
-      this.resolveSalesReturn(shift.storeId, shift.openedAt, windowEnd),
+    const [{revenue, salesReturn}, orderSummary] = await Promise.all([
+      this.resolveNetRevenue(shift.storeId, shift.openedAt, windowEnd),
       this.resolveOrderSummary(shift.storeId, shift.openedAt, windowEnd),
     ]);
 
@@ -822,6 +813,29 @@ export class ShiftController {
     };
   }
 
+  private async resolveNetRevenue(storeId: string, from: Date, to: Date) {
+    const [revenue, returns] = await Promise.all([
+      this.resolveRevenue(storeId, from, to),
+      this.resolveSalesReturn(storeId, from, to),
+    ]);
+    const revenueCell = (
+      revenue as {
+        pressto: {
+          revenue: number;
+          discount: number;
+          taxes: number;
+          totalSales: number;
+        };
+      }
+    ).pressto;
+    for (const key of ['revenue', 'discount', 'taxes', 'totalSales'] as const) {
+      revenueCell[key] =
+        Math.round((revenueCell[key] - returns.revenueAdjustment[key]) * 100) /
+        100;
+    }
+    return {revenue, salesReturn: {pressto: returns.pressto}};
+  }
+
   private async resolveOrderSummary(storeId: string, from: Date, to: Date) {
     const orders = await this.orderRepository.find({
       where: {
@@ -829,13 +843,16 @@ export class ShiftController {
         status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
         createdAt: {between: [from, to]},
       } as object,
-      fields: {id: true, totalAmount: true} as object,
+      fields: {id: true, totalAmount: true, discountAmount: true} as object,
     });
-    if (!orders.length) return {orders: 0, items: 0, services: 0, value: 0};
+    if (!orders.length)
+      return {orders: 0, items: 0, services: 0, value: 0, discount: 0};
 
+    const activeOrderIds = new Set(orders.map(order => order.id));
     const items = await this.orderItemRepository.find({
-      where: {orderId: {inq: orders.map(order => order.id)}} as object,
+      where: {orderId: {inq: [...activeOrderIds]}} as object,
       fields: {
+        orderId: true,
         quantity: true,
         additionalServiceIds: true,
         pendingUnitAdditionalServices: true,
@@ -844,6 +861,7 @@ export class ShiftController {
     let itemCount = 0;
     let serviceCount = 0;
     for (const item of items) {
+      if (!activeOrderIds.has(item.orderId)) continue;
       const quantity = Number(item.quantity) || 0;
       itemCount += quantity;
       serviceCount += quantity;
@@ -865,6 +883,13 @@ export class ShiftController {
             0,
           ) * 100,
         ) / 100,
+      discount:
+        Math.round(
+          orders.reduce(
+            (sum, order) => sum + (Number(order.discountAmount) || 0),
+            0,
+          ) * 100,
+        ) / 100,
     };
   }
 
@@ -881,20 +906,17 @@ export class ShiftController {
   // Unlike payment (which can genuinely split across several
   // PaymentTransaction events on different days), an order is invoiced
   // exactly ONCE — see InvoiceOrderLink's own doc comment: every normal
-  // invoice has exactly one link row mirroring its own orderId, a
-  // consolidated (On Account) invoice has one row per order it bills, and
+  // invoice has its own orderId, a consolidated (On Account) invoice has
+  // one link row per order it bills, and
   // nothing here ever re-invoices an order already linked elsewhere. So
   // there is no proration-across-shifts case to handle, and no
   // settle-once bookkeeping needed for tickets/items/services — each
   // order contributes exactly once, in the one shift window its one
   // invoice falls into.
   //
-  // A consolidated invoice's own subtotal/discount/tax are the SUM across
-  // every order it covers (per InvoiceOrderLink's doc comment) with no
-  // per-order split stored — so for one of those, each linked order's
-  // share is prorated by its own orderTotal ÷ the invoice's totalAmount.
-  // A normal (non-consolidated) invoice already belongs to exactly one
-  // order, so its figures apply directly, no proration needed.
+  // An on-account invoice records the remaining amount due for each order
+  // directly in InvoiceOrderLink; its rounded invoice total is not a split
+  // denominator. A normal invoice carries its orderId directly.
   // Shape matches SHIFT_REVENUE_COLUMNS (one column today: 'pressto').
   private async resolveRevenue(
     storeId: string,
@@ -907,6 +929,7 @@ export class ShiftController {
       taxes: 0,
       totalSales: 0,
       tickets: 0,
+      invoices: 0,
       items: 0,
       services: 0,
     };
@@ -921,6 +944,7 @@ export class ShiftController {
       } as object,
       fields: {
         id: true,
+        orderId: true,
         subtotal: true,
         discount: true,
         cgst: true,
@@ -936,14 +960,28 @@ export class ShiftController {
       where: {invoiceId: {inq: invoices.map(invoice => invoice.id)}} as object,
       fields: {invoiceId: true, orderId: true, orderTotal: true} as object,
     });
-    if (!links.length) return {pressto: cell};
+    const linkedInvoiceIds = new Set(links.map(link => link.invoiceId));
+    const invoiceOrders = [
+      ...links,
+      ...invoices
+        .filter(
+          invoice =>
+            !invoice.isConsolidated && !linkedInvoiceIds.has(invoice.id),
+        )
+        .map(invoice => ({
+          invoiceId: invoice.id,
+          orderId: invoice.orderId,
+          orderTotal: invoice.totalAmount,
+        })),
+    ];
+    if (!invoiceOrders.length) return {pressto: cell};
 
     // Scopes down to orders actually belonging to this store — a
     // consolidated invoice's linked orders aren't assumed to share one
     // store, so each is checked individually.
     const orders = await this.orderRepository.find({
       where: {
-        id: {inq: links.map(link => link.orderId)},
+        id: {inq: invoiceOrders.map(link => link.orderId)},
         storeId,
         status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
       } as object,
@@ -953,7 +991,8 @@ export class ShiftController {
     const validOrderIds = new Set(orders.map(order => order.id));
 
     const settledOrderIds: string[] = [];
-    for (const link of links) {
+    const settledInvoiceIds = new Set<string>();
+    for (const link of invoiceOrders) {
       if (!validOrderIds.has(link.orderId)) continue;
       const invoice = invoiceById.get(link.invoiceId);
       if (!invoice) continue;
@@ -963,15 +1002,14 @@ export class ShiftController {
       let discountContribution: number;
       let taxContribution: number;
       if (invoice.isConsolidated) {
-        const invoiceTotal = Number(invoice.totalAmount) || 0;
-        const fraction = invoiceTotal > 0 ? Math.min(1, orderTotal / invoiceTotal) : 0;
-        revenueContribution = (Number(invoice.subtotal) || 0) * fraction;
-        discountContribution = (Number(invoice.discount) || 0) * fraction;
-        taxContribution = ((Number(invoice.cgst) || 0) + (Number(invoice.sgst) || 0)) * fraction;
+        revenueContribution = orderTotal;
+        discountContribution = 0;
+        taxContribution = 0;
       } else {
         revenueContribution = Number(invoice.subtotal) || 0;
         discountContribution = Number(invoice.discount) || 0;
-        taxContribution = (Number(invoice.cgst) || 0) + (Number(invoice.sgst) || 0);
+        taxContribution =
+          (Number(invoice.cgst) || 0) + (Number(invoice.sgst) || 0);
       }
 
       cell.revenue += revenueContribution;
@@ -979,9 +1017,11 @@ export class ShiftController {
       cell.taxes += taxContribution;
       cell.totalSales += orderTotal;
       settledOrderIds.push(link.orderId);
+      settledInvoiceIds.add(invoice.id);
     }
 
     cell.tickets = settledOrderIds.length;
+    cell.invoices = settledInvoiceIds.size;
     if (settledOrderIds.length) {
       const items = await this.orderItemRepository.find({
         where: {orderId: {inq: settledOrderIds}} as object,
@@ -1002,19 +1042,15 @@ export class ShiftController {
   }
 
   // Today's RETURN activity — SalesReturn rows approved within this
-  // shift's window, regardless of which day the original order was
-  // placed. Independent of resolveRevenue() above, not subtracted from it.
-  private async resolveSalesReturn(
-    storeId: string,
-    from: Date,
-    to: Date,
-  ): Promise<object> {
+  // shift's window, regardless of when the original order was invoiced.
+  private async resolveSalesReturn(storeId: string, from: Date, to: Date) {
     const emptyCell = {
       revenue: 0,
       discount: 0,
       taxes: 0,
       totalSales: 0,
       tickets: 0,
+      invoices: 0,
       items: 0,
       services: 0,
     };
@@ -1024,8 +1060,8 @@ export class ShiftController {
     });
     const returns = approvedReturns.filter(salesReturn => {
       const resolvedAt =
-        salesReturn.resolvedAt ||
-        salesReturn.updatedAt ||
+        salesReturn.resolvedAt ??
+        salesReturn.updatedAt ??
         salesReturn.createdAt;
       if (!resolvedAt) return false;
       const resolvedTime = new Date(resolvedAt).getTime();
@@ -1035,7 +1071,13 @@ export class ShiftController {
         resolvedTime <= to.getTime()
       );
     });
-    if (!returns.length) return {pressto: emptyCell};
+    const revenueAdjustment = {
+      revenue: 0,
+      discount: 0,
+      taxes: 0,
+      totalSales: 0,
+    };
+    if (!returns.length) return {pressto: emptyCell, revenueAdjustment};
 
     // SalesReturn carries no storeId of its own — resolve it via the
     // order it belongs to and filter down to this shift's store.
@@ -1048,10 +1090,61 @@ export class ShiftController {
     const matched = returns.filter(
       r => storeIdByOrderId.get(r.orderId) === storeId,
     );
-    if (!matched.length) return {pressto: emptyCell};
+    if (!matched.length) return {pressto: emptyCell, revenueAdjustment};
 
-    // Same GST-unwind formula SalesReturnController.approve() already uses
-    // — creditAmount is stored tax-inclusive, split back to revenue/taxes.
+    const invoiceLinks = await this.invoiceOrderLinkRepository.find({
+      where: {
+        orderId: {inq: [...new Set(matched.map(r => r.orderId))]},
+      } as object,
+      fields: {invoiceId: true, orderId: true} as object,
+    });
+    const invoiceIdByOrderId = new Map(
+      invoiceLinks.map(link => [link.orderId, link.invoiceId]),
+    );
+    const unlinkedOrderIds = [
+      ...new Set(
+        matched
+          .filter(r => !r.invoiceId && !invoiceIdByOrderId.has(r.orderId))
+          .map(r => r.orderId),
+      ),
+    ];
+    const directInvoices = unlinkedOrderIds.length
+      ? await this.invoiceRepository.find({
+          where: {orderId: {inq: unlinkedOrderIds}} as object,
+          fields: {
+            id: true,
+            orderId: true,
+            createdAt: true,
+            isConsolidated: true,
+          } as object,
+        })
+      : [];
+    const directInvoiceIdByOrderId = new Map(
+      directInvoices
+        .filter(invoice => !invoice.isConsolidated)
+        .map(invoice => [invoice.orderId, invoice.id]),
+    );
+    const invoiceIdFor = (orderId: string, invoiceId?: string) =>
+      invoiceId ??
+      invoiceIdByOrderId.get(orderId) ??
+      directInvoiceIdByOrderId.get(orderId);
+    const invoiceIds = [
+      ...new Set(
+        matched
+          .map(r => invoiceIdFor(r.orderId, r.invoiceId))
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    const invoices = invoiceIds.length
+      ? await this.invoiceRepository.find({
+          where: {id: {inq: invoiceIds}} as object,
+          fields: {id: true, createdAt: true, isConsolidated: true} as object,
+        })
+      : [];
+    const invoiceById = new Map(invoices.map(invoice => [invoice.id, invoice]));
+
+    // The return lines carry the discounted pre-tax value. creditAmount may
+    // include GST for a paid order, or be pre-tax for an unpaid one.
     const gstConfig = await this.gstConfigRepository.findOne({
       where: {isActive: true, isDeleted: false} as object,
     });
@@ -1061,16 +1154,66 @@ export class ShiftController {
 
     const cell = {...emptyCell};
     const ticketIds = new Set<string>();
+    const returnedInvoiceIds = new Set<string>();
     // discount stays 0 — SalesReturn tracks no discount component at all,
     // a known data gap, not a bug (flagged in the plan for this feature).
     const quantityByOrderItemId = new Map<string, number>();
     for (const salesReturn of matched) {
       ticketIds.add(salesReturn.orderId);
       const credit = Number(salesReturn.creditAmount) || 0;
-      const preTax = gstRate > 0 ? credit / (1 + gstRate / 100) : credit;
+      const returnedItems = (salesReturn.returnedItems ?? []) as Array<{
+        amount?: number;
+        originalAmount?: number;
+      }>;
+      const taxable = returnedItems.reduce(
+        (sum, item) => sum + (Number(item.amount) || 0),
+        0,
+      );
+      const preTax = returnedItems.length
+        ? taxable
+        : gstRate > 0
+          ? credit / (1 + gstRate / 100)
+          : credit;
       cell.revenue += preTax;
       cell.taxes += credit - preTax;
       cell.totalSales += credit;
+      const invoiceId = invoiceIdFor(
+        salesReturn.orderId,
+        salesReturn.invoiceId,
+      );
+      const invoice = invoiceId ? invoiceById.get(invoiceId) : undefined;
+      if (invoice) returnedInvoiceIds.add(invoice.id);
+      const invoiceDate = invoice?.createdAt;
+      if (
+        invoiceDate &&
+        new Date(invoiceDate).getTime() <=
+          new Date(
+            salesReturn.resolvedAt ??
+              salesReturn.updatedAt ??
+              salesReturn.createdAt!,
+          ).getTime()
+      ) {
+        if (invoice.isConsolidated) {
+          // The on-account link stores this order's due amount. It is reduced
+          // on approval, so only a prior-shift invoice needs a deduction here.
+          if (new Date(invoiceDate).getTime() < from.getTime()) {
+            revenueAdjustment.revenue += credit;
+            revenueAdjustment.totalSales += credit;
+          }
+        } else if (new Date(invoiceDate).getTime() < from.getTime()) {
+          revenueAdjustment.totalSales += credit;
+          // Approval edits the invoice itself, so current-shift invoice
+          // revenue already includes its return. Older invoice revenue does not.
+          const gross = returnedItems.reduce(
+            (sum, item) =>
+              sum + (Number(item.originalAmount ?? item.amount) || 0),
+            0,
+          );
+          revenueAdjustment.revenue += gross;
+          revenueAdjustment.discount += Math.max(0, gross - taxable);
+          revenueAdjustment.taxes += Math.round(taxable * gstRate) / 100;
+        }
+      }
 
       for (const entry of (salesReturn.returnedItems ?? []) as Array<{
         orderItemId?: string;
@@ -1086,6 +1229,7 @@ export class ShiftController {
       }
     }
     cell.tickets = ticketIds.size;
+    cell.invoices = returnedInvoiceIds.size;
 
     if (quantityByOrderItemId.size) {
       const orderItems = await this.orderItemRepository.find({
@@ -1101,7 +1245,7 @@ export class ShiftController {
       }
     }
 
-    return {pressto: cell};
+    return {pressto: cell, revenueAdjustment};
   }
 
   // ─── Close ────────────────────────────────────────────────────────────────
@@ -1166,11 +1310,10 @@ export class ShiftController {
       );
     }
     const now = new Date();
-    const orderSummary = await this.resolveOrderSummary(
-      shift.storeId,
-      shift.openedAt,
-      now,
-    );
+    const [{revenue, salesReturn}, orderSummary] = await Promise.all([
+      this.resolveNetRevenue(shift.storeId, shift.openedAt, now),
+      this.resolveOrderSummary(shift.storeId, shift.openedAt, now),
+    ]);
 
     await this.shiftRepository.updateById(id, {
       status: ShiftStatus.CLOSED,
@@ -1178,7 +1321,7 @@ export class ShiftController {
       closureNo: shift.openingNo,
       closingUserId: userId,
       closingUserName,
-      closing: {...closing, orderSummary},
+      closing: {...closing, revenue, salesReturn, orderSummary},
     });
 
     const updated = await this.shiftRepository.findById(id);

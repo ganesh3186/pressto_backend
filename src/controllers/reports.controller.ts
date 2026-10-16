@@ -212,15 +212,13 @@ export class ReportsController {
   async consolidatedDailySales(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
+    @param.query.string('storeIds') storeIds?: string,
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
-    // "Consolidated" means across every store the caller can see, so
-    // unlike the per-store reports this one does not force a storeId —
-    // omitting it is the normal case, not an error.
     const report = await this.reportsService.buildConsolidatedDailySales({
-      storeIds: await this.resolveStoreIdsAllowingAll(currentUser, storeId),
+      storeIds: await this.resolveReportStoreIds(currentUser, storeId, storeIds),
       from,
       to,
     });
