@@ -8,6 +8,7 @@ import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {ApprovalRequest} from '../models/approval-request.model';
+import {ReprocessReason, REPROCESS_REASON_LABELS} from '../models/reprocess-reason.enum';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
 import {
@@ -176,6 +177,17 @@ export class ApprovalController {
     if (req.entityType === 'order') {
       const order = await this.orderRepo.findOne({where: {id: req.entityId}});
       const metadata = (req.metadata ?? {}) as Record<string, unknown>;
+      const reasonCode = req.type === ApprovalRequestType.REPROCESS && typeof metadata.reason === 'string'
+        ? metadata.reason
+        : '';
+      const reasonLabel = Object.values(ReprocessReason).includes(reasonCode as ReprocessReason)
+        ? REPROCESS_REASON_LABELS[reasonCode as ReprocessReason]
+        : reasonCode;
+      // Keep requestReason as the original remarks for editing/audit consumers.
+      // Derive the table text from metadata so older requests are fixed too.
+      const displayReason = reasonLabel
+        ? [...new Set([reasonLabel, req.requestReason?.trim()].filter(Boolean))].join(' — ')
+        : req.requestReason;
       const garmentIds = Array.isArray(metadata.garmentIds)
         ? (metadata.garmentIds as string[])
         : [];
@@ -221,6 +233,7 @@ export class ApprovalController {
             ', ',
           ) || null,
         reprocessReason: metadata.reason ?? null,
+        displayReason: displayReason ?? null,
         requestSource: metadata.source ?? null,
         // Distinct from requestSource above (who raised it: customer vs
         // store) — this is how the customer got in touch, and whether the

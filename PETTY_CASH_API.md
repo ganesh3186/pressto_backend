@@ -158,6 +158,14 @@ Permission: `petty_cash:read`. Both params optional.
 
 Ordered `expenseDate DESC`.
 
+For server pagination, add `page=1&limit=10` (page is one-based; limit is 1–100).
+Store and status filters apply before pagination. The paginated response includes
+`entries`, `count` (all matching entries), `page`, `limit`, and
+`counts: {pending, approved, rejected}`. Summary counts use the caller's store
+scope and selected store, independently of the selected status and page.
+Equal expense dates are ordered by `createdAt DESC`, then `id DESC`.
+Omitting both page and limit preserves the existing unpaginated response below.
+
 **Response `200`**
 ```json
 { "entries": [ { "...same shape as §4's entry..." } ] }

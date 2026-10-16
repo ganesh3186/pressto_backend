@@ -225,15 +225,41 @@ export class PickupHandoverController {
   @authorize({roles: ['super_admin'], permissions: ['pickup_request:read']})
   @get('/pickup-handovers')
   @response(200, {description: 'Store-targeted pickup handover batches'})
-  async find(@param.query.string('status') status?: PickupHandoverStatus): Promise<object> {
-    const handovers = await this.handoverRepo.find({
-      where: {
-        handoverToType: PickupHandoverTargetType.STORE,
-        isDeleted: false,
-        status: status ?? PickupHandoverStatus.PENDING,
-      } as object,
-      order: ['submittedAt DESC'],
-    });
+  async find(
+    @param.query.string('status') status?: PickupHandoverStatus,
+    @param.query.number('page') page?: number,
+    @param.query.number('limit') limit?: number,
+    @param.query.string('orderBy') orderBy = 'submittedAt',
+    @param.query.string('order') order = 'desc',
+  ): Promise<object> {
+    const paginated = page !== undefined || limit !== undefined;
+    const currentPage = page ?? 1;
+    const pageSize = limit ?? 10;
+    const skip = (currentPage - 1) * pageSize;
+    if (paginated && (
+      !Number.isSafeInteger(currentPage) || currentPage < 1 ||
+      !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100 ||
+      !Number.isSafeInteger(skip)
+    )) {
+      throw new HttpErrors.BadRequest('page must be a positive integer and limit must be between 1 and 100.');
+    }
+    if (!['handoverNumber', 'riderName', 'itemCount', 'submittedAt', 'confirmedAt'].includes(orderBy) ||
+      !['asc', 'desc'].includes(order)) {
+      throw new HttpErrors.BadRequest('Invalid handover sort field or direction.');
+    }
+    const where = {
+      handoverToType: PickupHandoverTargetType.STORE,
+      isDeleted: false,
+      status: status ?? PickupHandoverStatus.PENDING,
+    };
+    const [handovers, total] = await Promise.all([
+      this.handoverRepo.find({
+        where,
+        order: [`${orderBy} ${order.toUpperCase()}`, 'createdAt DESC', 'id DESC'],
+        ...(paginated ? {limit: pageSize, skip} : {}),
+      }),
+      this.handoverRepo.count(where),
+    ]);
     const handoverIds = handovers.map(h => h.id);
     const rawItems = handoverIds.length
       ? await this.handoverItemRepo.find({where: {pickupHandoverId: {inq: handoverIds}} as object})
@@ -246,7 +272,10 @@ export class PickupHandoverController {
       itemsByHandover.set(item.pickupHandoverId, list);
     }
 
-    return {handovers: handovers.map(h => ({...h, items: itemsByHandover.get(h.id) ?? []}))};
+    return {
+      handovers: handovers.map(h => ({...h, items: itemsByHandover.get(h.id) ?? []})),
+      totalCount: total.count,
+    };
   }
 
   // ─── Resolve a scanned code before receiving ─────────────────────────────
