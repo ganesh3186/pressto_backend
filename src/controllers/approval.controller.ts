@@ -185,7 +185,7 @@ export class ApprovalController {
         : reasonCode;
       // Keep requestReason as the original remarks for editing/audit consumers.
       // Derive the table text from metadata so older requests are fixed too.
-      const displayReason = reasonLabel
+      const displayReason = reasonLabel && reasonCode !== ReprocessReason.OTHER
         ? [...new Set([reasonLabel, req.requestReason?.trim()].filter(Boolean))].join(' — ')
         : req.requestReason;
       const garmentIds = Array.isArray(metadata.garmentIds)
