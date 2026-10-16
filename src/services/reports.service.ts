@@ -611,8 +611,7 @@ export class ReportsService {
    *
    * A consolidated invoice can span more than one store (its linked
    * orders aren't required to share one) — split per store by each
-   * store's own share of the invoice's total, same proration
-   * ShiftController.resolveRevenue() already uses for Revenue, so a
+   * linked order's orderTotal, as ShiftController.resolveRevenue() does, so a
    * store-scoped run of this report never shows money belonging to a
    * different store.
    */
@@ -1222,15 +1221,9 @@ export class ReportsService {
    * resolveSalesReturn() — not recomputed here, so this can't drift from
    * what the cashier actually saw on their closing screen).
    *
-   * PSB vs P2D revenue is the one figure closing time never split out —
-   * resolveRevenue() sums every order into a single `pressto` bucket
-   * regardless of channel. Recomputed here keyed and prorated exactly like
-   * resolveRevenue() itself (by invoice generation date, never order
-   * createdAt or payment date — see resolveRevenue()'s own doc comment,
-   * confirmed directly with the finance team), split by orderType, so
-   * PSB + PMU(always 0 — see OTHER_PAYMENT_MODES's neighboring comment,
-   * nothing in the schema records a PMU channel) + P2D reconciles exactly
-   * against the shift's own stored `revenue` total.
+   * PSB vs P2D is split by invoice generation date and linked order type.
+   * The total Revenue column comes from the saved closure snapshot, which
+   * also includes returns approved in this shift on earlier invoices.
    *
    * "Other Payment Mode" is the other figure the stored snapshot can't
    * answer — Shift.closing.collections only ever buckets cash/card/UPI/
@@ -1306,12 +1299,8 @@ export class ReportsService {
       : [];
     const orderById = new Map(orders.map(o => [o.id, o]));
 
-    // PSB/P2D must be keyed and prorated exactly like ShiftController's own
-    // resolveRevenue() (invoice generation date, not order createdAt or
-    // payment date; a consolidated invoice's figures split by each linked
-    // order's orderTotal ÷ the invoice's totalAmount) or these two stop
-    // reconciling against the shift's stored revenue total — see this
-    // method's doc comment. A separate fetch from `orders`/`payments` above
+    // PSB/P2D uses the same invoice-order values as ShiftController.
+    // A separate fetch from `orders`/`payments` above
     // because the order set differs: an order created (and paid) weeks ago
     // but invoiced inside this window belongs here even though its
     // createdAt falls outside [earliestOpen, latestClose].
@@ -1322,6 +1311,7 @@ export class ReportsService {
       } as object,
       fields: {
         id: true,
+        orderId: true,
         subtotal: true,
         discount: true,
         cgst: true,
@@ -1338,7 +1328,18 @@ export class ReportsService {
           fields: {invoiceId: true, orderId: true, orderTotal: true} as object,
         })
       : [];
-    const revenueOrderIds = [...new Set(revenueLinks.map(link => link.orderId))];
+    const linkedInvoiceIds = new Set(revenueLinks.map(link => link.invoiceId));
+    const invoiceOrders = [
+      ...revenueLinks,
+      ...revenueInvoices
+        .filter(invoice => !invoice.isConsolidated && !linkedInvoiceIds.has(invoice.id))
+        .map(invoice => ({
+          invoiceId: invoice.id,
+          orderId: invoice.orderId,
+          orderTotal: invoice.totalAmount,
+        })),
+    ];
+    const revenueOrderIds = [...new Set(invoiceOrders.map(link => link.orderId))];
     const revenueOrders = revenueOrderIds.length
       ? await this.orderRepo.find({
           where: {
@@ -1374,7 +1375,7 @@ export class ReportsService {
 
       let psbRevenue = 0;
       let p2dRevenue = 0;
-      for (const link of revenueLinks) {
+      for (const link of invoiceOrders) {
         const order = revenueOrderById.get(link.orderId);
         if (!order || order.storeId !== shift.storeId) continue;
         const invoice = revenueInvoiceById.get(link.invoiceId);
@@ -1387,14 +1388,9 @@ export class ReportsService {
         if (invoiceCreatedAt == null || invoiceCreatedAt < windowStart || invoiceCreatedAt > windowEnd) continue;
 
         const orderTotal = Number(link.orderTotal) || 0;
-        let value: number;
-        if (invoice.isConsolidated) {
-          const invoiceTotal = Number(invoice.totalAmount) || 0;
-          const fraction = invoiceTotal > 0 ? Math.min(1, orderTotal / invoiceTotal) : 0;
-          value = (Number(invoice.subtotal) || 0) * fraction;
-        } else {
-          value = Number(invoice.subtotal) || 0;
-        }
+        const value = invoice.isConsolidated
+          ? orderTotal
+          : Number(invoice.subtotal) || 0;
         if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
         else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
       }
