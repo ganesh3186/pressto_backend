@@ -106,19 +106,15 @@ export class OrderSummaryPdfService {
     const base = new URL(
       configuredBase ? configuredBase : (process.env.API_ENDPOINT ?? ''),
     );
-    const local = ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname);
-    const developmentLocal = local && process.env.NODE_ENV !== 'production';
     if (
-      (base.protocol !== 'https:' &&
-        !(developmentLocal && base.protocol === 'http:')) ||
+      !['http:', 'https:'].includes(base.protocol) ||
       base.username ||
       base.password ||
       base.search ||
-      base.hash ||
-      (local && !developmentLocal)
+      base.hash
     ) {
       throw new Error(
-        'PUBLIC_DOCUMENT_BASE_URL must be a public HTTPS backend URL.',
+        'PUBLIC_DOCUMENT_BASE_URL must be an HTTP or HTTPS backend URL without credentials, query or fragment.',
       );
     }
     return base;
