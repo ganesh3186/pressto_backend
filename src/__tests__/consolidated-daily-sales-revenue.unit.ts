@@ -201,6 +201,7 @@ describe('consolidated daily sales revenue', () => {
     expect(report.rows).to.have.length(1);
     expect(report.rows[0]).to.containEql({
       id: 'on-account-invoice:on-account:store-a',
+      invoiceNo: 'INV-1',
       amount: 40.25,
     });
     expect(report.totals).to.containEql({amount: 40.25});

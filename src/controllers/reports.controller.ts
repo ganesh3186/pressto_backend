@@ -187,10 +187,15 @@ export class ReportsController {
     @param.query.string('dateTo') dateTo?: string,
     @param.query.number('limit') limit?: number,
     @param.query.number('skip') skip?: number,
+    @param.query.string('state') state?: string,
+    @param.query.string('storeIds') storeIds?: string,
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
     const report = await this.reportsService.buildSalesGst({
-      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      storeIds: state
+        ? await this.resolveReportStoreIds(currentUser, storeId, storeIds)
+        : await this.resolveStoreIds(currentUser, storeId),
+      state,
       from,
       to,
       limit: clampLimit(limit),
@@ -271,6 +276,7 @@ export class ReportsController {
         'Use either storeId or storeIds, not both.',
       );
     }
+    if (storeIds === '') return [];
 
     const selected = [...new Set(storeIds.split(',').map(id => id.trim()))];
     if (selected.some(id => !id)) {
