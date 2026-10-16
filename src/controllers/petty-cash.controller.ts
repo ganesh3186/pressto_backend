@@ -1,10 +1,11 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {repository, Where} from '@loopback/repository';
 import {get, HttpErrors, param, post, del, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PettyCashStatus} from '../models/petty-cash-status.enum';
+import {PettyCashRegisterEntry} from '../models/petty-cash-register-entry.model';
 import {
   EmployeeRepository,
   PettyCashFinanceEntryRepository,
@@ -228,19 +229,58 @@ export class PettyCashController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
     @param.query.string('status') status?: PettyCashStatus,
+    @param.query.number('page') page?: number,
+    @param.query.number('limit') limit?: number,
   ): Promise<object> {
+    const paginated = page !== undefined || limit !== undefined;
+    const currentPage = page ?? 1;
+    const pageSize = limit ?? 10;
+    const skip = (currentPage - 1) * pageSize;
+    if (
+      paginated && (
+        !Number.isSafeInteger(currentPage) || currentPage < 1 ||
+        !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100 ||
+        !Number.isSafeInteger(skip)
+      )
+    ) {
+      throw new HttpErrors.BadRequest(
+        'page must be a positive integer and limit must be between 1 and 100.',
+      );
+    }
     const scope = await this.storeScopeService.resolve(currentUser);
     const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
 
     const and: object[] = [{isDeleted: false}];
     if (narrowedStoreIds) and.push({storeId: {inq: narrowedStoreIds}});
+    const storeWhere = {and: [...and]} as Where<PettyCashRegisterEntry>;
     if (status) and.push({status});
+    const where = {and} as Where<PettyCashRegisterEntry>;
 
-    const entries = await this.registerRepo.find({
-      where: {and} as object,
-      order: ['expenseDate DESC'],
+    const entriesPromise = this.registerRepo.find({
+      where,
+      order: ['expenseDate DESC', 'createdAt DESC', 'id DESC'],
+      ...(paginated ? {limit: pageSize, skip} : {}),
     });
-    return {entries};
+    // Existing Register callers can continue requesting the unpaginated list.
+    if (!paginated) return {entries: await entriesPromise};
+    const [entries, total, pending, approved, rejected] = await Promise.all([
+      entriesPromise,
+      this.registerRepo.count(where),
+      this.registerRepo.count({and: [storeWhere, {status: PettyCashStatus.PENDING}]}),
+      this.registerRepo.count({and: [storeWhere, {status: PettyCashStatus.APPROVED}]}),
+      this.registerRepo.count({and: [storeWhere, {status: PettyCashStatus.REJECTED}]}),
+    ]);
+    return {
+      entries,
+      count: total.count,
+      page: currentPage,
+      limit: pageSize,
+      counts: {
+        pending: pending.count,
+        approved: approved.count,
+        rejected: rejected.count,
+      },
+    };
   }
 
   @authenticate('jwt')

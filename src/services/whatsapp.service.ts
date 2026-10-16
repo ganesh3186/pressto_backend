@@ -1,4 +1,5 @@
-import {BindingScope, Getter, injectable} from '@loopback/core';
+import {BindingScope, Getter, inject, injectable} from '@loopback/core';
+import {OrderSummaryPdfService} from './order-summary-pdf.service';
 import {repository} from '@loopback/repository';
 import axios from 'axios';
 import {Order, PaymentTransaction, PickupRequest} from '../models';
@@ -27,7 +28,7 @@ import type {
 const TEMPLATES = {
   pulse_pickupreq: {parameters: 4, document: false},
   pulse_riderscheduled: {parameters: 4, document: false},
-  pulse_ordercreated: {parameters: 5, document: true},
+  pulse_ordercreated: {parameters: 6, document: false},
   pulse_paymentreceived: {parameters: 6, document: true},
   pulse_readyforcollection: {parameters: 5, document: false},
   pulse_deliveredcomplete: {parameters: 6, document: true},
@@ -97,6 +98,8 @@ export class WhatsAppService {
     private getInvoices: Getter<InvoiceRepository>,
     @repository.getter('PickupDeliverySlotRepository')
     private getPickupSlots: Getter<PickupDeliverySlotRepository>,
+    @inject('services.order-summary-pdf')
+    private orderSummaries: OrderSummaryPdfService,
   ) {}
 
   private warnOnce(key: string, message: string) {
@@ -211,7 +214,7 @@ export class WhatsAppService {
   }
 
   private async document(
-    kind: 'TICKET' | 'RECEIPT' | 'INVOICE',
+    kind: 'RECEIPT' | 'INVOICE',
     order: Order,
     paymentId = '',
   ): Promise<WhatsAppTemplateMedia | undefined> {
@@ -468,7 +471,11 @@ export class WhatsAppService {
     orderId: string,
     event: 'created' | 'ready' | 'delivered' | 'collected',
   ) {
-    if (event !== 'ready' && !this.attachmentsEnabled()) return;
+    if (
+      (event === 'delivered' || event === 'collected') &&
+      !this.attachmentsEnabled()
+    )
+      return;
     await this.once(
       'order:' + orderId + ':' + (event === 'collected' ? 'delivered' : event),
       async () => {
@@ -496,7 +503,8 @@ export class WhatsAppService {
         const recipient = await this.customer(order.customerId);
         if (!recipient) return undefined;
         const items = await this.items(order.id);
-        if (event === 'created')
+        if (event === 'created') {
+          const ticketUrl = await this.orderSummaries.createForOrder(order.id);
           return {
             to: recipient.to,
             templateId: 'pulse_ordercreated',
@@ -506,9 +514,12 @@ export class WhatsAppService {
               items,
               this.money(order.totalAmount),
               this.date(order.deliveryDate),
+              // Send the full URL as text, without HTML/Markdown link syntax.
+              // A URL button requires a separately approved template component.
+              ticketUrl,
             ],
-            media: await this.document('TICKET', order),
           };
+        }
         const due = await this.balance(order);
         if (event === 'ready') {
           const store = await (await this.getStores()).findById(order.storeId);

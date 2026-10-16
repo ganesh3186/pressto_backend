@@ -11,18 +11,33 @@ WHATSAPP_ATTACHMENTS_ENABLED defaults to false. These approved templates send in
 - pulse_pickupreq: after a customer pickup request is saved successfully.
 - pulse_riderscheduled: after rider assignment commits, when the pickup date is today in Asia/Kolkata.
 - pulse_readyforcollection: after an order successfully changes to READY.
+- pulse_ordercreated: after a new order commits. Six body parameters: customer name, ticket number, items, amount, expected delivery date, ticket-summary HTTPS PDF URL.
 - pulse_walletrecharge: after an admin recharge or a confirmed customer/gateway recharge succeeds. Parameters: customer name, recharge amount, date, available balance.
 - pulse_walletredeem: after wallet payment for a ticket commits, including checkout and later payments. Parameters: customer name, ticket number, amount redeemed, date, available balance.
 - pulse_paymentlink: after an order payment link is created/reused. Parameters: customer name, ticket number, requested payment amount, real Razorpay HTTPS payment URL.
 
-All six use body parameters only; no document/header component is sent.
+All seven use body parameters only; no document/header component is sent.
 The rider-scheduled time-slot parameter uses the referenced PickupDeliverySlot startTime and endTime (for example, 14:00 - 15:00), rather than its label. Legacy requests without an available slot/time range show Not specified and log a generic warning.
 Existing admin/customer/rider entry points use the business services described below.
 No new public message-sending endpoint is introduced; existing business APIs trigger the notifications.
-The four attachment-based templates are skipped before loading their customer/document data, even if PDF URLs are configured.
+The three attachment-based templates are skipped before loading their customer/document data, even if PDF URLs are configured.
 Direct sendTemplateMessage calls also enforce this restriction. Text-only templates reject unexpected media.
 Set WHATSAPP_ENABLED=true with a valid token to enable these notifications, then restart the backend.
 HTTP acceptance does not confirm delivery; confirm on the receiving phone or through provider delivery status.
+
+## Order-created PDF link
+
+pulse_ordercreated now uses the confirmed six-parameter text template. Its sixth parameter contains the complete PDF URL; no media field, document header or null attachment is sent.
+The backend PDF follows the frontend thermal-receipt.js ticket format: 80 mm paper with 6 mm side insets, company/store/GST header, ticket metadata, customer details, Description/HSN/Qty/Pending Qty/Rate/Amount columns, garment service/charge rows, estimated totals, payment information and receipt footer. It uses saved order financial totals and reads customer addresses, primary phone, wallet balance and brand/color names on the backend. It does not call frontend APIs or change frontend printing. Company values and the shared SAC currently mirror receipt-config.js; keep them aligned if that configuration changes.
+Parameter 6 is the raw complete URL, not an HTML anchor or Markdown link. Clickability is handled by WhatsApp, and localhost URLs may remain plain text. A localhost link also cannot open this computer from a customer's phone. Use a public HTTPS backend address for customer use. A dedicated View Ticket button requires an approved URL button in the provider template; do not add an unapproved button to the current payload.
+OrderSummaryPdfService generates a backend PDF from the existing order-detail read service and its saved financial totals, after the order commits and a customer WhatsApp recipient is found. It saves a unique PDF under the configured STORAGE_DIRECTORY/order-summaries (by default .sandbox/order-summaries), then supplies a signed HTTPS link as parameter 6. No Media rows, challan/PDF relations or UI changes are introduced. The admin panel keeps its existing receipt rendering.
+At startup the backend creates order-summaries, payment-receipts and invoices under STORAGE_DIRECTORY. Only order-summaries has a generator and signed download endpoint in this rollout; the other folders remain empty. General /files routes retain their existing behavior; folder restrictions are deferred. These routes can access generated PDFs by filename without enforcing signed-link expiry.
+Configure PUBLIC_DOCUMENT_BASE_URL with the backend base, including any proxy prefix. For development it is http://localhost:3040: HTTP loopback addresses are permitted only outside NODE_ENV=production, for opening PDFs on the same computer. Customers cannot open localhost links on their phones. Change this setting to the externally reachable HTTPS backend address when deploying; production rejects localhost. It falls back to API_ENDPOINT when unset. This setting must point to this deployment, not an arbitrary PDF or storage site. The old WHATSAPP_TICKET_DOCUMENT_URL_TEMPLATE setting is no longer used.
+Configure ORDER_SUMMARY_URL_SIGNING_SECRET with a unique random secret of at least 32 bytes. Use the same stable secret on every instance and deployment; rotating it invalidates existing links. ORDER_SUMMARY_LINK_TTL_SECONDS defaults to 604800 (7 days), accepts 60 through 31536000 seconds, and controls link expiry. The signed link grants access to that one document without an admin login, so treat it as confidential.
+GET /documents/order-summaries/{fileName}?expires=...&signature=... validates the filename, signature and expiry before reading the PDF. Invalid links return 403, expired links 410, and missing files 404. Responses are application/pdf with private/no-store caching.
+Missing/invalid configuration or generation/send failures skip the notification and log a generic error without rolling back the saved order. There is no automatic retry worker; an explicit service retry may generate another unique file. No placeholder or null URL is sent. WHATSAPP_ENABLED=false skips both PDF generation and messaging for this flow.
+Mount STORAGE_DIRECTORY on persistent storage. Multiple backend instances must share that storage and signing secret so a customer request can reach any instance. Files remain until operational cleanup; do not remove a file while its link is still needed. Local .sandbox files are not database backups and must survive redeployments.
+WHATSAPP_ATTACHMENTS_ENABLED=false does not block this text template. WHATSAPP_ENABLED=false still blocks all WhatsApp API calls.
 
 ## Wallet and PG-link behavior
 
@@ -66,17 +81,17 @@ New split/rework orders do not send a second order-created template.
 ## Attachments: confirmation required from senior/provider
 
 The provided documents list template bodies, but do not provide approved header metadata or PDF endpoints.
-The order-created, payment-received, delivered-complete and collected-complete bodies explicitly promise attachments.
-Those four notifications are deliberately disabled for the current rollout. Enabling them later requires WHATSAPP_ATTACHMENTS_ENABLED=true and a valid document URL, rather than promising a missing attachment.
+The payment-received, delivered-complete and collected-complete bodies still explicitly promise attachments.
+Those three notifications are deliberately disabled for the current rollout. Enabling them later requires WHATSAPP_ATTACHMENTS_ENABLED=true and a valid document URL, rather than promising a missing attachment.
 The service supports a WhatsApp Cloud-style document header; Tata Omni must confirm this format for the approved templates.
-Configure WHATSAPP_TICKET_DOCUMENT_URL_TEMPLATE, WHATSAPP_RECEIPT_DOCUMENT_URL_TEMPLATE and WHATSAPP_INVOICE_DOCUMENT_URL_TEMPLATE only with correct provider-accessible HTTPS PDFs.
+Configure WHATSAPP_RECEIPT_DOCUMENT_URL_TEMPLATE and WHATSAPP_INVOICE_DOCUMENT_URL_TEMPLATE only with correct provider-accessible HTTPS PDFs. Order-created summaries use their own backend generator and signed body link.
 Supported placeholders: {orderId}, {paymentId}, {invoiceId}. No authenticated admin JSON endpoint or browser blob URL is a PDF attachment.
-Prefer an existing signed short-lived document URL mechanism. This change does not invent a public invoice endpoint or generate PDFs.
+No payment-receipt or invoice PDF generator/download endpoint is implemented by this rollout.
 
 Questions for senior/provider:
-1. Do pulse_ordercreated, pulse_paymentreceived, pulse_deliveredcomplete and pulse_collectedcomplete have approved DOCUMENT headers?
+1. Do pulse_paymentreceived, pulse_deliveredcomplete and pulse_collectedcomplete have approved DOCUMENT headers?
 2. What are their exact language codes and document-header payload requirements? The supplied successful cURL uses en, but a different template.
-3. Where are the ticket, per-payment receipt and final invoice PDFs generated, and how can Tata fetch them securely?
+3. Where should per-payment receipt and final invoice PDFs be generated, and how can Tata fetch them securely? Ticket summaries are now generated by the backend; deployment must provide public HTTPS routing and persistent storage.
 4. For future-dated rider assignments, should a scheduled worker send on pickup day, or should a date-neutral template be approved? The approved text says today.
 5. What is the preferred policy for guest customers and customers without a designated WhatsApp number?
 6. Is durable delivery tracking/retry required? If so, add a transactional outbox and verified provider webhook contract.
