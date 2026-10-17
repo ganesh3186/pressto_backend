@@ -11,15 +11,21 @@ import {
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
+import {previewCreditNoteRefund} from './sales-return.controller';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
+import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {InvoiceStatus} from '../models/invoice.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
+import {RefundDueStatus} from '../models/refund-due-status.enum';
+import {RefundMethod} from '../models/refund-method.enum';
 import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
 import {SalesReturnStatus} from '../models/sales-return.model';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {Shift} from '../models/shift.model';
 import {
+  ApprovalRequestRepository,
   EmployeeRepository,
   GstTaxConfigurationRepository,
   InvoiceOrderLinkRepository,
@@ -28,6 +34,7 @@ import {
   OrderRepository,
   PaymentTransactionRepository,
   PettyCashFinanceEntryRepository,
+  RefundDueRepository,
   RiderCashHandoverRepository,
   SalesReturnRepository,
   ShiftRepository,
@@ -145,6 +152,10 @@ export class ShiftController {
     private gstConfigRepository: GstTaxConfigurationRepository,
     @repository(PaymentTransactionRepository)
     private paymentTransactionRepository: PaymentTransactionRepository,
+    @repository(ApprovalRequestRepository)
+    private approvalRequestRepository: ApprovalRequestRepository,
+    @repository(RefundDueRepository)
+    private refundDueRepository: RefundDueRepository,
     @repository(RiderCashHandoverRepository)
     private riderCashHandoverRepository: RiderCashHandoverRepository,
     @repository(WalletRechargeRequestRepository)
@@ -678,7 +689,13 @@ export class ShiftController {
 
     const orders = await this.orderRepository.find({
       where: {storeId: shift.storeId} as object,
-      fields: {id: true, status: true} as object,
+      fields: {
+        id: true,
+        status: true,
+        totalAmount: true,
+        allocatedPayment: true,
+        parentOrderId: true,
+      } as object,
     });
     const orderIds = orders
       .filter(
@@ -716,7 +733,7 @@ export class ShiftController {
         [PaymentMode.ON_ACCOUNT]: null,
       };
       for (const t of transactions.filter(
-        t => t.transactionType !== 'refund',
+        transaction => transaction.transactionType !== 'refund',
       )) {
         const bucket = bucketOf[t.paymentMode];
         if (bucket) collections[bucket] += Number(t.amount) || 0;
@@ -729,6 +746,13 @@ export class ShiftController {
             t.paymentMode === PaymentMode.CASH,
         )
         .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+      // shortcut: A payout approved in a later shift can appear in both closures; link payouts to requests if cross-shift attribution is needed.
+      cashReimbursement += await this.pendingCashReimbursement(
+        orders,
+        orderIds,
+        shift.openedAt,
+        windowEnd,
+      );
     }
 
     const receivedFromRiders = await this.riderCashHandoverRepository.find({
@@ -803,7 +827,7 @@ export class ShiftController {
       collections,
       walletCollections,
       cashReceived,
-      // Cash refunds are shown separately and reduce the expected cash in till.
+      // Include requested cash refunds while their approval is still pending.
       reimbursement: cashReimbursement,
       bankingSupposed,
       pettyCash,
@@ -811,6 +835,77 @@ export class ShiftController {
       salesReturn,
       orderSummary,
     };
+  }
+
+  private async pendingCashReimbursement(
+    orders: Awaited<ReturnType<OrderRepository['find']>>,
+    orderIds: string[],
+    from: Date,
+    to: Date,
+  ): Promise<number> {
+    const [creditNotes, refundDues] = await Promise.all([
+      this.salesReturnRepository.find({
+        where: {
+          orderId: {inq: orderIds},
+          status: SalesReturnStatus.PENDING,
+          refundMethod: RefundMethod.CASH,
+          createdAt: {between: [from, to]},
+        },
+      }),
+      this.refundDueRepository.find({
+        where: {
+          orderId: {inq: orderIds},
+          status: RefundDueStatus.REQUESTED,
+          method: RefundMethod.CASH,
+        },
+      }),
+    ]);
+    let total = 0;
+    const orderById = new Map(orders.map(order => [order.id, order]));
+    for (const note of creditNotes) {
+      const order = orderById.get(note.orderId);
+      if (!order) continue;
+      const [payments, unpaidDues] = await Promise.all([
+        this.paymentTransactionRepository.find({
+          where: {orderId: note.orderId},
+        }),
+        this.refundDueRepository.find({
+          where: {
+            orderId: note.orderId,
+            status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED]},
+          },
+        }),
+      ]);
+      total += previewCreditNoteRefund(
+        note,
+        order,
+        payments,
+        unpaidDues,
+      ).refundAmount;
+    }
+    if (refundDues.length) {
+      const approvalIds = refundDues.flatMap(refund =>
+        refund.approvalRequestId ? [refund.approvalRequestId] : [],
+      );
+      if (!approvalIds.length) return total;
+      const approvals = await this.approvalRequestRepository.find({
+        where: {
+          id: {inq: approvalIds},
+          type: ApprovalRequestType.REFUND_PAYOUT,
+          status: ApprovalRequestStatus.PENDING,
+          createdAt: {between: [from, to]},
+        },
+      });
+      const pendingIds = new Set(approvals.map(approval => approval.id));
+      total += refundDues
+        .filter(
+          refund =>
+            refund.approvalRequestId &&
+            pendingIds.has(refund.approvalRequestId),
+        )
+        .reduce((sum, refund) => sum + (Number(refund.amount) || 0), 0);
+    }
+    return total;
   }
 
   private async resolveNetRevenue(storeId: string, from: Date, to: Date) {
