@@ -4167,7 +4167,29 @@ export class OrderService {
       });
     }
 
-    return {...handover, customerContact: contact, familyMember};
+    const [staff, deliveredHistory] = await Promise.all([
+      this.userRepo.findOne({
+        where: {id: handover.handedOverBy},
+        fields: {id: true, fullName: true},
+      }),
+      this.statusHistoryRepo.findOne({
+        where: {orderId, status: OrderStatus.DELIVERED},
+        order: ['changedAt DESC'],
+      }),
+    ]);
+    // Both collection channels share order_handover. The counter workflow
+    // records this status-history marker, including for existing handovers.
+    const isInStoreHandover =
+      deliveredHistory?.changedBy === handover.handedOverBy &&
+      (deliveredHistory?.remarks?.startsWith('In-store handover to ') ?? false);
+
+    return {
+      ...handover,
+      customerContact: contact,
+      familyMember,
+      handedOverByName: staff?.fullName ?? null,
+      isInStoreHandover,
+    };
   }
 
   private async autoCreateGarments(
