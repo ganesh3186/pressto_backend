@@ -170,16 +170,22 @@ export class PickupHandoverController {
     const mediaUrlById = new Map(mediaRecords.map(m => [m.id, m.fileUrl]));
     const toUrls = (ids?: string[]) => (ids ?? []).map(id => mediaUrlById.get(id)).filter((url): url is string => Boolean(url));
 
-    // Service category per actualItemsByService line — batch service -> serviceCategory
+    // Service category per confirmed or estimated line — batch service -> serviceCategory
     // the same two-hop way _buildReworkContexts resolves item/service names above.
     const serviceIds = [
-      ...new Set(pickups.flatMap(p => (p.actualItemsByService ?? []).map(line => line.serviceId).filter(Boolean))),
+      ...new Set(pickups.flatMap(p => [
+        ...(p.actualItemsByService ?? []).map(line => line.serviceId),
+        ...(p.itemCategoryEstimate ?? []).map(line => line.serviceId),
+      ]).filter((id): id is string => Boolean(id))),
     ];
     const services = serviceIds.length
       ? await this.serviceRepo.find({where: {id: {inq: serviceIds}} as object})
       : [];
     const serviceCategoryIdByServiceId = new Map(services.map(s => [s.id, s.serviceCategoryId]));
-    const categoryIds = [...new Set(services.map(s => s.serviceCategoryId).filter(Boolean))];
+    const categoryIds = [...new Set([
+      ...services.map(s => s.serviceCategoryId),
+      ...pickups.flatMap(p => (p.itemCategoryEstimate ?? []).map(line => line.itemCategoryId)),
+    ].filter(Boolean))];
     const categories = categoryIds.length
       ? await this.serviceCategoryRepo.find({where: {id: {inq: categoryIds}} as object})
       : [];
@@ -196,7 +202,13 @@ export class PickupHandoverController {
         bagId: pickup?.bagId ?? null,
         bagNumber: pickup?.bagId ? bagNumberById.get(pickup.bagId) ?? null : null,
         itemCountEstimate: pickup?.itemCountEstimate ?? null,
-        itemCategoryEstimate: pickup?.itemCategoryEstimate ?? null,
+        itemCategoryEstimate: pickup?.itemCategoryEstimate?.map(line => {
+          const serviceCategoryId = line.serviceId ? serviceCategoryIdByServiceId.get(line.serviceId) : undefined;
+          return {
+            ...line,
+            serviceCategoryName: categoryNameById.get(serviceCategoryId ?? line.itemCategoryId) ?? null,
+          };
+        }) ?? null,
         actualItemsByService: (pickup?.actualItemsByService ?? null)?.map(line => {
           const serviceCategoryId = line.serviceId ? serviceCategoryIdByServiceId.get(line.serviceId) : undefined;
           return {
@@ -204,7 +216,7 @@ export class PickupHandoverController {
             mediaUrls: toUrls(line.mediaIds),
             bagNumber: line.bagId ? bagNumberById.get(line.bagId) ?? null : null,
             serviceCategoryId: serviceCategoryId ?? null,
-            serviceCategoryName: serviceCategoryId ? categoryNameById.get(serviceCategoryId) ?? null : null,
+            serviceCategoryName: categoryNameById.get(serviceCategoryId ?? '') ?? null,
           };
         }) ?? null,
         remarks: pickup?.remarks ?? null,
