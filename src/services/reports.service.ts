@@ -127,6 +127,7 @@ const PAYMENT_MODE_LABELS: Record<string, string> = {
   [PaymentMode.ON_ACCOUNT]: 'On Account',
   [PaymentMode.GATEWAY]: 'Gateway',
   [PaymentMode.WALLET]: 'Wallet',
+  [PaymentMode.PP_VOUCHER]: 'PP Voucher',
 };
 
 export type ModeOfPaymentRow = {
@@ -135,6 +136,7 @@ export type ModeOfPaymentRow = {
   date: Date | null;
   shiftClosureNo: string;
   ticketNo: string;
+  invoiceNo: string;
   userName: string;
   customerNameWithCode: string;
   amount: number;
@@ -470,11 +472,23 @@ export class ReportsService {
       .map(entry => entry.payment)
       .filter(Boolean) as typeof payments;
 
-    const [storeById, shiftById, customerById] = await Promise.all([
+    const [storeById, shiftById, customerById, pageInvoices] = await Promise.all([
       this.mapStores(pagePayments, orderById),
       this.mapShifts(pagePayments, orderById),
       this.mapCustomers(pagePayments, orderById),
+      pagePayments.length
+        ? this.invoiceRepo.find({
+            where: {
+              orderId: {inq: [...new Set(pagePayments.map(payment => payment.orderId))]},
+              status: InvoiceStatus.ISSUED,
+            } as object,
+            fields: {orderId: true, invoiceNumber: true} as object,
+          })
+        : [],
     ]);
+    const invoiceNumberByOrderId = new Map(
+      pageInvoices.map(invoice => [invoice.orderId, invoice.invoiceNumber]),
+    );
 
     const rows: ModeOfPaymentRow[] = pageEntries.map(entry => {
       if (entry.wallet) return entry.wallet;
@@ -503,6 +517,7 @@ export class ReportsService {
         ticketNo: onAccountInvoiceNumber
           ? `On Account - ${onAccountInvoiceNumber}`
           : order?.orderNumber ?? '—',
+        invoiceNo: onAccountInvoiceNumber ?? invoiceNumberByOrderId.get(txn.orderId) ?? '-',
         // The staff member who placed the ticket — never the customer, even
         // when placedByName is blank. Who bought it is its own column.
         userName: order?.placedByName ?? '—',
@@ -587,6 +602,7 @@ export class ReportsService {
         // and would read like a ticket number that can be looked up.
         shiftClosureNo: '—',
         ticketNo: 'Wallet Recharge',
+        invoiceNo: '-',
         // Self-service — no staff member placed this, unlike a ticket payment.
         userName: '—',
         customerNameWithCode: this.formatCustomerNameWithCode(customer),
@@ -715,6 +731,7 @@ export class ReportsService {
           // same '—' convention as a wallet top-up's shiftClosureNo.
           shiftClosureNo: '—',
           ticketNo: `On Account - ${invoice.invoiceNumber}`,
+          invoiceNo: invoice.invoiceNumber,
           userName: invoice.generatedBy
             ? (userNameById.get(String(invoice.generatedBy)) ?? '—')
             : '—',
@@ -747,7 +764,11 @@ export class ReportsService {
     if (!links.length) return result;
 
     const invoices = await this.invoiceRepo.find({
-      where: {id: {inq: [...new Set(links.map(l => l.invoiceId))]}, isConsolidated: true} as object,
+      where: {
+        id: {inq: [...new Set(links.map(l => l.invoiceId))]},
+        isConsolidated: true,
+        status: InvoiceStatus.ISSUED,
+      } as object,
       fields: {id: true, invoiceNumber: true} as object,
     });
     if (!invoices.length) return result;
@@ -1033,12 +1054,20 @@ export class ReportsService {
    * instead, since the invoice stores only aggregate tax figures, never
    * a per-item breakdown.
    */
-  async buildSalesGst(params: OrderReportParams): Promise<PagedReport<object>> {
-    const {storeIds, from, to, limit, skip} = params;
+  async buildSalesGst(params: OrderReportParams & {state?: string}): Promise<PagedReport<object>> {
+    const {storeIds, state, from, to, limit, skip} = params;
     if (!storeIds.length) return emptyPaged();
 
+    const selectedStoreIds = state
+      ? (await this.storeRepo.find({
+          where: {id: {inq: storeIds}, state} as object,
+          fields: {id: true} as object,
+        })).map(store => store.id)
+      : storeIds;
+    if (!selectedStoreIds.length) return emptyPaged();
+
     const orders = await this.orderRepo.find({
-      where: {storeId: {inq: storeIds}} as object,
+      where: {storeId: {inq: selectedStoreIds}} as object,
       fields: {
         id: true,
         storeId: true,
@@ -1067,7 +1096,7 @@ export class ReportsService {
       this.gstTaxConfigurationRepo.findOne({
         where: {isActive: true, isDeleted: false} as object,
       }),
-      this.buildStoreContext(storeIds),
+      this.buildStoreContext(selectedStoreIds),
       this.customerRepo.find({where: {id: {inq: customerIds}} as object}),
       addressIds.length
         ? this.customerAddressRepo.find({where: {id: {inq: addressIds}} as object})
