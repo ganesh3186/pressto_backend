@@ -1,11 +1,10 @@
 import {Entity, model, property} from '@loopback/repository';
 
 // Join table letting one Invoice cover several Orders — used exclusively by
-// On Account consolidated billing (see OnAccountBillingController). Every
-// *normal* invoice still has exactly one row here mirroring its own
-// Invoice.orderId; a consolidated invoice has one row per order it bills.
-// orderTotal is a snapshot of that order's contribution at generation time —
-// the invoice's own totals are the sum of these, not recomputed later.
+// On Account consolidated billing (see CustomerBillingController). Normal
+// invoices use Invoice.orderId directly; consolidated invoices have one row
+// per order they bill. orderTotal is that order's remaining invoiced amount
+// and decreases when a sales return is approved.
 @model({
   settings: {
     postgresql: {
@@ -59,4 +58,5 @@ export class InvoiceOrderLink extends Entity {
 
 export interface InvoiceOrderLinkRelations {}
 
-export type InvoiceOrderLinkWithRelations = InvoiceOrderLink & InvoiceOrderLinkRelations;
+export type InvoiceOrderLinkWithRelations = InvoiceOrderLink &
+  InvoiceOrderLinkRelations;

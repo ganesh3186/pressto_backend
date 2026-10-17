@@ -38,7 +38,7 @@ export class DashboardController {
   ) {}
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['dashboard:read']})
+  @authorize({roles: ['super_admin', 'pmu'], permissions: ['dashboard:read']})
   @get('/dashboard/store-summary')
   @response(200, {description: 'Every store dashboard panel in one payload'})
   async storeSummary(
@@ -49,20 +49,9 @@ export class DashboardController {
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
 
-    const scope = await this.storeScopeService.resolve(currentUser);
-    const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
-      storeId,
-    });
-
-    // narrowStoreIds returns null only for a global caller who asked for
-    // no particular store. Aggregating every store in the business is not
-    // something this screen is built to show (and would scan the whole
-    // orders table), so make the client pick one.
-    if (storeIds === null) {
-      throw new HttpErrors.BadRequest(
-        'Select a store — storeId is required for accounts that can see every store.',
-      );
-    }
+    // Same scoping rule (and the same pmu-must-pick-a-store case) as the
+    // other three dashboard endpoints — see resolveStoreIds().
+    const storeIds = await this.resolveStoreIds(currentUser, storeId);
 
     const summary = await this.dashboardService.buildStoreSummary(
       storeIds,
@@ -82,7 +71,7 @@ export class DashboardController {
   // alone.
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['dashboard:read']})
+  @authorize({roles: ['super_admin', 'pmu'], permissions: ['dashboard:read']})
   @get('/dashboard/live')
   @response(200, {
     description: 'Live store figures and first page of each live list',
@@ -101,7 +90,7 @@ export class DashboardController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['dashboard:read']})
+  @authorize({roles: ['super_admin', 'pmu'], permissions: ['dashboard:read']})
   @get('/dashboard/window')
   @response(200, {
     description: 'Date-range store figures and first page of each range list',
@@ -124,7 +113,7 @@ export class DashboardController {
   }
 
   @authenticate('jwt')
-  @authorize({roles: ['super_admin'], permissions: ['dashboard:read']})
+  @authorize({roles: ['super_admin', 'pmu'], permissions: ['dashboard:read']})
   @get('/dashboard/lists/{list}')
   @response(200, {description: 'The next page of one dashboard list'})
   async listPage(
@@ -175,6 +164,15 @@ export class DashboardController {
     // here rather than letting Postgres fail the query with a 500.
     if (storeId && !UUID.test(storeId)) {
       throw new HttpErrors.BadRequest('storeId is not a valid id.');
+    }
+    // storeScopeService has no concept of 'pmu' — that role sees exactly
+    // the one store it picks, never "every store", so it's handled here
+    // directly rather than taught to storeScopeService.
+    if ((currentUser.roles as string[] | undefined)?.includes('pmu')) {
+      if (!storeId) {
+        throw new HttpErrors.BadRequest('Select a store.');
+      }
+      return [storeId];
     }
     const scope = await this.storeScopeService.resolve(currentUser);
     const storeIds = await this.storeScopeService.narrowStoreIds(scope, {

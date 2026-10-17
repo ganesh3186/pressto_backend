@@ -11,6 +11,7 @@ import {
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
+import {PresstoDataSource} from '../datasources';
 import {SalesReturn, SalesReturnStatus} from '../models/sales-return.model';
 import {
   ORDER_STATUS_TRANSITIONS,
@@ -25,6 +26,7 @@ import {
   CustomerRepository,
   GarmentRepository,
   GstTaxConfigurationRepository,
+  InvoiceOrderLinkRepository,
   InvoiceRepository,
   ItemRepository,
   OrderItemRepository,
@@ -84,6 +86,8 @@ export class SalesReturnController {
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
+    @repository(InvoiceOrderLinkRepository)
+    private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(OrderStatusHistoryRepository)
     private statusHistoryRepo: OrderStatusHistoryRepository,
@@ -94,10 +98,18 @@ export class SalesReturnController {
     @repository(GstTaxConfigurationRepository)
     private gstConfigRepo: GstTaxConfigurationRepository,
     @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
     @inject('services.store-scope')
     private storeScopeService: StoreScopeService,
     @inject('services.approval') private approvalService: ApprovalService,
   ) {}
+
+  private async findInvoiceForOrder(orderId: string) {
+    const direct = await this.invoiceRepo.findOne({where: {orderId}});
+    if (direct) return direct;
+    const link = await this.invoiceOrderLinkRepo.findOne({where: {orderId}});
+    return link ? this.invoiceRepo.findById(link.invoiceId) : null;
+  }
 
   /**
    * The current GST rate (CGST + SGST %), same source order creation itself
@@ -363,7 +375,7 @@ export class SalesReturnController {
       }
     }
 
-    const invoice = await this.invoiceRepo.findOne({where: {orderId}} as any);
+    const invoice = await this.findInvoiceForOrder(orderId);
 
     // GST is applied once, at the order level (see order.service.ts's
     // createOrder), never per line item — OrderItem.totalPrice, and so the
@@ -540,7 +552,11 @@ export class SalesReturnController {
 
     const resolvedLimit = limit !== undefined ? Number(limit) : undefined;
     let resolvedSkip = skip !== undefined ? Number(skip) : undefined;
-    if (resolvedSkip === undefined && page !== undefined && resolvedLimit !== undefined) {
+    if (
+      resolvedSkip === undefined &&
+      page !== undefined &&
+      resolvedLimit !== undefined
+    ) {
       const pageNum = Number(page);
       const zeroBasedPage = pageNum >= 1 ? pageNum - 1 : Math.max(0, pageNum);
       resolvedSkip = zeroBasedPage * resolvedLimit;
@@ -588,8 +604,8 @@ export class SalesReturnController {
       resolvedLimit !== undefined
         ? inScope.slice(resolvedSkip ?? 0, (resolvedSkip ?? 0) + resolvedLimit)
         : resolvedSkip !== undefined
-        ? inScope.slice(resolvedSkip)
-        : inScope;
+          ? inScope.slice(resolvedSkip)
+          : inScope;
 
     const customerIds = [
       ...new Set(paged.map(sr => sr.customerId).filter(Boolean)),
@@ -682,6 +698,19 @@ export class SalesReturnController {
     // human sign-off here.
     const {newOrderTotal, refundAmount, newBalanceDue} =
       await this._previewCreditNote(record, order);
+    const invoice = record.invoiceId
+      ? await this.invoiceRepo.findById(record.invoiceId)
+      : await this.findInvoiceForOrder(record.orderId);
+    const invoiceLink = invoice?.isConsolidated
+      ? await this.invoiceOrderLinkRepo.findOne({
+          where: {invoiceId: invoice.id, orderId: record.orderId},
+        })
+      : null;
+    if (invoice?.isConsolidated && !invoiceLink) {
+      throw new HttpErrors.Conflict(
+        'Order is missing from its on-account invoice.',
+      );
+    }
 
     // The returned item lines are always pre-tax. A paid order stores a
     // GST-inclusive creditAmount, while an unpaid order stores only its
@@ -752,9 +781,43 @@ export class SalesReturnController {
       }
     }
 
-    if (record.invoiceId) {
-      const invoice = await this.invoiceRepo.findById(record.invoiceId);
-      if (invoice) {
+    if (invoice) {
+      if (invoice.isConsolidated && invoiceLink) {
+        const credit = Math.min(
+          money(invoiceLink.orderTotal),
+          money(record.creditAmount),
+        );
+        const tx = await this.dataSource.beginTransaction();
+        try {
+          await this.invoiceRepo.updateById(
+            invoice.id,
+            {
+              subtotal: money(Math.max(0, money(invoice.subtotal) - credit)),
+              totalAmount: roundRupee(
+                Math.max(0, money(invoice.totalAmount) - credit),
+              ),
+              balanceDue: roundRupee(
+                Math.max(0, money(invoice.balanceDue) - credit),
+              ),
+              updatedAt: new Date(),
+            },
+            {transaction: tx},
+          );
+          await this.invoiceOrderLinkRepo.updateById(
+            invoiceLink.id,
+            {
+              orderTotal: money(
+                Math.max(0, money(invoiceLink.orderTotal) - credit),
+              ),
+            },
+            {transaction: tx},
+          );
+          await tx.commit();
+        } catch (error) {
+          await tx.rollback();
+          throw error;
+        }
+      } else {
         await this.invoiceRepo.updateById(invoice.id, {
           subtotal: newSubtotal,
           discount: newDiscount,
@@ -795,6 +858,7 @@ export class SalesReturnController {
 
     await this.salesReturnRepo.updateById(id, {
       status: SalesReturnStatus.APPROVED,
+      ...(invoice && !record.invoiceId ? {invoiceId: invoice.id} : {}),
       resolvedBy: currentUser[securityId],
       resolvedAt: new Date(),
       refundAmount,

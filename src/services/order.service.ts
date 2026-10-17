@@ -66,6 +66,7 @@ import {
   DeliveryCustodyEventRepository,
   DeliveryOrderRepository,
   DeliveryTypeConfigurationRepository,
+  InvoiceRepository,
   ItemRepository,
   PickupRequestRepository,
   ProcessStepRepository,
@@ -105,7 +106,6 @@ import {
   WalletTransactionRepository,
 } from '../repositories';
 import {DeliveryType} from '../models/delivery-type.enum';
-import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {
   canChangeSplitTier,
   resolveSplitDeliveryTier,
@@ -184,7 +184,6 @@ export interface CreateOrderInput {
   items: CreateOrderItemInput[];
   isDraft?: boolean;
   deliveryType?: DeliveryType; // standard | express | lightning
-  pickupRequestId?: string;
   additionalChargeIds?: AdditionalChargeSelection[];
   customerContactId?: string; // person who came on behalf of customer
   familyGroupMemberId?: string; // alternative to customerContactId — a family-group member instead
@@ -309,6 +308,7 @@ export class OrderService {
     @repository(ApprovalRequestRepository)
     private approvalRequestRepo: ApprovalRequestRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
+    @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(CouponRepository) private couponRepo: CouponRepository,
     @repository(CouponRedemptionRepository)
     private couponRedemptionRepo: CouponRedemptionRepository,
@@ -1329,27 +1329,6 @@ export class OrderService {
       throw new HttpErrors.BadRequest('Order must have at least one item.');
     }
 
-    const pickupRequest = input.pickupRequestId
-      ? await this.pickupRequestRepo.findOne({where: {id: input.pickupRequestId, isDeleted: false}})
-      : null;
-    if (input.pickupRequestId) {
-      if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
-      if (pickupRequest.status !== PickupRequestStatus.RECEIVED_AT_STORE ||
-        pickupRequest.customerId !== input.customerId || pickupRequest.storeId !== input.storeId) {
-        throw new HttpErrors.BadRequest('Pickup, customer, and store must match a received pickup.');
-      }
-      const group = pickupRequest.conversionPlan?.find(row => row.deliveryType === input.deliveryType);
-      const quantity = input.items.reduce((sum, item) => sum + item.quantity, 0);
-      if (!group || group.quantity !== quantity ||
-        group.itemSignature !== JSON.stringify(input.items) || input.isDraft) {
-        throw new HttpErrors.BadRequest('Order items do not match the confirmed pickup delivery group.');
-      }
-      if (input.payments?.length || Number(input.walletAmount ?? 0) > 0 ||
-        input.couponCode || input.couponCodes?.length || input.additionalChargeIds?.length || input.paymentIsOnAccount) {
-        throw new HttpErrors.BadRequest('Create pickup tickets with balances due; handle payment and discounts per ticket.');
-      }
-    }
-
     await this.assertItemsHaveRequiredAdditionalServices(input.items);
 
     // ── Validate wallet deduction before starting transaction ──
@@ -1973,7 +1952,7 @@ export class OrderService {
         input.orderType === OrderType.STORE_DROPOFF_HOME_DELIVERY;
       const orderInitialStatus = input.isDraft
         ? OrderStatus.DRAFT
-        : isStoreDropoffOrder || pickupRequest
+        : isStoreDropoffOrder
           ? OrderStatus.RECEIVED_AT_STORE
           : OrderStatus.CONFIRMED;
 
@@ -1986,7 +1965,6 @@ export class OrderService {
           status: orderInitialStatus,
           expressMultiplier,
           deliveryType: input.deliveryType,
-          ...(pickupRequest ? {pickupRequestId: pickupRequest.id, pickupSource: pickupRequest.source} : {}),
           deliveryTypePercentage,
           customerContactId: input.customerContactId,
           placedByFamilyGroupMemberId,
@@ -2021,11 +1999,6 @@ export class OrderService {
         },
         {transaction: tx},
       );
-      if (pickupRequest && !pickupRequest.convertedOrderId) {
-        await this.pickupRequestRepo.updateAll({
-          convertedOrderId: order.id,
-        }, {id: pickupRequest.id, convertedOrderId: null} as object, {transaction: tx});
-      }
 
       for (const result of couponResults) {
         // eslint-disable-next-line no-await-in-loop
@@ -3401,6 +3374,38 @@ export class OrderService {
       totalAmount,
     });
 
+    // Keep an already-generated invoice/challan in sync with the same
+    // recompute — otherwise a tax invoice generated before this edit (e.g.
+    // a delivery-tier change) keeps showing its stale snapshot forever,
+    // even though the order's own totals just changed here. A consolidated
+    // (On Account) invoice's totals are the sum across every order it
+    // covers, not this order alone, so it's deliberately left untouched.
+    const cgst = parseFloat((taxAmount / 2).toFixed(2));
+    const sgst = parseFloat((taxAmount - cgst).toFixed(2));
+    const invoice = await this.invoiceRepo.findOne({where: {orderId} as object});
+    if (invoice && !invoice.isConsolidated) {
+      await this.invoiceRepo.updateById(invoice.id, {
+        subtotal,
+        discount: discountAmount,
+        cgst,
+        sgst,
+        totalAmount,
+        balanceDue: rupeeBalance(totalAmount, collected),
+        updatedAt: new Date(),
+      } as object);
+    }
+    const challan = await this.challanRepo.findOne({where: {orderId} as object});
+    if (challan) {
+      await this.challanRepo.updateById(challan.id, {
+        subtotal,
+        discount: discountAmount,
+        cgst,
+        sgst,
+        totalAmount,
+        updatedAt: new Date(),
+      } as object);
+    }
+
     return {
       subtotal,
       discountAmount,
@@ -4586,6 +4591,7 @@ export class OrderService {
         orderType: order.orderType,
         status: order.status,
         deliveryType: order.deliveryType,
+        pickupRequestId: order.pickupRequestId ?? null,
         createdAt: order.createdAt,
         deliveryDate: order.deliveryDate,
         deliveryMethod: (order as any).deliveryMethod ?? null,
@@ -4823,12 +4829,10 @@ export class OrderService {
     let pickupRiderPhone: string | null = null;
 
     if (isHomePickup) {
-      const pickupRequest = (order.pickupRequestId
-        ? await this.pickupRequestRepo.findOne({
-          where: {id: order.pickupRequestId, isDeleted: false},
-          include: [{relation: 'assignedRider'}],
-        }) : null) ?? await this.pickupRequestRepo.findOne({
-        where: {convertedOrderId: orderId, isDeleted: false} as any,
+      const pickupRequest = await this.pickupRequestRepo.findOne({
+        where: order.pickupRequestId
+          ? {id: order.pickupRequestId, isDeleted: false}
+          : {convertedOrderId: orderId, isDeleted: false},
         include: [{relation: 'assignedRider'}],
       });
 
@@ -5307,12 +5311,9 @@ export class OrderService {
       this.transferItemRepo.find({where: {orderId}}),
       this.deliveryOrderRepo.find({where: {orderId}}),
       this.orderHandoverRepo.find({where: {orderId}}),
-      this.pickupRequestRepo.find({where: {
-        or: [
-          {convertedOrderId: orderId},
-          ...(order.pickupRequestId ? [{id: order.pickupRequestId}] : []),
-        ],
-      }}),
+      this.pickupRequestRepo.find({where: order.pickupRequestId
+        ? {id: order.pickupRequestId}
+        : {convertedOrderId: orderId}}),
     ]);
 
     const approvalRequestIds = approvalRequests.map(a => a.id);

@@ -5,6 +5,7 @@ import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
+import {PettyCashStatus} from '../models/petty-cash-status.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {
   ClusterRepository,
@@ -21,6 +22,7 @@ import {
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
+  PettyCashFinanceEntryRepository,
   PettyCashRegisterEntryRepository,
   RegionRepository,
   ServiceRepository,
@@ -127,6 +129,7 @@ const PAYMENT_MODE_LABELS: Record<string, string> = {
   [PaymentMode.ON_ACCOUNT]: 'On Account',
   [PaymentMode.GATEWAY]: 'Gateway',
   [PaymentMode.WALLET]: 'Wallet',
+  [PaymentMode.PP_VOUCHER]: 'PP Voucher',
 };
 
 export type ModeOfPaymentRow = {
@@ -135,6 +138,7 @@ export type ModeOfPaymentRow = {
   date: Date | null;
   shiftClosureNo: string;
   ticketNo: string;
+  invoiceNo: string;
   userName: string;
   customerNameWithCode: string;
   amount: number;
@@ -269,12 +273,6 @@ function roundRupees(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function addDays(date: Date, days: number): Date {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
-}
-
 /** Shared shape for the paged, order-backed reports. */
 export type PagedReport<TRow> = {
   rows: TRow[];
@@ -319,6 +317,8 @@ export class ReportsService {
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(PettyCashRegisterEntryRepository)
     private pettyCashRegisterRepo: PettyCashRegisterEntryRepository,
+    @repository(PettyCashFinanceEntryRepository)
+    private pettyCashFinanceRepo: PettyCashFinanceEntryRepository,
     @repository(WalletRechargeRequestRepository)
     private walletRechargeRequestRepo: WalletRechargeRequestRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
@@ -470,11 +470,23 @@ export class ReportsService {
       .map(entry => entry.payment)
       .filter(Boolean) as typeof payments;
 
-    const [storeById, shiftById, customerById] = await Promise.all([
+    const [storeById, shiftById, customerById, pageInvoices] = await Promise.all([
       this.mapStores(pagePayments, orderById),
       this.mapShifts(pagePayments, orderById),
       this.mapCustomers(pagePayments, orderById),
+      pagePayments.length
+        ? this.invoiceRepo.find({
+            where: {
+              orderId: {inq: [...new Set(pagePayments.map(payment => payment.orderId))]},
+              status: InvoiceStatus.ISSUED,
+            } as object,
+            fields: {orderId: true, invoiceNumber: true} as object,
+          })
+        : [],
     ]);
+    const invoiceNumberByOrderId = new Map(
+      pageInvoices.map(invoice => [invoice.orderId, invoice.invoiceNumber]),
+    );
 
     const rows: ModeOfPaymentRow[] = pageEntries.map(entry => {
       if (entry.wallet) return entry.wallet;
@@ -503,6 +515,7 @@ export class ReportsService {
         ticketNo: onAccountInvoiceNumber
           ? `On Account - ${onAccountInvoiceNumber}`
           : order?.orderNumber ?? '—',
+        invoiceNo: onAccountInvoiceNumber ?? invoiceNumberByOrderId.get(txn.orderId) ?? '-',
         // The staff member who placed the ticket — never the customer, even
         // when placedByName is blank. Who bought it is its own column.
         userName: order?.placedByName ?? '—',
@@ -587,6 +600,7 @@ export class ReportsService {
         // and would read like a ticket number that can be looked up.
         shiftClosureNo: '—',
         ticketNo: 'Wallet Recharge',
+        invoiceNo: '-',
         // Self-service — no staff member placed this, unlike a ticket payment.
         userName: '—',
         customerNameWithCode: this.formatCustomerNameWithCode(customer),
@@ -611,8 +625,7 @@ export class ReportsService {
    *
    * A consolidated invoice can span more than one store (its linked
    * orders aren't required to share one) — split per store by each
-   * store's own share of the invoice's total, same proration
-   * ShiftController.resolveRevenue() already uses for Revenue, so a
+   * linked order's orderTotal, as ShiftController.resolveRevenue() does, so a
    * store-scoped run of this report never shows money belonging to a
    * different store.
    */
@@ -716,6 +729,7 @@ export class ReportsService {
           // same '—' convention as a wallet top-up's shiftClosureNo.
           shiftClosureNo: '—',
           ticketNo: `On Account - ${invoice.invoiceNumber}`,
+          invoiceNo: invoice.invoiceNumber,
           userName: invoice.generatedBy
             ? (userNameById.get(String(invoice.generatedBy)) ?? '—')
             : '—',
@@ -748,7 +762,11 @@ export class ReportsService {
     if (!links.length) return result;
 
     const invoices = await this.invoiceRepo.find({
-      where: {id: {inq: [...new Set(links.map(l => l.invoiceId))]}, isConsolidated: true} as object,
+      where: {
+        id: {inq: [...new Set(links.map(l => l.invoiceId))]},
+        isConsolidated: true,
+        status: InvoiceStatus.ISSUED,
+      } as object,
       fields: {id: true, invoiceNumber: true} as object,
     });
     if (!invoices.length) return result;
@@ -1034,12 +1052,20 @@ export class ReportsService {
    * instead, since the invoice stores only aggregate tax figures, never
    * a per-item breakdown.
    */
-  async buildSalesGst(params: OrderReportParams): Promise<PagedReport<object>> {
-    const {storeIds, from, to, limit, skip} = params;
+  async buildSalesGst(params: OrderReportParams & {state?: string}): Promise<PagedReport<object>> {
+    const {storeIds, state, from, to, limit, skip} = params;
     if (!storeIds.length) return emptyPaged();
 
+    const selectedStoreIds = state
+      ? (await this.storeRepo.find({
+          where: {id: {inq: storeIds}, state} as object,
+          fields: {id: true} as object,
+        })).map(store => store.id)
+      : storeIds;
+    if (!selectedStoreIds.length) return emptyPaged();
+
     const orders = await this.orderRepo.find({
-      where: {storeId: {inq: storeIds}} as object,
+      where: {storeId: {inq: selectedStoreIds}} as object,
       fields: {
         id: true,
         storeId: true,
@@ -1068,7 +1094,7 @@ export class ReportsService {
       this.gstTaxConfigurationRepo.findOne({
         where: {isActive: true, isDeleted: false} as object,
       }),
-      this.buildStoreContext(storeIds),
+      this.buildStoreContext(selectedStoreIds),
       this.customerRepo.find({where: {id: {inq: customerIds}} as object}),
       addressIds.length
         ? this.customerAddressRepo.find({where: {id: {inq: addressIds}} as object})
@@ -1155,6 +1181,7 @@ export class ReportsService {
           region: store?.regionName ?? '—',
           cluster: store?.clusterName ?? '—',
           storeName: store?.name ?? '—',
+          state: store?.state ?? '—',
           customerGstin: isBusiness ? customer?.gstNumber ?? '' : '',
           customerName: customerName || '—',
           ticketNo: `${store?.code ?? '—'}/${order.orderNumber ?? '—'}`,
@@ -1221,15 +1248,9 @@ export class ReportsService {
    * resolveSalesReturn() — not recomputed here, so this can't drift from
    * what the cashier actually saw on their closing screen).
    *
-   * PSB vs P2D revenue is the one figure closing time never split out —
-   * resolveRevenue() sums every order into a single `pressto` bucket
-   * regardless of channel. Recomputed here keyed and prorated exactly like
-   * resolveRevenue() itself (by invoice generation date, never order
-   * createdAt or payment date — see resolveRevenue()'s own doc comment,
-   * confirmed directly with the finance team), split by orderType, so
-   * PSB + PMU(always 0 — see OTHER_PAYMENT_MODES's neighboring comment,
-   * nothing in the schema records a PMU channel) + P2D reconciles exactly
-   * against the shift's own stored `revenue` total.
+   * PSB vs P2D is split by invoice generation date and linked order type.
+   * The total Revenue column comes from the saved closure snapshot, which
+   * also includes returns approved in this shift on earlier invoices.
    *
    * "Other Payment Mode" is the other figure the stored snapshot can't
    * answer — Shift.closing.collections only ever buckets cash/card/UPI/
@@ -1305,12 +1326,8 @@ export class ReportsService {
       : [];
     const orderById = new Map(orders.map(o => [o.id, o]));
 
-    // PSB/P2D must be keyed and prorated exactly like ShiftController's own
-    // resolveRevenue() (invoice generation date, not order createdAt or
-    // payment date; a consolidated invoice's figures split by each linked
-    // order's orderTotal ÷ the invoice's totalAmount) or these two stop
-    // reconciling against the shift's stored revenue total — see this
-    // method's doc comment. A separate fetch from `orders`/`payments` above
+    // PSB/P2D uses the same invoice-order values as ShiftController.
+    // A separate fetch from `orders`/`payments` above
     // because the order set differs: an order created (and paid) weeks ago
     // but invoiced inside this window belongs here even though its
     // createdAt falls outside [earliestOpen, latestClose].
@@ -1321,6 +1338,7 @@ export class ReportsService {
       } as object,
       fields: {
         id: true,
+        orderId: true,
         subtotal: true,
         discount: true,
         cgst: true,
@@ -1337,7 +1355,18 @@ export class ReportsService {
           fields: {invoiceId: true, orderId: true, orderTotal: true} as object,
         })
       : [];
-    const revenueOrderIds = [...new Set(revenueLinks.map(link => link.orderId))];
+    const linkedInvoiceIds = new Set(revenueLinks.map(link => link.invoiceId));
+    const invoiceOrders = [
+      ...revenueLinks,
+      ...revenueInvoices
+        .filter(invoice => !invoice.isConsolidated && !linkedInvoiceIds.has(invoice.id))
+        .map(invoice => ({
+          invoiceId: invoice.id,
+          orderId: invoice.orderId,
+          orderTotal: invoice.totalAmount,
+        })),
+    ];
+    const revenueOrderIds = [...new Set(invoiceOrders.map(link => link.orderId))];
     const revenueOrders = revenueOrderIds.length
       ? await this.orderRepo.find({
           where: {
@@ -1373,7 +1402,7 @@ export class ReportsService {
 
       let psbRevenue = 0;
       let p2dRevenue = 0;
-      for (const link of revenueLinks) {
+      for (const link of invoiceOrders) {
         const order = revenueOrderById.get(link.orderId);
         if (!order || order.storeId !== shift.storeId) continue;
         const invoice = revenueInvoiceById.get(link.invoiceId);
@@ -1386,14 +1415,9 @@ export class ReportsService {
         if (invoiceCreatedAt == null || invoiceCreatedAt < windowStart || invoiceCreatedAt > windowEnd) continue;
 
         const orderTotal = Number(link.orderTotal) || 0;
-        let value: number;
-        if (invoice.isConsolidated) {
-          const invoiceTotal = Number(invoice.totalAmount) || 0;
-          const fraction = invoiceTotal > 0 ? Math.min(1, orderTotal / invoiceTotal) : 0;
-          value = (Number(invoice.subtotal) || 0) * fraction;
-        } else {
-          value = Number(invoice.subtotal) || 0;
-        }
+        const value = invoice.isConsolidated
+          ? orderTotal
+          : Number(invoice.subtotal) || 0;
         if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
         else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
       }
@@ -1561,40 +1585,18 @@ export class ReportsService {
     };
   }
 
-  /**
-   * Petty Cash Expense — one row per shift closure, per the Pulse
-   * requirements sheet ("Data is being pulled from closure report"). Pulls
-   * the actual expense claims (date, description, amount, who submitted,
-   * approval status) — same as the original version of this report — but
-   * each row is also joined to its shift's reconciliation snapshot
-   * (opening/closing.pettyCash, same fields Daily Sales reads for
-   * banking/revenue), so the Opening/Received/Closing Amount and Shift
-   * Open/Closure Diff columns from the Pulse sheet are visible alongside
-   * the expense that was actually claimed — a plain listing of claims
-   * alone left no way to see the shift-level reconciliation context, and
-   * a shift-only summary (tried first) left no way to see what was
-   * actually spent. A claim's shift is resolved by matching its
-   * expenseDate into a closed shift's [openedAt, closedAt] window at the
-   * same store — shifts at a store never overlap, so this is exact, not
-   * an approximation. A claim outside any closed shift's window (e.g.
-   * submitted against a still-open shift) simply carries no shift
-   * context.
-   *
-   * The spec also asks for a 6-way expense category breakdown (Petrol,
-   * Petrol P2D, Petty cash expenses (Stores), DGT, Darner, Vehicle) that
-   * this deliberately leaves out: the live expense-entry dropdown
-   * (PETTY_EXPENSE_DESCRIPTIONS) uses a different, unrelated category set
-   * today, and there is no confirmed mapping between the two yet.
-   */
+  /** Petty cash transactions and separate opening/closing events for each shift. */
   async buildPettyCashExpense(params: {
     storeIds: string[];
     from: Date;
     to: Date;
     limit: number;
     skip: number;
-  }): Promise<PagedReport<object>> {
+  }): Promise<
+    PagedReport<object> & {totalsByDescription: Record<string, number>}
+  > {
     const {storeIds, from, to, limit, skip} = params;
-    if (!storeIds.length) return emptyPaged();
+    if (!storeIds.length) return {...emptyPaged(), totalsByDescription: {}};
 
     const where = {
       storeId: {inq: storeIds},
@@ -1602,33 +1604,32 @@ export class ReportsService {
       expenseDate: {between: [from, to]},
     } as object;
 
-    const [{count}, pageEntries, allEntries, shifts] = await Promise.all([
-      this.pettyCashRegisterRepo.count(where),
-      this.pettyCashRegisterRepo.find({where, order: ['expenseDate DESC'], limit, skip}),
-      this.pettyCashRegisterRepo.find({
-        where,
-        fields: {amount: true, approvedAmount: true} as object,
-      }),
-      // Closed shifts to resolve each page entry's shift context, matched
-      // by the entry's createdAt (see findShiftFor below) rather than its
-      // user-editable expenseDate — widened a day past the filter window
-      // on each side since createdAt can drift outside [from, to] near a
-      // month boundary even though expenseDate stays inside it.
+    const [allEntries, shifts] = await Promise.all([
+      this.pettyCashRegisterRepo.find({where}),
       this.shiftRepo.find({
         where: {
           storeId: {inq: storeIds},
-          status: ShiftStatus.CLOSED,
-          closedAt: {between: [addDays(from, -1), addDays(to, 1)]},
+          openedAt: {lte: to},
+          or: [{closedAt: {gte: from}}, {status: ShiftStatus.OPEN}],
         } as object,
       }),
     ]);
-    if (!count) return emptyPaged();
+
+    const descriptionTotals = new Map<string, number>();
+    allEntries.forEach(entry => {
+      const description = entry.description ?? '—';
+      descriptionTotals.set(
+        description,
+        roundRupees(
+          (descriptionTotals.get(description) ?? 0) +
+            (Number(entry.amount) || 0),
+        ),
+      );
+    });
 
     type PettyCashClosingCell = {
-      prevSupposed?: number;
       recvFromFinance?: number;
       used?: number;
-      disapprovedAmt?: number;
       actualBalance?: number;
       difference?: number;
     };
@@ -1646,52 +1647,239 @@ export class ReportsService {
         s =>
           s.storeId === storeId &&
           s.openedAt &&
-          s.closedAt &&
           t >= s.openedAt.getTime() &&
-          t <= s.closedAt.getTime(),
+          (!s.closedAt || t <= s.closedAt.getTime()),
       );
     };
 
-    return {
-      rows: pageEntries.map(entry => {
-        const shift = findShiftFor(entry.storeId, entry.createdAt);
-        const pettyClosing =
-          ((shift?.closing ?? {}) as {pettyCash?: PettyCashClosingCell}).pettyCash ?? {};
-        const pettyOpening =
-          ((shift?.opening ?? {}) as {pettyCash?: PettyCashOpeningCell}).pettyCash ?? {};
+    const reportFinanceEntries = shifts.length
+      ? await this.pettyCashFinanceRepo.find({
+          where: {
+            storeId: {inq: storeIds},
+            createdAt: {between: [from, to]},
+          } as object,
+        })
+      : [];
+    const visibleFinanceEntries = reportFinanceEntries.filter(entry =>
+      Boolean(findShiftFor(entry.storeId, entry.createdAt)),
+    );
+    const inRange = (date: Date | undefined) =>
+      date && timeOf(date) >= from.getTime() && timeOf(date) <= to.getTime();
 
-        return {
-          id: String(entry.id),
-          expenseDate: entry.expenseDate ?? null,
-          description: entry.description ?? '—',
-          remarks: entry.remarks ?? '—',
-          method: entry.method ?? '—',
-          recordedBy: entry.userName ?? '—',
-          storeName: entry.storeName ?? '—',
-          amount: Number(entry.amount) || 0,
-          // approvedAmount is only set once a manager resolves the entry;
-          // until then there is no approved figure, not a zero one.
-          approvedAmount: entry.approvedAmount == null ? null : Number(entry.approvedAmount),
-          status: entry.status ?? 'pending',
-          closureNo: shift
-            ? shift.closureNo != null
-              ? String(shift.closureNo)
-              : String(shift.openingNo)
-            : '—',
-          openingAmount: Number(pettyClosing.prevSupposed) || 0,
-          receivedAmount: Number(pettyClosing.recvFromFinance) || 0,
-          closingAmount: Number(pettyClosing.actualBalance) || 0,
-          shiftOpenDiff: (Number(pettyOpening.actual) || 0) - (Number(pettyOpening.supposed) || 0),
-          shiftClosureDiff: Number(pettyClosing.difference) || 0,
-          shiftDisapprovedAmt: Number(pettyClosing.disapprovedAmt) || 0,
-          shiftTotalExpense: Number(pettyClosing.used) || 0,
-        };
-      }),
-      totalCount: count,
+    const shiftById = new Map<string, (typeof shifts)[number]>();
+    shifts.forEach(shift => {
+      if (inRange(shift.openedAt) || inRange(shift.closedAt))
+        shiftById.set(String(shift.id), shift);
+    });
+    allEntries.forEach(entry => {
+      const shift = findShiftFor(entry.storeId, entry.createdAt);
+      if (shift) shiftById.set(String(shift.id), shift);
+    });
+    visibleFinanceEntries.forEach(entry => {
+      const shift = findShiftFor(entry.storeId, entry.createdAt);
+      if (shift) shiftById.set(String(shift.id), shift);
+    });
+    const relevantShifts = [...shiftById.values()];
+    const balanceByEntryId = new Map<string, number>();
+    if (relevantShifts.length) {
+      const earliestOpen = new Date(
+        Math.min(...relevantShifts.map(shift => timeOf(shift.openedAt))),
+      );
+      const latestClose = new Date(
+        Math.max(...relevantShifts.map(shift => timeOf(shift.closedAt ?? to))),
+      );
+      const [shiftEntries, financeEntries] = await Promise.all([
+        this.pettyCashRegisterRepo.find({
+          where: {
+            storeId: {inq: storeIds},
+            isDeleted: false,
+            createdAt: {between: [earliestOpen, latestClose]},
+          } as object,
+        }),
+        this.pettyCashFinanceRepo.find({
+          where: {
+            storeId: {inq: storeIds},
+            createdAt: {between: [earliestOpen, latestClose]},
+          } as object,
+        }),
+      ]);
+
+      const entriesByShift = new Map<string, typeof shiftEntries>();
+      shiftEntries.forEach(entry => {
+        const shift = findShiftFor(entry.storeId, entry.createdAt);
+        if (!shift || !shiftById.has(String(shift.id))) return;
+        const key = String(shift.id);
+        const grouped = entriesByShift.get(key) ?? [];
+        grouped.push(entry);
+        entriesByShift.set(key, grouped);
+      });
+      const financeByShift = new Map<string, typeof financeEntries>();
+      financeEntries.forEach(entry => {
+        const shift = findShiftFor(entry.storeId, entry.createdAt);
+        if (!shift || !shiftById.has(String(shift.id))) return;
+        const key = String(shift.id);
+        const grouped = financeByShift.get(key) ?? [];
+        grouped.push(entry);
+        financeByShift.set(key, grouped);
+      });
+
+      relevantShifts.forEach(shift => {
+        const opening =
+          ((shift.opening ?? {}) as {pettyCash?: PettyCashOpeningCell})
+            .pettyCash ?? {};
+        let balance = Number(opening.actual) || 0;
+        const events = [
+          ...(financeByShift.get(String(shift.id)) ?? []).map(entry => ({
+            at: timeOf(entry.createdAt),
+            // Opening-time finance is already included in the opening count.
+            amount:
+              timeOf(entry.createdAt) === timeOf(shift.openedAt)
+                ? 0
+                : Number(entry.amount) || 0,
+            id: `0-finance:${entry.id}`,
+          })),
+          ...(entriesByShift.get(String(shift.id)) ?? []).map(entry => ({
+            at: timeOf(entry.createdAt),
+            // shortcut: current approvals apply to earlier claims; replay resolutions for point-in-time balances.
+            amount:
+              entry.status === PettyCashStatus.REJECTED
+                ? 0
+                : -(entry.status === PettyCashStatus.APPROVED
+                    ? Number(entry.approvedAmount) || 0
+                    : Number(entry.amount) || 0),
+            id: `1-expense:${entry.id}`,
+          })),
+        ].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+        events.forEach(event => {
+          balance = roundRupees(balance + event.amount);
+          balanceByEntryId.set(event.id, balance);
+        });
+      });
+    }
+
+    const rows: Array<{
+      id: string;
+      expenseDate: Date | null;
+      shiftId?: string;
+      [key: string]: unknown;
+    }> = allEntries.map(entry => {
+      const shift = findShiftFor(entry.storeId, entry.createdAt);
+      const closing =
+        ((shift?.closing ?? {}) as {pettyCash?: PettyCashClosingCell})
+          .pettyCash ?? {};
+
+      return {
+        id: String(entry.id),
+        entryType: 'expense',
+        shiftId: shift ? String(shift.id) : undefined,
+        expenseDate: entry.expenseDate ?? null,
+        description: entry.description ?? '—',
+        remarks: entry.remarks ?? '—',
+        method: entry.method ?? '—',
+        recordedBy: entry.userName ?? '—',
+        storeName: entry.storeName ?? '—',
+        amount: Number(entry.amount) || 0,
+        // approvedAmount is only set once a manager resolves the entry;
+        // until then there is no approved figure, not a zero one.
+        approvedAmount:
+          entry.approvedAmount == null ? null : Number(entry.approvedAmount),
+        status: entry.status ?? 'pending',
+        shiftDisapprovedAmt: Number(entry.disapprovedAmt) || 0,
+        receivedAmount: shift ? Number(closing.recvFromFinance) || 0 : 0,
+        shiftTotalExpense: shift ? Number(closing.used) || 0 : 0,
+        balance: balanceByEntryId.get(`1-expense:${entry.id}`) ?? null,
+        closureNo: shift
+          ? shift.closureNo != null
+            ? String(shift.closureNo)
+            : String(shift.openingNo)
+          : '—',
+      };
+    });
+    visibleFinanceEntries.forEach(entry => {
+      const shift = findShiftFor(entry.storeId, entry.createdAt);
+      if (!shift) return;
+      rows.push({
+        id: `finance-${entry.id}`,
+        entryType: 'finance',
+        shiftId: String(shift.id),
+        expenseDate: entry.createdAt ?? null,
+        storeName: entry.storeName ?? shift.storeName ?? '—',
+        closureNo: String(shift.closureNo ?? shift.openingNo),
+        description:
+          timeOf(entry.createdAt) === timeOf(shift.openedAt)
+            ? 'Opening Finance Adjustment'
+            : 'Received from Finance',
+        remarks: entry.remarks ?? '—',
+        recordedBy: entry.createdByName ?? '—',
+        financeAmount: Number(entry.amount) || 0,
+        balance: balanceByEntryId.get(`0-finance:${entry.id}`) ?? null,
+      });
+    });
+    relevantShifts.forEach(shift => {
+      const opening =
+        ((shift.opening ?? {}) as {pettyCash?: PettyCashOpeningCell})
+          .pettyCash ?? {};
+      const closing =
+        ((shift.closing ?? {}) as {pettyCash?: PettyCashClosingCell})
+          .pettyCash ?? {};
+      const shiftId = String(shift.id);
+      const common = {
+        shiftId,
+        storeName: shift.storeName ?? '—',
+        closureNo: String(shift.closureNo ?? shift.openingNo),
+      };
+      if (inRange(shift.openedAt)) {
+        rows.push({
+          ...common,
+          id: `opening-${shiftId}`,
+          entryType: 'opening',
+          expenseDate: shift.openedAt,
+          description: 'Shift Opening',
+          openingAmount: Number(opening.actual) || 0,
+          shiftOpenDiff:
+            (Number(opening.actual) || 0) - (Number(opening.supposed) || 0),
+          balance: Number(opening.actual) || 0,
+        });
+      }
+      if (shift.closedAt && inRange(shift.closedAt)) {
+        rows.push({
+          ...common,
+          id: `closing-${shiftId}`,
+          entryType: 'closing',
+          expenseDate: shift.closedAt,
+          description: 'Shift Closing',
+          closingAmount: Number(closing.actualBalance) || 0,
+          shiftClosureDiff: Number(closing.difference) || 0,
+          balance: Number(closing.actualBalance) || 0,
+        });
+      }
+    });
+    const eventOrder = (row: (typeof rows)[number]) =>
+      row.entryType === 'opening'
+        ? 0
+        : row.entryType === 'finance'
+          ? 1
+          : row.entryType === 'closing'
+            ? 3
+            : 2;
+    rows.sort(
+      (a, b) =>
+        timeOf(a.expenseDate) - timeOf(b.expenseDate) ||
+        eventOrder(a) - eventOrder(b) ||
+        a.id.localeCompare(b.id),
+    );
+
+    return {
+      rows: rows.slice(skip, skip + limit),
+      totalCount: rows.length,
       totals: {
         claimed: allEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0),
-        approved: allEntries.reduce((s, e) => s + (Number(e.approvedAmount) || 0), 0),
+        approved: allEntries.reduce(
+          (s, e) => s + (Number(e.approvedAmount) || 0),
+          0,
+        ),
       },
+      totalsByDescription: Object.fromEntries(descriptionTotals),
     };
   }
 
@@ -1723,7 +1911,7 @@ export class ReportsService {
   private async buildStoreContext(storeIds: string[]) {
     const stores = await this.storeRepo.find({
       where: {id: {inq: storeIds}} as object,
-      fields: {id: true, name: true, code: true, clusterId: true} as object,
+      fields: {id: true, name: true, code: true, state: true, clusterId: true} as object,
     });
 
     const clusterIds = [...new Set(stores.map(s => s.clusterId).filter(Boolean))] as string[];
@@ -1758,6 +1946,7 @@ export class ReportsService {
           {
             name: s.name ?? String(s.code ?? '—'),
             code: s.code ?? '—',
+            state: s.state,
             clusterName: cluster?.name ?? '—',
             regionName: cluster?.regionName ?? '—',
           },

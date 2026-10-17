@@ -187,10 +187,15 @@ export class ReportsController {
     @param.query.string('dateTo') dateTo?: string,
     @param.query.number('limit') limit?: number,
     @param.query.number('skip') skip?: number,
+    @param.query.string('state') state?: string,
+    @param.query.string('storeIds') storeIds?: string,
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
     const report = await this.reportsService.buildSalesGst({
-      storeIds: await this.resolveStoreIds(currentUser, storeId),
+      storeIds: state
+        ? await this.resolveReportStoreIds(currentUser, storeId, storeIds)
+        : await this.resolveStoreIds(currentUser, storeId),
+      state,
       from,
       to,
       limit: clampLimit(limit),
@@ -212,15 +217,13 @@ export class ReportsController {
   async consolidatedDailySales(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
+    @param.query.string('storeIds') storeIds?: string,
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
-    // "Consolidated" means across every store the caller can see, so
-    // unlike the per-store reports this one does not force a storeId —
-    // omitting it is the normal case, not an error.
     const report = await this.reportsService.buildConsolidatedDailySales({
-      storeIds: await this.resolveStoreIdsAllowingAll(currentUser, storeId),
+      storeIds: await this.resolveReportStoreIds(currentUser, storeId, storeIds),
       from,
       to,
     });
@@ -234,7 +237,7 @@ export class ReportsController {
   })
   @get('/reports/petty-cash-expense')
   @response(200, {
-    description: 'Petty Cash Expense report — one row per shift closure',
+    description: 'Petty Cash Expense report — expense and in-shift finance entries',
   })
   async pettyCashExpense(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
@@ -273,6 +276,7 @@ export class ReportsController {
         'Use either storeId or storeIds, not both.',
       );
     }
+    if (storeIds === '') return [];
 
     const selected = [...new Set(storeIds.split(',').map(id => id.trim()))];
     if (selected.some(id => !id)) {
