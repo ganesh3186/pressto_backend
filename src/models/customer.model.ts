@@ -168,6 +168,15 @@ export class Customer extends Entity {
   @property({type: 'boolean', default: false})
   isDeleted?: boolean;
 
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  itpvId?: string;
+
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  itpvMergedIds?: string;
+
+  @property({type: 'boolean', default: false})
+  isGeneratedNumber?: boolean;
+
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 
