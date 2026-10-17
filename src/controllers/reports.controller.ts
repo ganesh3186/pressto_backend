@@ -237,7 +237,7 @@ export class ReportsController {
   })
   @get('/reports/petty-cash-expense')
   @response(200, {
-    description: 'Petty Cash Expense report — one row per shift closure',
+    description: 'Petty Cash Expense report — expense and in-shift finance entries',
   })
   async pettyCashExpense(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
