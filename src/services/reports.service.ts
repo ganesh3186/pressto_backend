@@ -5,6 +5,7 @@ import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
+import {PettyCashStatus} from '../models/petty-cash-status.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {
   ClusterRepository,
@@ -21,6 +22,7 @@ import {
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
+  PettyCashFinanceEntryRepository,
   PettyCashRegisterEntryRepository,
   RegionRepository,
   ServiceRepository,
@@ -271,12 +273,6 @@ function roundRupees(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function addDays(date: Date, days: number): Date {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
-}
-
 /** Shared shape for the paged, order-backed reports. */
 export type PagedReport<TRow> = {
   rows: TRow[];
@@ -321,6 +317,8 @@ export class ReportsService {
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(PettyCashRegisterEntryRepository)
     private pettyCashRegisterRepo: PettyCashRegisterEntryRepository,
+    @repository(PettyCashFinanceEntryRepository)
+    private pettyCashFinanceRepo: PettyCashFinanceEntryRepository,
     @repository(WalletRechargeRequestRepository)
     private walletRechargeRequestRepo: WalletRechargeRequestRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
@@ -1587,40 +1585,18 @@ export class ReportsService {
     };
   }
 
-  /**
-   * Petty Cash Expense — one row per shift closure, per the Pulse
-   * requirements sheet ("Data is being pulled from closure report"). Pulls
-   * the actual expense claims (date, description, amount, who submitted,
-   * approval status) — same as the original version of this report — but
-   * each row is also joined to its shift's reconciliation snapshot
-   * (opening/closing.pettyCash, same fields Daily Sales reads for
-   * banking/revenue), so the Opening/Received/Closing Amount and Shift
-   * Open/Closure Diff columns from the Pulse sheet are visible alongside
-   * the expense that was actually claimed — a plain listing of claims
-   * alone left no way to see the shift-level reconciliation context, and
-   * a shift-only summary (tried first) left no way to see what was
-   * actually spent. A claim's shift is resolved by matching its
-   * expenseDate into a closed shift's [openedAt, closedAt] window at the
-   * same store — shifts at a store never overlap, so this is exact, not
-   * an approximation. A claim outside any closed shift's window (e.g.
-   * submitted against a still-open shift) simply carries no shift
-   * context.
-   *
-   * The spec also asks for a 6-way expense category breakdown (Petrol,
-   * Petrol P2D, Petty cash expenses (Stores), DGT, Darner, Vehicle) that
-   * this deliberately leaves out: the live expense-entry dropdown
-   * (PETTY_EXPENSE_DESCRIPTIONS) uses a different, unrelated category set
-   * today, and there is no confirmed mapping between the two yet.
-   */
+  /** Petty cash transactions and separate opening/closing events for each shift. */
   async buildPettyCashExpense(params: {
     storeIds: string[];
     from: Date;
     to: Date;
     limit: number;
     skip: number;
-  }): Promise<PagedReport<object>> {
+  }): Promise<
+    PagedReport<object> & {totalsByDescription: Record<string, number>}
+  > {
     const {storeIds, from, to, limit, skip} = params;
-    if (!storeIds.length) return emptyPaged();
+    if (!storeIds.length) return {...emptyPaged(), totalsByDescription: {}};
 
     const where = {
       storeId: {inq: storeIds},
@@ -1628,33 +1604,32 @@ export class ReportsService {
       expenseDate: {between: [from, to]},
     } as object;
 
-    const [{count}, pageEntries, allEntries, shifts] = await Promise.all([
-      this.pettyCashRegisterRepo.count(where),
-      this.pettyCashRegisterRepo.find({where, order: ['expenseDate DESC'], limit, skip}),
-      this.pettyCashRegisterRepo.find({
-        where,
-        fields: {amount: true, approvedAmount: true} as object,
-      }),
-      // Closed shifts to resolve each page entry's shift context, matched
-      // by the entry's createdAt (see findShiftFor below) rather than its
-      // user-editable expenseDate — widened a day past the filter window
-      // on each side since createdAt can drift outside [from, to] near a
-      // month boundary even though expenseDate stays inside it.
+    const [allEntries, shifts] = await Promise.all([
+      this.pettyCashRegisterRepo.find({where}),
       this.shiftRepo.find({
         where: {
           storeId: {inq: storeIds},
-          status: ShiftStatus.CLOSED,
-          closedAt: {between: [addDays(from, -1), addDays(to, 1)]},
+          openedAt: {lte: to},
+          or: [{closedAt: {gte: from}}, {status: ShiftStatus.OPEN}],
         } as object,
       }),
     ]);
-    if (!count) return emptyPaged();
+
+    const descriptionTotals = new Map<string, number>();
+    allEntries.forEach(entry => {
+      const description = entry.description ?? '—';
+      descriptionTotals.set(
+        description,
+        roundRupees(
+          (descriptionTotals.get(description) ?? 0) +
+            (Number(entry.amount) || 0),
+        ),
+      );
+    });
 
     type PettyCashClosingCell = {
-      prevSupposed?: number;
       recvFromFinance?: number;
       used?: number;
-      disapprovedAmt?: number;
       actualBalance?: number;
       difference?: number;
     };
@@ -1672,52 +1647,239 @@ export class ReportsService {
         s =>
           s.storeId === storeId &&
           s.openedAt &&
-          s.closedAt &&
           t >= s.openedAt.getTime() &&
-          t <= s.closedAt.getTime(),
+          (!s.closedAt || t <= s.closedAt.getTime()),
       );
     };
 
-    return {
-      rows: pageEntries.map(entry => {
-        const shift = findShiftFor(entry.storeId, entry.createdAt);
-        const pettyClosing =
-          ((shift?.closing ?? {}) as {pettyCash?: PettyCashClosingCell}).pettyCash ?? {};
-        const pettyOpening =
-          ((shift?.opening ?? {}) as {pettyCash?: PettyCashOpeningCell}).pettyCash ?? {};
+    const reportFinanceEntries = shifts.length
+      ? await this.pettyCashFinanceRepo.find({
+          where: {
+            storeId: {inq: storeIds},
+            createdAt: {between: [from, to]},
+          } as object,
+        })
+      : [];
+    const visibleFinanceEntries = reportFinanceEntries.filter(entry =>
+      Boolean(findShiftFor(entry.storeId, entry.createdAt)),
+    );
+    const inRange = (date: Date | undefined) =>
+      date && timeOf(date) >= from.getTime() && timeOf(date) <= to.getTime();
 
-        return {
-          id: String(entry.id),
-          expenseDate: entry.expenseDate ?? null,
-          description: entry.description ?? '—',
-          remarks: entry.remarks ?? '—',
-          method: entry.method ?? '—',
-          recordedBy: entry.userName ?? '—',
-          storeName: entry.storeName ?? '—',
-          amount: Number(entry.amount) || 0,
-          // approvedAmount is only set once a manager resolves the entry;
-          // until then there is no approved figure, not a zero one.
-          approvedAmount: entry.approvedAmount == null ? null : Number(entry.approvedAmount),
-          status: entry.status ?? 'pending',
-          closureNo: shift
-            ? shift.closureNo != null
-              ? String(shift.closureNo)
-              : String(shift.openingNo)
-            : '—',
-          openingAmount: Number(pettyClosing.prevSupposed) || 0,
-          receivedAmount: Number(pettyClosing.recvFromFinance) || 0,
-          closingAmount: Number(pettyClosing.actualBalance) || 0,
-          shiftOpenDiff: (Number(pettyOpening.actual) || 0) - (Number(pettyOpening.supposed) || 0),
-          shiftClosureDiff: Number(pettyClosing.difference) || 0,
-          shiftDisapprovedAmt: Number(pettyClosing.disapprovedAmt) || 0,
-          shiftTotalExpense: Number(pettyClosing.used) || 0,
-        };
-      }),
-      totalCount: count,
+    const shiftById = new Map<string, (typeof shifts)[number]>();
+    shifts.forEach(shift => {
+      if (inRange(shift.openedAt) || inRange(shift.closedAt))
+        shiftById.set(String(shift.id), shift);
+    });
+    allEntries.forEach(entry => {
+      const shift = findShiftFor(entry.storeId, entry.createdAt);
+      if (shift) shiftById.set(String(shift.id), shift);
+    });
+    visibleFinanceEntries.forEach(entry => {
+      const shift = findShiftFor(entry.storeId, entry.createdAt);
+      if (shift) shiftById.set(String(shift.id), shift);
+    });
+    const relevantShifts = [...shiftById.values()];
+    const balanceByEntryId = new Map<string, number>();
+    if (relevantShifts.length) {
+      const earliestOpen = new Date(
+        Math.min(...relevantShifts.map(shift => timeOf(shift.openedAt))),
+      );
+      const latestClose = new Date(
+        Math.max(...relevantShifts.map(shift => timeOf(shift.closedAt ?? to))),
+      );
+      const [shiftEntries, financeEntries] = await Promise.all([
+        this.pettyCashRegisterRepo.find({
+          where: {
+            storeId: {inq: storeIds},
+            isDeleted: false,
+            createdAt: {between: [earliestOpen, latestClose]},
+          } as object,
+        }),
+        this.pettyCashFinanceRepo.find({
+          where: {
+            storeId: {inq: storeIds},
+            createdAt: {between: [earliestOpen, latestClose]},
+          } as object,
+        }),
+      ]);
+
+      const entriesByShift = new Map<string, typeof shiftEntries>();
+      shiftEntries.forEach(entry => {
+        const shift = findShiftFor(entry.storeId, entry.createdAt);
+        if (!shift || !shiftById.has(String(shift.id))) return;
+        const key = String(shift.id);
+        const grouped = entriesByShift.get(key) ?? [];
+        grouped.push(entry);
+        entriesByShift.set(key, grouped);
+      });
+      const financeByShift = new Map<string, typeof financeEntries>();
+      financeEntries.forEach(entry => {
+        const shift = findShiftFor(entry.storeId, entry.createdAt);
+        if (!shift || !shiftById.has(String(shift.id))) return;
+        const key = String(shift.id);
+        const grouped = financeByShift.get(key) ?? [];
+        grouped.push(entry);
+        financeByShift.set(key, grouped);
+      });
+
+      relevantShifts.forEach(shift => {
+        const opening =
+          ((shift.opening ?? {}) as {pettyCash?: PettyCashOpeningCell})
+            .pettyCash ?? {};
+        let balance = Number(opening.actual) || 0;
+        const events = [
+          ...(financeByShift.get(String(shift.id)) ?? []).map(entry => ({
+            at: timeOf(entry.createdAt),
+            // Opening-time finance is already included in the opening count.
+            amount:
+              timeOf(entry.createdAt) === timeOf(shift.openedAt)
+                ? 0
+                : Number(entry.amount) || 0,
+            id: `0-finance:${entry.id}`,
+          })),
+          ...(entriesByShift.get(String(shift.id)) ?? []).map(entry => ({
+            at: timeOf(entry.createdAt),
+            // shortcut: current approvals apply to earlier claims; replay resolutions for point-in-time balances.
+            amount:
+              entry.status === PettyCashStatus.REJECTED
+                ? 0
+                : -(entry.status === PettyCashStatus.APPROVED
+                    ? Number(entry.approvedAmount) || 0
+                    : Number(entry.amount) || 0),
+            id: `1-expense:${entry.id}`,
+          })),
+        ].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+        events.forEach(event => {
+          balance = roundRupees(balance + event.amount);
+          balanceByEntryId.set(event.id, balance);
+        });
+      });
+    }
+
+    const rows: Array<{
+      id: string;
+      expenseDate: Date | null;
+      shiftId?: string;
+      [key: string]: unknown;
+    }> = allEntries.map(entry => {
+      const shift = findShiftFor(entry.storeId, entry.createdAt);
+      const closing =
+        ((shift?.closing ?? {}) as {pettyCash?: PettyCashClosingCell})
+          .pettyCash ?? {};
+
+      return {
+        id: String(entry.id),
+        entryType: 'expense',
+        shiftId: shift ? String(shift.id) : undefined,
+        expenseDate: entry.expenseDate ?? null,
+        description: entry.description ?? '—',
+        remarks: entry.remarks ?? '—',
+        method: entry.method ?? '—',
+        recordedBy: entry.userName ?? '—',
+        storeName: entry.storeName ?? '—',
+        amount: Number(entry.amount) || 0,
+        // approvedAmount is only set once a manager resolves the entry;
+        // until then there is no approved figure, not a zero one.
+        approvedAmount:
+          entry.approvedAmount == null ? null : Number(entry.approvedAmount),
+        status: entry.status ?? 'pending',
+        shiftDisapprovedAmt: Number(entry.disapprovedAmt) || 0,
+        receivedAmount: shift ? Number(closing.recvFromFinance) || 0 : 0,
+        shiftTotalExpense: shift ? Number(closing.used) || 0 : 0,
+        balance: balanceByEntryId.get(`1-expense:${entry.id}`) ?? null,
+        closureNo: shift
+          ? shift.closureNo != null
+            ? String(shift.closureNo)
+            : String(shift.openingNo)
+          : '—',
+      };
+    });
+    visibleFinanceEntries.forEach(entry => {
+      const shift = findShiftFor(entry.storeId, entry.createdAt);
+      if (!shift) return;
+      rows.push({
+        id: `finance-${entry.id}`,
+        entryType: 'finance',
+        shiftId: String(shift.id),
+        expenseDate: entry.createdAt ?? null,
+        storeName: entry.storeName ?? shift.storeName ?? '—',
+        closureNo: String(shift.closureNo ?? shift.openingNo),
+        description:
+          timeOf(entry.createdAt) === timeOf(shift.openedAt)
+            ? 'Opening Finance Adjustment'
+            : 'Received from Finance',
+        remarks: entry.remarks ?? '—',
+        recordedBy: entry.createdByName ?? '—',
+        financeAmount: Number(entry.amount) || 0,
+        balance: balanceByEntryId.get(`0-finance:${entry.id}`) ?? null,
+      });
+    });
+    relevantShifts.forEach(shift => {
+      const opening =
+        ((shift.opening ?? {}) as {pettyCash?: PettyCashOpeningCell})
+          .pettyCash ?? {};
+      const closing =
+        ((shift.closing ?? {}) as {pettyCash?: PettyCashClosingCell})
+          .pettyCash ?? {};
+      const shiftId = String(shift.id);
+      const common = {
+        shiftId,
+        storeName: shift.storeName ?? '—',
+        closureNo: String(shift.closureNo ?? shift.openingNo),
+      };
+      if (inRange(shift.openedAt)) {
+        rows.push({
+          ...common,
+          id: `opening-${shiftId}`,
+          entryType: 'opening',
+          expenseDate: shift.openedAt,
+          description: 'Shift Opening',
+          openingAmount: Number(opening.actual) || 0,
+          shiftOpenDiff:
+            (Number(opening.actual) || 0) - (Number(opening.supposed) || 0),
+          balance: Number(opening.actual) || 0,
+        });
+      }
+      if (shift.closedAt && inRange(shift.closedAt)) {
+        rows.push({
+          ...common,
+          id: `closing-${shiftId}`,
+          entryType: 'closing',
+          expenseDate: shift.closedAt,
+          description: 'Shift Closing',
+          closingAmount: Number(closing.actualBalance) || 0,
+          shiftClosureDiff: Number(closing.difference) || 0,
+          balance: Number(closing.actualBalance) || 0,
+        });
+      }
+    });
+    const eventOrder = (row: (typeof rows)[number]) =>
+      row.entryType === 'opening'
+        ? 0
+        : row.entryType === 'finance'
+          ? 1
+          : row.entryType === 'closing'
+            ? 3
+            : 2;
+    rows.sort(
+      (a, b) =>
+        timeOf(a.expenseDate) - timeOf(b.expenseDate) ||
+        eventOrder(a) - eventOrder(b) ||
+        a.id.localeCompare(b.id),
+    );
+
+    return {
+      rows: rows.slice(skip, skip + limit),
+      totalCount: rows.length,
       totals: {
         claimed: allEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0),
-        approved: allEntries.reduce((s, e) => s + (Number(e.approvedAmount) || 0), 0),
+        approved: allEntries.reduce(
+          (s, e) => s + (Number(e.approvedAmount) || 0),
+          0,
+        ),
       },
+      totalsByDescription: Object.fromEntries(descriptionTotals),
     };
   }
 
