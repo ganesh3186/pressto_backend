@@ -78,6 +78,47 @@ export function calculateDiscountedSalesReturnAmount(
   return money(Math.max(0, amount - (discount * amount) / subtotal));
 }
 
+export function previewCreditNoteRefund(
+  record: SalesReturn,
+  order: Order,
+  payments: {transactionType?: string; amount: number}[],
+  unpaidRefundDues: {amount: number}[],
+) {
+  const newOrderTotal = Math.max(
+    0,
+    roundRupee(money(order.totalAmount) - money(record.creditAmount)),
+  );
+  const txnCollected = payments.reduce(
+    (sum, payment) =>
+      sum + (payment.transactionType === 'refund' ? 0 : money(payment.amount)),
+    0,
+  );
+  const paidRefunds = payments.reduce(
+    (sum, payment) =>
+      sum + (payment.transactionType === 'refund' ? money(payment.amount) : 0),
+    0,
+  );
+  const unpaidRefundTotal = unpaidRefundDues.reduce(
+    (sum, refund) => sum + money(refund.amount),
+    0,
+  );
+  const allocated = money(
+    (order as Order & {allocatedPayment?: number}).allocatedPayment,
+  );
+  const isChild = !!(order as Order & {parentOrderId?: string}).parentOrderId;
+  const collected = isChild
+    ? money(allocated + txnCollected)
+    : allocated > 0
+      ? allocated
+      : txnCollected;
+  const netPaid = money(collected - money(paidRefunds + unpaidRefundTotal));
+  return {
+    newOrderTotal,
+    refundAmount: money(Math.max(0, netPaid - newOrderTotal)),
+    newBalanceDue: money(Math.max(0, newOrderTotal - netPaid)),
+  };
+}
+
 export class SalesReturnController {
   constructor(
     @repository(SalesReturnRepository)
@@ -165,58 +206,16 @@ export class SalesReturnController {
     refundAmount: number;
     newBalanceDue: number;
   }> {
-    const creditAmount = money(record.creditAmount);
-    const newOrderTotal = Math.max(
-      0,
-      roundRupee(money(order.totalAmount) - creditAmount),
-    );
-
-    // Split-aware collected amount, same reasoning as the garment-level return
-    // path (ApprovalService._applyReturnEffect): a split child's money lives in
-    // allocatedPayment, a split parent's transactions were superseded by its
-    // allocated share, and refund entries must never count as collected.
     const payments = await this.paymentRepo.find({
       where: {orderId: record.orderId},
     } as any);
-    const txnCollected = payments.reduce(
-      (s: number, p: any) =>
-        s + (p.transactionType === 'refund' ? 0 : money(p.amount)),
-      0,
-    );
-    const paidRefunds = payments.reduce(
-      (s: number, p: any) =>
-        s + (p.transactionType === 'refund' ? money(p.amount) : 0),
-      0,
-    );
-    // A RefundDue not yet paid out (from an earlier Return Item / Upgrade-
-    // downgrade / another credit note on this same order) is still money
-    // that's spoken for — net it out too, or this credit note would treat it
-    // as still-available and double-refund the same amount. See
-    // ApprovalService._computeOverpaymentRefund for the identical reasoning.
     const unpaidRefundDues = await this.refundDueRepo.find({
       where: {
         orderId: record.orderId,
         status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED]},
       },
     });
-    const unpaidRefundTotal = unpaidRefundDues.reduce(
-      (s, r) => s + money(r.amount),
-      0,
-    );
-    const alreadyAccountedFor = money(paidRefunds + unpaidRefundTotal);
-    const allocPay = money((order as any).allocatedPayment);
-    const isChild = !!(order as any).parentOrderId;
-    const collected = isChild
-      ? money(allocPay + txnCollected)
-      : allocPay > 0
-        ? allocPay
-        : txnCollected;
-
-    const netPaid = money(collected - alreadyAccountedFor);
-    const refundAmount = money(Math.max(0, netPaid - newOrderTotal));
-    const newBalanceDue = money(Math.max(0, newOrderTotal - netPaid));
-
-    return {newOrderTotal, refundAmount, newBalanceDue};
+    return previewCreditNoteRefund(record, order, payments, unpaidRefundDues);
   }
 
   // ─── Create Sales Return ──────────────────────────────────────────────────

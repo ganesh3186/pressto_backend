@@ -7,6 +7,71 @@ import {SalesReturnStatus} from '../models/sales-return.model';
 import {ShiftStatus} from '../models/shift-status.enum';
 
 describe('shift collections from riders', () => {
+  it('shows requested cash refunds before approval without counting a paid payout twice', async () => {
+    const from = new Date('2026-10-01T09:00:00Z');
+    const to = new Date('2026-10-01T17:00:00Z');
+    let approved = false;
+    const controller = Object.assign(Object.create(ShiftController.prototype), {
+      salesReturnRepository: {
+        find: async ({where}: {where: Record<string, unknown>}) => {
+          expect(where).to.containEql({
+            status: 'pending',
+            refundMethod: 'cash',
+            createdAt: {between: [from, to]},
+          });
+          return [
+            {
+              orderId: 'order-a',
+              creditAmount: 20,
+              status: 'pending',
+              refundMethod: 'cash',
+            },
+          ];
+        },
+      },
+      refundDueRepository: {
+        find: async ({where}: {where: {method?: string}}) =>
+          where.method
+            ? approved
+              ? []
+              : [
+                  {
+                    orderId: 'order-a',
+                    amount: 15,
+                    approvalRequestId: 'approval-a',
+                  },
+                ]
+            : approved
+              ? []
+              : [{amount: 15}],
+      },
+      paymentTransactionRepository: {
+        find: async () => [
+          {amount: 100, transactionType: 'payment'},
+          {amount: 10, transactionType: 'refund'},
+          ...(approved ? [{amount: 15, transactionType: 'refund'}] : []),
+        ],
+      },
+      approvalRequestRepository: {
+        find: async ({where}: {where: Record<string, unknown>}) => {
+          expect(where).to.containEql({
+            status: 'pending',
+            createdAt: {between: [from, to]},
+          });
+          return [{id: 'approval-a'}];
+        },
+      },
+    }) as ShiftController;
+    const pending = controller['pendingCashReimbursement'].bind(controller);
+    const orders = [{id: 'order-a', totalAmount: 70}] as unknown as Parameters<
+      typeof pending
+    >[0];
+
+    expect(await pending(orders, ['order-a'], from, to)).to.equal(40);
+    approved = true;
+    expect(await pending(orders, ['order-a'], from, to)).to.equal(25);
+  });
+
   it('counts store-confirmed handovers in the shift when the cash reaches the till', async () => {
     const openedAt = new Date('2026-10-01T09:00:00Z');
     const closedAt = new Date('2026-10-01T17:00:00Z');
@@ -60,6 +125,7 @@ describe('shift collections from riders', () => {
         find: async () => [{paymentMode: 'cash', amount: 25}],
       },
       pettyCashService: {computeWindowActivity: async () => ({})},
+      pendingCashReimbursement: async () => 0,
       resolveRevenue: async () => ({
         pressto: {
           revenue: 0,
@@ -331,6 +397,7 @@ describe('shift revenue after sales returns', () => {
       riderCashHandoverRepository: {find: async () => []},
       walletRechargeRequestRepository: {find: async () => []},
       pettyCashService: {computeWindowActivity: async () => ({})},
+      pendingCashReimbursement: async () => 0,
       invoiceRepository: {
         find: async ({where}: {where: Record<string, unknown>}) =>
           where.orderId
