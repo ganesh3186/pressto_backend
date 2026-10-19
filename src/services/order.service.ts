@@ -4150,11 +4150,12 @@ export class OrderService {
       where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any,
     });
 
-    // Already-delivered and returned garments are terminal — leave them.
+    // Only garments still in the workflow can be handed over. A damaged or
+    // held garment must keep its status, just like a returned one.
     const toDeliver = garments.filter(
       g =>
         g.status !== GarmentStatus.DELIVERED &&
-        g.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+        isActiveGarmentStatus(g.status),
     );
 
     const now = new Date();
