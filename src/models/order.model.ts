@@ -231,6 +231,9 @@ export class Order extends Entity {
   @property({type: 'boolean', default: false})
   isDeleted?: boolean;
 
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  itpvId?: string;
+
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 

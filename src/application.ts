@@ -9,6 +9,8 @@ import {
 } from '@loopback/rest-explorer';
 import { ServiceMixin } from '@loopback/service-proxy';
 import multer from 'multer';
+import {prepareCustomerDocumentFolders} from './utils/customer-document-storage';
+import {OrderSummaryPdfService} from './services/order-summary-pdf.service';
 import path from 'path';
 import { JWTStrategy } from './authentication-strategy/jwt-strategy';
 import { EmailManagerBindings, FILE_UPLOAD_SERVICE, STORAGE_DIRECTORY } from './keys';
@@ -100,6 +102,7 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.customer-contact').toClass(CustomerContactService);
     this.bind('services.customer-phone').toClass(CustomerPhoneService);
     this.bind('services.order').toClass(OrderService);
+    this.bind('services.order-summary-pdf').toClass(OrderSummaryPdfService);
     this.bind('services.payment').toClass(PaymentService);
     this.bind('services.pickup-request').toClass(PickupRequestService);
     this.bind('services.process').toClass(ProcessService);
@@ -139,6 +142,8 @@ export class presstoBackendApplication extends BootMixin(
 
   protected configureFileUpload(destination?: string) {
     destination = destination ?? path.join(__dirname, '../.sandbox');
+    destination = path.resolve(destination);
+    prepareCustomerDocumentFolders(destination);
     this.bind(STORAGE_DIRECTORY).to(destination);
 
     const multerOptions: multer.Options = {

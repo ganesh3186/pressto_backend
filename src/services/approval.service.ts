@@ -1059,6 +1059,18 @@ export class ApprovalService {
       updatedAt: new Date(),
     } as any);
 
+    // The line this garment belonged to must drop by this garment's own
+    // share too — otherwise reports that read OrderItem directly (e.g. the
+    // DSR's item/service counts) still count this piece after the order's
+    // own total has already been reduced for it. pieceSubtotal is this same
+    // garment's contribution, computed on the same basis OrderItem.totalPrice
+    // itself is built from (see _applyUpgradeOnOrderItem for the same pattern).
+    await this.orderItemRepo.updateById(orderItem.id, {
+      quantity: Math.max(0, (Number(orderItem.quantity) || 0) - 1),
+      totalPrice: Math.max(0, money(orderItem.totalPrice) - pieceSubtotal),
+      updatedAt: new Date(),
+    } as any);
+
     const invoice = await this.invoiceRepo.findOne({
       where: {orderId: order.id},
     } as any);

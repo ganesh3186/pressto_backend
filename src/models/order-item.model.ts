@@ -109,6 +109,9 @@ export class OrderItem extends Entity {
   @property({type: 'string', postgresql: {dataType: 'text'}})
   rejectionRemarks?: string;
 
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  itpvId?: string;
+
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 
