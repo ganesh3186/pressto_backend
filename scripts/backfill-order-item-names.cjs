@@ -9,12 +9,25 @@ const {Client} = require('pg');
 // (e.g. before a staging->production catalog reconciliation) — afterward,
 // the names it would resolve may no longer match what the order actually
 // had at the time.
-const CANDIDATES = `
-  SELECT oi.id AS orderitemid, s.name AS servicename, i.name AS itemname
+//
+// One bulk UPDATE...FROM rather than a per-row loop — some environments
+// (e.g. migration, with ~4.8M order_item rows from the legacy import) are
+// far too large for a round trip per row.
+const COUNT_CANDIDATES = `
+  SELECT count(*) AS n
   FROM public.order_item oi
   JOIN public.service s ON s.id = oi.serviceid
   JOIN public.item i ON i.id = oi.itemid
   WHERE oi.servicename IS NULL OR oi.itemname IS NULL
+`;
+
+const APPLY_UPDATE = `
+  UPDATE public.order_item oi
+  SET servicename = s.name, itemname = i.name
+  FROM public.service s, public.item i
+  WHERE s.id = oi.serviceid
+    AND i.id = oi.itemid
+    AND (oi.servicename IS NULL OR oi.itemname IS NULL)
 `;
 
 async function backfill() {
@@ -29,18 +42,15 @@ async function backfill() {
 
   await client.connect();
   try {
-    await client.query('BEGIN');
-    const {rows} = await client.query(`${CANDIDATES} FOR UPDATE OF oi`);
-    if (apply) {
-      for (const row of rows) {
-        await client.query(
-          'UPDATE public.order_item SET servicename = $1, itemname = $2 WHERE id = $3',
-          [row.servicename, row.itemname, row.orderitemid],
-        );
-      }
+    if (!apply) {
+      const {rows} = await client.query(COUNT_CANDIDATES);
+      console.log(`${rows[0].n} order item(s) eligible for backfill (dry run).`);
+      return;
     }
-    await client.query(apply ? 'COMMIT' : 'ROLLBACK');
-    console.log(`${rows.length} order item(s) ${apply ? 'backfilled' : 'eligible for backfill (dry run)'}.`);
+    await client.query('BEGIN');
+    const result = await client.query(APPLY_UPDATE);
+    await client.query('COMMIT');
+    console.log(`${result.rowCount} order item(s) backfilled.`);
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

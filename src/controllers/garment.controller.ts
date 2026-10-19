@@ -307,8 +307,11 @@ export class GarmentController {
       orderId,
       orderNumber: (order as any)?.orderNumber ?? null,
       orderItemId: garment.orderItemId,
-      itemName: item?.name ?? null,
-      serviceName: service?.name ?? null,
+      // Prefer the OrderItem's own frozen snapshot — the catalog row this
+      // order was actually created against may since have been renamed or
+      // removed (see OrderItem.itemName/serviceName).
+      itemName: orderItem?.itemName ?? item?.name ?? null,
+      serviceName: orderItem?.serviceName ?? service?.name ?? null,
       brandName: (brand as any)?.name ?? null,
       colorName: (color as any)?.name ?? null,
       currentStoreId,
@@ -910,9 +913,12 @@ export class GarmentController {
         ...g,
         orderId: orderItem.orderId ?? null,
         itemId: orderItem.itemId ?? null,
-        itemName: (item as any)?.name ?? null,
+        // Prefer the OrderItem's own frozen snapshot — the catalog row this
+        // order was actually created against may since have been renamed or
+        // removed (see OrderItem.itemName/serviceName).
+        itemName: orderItem.itemName ?? (item as any)?.name ?? null,
         serviceId: orderItem.serviceId ?? null,
-        serviceName: (service as any)?.name ?? null,
+        serviceName: orderItem.serviceName ?? (service as any)?.name ?? null,
       };
     });
   }
