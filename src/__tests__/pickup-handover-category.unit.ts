@@ -5,7 +5,10 @@ import {PickupHandoverStatus} from '../models/pickup-handover-status.enum';
 describe('pickup handover category labels', () => {
   it('shows only assigned categories in pending and confirmed lists', async () => {
     const controller = Object.assign(Object.create(PickupHandoverController.prototype), {
-      handoverRepo: {find: async () => [{id: 'handover-1'}]},
+      handoverRepo: {
+        find: async () => [{id: 'handover-1'}],
+        count: async () => ({count: 1}),
+      },
       handoverItemRepo: {find: async () => [
         {id: 'item-1', pickupHandoverId: 'handover-1', pickupRequestId: 'pickup-1'},
         {id: 'item-2', pickupHandoverId: 'handover-1', pickupRequestId: 'pickup-2'},
