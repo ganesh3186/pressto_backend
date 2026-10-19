@@ -61,6 +61,7 @@ import {
   CustomerDiscountGroupRepository,
   CustomerFamilyGroupMemberRepository,
   CustomerFamilyGroupRepository,
+  CustomerLabelAssignmentRepository,
   CustomerRepository,
   CustomerSecurityDepositRepository,
   DeliveryCustodyEventRepository,
@@ -254,6 +255,8 @@ export class OrderService {
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(CustomerDiscountGroupRepository)
     private customerDiscountGroupRepo: CustomerDiscountGroupRepository,
+    @repository(CustomerLabelAssignmentRepository)
+    private customerLabelAssignmentRepo: CustomerLabelAssignmentRepository,
     @repository(CustomerSecurityDepositRepository)
     private securityDepositRepo: CustomerSecurityDepositRepository,
     @repository(StoreRepository) private storeRepo: StoreRepository,
@@ -461,10 +464,16 @@ export class OrderService {
    * Priority-0 check for resolvePricing(): is there an active
    * CouponDiscountType.PRICE_OVERRIDE coupon with a CouponPriceOverride row
    * for this exact (serviceId, itemId), whose date window covers now and
-   * whose store/cluster/region targeting matches this store? Same
-   * AND-across-set-dimensions geo rule as CouponService's own
-   * geoScopeReason() (duplicated rather than imported — CouponService isn't
-   * injected into OrderService, and this is a small, self-contained check).
+   * whose store/cluster/region targeting matches this store, and whose
+   * customer-group (CustomerLabel) targeting, if any, matches this
+   * customer? Same AND-across-set-dimensions geo rule as CouponService's
+   * own geoScopeReason() (duplicated rather than imported — CouponService
+   * isn't injected into OrderService, and this is a small, self-contained
+   * check). The audience check mirrors CouponService.audienceScopeReason()
+   * minus its individual-grant fallback — CouponCustomer is never
+   * populated for a price-override coupon (see CouponPriceOverride's model
+   * comment), so customerLabelIds is the only targeting dimension here;
+   * unset means open to every customer, same as every other dimension.
    * Two or more equally-eligible coupons overlapping on the same mapping
    * resolve to the cheaper price.
    */
@@ -472,6 +481,7 @@ export class OrderService {
     storeId: string,
     serviceId: string,
     itemId: string,
+    customerId: string,
   ): Promise<number | null> {
     const overrides = await this.couponPriceOverrideRepo.find({
       where: {serviceId, itemId, isActive: true, isDeleted: false},
@@ -481,6 +491,7 @@ export class OrderService {
     const now = new Date();
     let store: {id: string; clusterId?: string} | null = null;
     let cluster: {regionId: string} | null = null;
+    let customerLabelIds: string[] | null = null;
     let cheapest: number | null = null;
 
     for (const row of overrides) {
@@ -518,6 +529,18 @@ export class OrderService {
         }
       }
 
+      if ((coupon.customerLabelIds?.length ?? 0) > 0) {
+        if (customerLabelIds === null) {
+          const assignments = await this.customerLabelAssignmentRepo.find({
+            where: {customerId, isDeleted: false} as object,
+            fields: {customerLabelId: true} as object,
+          });
+          customerLabelIds = assignments.map(a => a.customerLabelId);
+        }
+        if (!coupon.customerLabelIds!.some(id => customerLabelIds!.includes(id)))
+          continue;
+      }
+
       const price = Number(row.overridePrice);
       if (cheapest === null || price < cheapest) cheapest = price;
     }
@@ -529,6 +552,7 @@ export class OrderService {
     storeId: string,
     serviceId: string,
     itemId: string,
+    customerId: string,
     options: {additional?: boolean} = {},
   ): Promise<{
     basePrice: number;
@@ -556,6 +580,7 @@ export class OrderService {
       storeId,
       serviceId,
       itemId,
+      customerId,
     );
     if (couponOverridePrice != null) {
       return {
@@ -1519,6 +1544,7 @@ export class OrderService {
         input.storeId,
         item.serviceId,
         item.itemId,
+        input.customerId,
       );
 
       // A rejected line is recorded but never billed — everything payable is 0,
@@ -1552,6 +1578,7 @@ export class OrderService {
           input.storeId,
           addlServiceId,
           item.itemId,
+          input.customerId,
           {
             additional: true,
           },
@@ -2888,6 +2915,7 @@ export class OrderService {
           order.storeId!,
           desired.serviceId,
           desired.itemId,
+          order.customerId,
         );
 
         const quantity = Number(desired.quantity);
@@ -2935,6 +2963,7 @@ export class OrderService {
             order.storeId!,
             addlServiceId,
             desired.itemId,
+            order.customerId,
             {
               additional: true,
             },

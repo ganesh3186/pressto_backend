@@ -1685,6 +1685,7 @@ export class ApprovalService {
           order.storeId!,
           toServiceId,
           orderItem.itemId,
+          order.customerId,
         );
         newBasePrice = pricing.basePrice;
         newResolvedPrice = pricing.resolvedPrice;
@@ -1725,6 +1726,7 @@ export class ApprovalService {
           order.storeId!,
           addlId,
           orderItem.itemId,
+          order.customerId,
           {additional: true},
         );
         newlyAddedAddlServices.push({
@@ -2401,6 +2403,7 @@ export class ApprovalService {
           order.storeId!,
           toServiceId,
           orderItem.itemId,
+          order.customerId,
         );
         newResolvedPrice = pricing.resolvedPrice;
       } catch {
@@ -2423,6 +2426,7 @@ export class ApprovalService {
             order.storeId!,
             addlId,
             orderItem.itemId,
+            order.customerId,
             {additional: true},
           );
           newAddlAmountSum += addlPricing.resolvedPrice;

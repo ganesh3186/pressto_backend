@@ -7,6 +7,7 @@ import {
   ClusterRepository,
   CouponPriceOverrideRepository,
   CouponRepository,
+  CustomerLabelAssignmentRepository,
   PriceListRepository,
   ServiceItemMappingRepository,
   StorePriceOverrideRepository,
@@ -57,6 +58,8 @@ export class ServiceItemPricesController {
     private couponRepository: CouponRepository,
     @repository(CouponPriceOverrideRepository)
     private couponPriceOverrideRepository: CouponPriceOverrideRepository,
+    @repository(CustomerLabelAssignmentRepository)
+    private customerLabelAssignmentRepository: CustomerLabelAssignmentRepository,
   ) {}
 
   @authenticate('jwt')
@@ -100,6 +103,12 @@ export class ServiceItemPricesController {
   })
   async getServiceItemPrices(
     @param.query.string('storeId') storeId: string,
+    // Optional — a price-override coupon targeted at a customer group
+    // (customerLabelIds) only resolves for a customer whose labels match,
+    // same gate as OrderService.resolveCouponOverridePrice(). Omitting it
+    // (e.g. before a customer is selected) just skips any group-targeted
+    // override, same as a customer with no matching labels would.
+    @param.query.string('customerId') customerId?: string,
   ): Promise<ServiceItemPrice[]> {
     if (!storeId) {
       throw new HttpErrors.BadRequest('storeId is required');
@@ -171,7 +180,12 @@ export class ServiceItemPricesController {
     // store (empty array = applies everywhere), cheaper price wins on a
     // tie. Built once, up front, since this endpoint returns every mapping
     // in one call rather than resolving one pair at a time.
-    const couponOverrideByPair = await this.buildCouponOverrideMap(storeId, store.clusterId, cluster.regionId);
+    const couponOverrideByPair = await this.buildCouponOverrideMap(
+      storeId,
+      store.clusterId,
+      cluster.regionId,
+      customerId,
+    );
 
     // Store/cluster/region percentage is an UPLIFT on top of base (e.g. 30 = +30%).
     // 0 = no change. First match in the store→cluster→region waterfall wins.
@@ -238,6 +252,7 @@ export class ServiceItemPricesController {
     storeId: string,
     clusterId: string,
     regionId: string,
+    customerId?: string,
   ): Promise<Map<string, number>> {
     const overrides = await this.couponPriceOverrideRepository.find({
       where: {isActive: true, isDeleted: false},
@@ -248,6 +263,19 @@ export class ServiceItemPricesController {
     const coupons = await this.couponRepository.find({
       where: {id: {inq: couponIds}, isActive: true, isDeleted: false},
     });
+    // Fetched once, up front — same audience gate as
+    // OrderService.resolveCouponOverridePrice(), minus its individual-grant
+    // fallback (CouponCustomer is never populated for a price-override
+    // coupon). No customerId (e.g. no customer selected yet) behaves like a
+    // customer with no matching labels — only ungated coupons apply.
+    const customerLabelIds = customerId
+      ? (
+          await this.customerLabelAssignmentRepository.find({
+            where: {customerId, isDeleted: false} as object,
+            fields: {customerLabelId: true} as object,
+          })
+        ).map(a => a.customerLabelId)
+      : [];
     const now = new Date();
     const eligibleCouponIds = new Set(
       coupons
@@ -256,10 +284,14 @@ export class ServiceItemPricesController {
           if (now < new Date(c.startDate) || now > new Date(c.endDate)) return false;
           const hasGeoScope =
             (c.storeIds?.length ?? 0) > 0 || (c.clusterIds?.length ?? 0) > 0 || (c.regionIds?.length ?? 0) > 0;
-          if (!hasGeoScope) return true;
-          if ((c.storeIds?.length ?? 0) > 0 && !c.storeIds!.includes(storeId)) return false;
-          if ((c.clusterIds?.length ?? 0) > 0 && !c.clusterIds!.includes(clusterId)) return false;
-          if ((c.regionIds?.length ?? 0) > 0 && !c.regionIds!.includes(regionId)) return false;
+          if (hasGeoScope) {
+            if ((c.storeIds?.length ?? 0) > 0 && !c.storeIds!.includes(storeId)) return false;
+            if ((c.clusterIds?.length ?? 0) > 0 && !c.clusterIds!.includes(clusterId)) return false;
+            if ((c.regionIds?.length ?? 0) > 0 && !c.regionIds!.includes(regionId)) return false;
+          }
+          if ((c.customerLabelIds?.length ?? 0) > 0) {
+            if (!c.customerLabelIds!.some(id => customerLabelIds.includes(id))) return false;
+          }
           return true;
         })
         .map(c => c.id),

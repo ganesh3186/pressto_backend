@@ -199,7 +199,7 @@ export class GarmentActionsController {
         addlServiceNames.set(addlId, (addlService as any).name);
         // Same server-side gate POS/order-edit rely on — throws BadRequest
         // when no ServiceItemMapping/basePrice exists for this pairing.
-        await this.orderService.resolvePricing(order.storeId, addlId, orderItem.itemId, {
+        await this.orderService.resolvePricing(order.storeId, addlId, orderItem.itemId, order.customerId, {
           additional: true,
         });
       }
