@@ -1696,6 +1696,9 @@ export class ApprovalService {
     // then apply the order's delivery-tier uplift — identical to order creation.
     let newBasePrice = Number(orderItem.basePrice) || 0;
     let newResolvedPrice = Number(orderItem.resolvedPrice) || 0;
+    // Display snapshot only (see OrderItem.serviceName) — resolved alongside
+    // pricing since both need toServiceId's row, but never blocks the upgrade.
+    let newServiceName: string | undefined;
     if (toServiceId) {
       try {
         const pricing = await this.orderService.resolvePricing(
@@ -1711,6 +1714,7 @@ export class ApprovalService {
         newBasePrice = Number(orderItem.basePrice) || 0;
         newResolvedPrice = newBasePrice;
       }
+      newServiceName = (await this.serviceRepo.findOne({where: {id: toServiceId}}))?.name;
     }
     // Base-only per-unit reference (no add-ons folded in) — same meaning as
     // OrderItem.unitPrice everywhere else (order.service.ts's createOrder).
@@ -1816,6 +1820,7 @@ export class ApprovalService {
         id: upgradedOrderItemId,
         quantity: 1,
         serviceId: toServiceId,
+        serviceName: newServiceName,
         basePrice: newBasePrice,
         resolvedPrice: newResolvedPrice,
         unitPrice: newUnitPrice,
@@ -1835,6 +1840,7 @@ export class ApprovalService {
     } else if (toServiceId) {
       await this.orderItemRepo.updateById(orderItemId, {
         serviceId: toServiceId,
+        serviceName: newServiceName,
         basePrice: newBasePrice,
         resolvedPrice: newResolvedPrice,
         unitPrice: newUnitPrice,

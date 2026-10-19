@@ -21,6 +21,20 @@ export class OrderItem extends Entity {
   @property({type: 'string', required: true, postgresql: {dataType: 'uuid'}})
   itemId: string;
 
+  // Denormalized display snapshot of Service.name/Item.name at the time this
+  // line was priced — same precedent as Order.assignedRiderName next to
+  // assignedRiderId. The catalog's Service/Item rows can be renamed or
+  // removed later (e.g. a staging→production catalog reconciliation); this
+  // keeps a historical order's display intact regardless, since serviceId/
+  // itemId carry no real foreign-key constraint today. Refreshed whenever
+  // serviceId actually changes (see ApprovalService's upgrade-service path);
+  // itemId never changes after creation, so itemName never needs a refresh.
+  @property({type: 'string'})
+  serviceName?: string;
+
+  @property({type: 'string'})
+  itemName?: string;
+
   @property({type: 'number', required: true})
   quantity: number;
 
