@@ -5132,9 +5132,12 @@ export class OrderService {
       ),
       serviceId: oi.serviceId,
       standardTurnaroundDays: standardDaysByItem.get(oi.id) ?? 3,
-      serviceName: serviceMap.get(oi.serviceId)?.name ?? null,
+      // Prefer the OrderItem's own frozen snapshot — the catalog row this
+      // order was actually created against may since have been renamed or
+      // removed (see OrderItem.itemName/serviceName).
+      serviceName: oi.serviceName ?? serviceMap.get(oi.serviceId)?.name ?? null,
       itemId: oi.itemId,
-      itemName: itemMap.get(oi.itemId)?.name ?? null,
+      itemName: oi.itemName ?? itemMap.get(oi.itemId)?.name ?? null,
       // Drives the inspection popup's length/width fields (curtains etc,
       // billed by area) — the frontend reads this straight off each item.
       isMeasurement: itemMap.get(oi.itemId)?.isMeasurement ?? false,
