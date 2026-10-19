@@ -481,10 +481,10 @@ export class GarmentController {
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
     await this.storeScopeService.assertGarmentEditable(garmentId, currentUser);
 
-    // Block direct on_hold — must come through the approval flow
-    if (body.status === GarmentStatus.ON_HOLD) {
+    // Both states are set through approval requests.
+    if (body.status === GarmentStatus.ON_HOLD || body.status === GarmentStatus.DAMAGED) {
       throw new HttpErrors.BadRequest(
-        "Garment cannot be put on hold directly. Submit a return_item or item_damaged approval request.",
+        `Garment cannot be marked '${body.status}' directly. Submit an approval request.`,
       );
     }
 
@@ -831,9 +831,9 @@ export class GarmentController {
       g.id === garmentId ? newStatus : (g.status as GarmentStatus),
     );
 
-    // Active garments = those still in the pipeline (on_hold and returned garments are excluded)
+    // Active garments = those still in the pipeline (held, damaged, and returned are excluded)
     const activeStatuses = effectiveStatuses.filter(
-      s => s !== GarmentStatus.ON_HOLD && s !== GarmentStatus.RETURNED_TO_CUSTOMER,
+      s => s !== GarmentStatus.ON_HOLD && s !== GarmentStatus.DAMAGED && s !== GarmentStatus.RETURNED_TO_CUSTOMER,
     );
 
     const {v4} = await import('uuid');

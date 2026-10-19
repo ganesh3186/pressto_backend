@@ -35,6 +35,7 @@
     "migrate:delivery-order-failure-remarks": "node scripts/add-delivery-order-failure-remarks.cjs",
     "migrate:store-targets": "node scripts/add-store-targets.cjs",
     "migrate:dashboard-indexes": "node scripts/add-dashboard-indexes.cjs",
+    "migrate:approved-damaged-garments": "node scripts/backfill-approved-damaged-garments.cjs",
     "migrate:pickup-order-links": "node scripts/drop-legacy-pickup-delivery-index.cjs",
     "migrate:bag-capacity": "node scripts/set-bag-capacity-500.cjs",
     "preseed": "npm run build",

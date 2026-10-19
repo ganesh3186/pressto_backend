@@ -50,18 +50,9 @@ import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
 
 // What status to set on the garment immediately when a request is CREATED.
-// Every garment-level approval type resolves the garment's status the
-// instant it's raised — approval is a side process that reconciles the
-// MONEY side later (see GARMENT_STATUS_ON_APPROVE / _applyReturnEffect /
-// _applyUpgradeOnOrderItem, all still gated on an actual approve), it no
-// longer gates the garment's own state. Most types have no real "done"
-// state yet, so they park on ON_HOLD so the wait never gets silently
-// attributed to whatever pipeline stage (in_process, quality_check, ...)
-// the garment happened to be sitting in. RETURN_ITEM is the one exception —
-// "returned to customer" already IS its own resolution, so it goes there
-// directly rather than parking on ON_HOLD first (see also
-// _resumeGarmentFromHold, which now treats RETURNED_TO_CUSTOMER the same
-// way it already treats ON_HOLD when a pending request here gets rejected).
+// Requests that need a decision park the garment on ON_HOLD, so work does not
+// appear to continue through the pipeline. RETURN_ITEM moves it to returned
+// immediately; the return stays final regardless of the approval decision.
 const GARMENT_STATUS_ON_CREATE: Partial<
   Record<ApprovalRequestType, GarmentStatus>
 > = {
@@ -75,13 +66,13 @@ const GARMENT_STATUS_ON_CREATE: Partial<
 // What status to set on the garment when request is APPROVED. RETURN_ITEM
 // is deliberately absent — it's already RETURNED_TO_CUSTOMER from the
 // moment the request was created (see GARMENT_STATUS_ON_CREATE); approve
-// only needs to run the money side (_applyReturnEffect), not touch status
-// again (that would just add a redundant second history entry).
+// does not change its status again.
 const GARMENT_STATUS_ON_APPROVE: Partial<
   Record<ApprovalRequestType, GarmentStatus>
 > = {
   // Upgrade: on approve, move to in_inspection so the new service process can be initialised
   [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.IN_INSPECTION,
+  [ApprovalRequestType.ITEM_DAMAGED]: GarmentStatus.DAMAGED,
 };
 
 /**
@@ -506,7 +497,37 @@ export class ApprovalService {
       );
     }
 
+    if (params.type === ApprovalRequestType.RETURN_ITEM && params.entityType === 'garment') {
+      await this._ensureReturnBillingApplied(request, params.requestedBy);
+    }
+
     return request;
+  }
+
+  private async _ensureReturnBillingApplied(
+    request: ApprovalRequest,
+    performedBy: string,
+  ): Promise<void> {
+    const current = await this.approvalRequestRepo.findById(request.id);
+    if (current.metadata?._returnBillingApplied) return;
+
+    const garment = await this.garmentRepo.findById(request.entityId);
+    const orderItem = await this.orderItemRepo.findById(garment.orderItemId);
+    const activeGarments = await this.garmentRepo.count({
+      orderItemId: orderItem.id,
+      status: {neq: GarmentStatus.RETURNED_TO_CUSTOMER},
+      isDeleted: false,
+    });
+    // Requests resolved by older builds have no marker, but already reduced
+    // OrderItem.quantity. Recognize those before applying the credit again.
+    if (Number(orderItem.quantity) > activeGarments.count) {
+      await this._applyReturnEffect(request, performedBy);
+    }
+    const updated = await this.approvalRequestRepo.findById(request.id);
+    await this.approvalRequestRepo.updateById(request.id, {
+      metadata: {...(updated.metadata ?? {}), _returnBillingApplied: true},
+      updatedAt: new Date(),
+    });
   }
 
   // ─── Deferred refund payouts ──────────────────────────────────────────────
@@ -824,10 +845,6 @@ export class ApprovalService {
       );
     }
 
-    // Item damaged approved: no further status change — the garment stays
-    // on_hold (set at request creation) until someone manually resolves it
-    // via reprocess or return.
-
     // Reprocess approved: reset the process logs and send the garment back into
     // processing so the workshop redoes every step. The garment_status_history
     // entry written below is the trail the client sees for the reprocess.
@@ -835,10 +852,9 @@ export class ApprovalService {
       await this._applyReprocess(request, performedBy);
     }
 
-    // Return approved: remove the returned garment from billing, reflect on
-    // invoice + challan, and refund any already-paid amount to the wallet.
+    // Older pending requests may predate the immediate billing adjustment.
     if (request.type === ApprovalRequestType.RETURN_ITEM) {
-      await this._applyReturnEffect(request, performedBy);
+      await this._ensureReturnBillingApplied(request, performedBy);
     }
 
     // Risk approved: customer accepted the risk — no service/price change,
@@ -1571,6 +1587,13 @@ export class ApprovalService {
 
     if (request.entityType !== 'garment') return;
 
+    if (request.type === ApprovalRequestType.RETURN_ITEM) {
+      // Rejecting the approval does not undo a physical return or its credit.
+      // Apply the credit here for requests created before immediate adjustment.
+      await this._ensureReturnBillingApplied(request, performedBy);
+      return;
+    }
+
     // Declined + return: the customer wants the piece back unprocessed. Same
     // downstream effect as an approved return_item — drop it from billing and
     // refund any overpayment.
@@ -1585,12 +1608,8 @@ export class ApprovalService {
       return;
     }
 
-    // Plain reject, or declined + carry on as before. Either way, whatever the
-    // request touched was never actually applied (upgrade's serviceId swap,
-    // return's removal, reprocess's log reset all only happen on APPROVE), so
-    // the garment just comes off hold and resumes wherever it left off — no
-    // other field needs undoing. Applies to every type this service holds at
-    // creation (see GARMENT_STATUS_ON_CREATE), not just upgrades.
+    // Other rejected requests resume the garment's previous stage. Their
+    // service and process changes only happen on approval.
     if (GARMENT_STATUS_ON_CREATE[request.type]) {
       const reason =
         action === ApprovalActionType.REJECTED_AND_PROCESS
@@ -1601,9 +1620,7 @@ export class ApprovalService {
   }
 
   /**
-   * Move a garment off ON_HOLD — or off RETURNED_TO_CUSTOMER, for a
-   * RETURN_ITEM request rejected before its money side ever ran (see
-   * GARMENT_STATUS_ON_CREATE) — back to wherever it was before. Walks
+   * Move a garment off ON_HOLD back to wherever it was before. Walks
    * garment_status_history newest-first for the last real pipeline stage,
    * skipping ON_HOLD and RETURNED_TO_CUSTOMER entries (either can be a
    * leftover from the very request being rejected/reverted right now, so
@@ -2064,9 +2081,9 @@ export class ApprovalService {
       | undefined;
     const notes: string[] = [];
 
-    if (snapshot) {
+    if (snapshot && request.type !== ApprovalRequestType.RETURN_ITEM) {
       await this._restoreSnapshot(snapshot);
-    } else {
+    } else if (!snapshot && request.type !== ApprovalRequestType.RETURN_ITEM) {
       // Resolved before revert support existed, so nothing was photographed.
       notes.push(
         'No pre-resolve snapshot was recorded for this request, so pricing and billing were left untouched. Check the order totals manually.',
@@ -2172,14 +2189,19 @@ export class ApprovalService {
       updatedAt: new Date(),
     });
 
-    // Back on hold, exactly as it sat before anyone decided.
+    // A return remains returned and unbilled even if its approval is reopened.
     if (request.entityType === 'garment') {
       await this._updateGarmentStatus(
         request.entityId,
-        GarmentStatus.ON_HOLD,
+        request.type === ApprovalRequestType.RETURN_ITEM
+          ? GarmentStatus.RETURNED_TO_CUSTOMER
+          : GarmentStatus.ON_HOLD,
         params.performedBy,
         `${previousStatus} decision reverted — awaiting a fresh decision`,
       );
+      if (request.type === ApprovalRequestType.RETURN_ITEM) {
+        await this._ensureReturnBillingApplied(request, params.performedBy);
+      }
     }
 
     await this.approvalAuditLogRepo.create({
