@@ -860,13 +860,7 @@ export class ReportsService {
     return {rows, totalCount: enriched.length, totals};
   }
 
-  /**
-   * Pending Tickets — orders still in the plant, not yet delivered.
-   *
-   * "No Of Items" counts garments. The client read order.itemCount, a
-   * field the order-list endpoint does not return (it sends
-   * orderItemsCount), so this column has been showing 0 throughout.
-   */
+  /** Pending Tickets — orders still in the plant, not yet delivered. */
   async buildPendingTickets(params: OrderReportParams): Promise<PagedReport<object>> {
     const {storeIds, limit, skip} = params;
     if (!storeIds.length) return emptyPaged();
@@ -881,12 +875,23 @@ export class ReportsService {
     if (!orders.length) return emptyPaged();
 
     const orderIds = orders.map(o => o.id);
-    const [itemCounts, deliveryStatuses, storeCtx, customerCtx] = await Promise.all([
-      this.buildItemCountByOrder(orderIds),
+    const [orderItems, deliveryStatuses, storeCtx, customerCtx] = await Promise.all([
+      this.orderItemRepo.find({
+        where: {orderId: {inq: orderIds}} as object,
+        fields: {id: true, orderId: true, itemId: true, quantity: true} as object,
+        order: ['createdAt ASC', 'id ASC'],
+      }),
       this.buildDeliveryStatusByOrder(orderIds),
       this.buildStoreContext(storeIds),
       this.buildCustomerContext([...new Set(orders.map(o => String(o.customerId)))]),
     ]);
+    const itemCounts = new Map<string, number>();
+    for (const orderItem of orderItems) {
+      const quantity = Number(orderItem.quantity) || 0;
+      if (quantity <= 0) continue;
+      const orderId = String(orderItem.orderId);
+      itemCounts.set(orderId, (itemCounts.get(orderId) ?? 0) + quantity);
+    }
 
     // An order already handed over is no longer pending, whatever its
     // own status says.
@@ -899,7 +904,30 @@ export class ReportsService {
       items: pending.reduce((sum, o) => sum + (itemCounts.get(String(o.id)) ?? 0), 0),
     };
 
-    const rows = pending.slice(skip, skip + limit).map(order => {
+    const pageOrders = pending.slice(skip, skip + limit);
+    const pageOrderIds = new Set(pageOrders.map(o => String(o.id)));
+    const pageItems = orderItems.filter(oi => pageOrderIds.has(String(oi.orderId)));
+    const itemIds = [...new Set(pageItems.map(oi => oi.itemId))];
+    const items = itemIds.length
+      ? await this.itemRepo.find({
+          where: {id: {inq: itemIds}} as object,
+          fields: {id: true, name: true} as object,
+        })
+      : [];
+    const itemNameById = new Map(items.map(item => [String(item.id), item.name]));
+    const itemsByOrder = new Map<string, Array<{name: string; quantity: number}>>();
+    for (const orderItem of pageItems) {
+      const quantity = Number(orderItem.quantity) || 0;
+      if (quantity <= 0) continue;
+      const orderId = String(orderItem.orderId);
+      if (!itemsByOrder.has(orderId)) itemsByOrder.set(orderId, []);
+      itemsByOrder.get(orderId)!.push({
+        name: itemNameById.get(String(orderItem.itemId)) ?? '—',
+        quantity,
+      });
+    }
+
+    const rows = pageOrders.map(order => {
       const store = storeCtx.get(String(order.storeId));
       const customer = customerCtx.get(String(order.customerId));
       return {
@@ -912,6 +940,7 @@ export class ReportsService {
         customerCode: customer?.code ?? '—',
         customerName: customer?.name ?? '—',
         itemCount: itemCounts.get(String(order.id)) ?? 0,
+        items: itemsByOrder.get(String(order.id)) ?? [],
         receptionDate: order.createdAt ?? null,
         estDeliveryDate: order.deliveryDate ?? null,
         ticketStatus: order.status ?? '—',
@@ -1617,12 +1646,15 @@ export class ReportsService {
 
     const descriptionTotals = new Map<string, number>();
     allEntries.forEach(entry => {
+      if (entry.status === PettyCashStatus.REJECTED) return;
       const description = entry.description ?? '—';
       descriptionTotals.set(
         description,
         roundRupees(
           (descriptionTotals.get(description) ?? 0) +
-            (Number(entry.amount) || 0),
+            (entry.status === PettyCashStatus.APPROVED
+              ? Number(entry.approvedAmount) || 0
+              : Number(entry.amount) || 0),
         ),
       );
     });

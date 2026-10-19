@@ -2,11 +2,27 @@ import {expect} from '@loopback/testlab';
 import {ReportsService} from '../services/reports.service';
 
 describe('petty cash expense report', () => {
-  it('keeps description totals across pages', async () => {
+  it('keeps pending and approved description totals across pages', async () => {
     const entries = [
       {id: '1', description: 'Office Supplies', amount: 100.1},
       {id: '2', description: 'Transport', amount: 2500},
       {id: '3', description: 'Office Supplies', amount: 149.9},
+      {
+        id: '4',
+        description: 'Office Supplies',
+        amount: 100,
+        approvedAmount: 60,
+        disapprovedAmt: 40,
+        status: 'Approved',
+      },
+      {
+        id: '5',
+        description: 'DGT',
+        amount: 50,
+        approvedAmount: 0,
+        disapprovedAmt: 50,
+        status: 'Rejected',
+      },
     ];
     const service = Object.assign(Object.create(ReportsService.prototype), {
       pettyCashRegisterRepo: {find: async () => entries},
@@ -20,9 +36,9 @@ describe('petty cash expense report', () => {
       skip: 0,
     });
     expect(report.rows).to.have.length(1);
-    expect(report.totalCount).to.equal(3);
+    expect(report.totalCount).to.equal(5);
     expect(report.totalsByDescription).to.deepEqual({
-      'Office Supplies': 250,
+      'Office Supplies': 310,
       Transport: 2500,
     });
   });
