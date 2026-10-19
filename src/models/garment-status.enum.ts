@@ -7,6 +7,7 @@ export enum GarmentStatus {
   OUT_FOR_DELIVERY = 'out_for_delivery',
   DELIVERED = 'delivered',
   ON_HOLD = 'on_hold',
+  DAMAGED = 'damaged',
   // Terminal: garment returned to customer (return approved at any stage)
   RETURNED_TO_CUSTOMER = 'returned_to_customer',
 }
@@ -19,9 +20,10 @@ export const GARMENT_STATUS_TRANSITIONS: Record<GarmentStatus, GarmentStatus[]> 
   [GarmentStatus.READY]:                 [GarmentStatus.OUT_FOR_DELIVERY, GarmentStatus.RETURNED_TO_CUSTOMER],
   [GarmentStatus.OUT_FOR_DELIVERY]:      [GarmentStatus.DELIVERED],
   [GarmentStatus.DELIVERED]:             [],
-  // on_hold: waiting for customer approval (upgrade) or store exec (damaged/reprocess)
-  // can resume to previous stage or be returned
-  [GarmentStatus.ON_HOLD]:              [GarmentStatus.IN_INSPECTION, GarmentStatus.IN_PROCESS, GarmentStatus.RETURNED_TO_CUSTOMER],
+  // on_hold: waiting for customer approval or store exec; approved damage is
+  // recorded separately so it cannot silently rejoin the processing pipeline.
+  [GarmentStatus.ON_HOLD]:              [GarmentStatus.IN_INSPECTION, GarmentStatus.IN_PROCESS, GarmentStatus.DAMAGED, GarmentStatus.RETURNED_TO_CUSTOMER],
+  [GarmentStatus.DAMAGED]:              [GarmentStatus.ON_HOLD, GarmentStatus.RETURNED_TO_CUSTOMER],
   [GarmentStatus.RETURNED_TO_CUSTOMER]: [],
 };
 
@@ -40,21 +42,23 @@ export const GARMENT_STATUS_RANK: Record<GarmentStatus, number> = {
   [GarmentStatus.OUT_FOR_DELIVERY]:     5,
   [GarmentStatus.DELIVERED]:            6,
   [GarmentStatus.ON_HOLD]:             -1,
+  [GarmentStatus.DAMAGED]:             -1,
   [GarmentStatus.RETURNED_TO_CUSTOMER]: -1,
 };
 
-/** Garments still moving through the pipeline — on-hold and returned are not. */
+/** Garments still moving through the pipeline — held, damaged, and returned are not. */
 export function isActiveGarmentStatus(status?: GarmentStatus | string | null): boolean {
   return (
     !!status &&
     status !== GarmentStatus.ON_HOLD &&
+    status !== GarmentStatus.DAMAGED &&
     status !== GarmentStatus.RETURNED_TO_CUSTOMER
   );
 }
 
 /**
  * The stage a group of garments has collectively reached — the least advanced
- * of the active ones. Returns null when every garment is on hold or returned.
+ * of the active ones. Returns null when no garment is moving through the pipeline.
  */
 export function deriveGarmentGroupStatus(
   statuses: (GarmentStatus | string | undefined | null)[],

@@ -50,18 +50,9 @@ import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
 
 // What status to set on the garment immediately when a request is CREATED.
-// Every garment-level approval type resolves the garment's status the
-// instant it's raised — approval is a side process that reconciles the
-// MONEY side later (see GARMENT_STATUS_ON_APPROVE / _applyReturnEffect /
-// _applyUpgradeOnOrderItem, all still gated on an actual approve), it no
-// longer gates the garment's own state. Most types have no real "done"
-// state yet, so they park on ON_HOLD so the wait never gets silently
-// attributed to whatever pipeline stage (in_process, quality_check, ...)
-// the garment happened to be sitting in. RETURN_ITEM is the one exception —
-// "returned to customer" already IS its own resolution, so it goes there
-// directly rather than parking on ON_HOLD first (see also
-// _resumeGarmentFromHold, which now treats RETURNED_TO_CUSTOMER the same
-// way it already treats ON_HOLD when a pending request here gets rejected).
+// Requests that need a decision park the garment on ON_HOLD, so work does not
+// appear to continue through the pipeline. RETURN_ITEM moves it to returned
+// immediately; rejection restores its previous stage.
 const GARMENT_STATUS_ON_CREATE: Partial<
   Record<ApprovalRequestType, GarmentStatus>
 > = {
@@ -82,6 +73,7 @@ const GARMENT_STATUS_ON_APPROVE: Partial<
 > = {
   // Upgrade: on approve, move to in_inspection so the new service process can be initialised
   [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.IN_INSPECTION,
+  [ApprovalRequestType.ITEM_DAMAGED]: GarmentStatus.DAMAGED,
 };
 
 /**
@@ -823,10 +815,6 @@ export class ApprovalService {
         garment.id,
       );
     }
-
-    // Item damaged approved: no further status change — the garment stays
-    // on_hold (set at request creation) until someone manually resolves it
-    // via reprocess or return.
 
     // Reprocess approved: reset the process logs and send the garment back into
     // processing so the workshop redoes every step. The garment_status_history

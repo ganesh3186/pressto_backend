@@ -684,6 +684,7 @@ export class ProcessService {
       [GarmentStatus.OUT_FOR_DELIVERY]: 5,
       [GarmentStatus.DELIVERED]: 6,
       [GarmentStatus.ON_HOLD]: -1,
+      [GarmentStatus.DAMAGED]: -1,
       [GarmentStatus.RETURNED_TO_CUSTOMER]: -1,
     };
     const RANK_TO_ORDER_STATUS: Record<number, OrderStatus> = {
@@ -716,7 +717,7 @@ export class ProcessService {
       }
     };
 
-    // Active = anything still in the pipeline (exclude on_hold / returned)
+    // Active = anything still in the pipeline (exclude held, damaged, and returned)
     const activeStatuses = garments
       .map(g => g.status as GarmentStatus)
       .filter(s => (STATUS_RANK[s] ?? -1) >= 0);
