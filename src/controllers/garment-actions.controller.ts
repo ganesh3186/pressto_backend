@@ -38,10 +38,8 @@ export class GarmentActionsController {
   // ─── Return Item ──────────────────────────────────────────────────────────
   // Garment goes straight to returned_to_customer at REQUEST time (see
   // ApprovalService's GARMENT_STATUS_ON_CREATE) — approval is a side
-  // process from here on, it only gates the MONEY side (order total
-  // reduction, refund-due creation via _applyReturnEffect), not the
-  // garment's own status. If rejected, the garment resumes wherever it
-  // was before (_resumeGarmentFromHold).
+  // process from here on. Billing is reduced at request time too; approval
+  // cannot put the returned garment or its price back on the invoice.
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['approval:create']})
@@ -93,7 +91,7 @@ export class GarmentActionsController {
     });
 
     return {
-      message: 'Garment marked returned to customer. Refund, if any, awaits ASM approval.',
+      message: 'Garment returned and removed from billing. Any refund awaits payout approval.',
       request,
       returnCalculation,
     };
