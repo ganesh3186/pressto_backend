@@ -316,7 +316,11 @@ export class GarmentActionsController {
     const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
 
-    if (garment.status === GarmentStatus.DAMAGED || garment.status === GarmentStatus.ON_HOLD) {
+    if (
+      garment.status === GarmentStatus.DAMAGED ||
+      garment.status === GarmentStatus.ON_HOLD ||
+      garment.status === GarmentStatus.RETURNED_TO_CUSTOMER
+    ) {
       throw new HttpErrors.BadRequest(`Garment is already ${garment.status}.`);
     }
 
