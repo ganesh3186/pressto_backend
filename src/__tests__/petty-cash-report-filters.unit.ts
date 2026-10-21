@@ -99,10 +99,29 @@ describe('report store filters', () => {
     await controller.salesGst(user, 'store-a', '2026-10-01', '2026-10-02');
     expect(captured[captured.length - 1]).to.deepEqual(['store-a']);
 
+    await controller.salesGst(
+      user,
+      undefined,
+      '2026-10-01',
+      '2026-10-02',
+      undefined,
+      undefined,
+      undefined,
+      'store-b,store-c',
+    );
+    expect(captured[captured.length - 1]).to.deepEqual(['store-b']);
+
     await controller.salesGst(user, undefined, '2026-10-01', '2026-10-02', undefined, undefined, 'Maharashtra');
     expect(captured[captured.length - 1]).to.deepEqual(['store-a', 'store-b']);
 
     global = true;
+    await controller.salesGst(user, undefined, '2026-10-01', '2026-10-02');
+    expect(captured[captured.length - 1]).to.deepEqual([
+      'store-a',
+      'store-b',
+      'store-c',
+    ]);
+
     await controller.salesGst(user, undefined, '2026-10-01', '2026-10-02', undefined, undefined, 'Maharashtra', 'store-c');
     expect(captured[captured.length - 1]).to.deepEqual(['store-c']);
 
