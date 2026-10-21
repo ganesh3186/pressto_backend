@@ -4846,7 +4846,7 @@ export class OrderService {
       order.parentOrderId
         ? this.orderRepo.findOne({
             where: {id: order.parentOrderId} as any,
-            fields: {id: true, orderNumber: true, status: true} as any,
+            fields: {id: true, orderNumber: true, status: true, isOnAccount: true} as any,
           })
         : Promise.resolve(null),
       // This is a free rework — name the order it is redoing, so a ₹0 total
@@ -5248,6 +5248,7 @@ export class OrderService {
               id: parentOrder.id,
               orderNumber: (parentOrder as any).orderNumber,
               status: parentOrder.status,
+              isOnAccount: parentOrder.isOnAccount,
             }
           : null,
         splitChildren: splitChildren.map(c => ({
@@ -6034,6 +6035,7 @@ export class OrderService {
           deliveryTypePercentage: subDeliveryPercentage,
           customerContactId: order.customerContactId,
           parentOrderId: order.id,
+          isOnAccount: order.isOnAccount === true,
           deliveryDate: deliveryDate ? new Date(deliveryDate) : undefined,
           subtotal: subOrderSubtotal,
           discountAmount: subOrderDiscount,
