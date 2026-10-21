@@ -10,7 +10,7 @@ import {ShiftRepository} from '../repositories';
 import {DashboardAccess} from '../utils/dashboard-access';
 import {BUCKET_OF, isTodayWindow} from './dashboard.service';
 
-/** Lists that ignore the date range — a live position of the store. */
+/** Live lists; pickups additionally follow the selected date range. */
 export const LIVE_LISTS = [
   'overdue',
   'ready',
@@ -245,15 +245,20 @@ export class StoreDashboardService {
 
   // ─── Payloads ─────────────────────────────────────────────────────────────
 
-  /** Everything that ignores the date range: counts plus first pages. */
-  async live(storeIds: string[], limit: number, access: DashboardAccess) {
+  /** Live counts and lists; pickups follow the selected date range. */
+  async live(
+    storeIds: string[],
+    window: DashboardWindow,
+    limit: number,
+    access: DashboardAccess,
+  ) {
     const today = startOfToday();
     const scoped = storeIds.length > 0;
     const [aggregates, overdue, ready, inStore, pickups, riders] =
       await Promise.all([
         scoped &&
         (access.tickets || access.pickups || access.riders || access.handover)
-          ? this.liveAggregates(storeIds, today, access)
+          ? this.liveAggregates(storeIds, today, window, access)
           : {},
         scoped && access.tickets
           ? this.overduePage(storeIds, today, null, limit)
@@ -265,7 +270,7 @@ export class StoreDashboardService {
           ? this.statusPage(storeIds, IN_STORE_ORDER_STATUSES, null, limit)
           : EMPTY_PAGE,
         scoped && access.pickups
-          ? this.pickupPage(storeIds, today, null, limit)
+          ? this.pickupPage(storeIds, today, window, null, limit)
           : EMPTY_PAGE,
         scoped && access.riders
           ? this.riderPage(storeIds, null, limit)
@@ -402,6 +407,7 @@ export class StoreDashboardService {
         return this.pickupPage(
           storeIds,
           today,
+          window,
           decodeCursor(rawCursor, PG_TIMESTAMP, UUID),
           limit,
         );
@@ -427,12 +433,15 @@ export class StoreDashboardService {
   private async liveAggregates(
     storeIds: string[],
     today: Date,
+    window: DashboardWindow,
     access: DashboardAccess,
   ): Promise<Row> {
     const q = new SqlParams();
     const stores = q.add(storeIds);
     const open = q.add(OPEN_ORDER_STATUSES);
     const todayParam = q.add(today);
+    const pickupFrom = q.add(window.from);
+    const pickupTo = q.add(window.to);
     const loads = this.riderLoadsSql(q, storeIds);
 
     const rows: Row[] = await this.dataSource.execute(
@@ -454,6 +463,7 @@ export class StoreDashboardService {
          WHERE ${access.pickups ? 'TRUE' : 'FALSE'} AND pr.storeid = ANY(${q.add(storeIds)}::text[])
            AND pr.isdeleted IS NOT TRUE
            AND pr.status = ANY(${q.add(OPEN_PICKUP_STATUSES)}::text[])
+           AND pr.requesteddate BETWEEN ${pickupFrom} AND ${pickupTo}
        ),
        handover AS (
          SELECT COALESCE(SUM(pt.amount), 0) AS handoverpending
@@ -642,10 +652,11 @@ export class StoreDashboardService {
 
   // ─── Logistics lists ──────────────────────────────────────────────────────
 
-  /** Open pickups, earliest requested date first — so missed ones lead. */
+  /** Open pickups inside the selected date range, earliest requested date first. */
   private async pickupPage(
     storeIds: string[],
     today: Date,
+    window: DashboardWindow,
     cursor: Cursor | null,
     limit: number,
   ): Promise<Page<PickupRow>> {
@@ -658,6 +669,7 @@ export class StoreDashboardService {
       `pr.storeid = ANY(${q.add(storeIds)}::text[])`,
       'pr.isdeleted IS NOT TRUE',
       `pr.status = ANY(${q.add(OPEN_PICKUP_STATUSES)}::text[])`,
+      `pr.requesteddate BETWEEN ${q.add(window.from)} AND ${q.add(window.to)}`,
     ];
     if (cursor) {
       conditions.push(

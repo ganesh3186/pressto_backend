@@ -64,11 +64,10 @@ export class DashboardController {
 
   // ─── Paged dashboard ──────────────────────────────────────────────────────
   //
-  // The landing screen loads with two calls — `live` (ignores the date
-  // range) and `window` (follows it) — so changing the date never refetches
-  // the live lists. Each returns true counts plus the first page of every
-  // list; "Show more" on one card then calls `lists/{list}` for that card
-  // alone.
+  // The landing screen loads with two calls — `live` (pickup figures follow
+  // the date range) and `window` (all figures follow it). Each returns true
+  // counts plus the first page of every list; "Show more" on one card then
+  // calls `lists/{list}` for that card alone.
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin', 'pmu'], permissions: ['dashboard:read']})
@@ -79,11 +78,15 @@ export class DashboardController {
   async live(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
+    @param.query.string('dateFrom') dateFrom?: string,
+    @param.query.string('dateTo') dateTo?: string,
     @param.query.number('limit') limit?: number,
   ): Promise<object> {
+    const window = resolveWindow(dateFrom, dateTo);
     const storeIds = await this.resolveStoreIds(currentUser, storeId);
     return this.storeDashboardService.live(
       storeIds,
+      window,
       resolveLimit(limit),
       dashboardAccess(currentUser),
     );
@@ -142,7 +145,7 @@ export class DashboardController {
         'You do not have permission to view this dashboard list.',
       );
     }
-    // Only the range lists read the window, but validating it for every
+    // Pickups and the range lists read the window, but validating it for every
     // list keeps a malformed date a 400 regardless of which card asked.
     const window = resolveWindow(dateFrom, dateTo);
     const storeIds = await this.resolveStoreIds(currentUser, storeId);
