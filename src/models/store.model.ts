@@ -45,6 +45,9 @@ export class Store extends Entity {
   @property({type: 'string'})
   storePrefix?: string;
 
+  @property({type: 'boolean', default: false})
+  isPrefixLocked?: boolean;
+
   @property({type: 'string', required: true})
   storeType: string;
 

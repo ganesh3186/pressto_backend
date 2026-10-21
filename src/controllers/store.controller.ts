@@ -20,11 +20,14 @@ import {
 import {authorize} from '../authorization';
 import {Store} from '../models/store.model';
 import {StoreRepository} from '../repositories/store.repository';
+import {OrderRepository} from '../repositories/order.repository';
 
 export class StoreController {
   constructor(
     @repository(StoreRepository)
     public storeRepository: StoreRepository,
+    @repository(OrderRepository)
+    public orderRepository: OrderRepository,
   ) {}
 
   // Client-chosen (unlike `code`, which is server-generated), so it needs
@@ -34,10 +37,10 @@ export class StoreController {
   // null = explicitly clearing it (empty string submitted); string = the
   // normalized value to save.
   private async normalizeAndValidateStorePrefix(
-    prefix: string | undefined,
+    prefix: string | null | undefined,
     excludeId?: string,
   ): Promise<string | null | undefined> {
-    if (prefix === undefined) return undefined;
+    if (prefix == null) return prefix;
     const trimmed = prefix.trim().toUpperCase();
     if (!trimmed) return null;
     if (!/^[A-Z0-9]{2,10}$/.test(trimmed)) {
@@ -84,8 +87,9 @@ export class StoreController {
     const duplicate = await this.storeRepository.findOne({where: {name: {ilike: store.name}, isDeleted: false}});
     if (duplicate) throw new HttpErrors.Conflict(`A store with name "${store.name}" already exists.`);
     const normalizedPrefix = await this.normalizeAndValidateStorePrefix(store.storePrefix);
-    if (normalizedPrefix) store.storePrefix = normalizedPrefix;
-    else delete store.storePrefix;
+    if (!normalizedPrefix) throw new HttpErrors.BadRequest('Store prefix is required.');
+    store.storePrefix = normalizedPrefix;
+    store.isPrefixLocked = false;
     store.code = `STR${String(maxNum + 1).padStart(3, '0')}`;
     return this.storeRepository.create(store);
   }
@@ -140,6 +144,9 @@ export class StoreController {
     store: Store,
     @param.where(Store) where?: Where<Store>,
   ): Promise<Count> {
+    if (store.storePrefix !== undefined || store.isPrefixLocked !== undefined) {
+      throw new HttpErrors.BadRequest('Store prefixes cannot be changed in bulk.');
+    }
     return this.storeRepository.updateAll(store, where);
   }
 
@@ -179,18 +186,38 @@ export class StoreController {
     })
     store: Partial<Store>,
   ): Promise<void> {
+    if (store.isPrefixLocked !== undefined) {
+      throw new HttpErrors.BadRequest('The prefix lock cannot be changed directly.');
+    }
+    const current = await this.storeRepository.findById(id);
     if (store.name) {
       store.name = (store.name as string).trim();
-      const duplicate = await this.storeRepository.findOne({where: {name: {ilike: store.name}, isDeleted: false, id: {neq: id}} as any});
-      if (duplicate) throw new HttpErrors.Conflict(`A store with name "${store.name}" already exists.`);
+      if (store.name.toLowerCase() !== current.name.trim().toLowerCase()) {
+        const duplicate = await this.storeRepository.findOne({where: {name: {ilike: store.name}, isDeleted: false, id: {neq: id}} as Where<Store>});
+        if (duplicate) throw new HttpErrors.Conflict(`A store with name "${store.name}" already exists.`);
+      }
     }
+    let changingExistingPrefix = false;
     if (store.storePrefix !== undefined) {
+      const prefix = store.storePrefix?.trim().toUpperCase() ?? null;
+      if (prefix !== (current.storePrefix ?? null)) {
+        const orders = await this.orderRepository.count({storeId: id} as object);
+        if (!!current.storePrefix && (current.isPrefixLocked === true || orders.count > 0)) {
+          throw new HttpErrors.Conflict('Store prefix is locked after the first order.');
+        }
+        changingExistingPrefix = !!current.storePrefix;
+      }
       // May resolve to `null` (explicit clear) — cast past Partial<Store>'s
       // `string`-only type, same as this codebase's other nullable-clear
       // fields (e.g. Customer.invoiceSpanDays): `undefined` is stripped
       // before reaching the DB, so only an explicit `null` actually clears.
       (store as unknown as {storePrefix?: string | null}).storePrefix =
         await this.normalizeAndValidateStorePrefix(store.storePrefix, id);
+    }
+    if (changingExistingPrefix) {
+      const updated = await this.storeRepository.updateAll(store, {id, isPrefixLocked: false});
+      if (!updated.count) throw new HttpErrors.Conflict('Store prefix is locked after the first order.');
+      return;
     }
     await this.storeRepository.updateById(id, store);
   }

@@ -1320,7 +1320,7 @@ export class OrderService {
       where: {id: storeId, isDeleted: false} as object,
     });
     if (!store) throw new HttpErrors.NotFound('Store not found.');
-    if (!store.storePrefix) {
+    if (!store.storePrefix?.trim()) {
       throw new HttpErrors.BadRequest(
         'This store has no order number prefix set. Set one in Store Master before creating orders.',
       );
@@ -1330,6 +1330,19 @@ export class OrderService {
     const count = await this.orderRepo.count({storeId} as object);
     const seq = String(count.count + 1).padStart(4, '0');
     return `${store.storePrefix}-${mmyy}-${seq}`;
+  }
+
+  private async lockStorePrefix(
+    storeId: string,
+    orderNumber: string,
+    tx: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<void> {
+    const locked = await this.storeRepo.updateAll(
+      {isPrefixLocked: true},
+      {id: storeId, storePrefix: orderNumber.split('-').slice(0, -2).join('-')},
+      {transaction: tx},
+    );
+    if (!locked.count) throw new HttpErrors.Conflict('Store prefix changed while creating the order.');
   }
 
   // ─── Create Order ─────────────────────────────────────────────────────────
@@ -2027,6 +2040,8 @@ export class OrderService {
         {transaction: tx},
       );
 
+      await this.lockStorePrefix(input.storeId, orderNumber, tx);
+
       for (const result of couponResults) {
         // eslint-disable-next-line no-await-in-loop
         await this.couponRedemptionRepo.create(
@@ -2490,6 +2505,8 @@ export class OrderService {
         },
         {transaction: tx},
       );
+
+      await this.lockStorePrefix(original.storeId, orderNumber, tx);
 
       for (const [orderItemId, quantity] of countByItem) {
         const source = itemById.get(orderItemId)!;
@@ -6049,6 +6066,8 @@ export class OrderService {
         },
         {transaction: tx},
       );
+
+      await this.lockStorePrefix(order.storeId, subOrderNumber, tx);
 
       const createdSubItems = [];
       for (const [itemId, itemGarments] of garmentsByItem) {

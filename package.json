@@ -34,6 +34,7 @@
     "migrate:coupon-order-fields": "node scripts/add-coupon-order-fields.cjs",
     "migrate:delivery-order-failure-remarks": "node scripts/add-delivery-order-failure-remarks.cjs",
     "migrate:store-targets": "node scripts/add-store-targets.cjs",
+    "migrate:store-prefix-lock": "node scripts/add-store-prefix-lock.cjs",
     "migrate:dashboard-indexes": "node scripts/add-dashboard-indexes.cjs",
     "migrate:approved-damaged-garments": "node scripts/backfill-approved-damaged-garments.cjs",
     "migrate:split-on-account": "node scripts/backfill-split-on-account.cjs",
