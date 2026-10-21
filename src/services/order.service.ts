@@ -4175,11 +4175,12 @@ export class OrderService {
       where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any,
     });
 
-    // Already-delivered and returned garments are terminal — leave them.
+    // Only garments still in the workflow can be handed over. A damaged or
+    // held garment must keep its status, just like a returned one.
     const toDeliver = garments.filter(
       g =>
         g.status !== GarmentStatus.DELIVERED &&
-        g.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+        isActiveGarmentStatus(g.status),
     );
 
     const now = new Date();
@@ -4870,7 +4871,7 @@ export class OrderService {
       order.parentOrderId
         ? this.orderRepo.findOne({
             where: {id: order.parentOrderId} as any,
-            fields: {id: true, orderNumber: true, status: true} as any,
+            fields: {id: true, orderNumber: true, status: true, isOnAccount: true} as any,
           })
         : Promise.resolve(null),
       // This is a free rework — name the order it is redoing, so a ₹0 total
@@ -5275,6 +5276,7 @@ export class OrderService {
               id: parentOrder.id,
               orderNumber: (parentOrder as any).orderNumber,
               status: parentOrder.status,
+              isOnAccount: parentOrder.isOnAccount,
             }
           : null,
         splitChildren: splitChildren.map(c => ({
@@ -6061,6 +6063,7 @@ export class OrderService {
           deliveryTypePercentage: subDeliveryPercentage,
           customerContactId: order.customerContactId,
           parentOrderId: order.id,
+          isOnAccount: order.isOnAccount === true,
           deliveryDate: deliveryDate ? new Date(deliveryDate) : undefined,
           subtotal: subOrderSubtotal,
           discountAmount: subOrderDiscount,

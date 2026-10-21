@@ -192,9 +192,11 @@ export class ReportsController {
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
     const report = await this.reportsService.buildSalesGst({
-      storeIds: state
-        ? await this.resolveReportStoreIds(currentUser, storeId, storeIds)
-        : await this.resolveStoreIds(currentUser, storeId),
+      storeIds: await this.resolveReportStoreIds(
+        currentUser,
+        storeId,
+        storeIds,
+      ),
       state,
       from,
       to,
