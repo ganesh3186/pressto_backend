@@ -578,7 +578,7 @@ export class CustomerProfileController {
   @get('/profile/customer/pickup-requests')
   @response(200, {
     description: "Caller's own pickup requests",
-    content: { 'application/json': { schema: { type: 'array', items: getModelSchemaRef(PickupRequest) } } },
+    content: { 'application/json': { schema: { type: 'array', items: getModelSchemaRef(PickupRequest, {includeRelations: true}) } } },
   })
   async getPickupRequests(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
@@ -586,19 +586,26 @@ export class CustomerProfileController {
     const customer = await this.resolveCustomer(currentUser[securityId]);
     return this.pickupRequestRepository.find({
       where: { customerId: customer.id, isDeleted: false } as object,
+      include: [{relation: 'pickupSlot'}],
       order: ['createdAt DESC'],
     });
   }
 
   @authenticate('jwt')
   @get('/profile/customer/pickup-requests/{id}')
-  @response(200, { description: 'Pickup request detail' })
+  @response(200, {
+    description: 'Pickup request detail',
+    content: {'application/json': {schema: getModelSchemaRef(PickupRequest, {includeRelations: true})}},
+  })
   async getPickupRequestById(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<PickupRequest> {
     const customer = await this.resolveCustomer(currentUser[securityId]);
-    const pickupRequest = await this.pickupRequestRepository.findOne({ where: { id, isDeleted: false } as object });
+    const pickupRequest = await this.pickupRequestRepository.findOne({
+      where: {id, isDeleted: false} as object,
+      include: [{relation: 'pickupSlot'}],
+    });
     if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
     this.verifyOwnership(pickupRequest.customerId ?? '', customer.id);
     return pickupRequest;
