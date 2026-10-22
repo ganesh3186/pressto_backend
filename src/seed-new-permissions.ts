@@ -241,6 +241,14 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
     permission: 'petty_cash_register:update',
     description: 'Approve (fully or partially) or reject a petty cash expense',
   },
+  // Wallet Transactions (see AdminCustomerRechargeController.walletTransactions)
+  // — the merged recharge + redemption ledger. Distinct from
+  // customer_recharge:read (per-customer history) since this lists across
+  // every customer, system-wide, with no store/cluster/region scoping.
+  {
+    permission: 'wallet_transactions:read',
+    description: 'View the wallet transactions ledger (all customers, all stores)',
+  },
   // Rider (see RiderController) — already in seed.ts's original PERMISSIONS
   // list, added here too so a live database that only ever ran this
   // incremental seed (never a full `npm run seed`) still has them. No
@@ -408,6 +416,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'report_pending_tickets:read',
       'report_petty_cash_expense:read',
       'report_sales_gst:read',
+      // Wallet Transactions: already has customer_recharge from seed.ts.
+      'wallet_transactions:read',
     ],
   },
   {
@@ -467,6 +477,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // reports stay with manager/finance.
       'report_pending_payments:read',
       'report_pending_tickets:read',
+      // Wallet Transactions: already has customer_recharge from seed.ts.
+      'wallet_transactions:read',
     ],
   },
   {
@@ -493,6 +505,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // System Notification: view and update notification alerts for their store
       'system_notification:read',
       'system_notification:update',
+      // Wallet Transactions: already has customer_recharge from seed.ts.
+      'wallet_transactions:read',
     ],
   },
   {
@@ -514,6 +528,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'report_pending_tickets:read',
       'report_petty_cash_expense:read',
       'report_sales_gst:read',
+      // Wallet Transactions: already has customer_recharge from seed.ts.
+      'wallet_transactions:read',
     ],
   },
   {
@@ -546,6 +562,8 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'report_pending_payments:read',
       'report_petty_cash_expense:read',
       'report_sales_gst:read',
+      // Wallet Transactions: already has customer_recharge from seed.ts.
+      'wallet_transactions:read',
     ],
   },
 ];

@@ -3,8 +3,31 @@ import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {PaymentMode, PaymentRequestStatus, ReferenceType, WalletTransactionType} from '../models';
 import {WalletRechargeRequest} from '../models/wallet-recharge-request.model';
-import {WalletRechargeRequestRepository, WalletRepository, WalletTransactionRepository} from '../repositories';
+import {
+  CustomerPhoneRepository,
+  CustomerRepository,
+  OrderRepository,
+  UsersRepository,
+  WalletRechargeRequestRepository,
+  WalletRepository,
+  WalletTransactionRepository,
+} from '../repositories';
 import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
+
+export type WalletTransactionRow = {
+  id: string;
+  date: Date | null;
+  transactionType: 'credit' | 'debit';
+  amount: number;
+  customerId: string;
+  customerName: string;
+  customerMobile: string;
+  storeId: string | null;
+  shiftId: string | null;
+  reference: string;
+  remarks: string;
+  performedBy: string | null;
+};
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class WalletService {
@@ -12,6 +35,10 @@ export class WalletService {
     @repository(WalletRepository) private walletRepository: WalletRepository,
     @repository(WalletTransactionRepository) private walletTransactionRepository: WalletTransactionRepository,
     @repository(WalletRechargeRequestRepository) private rechargeRequestRepository: WalletRechargeRequestRepository,
+    @repository(CustomerRepository) private customerRepository: CustomerRepository,
+    @repository(UsersRepository) private usersRepository: UsersRepository,
+    @repository(CustomerPhoneRepository) private customerPhoneRepository: CustomerPhoneRepository,
+    @repository(OrderRepository) private orderRepository: OrderRepository,
     @inject('services.whatsapp') private whatsAppService: WhatsAppService,
   ) {}
 
@@ -59,6 +86,8 @@ export class WalletService {
     amount: number,
     paymentMode: PaymentMode,
     remarks?: string,
+    storeId?: string,
+    shiftId?: string,
   ): Promise<WalletRechargeRequest> {
     if (amount <= 0) {
       throw new HttpErrors.BadRequest('Recharge amount must be greater than zero.');
@@ -82,6 +111,8 @@ export class WalletService {
       paymentMode,
       status: PaymentRequestStatus.PENDING,
       remarks,
+      storeId,
+      shiftId,
     });
   }
 
@@ -180,6 +211,8 @@ export class WalletService {
     paymentMode: PaymentMode,
     performedBy: string,
     remarks?: string,
+    storeId?: string,
+    shiftId?: string,
   ): Promise<{rechargeRequest: WalletRechargeRequest; walletBalance: number}> {
     if (amount <= 0) {
       throw new HttpErrors.BadRequest('Recharge amount must be greater than zero.');
@@ -204,6 +237,8 @@ export class WalletService {
       status: PaymentRequestStatus.SUCCESS,
       performedBy,
       remarks,
+      storeId,
+      shiftId,
     });
 
     const transaction = await this.credit(
@@ -265,5 +300,215 @@ export class WalletService {
 
     const updatedWallet = await this.walletRepository.findById(wallet.id);
     return {walletBalance: updatedWallet.currentBalance!};
+  }
+
+  // ─── Transactions ledger (admin Wallet > Transactions page) ───────────────
+  // Merges two distinct sources into one feed:
+  //   credit → WalletRechargeRequest (status SUCCESS) — the recharge itself,
+  //            not the WalletTransaction credit it creates, since only the
+  //            request carries paymentMode/storeId/shiftId.
+  //   debit  → WalletTransaction where referenceType=ORDER — a wallet
+  //            redemption against a ticket; store/shift come from the Order.
+  // Manual admin debit corrections (ReferenceType.MANUAL debits) are
+  // deliberately excluded — by design, not shown on this page.
+  // No store/cluster/region scoping: every caller with wallet_transactions:read
+  // sees every transaction, same posture as the Customer list already has.
+  async getAllTransactions(filters: {
+    customerName?: string;
+    mobile?: string;
+    status?: 'credit' | 'debit';
+    limit?: number;
+    skip?: number;
+  }): Promise<{rows: WalletTransactionRow[]; total: number}> {
+    const limit = filters.limit && filters.limit > 0 ? filters.limit : 50;
+    const skip = filters.skip && filters.skip > 0 ? filters.skip : 0;
+
+    const customerIdFilter = await this.resolveCustomerIdFilter(filters.customerName, filters.mobile);
+    // A name/mobile filter was given but matched nobody — honest empty
+    // result rather than falling through to "no filter, show everyone".
+    if (customerIdFilter && customerIdFilter.length === 0) {
+      return {rows: [], total: 0};
+    }
+
+    const fetchCap = skip + limit;
+    const [credits, creditTotal] = filters.status === 'debit'
+      ? [[], 0]
+      : await this.fetchCreditRows(customerIdFilter, fetchCap);
+    const [debits, debitTotal] = filters.status === 'credit'
+      ? [[], 0]
+      : await this.fetchDebitRows(customerIdFilter, fetchCap);
+
+    const customerIds = [...new Set([...credits, ...debits].map(row => row.customerId))];
+    const customerById = await this.loadCustomerDisplayInfo(customerIds);
+
+    const merged = [...credits, ...debits]
+      .map(row => {
+        const customer = customerById.get(row.customerId);
+        return {
+          ...row,
+          customerName: customer?.name ?? '—',
+          customerMobile: customer?.mobile ?? '—',
+        };
+      })
+      .sort((a, b) => (new Date(b.date ?? 0).getTime()) - (new Date(a.date ?? 0).getTime()));
+
+    return {
+      rows: merged.slice(skip, skip + limit),
+      total: creditTotal + debitTotal,
+    };
+  }
+
+  /** Resolves a name/mobile filter to a customerId allowlist, or null (no filter). */
+  private async resolveCustomerIdFilter(
+    customerName?: string,
+    mobile?: string,
+  ): Promise<string[] | null> {
+    const name = customerName?.trim();
+    const digits = mobile?.replace(/\D/g, '').trim();
+    if (!name && !digits) return null;
+
+    const clauses: object[] = [];
+    if (name) {
+      clauses.push({firstName: {ilike: `%${name}%`}}, {lastName: {ilike: `%${name}%`}});
+    }
+    if (digits && digits.length >= 3) {
+      const [matchedUsers, matchedPhones] = await Promise.all([
+        this.usersRepository.find({where: {phone: {like: `%${digits}%`}}, fields: {id: true}}),
+        this.customerPhoneRepository.find({
+          where: {phone: {like: `%${digits}%`}, isDeleted: false} as object,
+          fields: {customerId: true} as object,
+        }),
+      ]);
+      if (matchedUsers.length) clauses.push({userId: {inq: matchedUsers.map(u => u.id)}});
+      if (matchedPhones.length) clauses.push({id: {inq: matchedPhones.map(p => p.customerId)}});
+    }
+    if (!clauses.length) return [];
+
+    const customers = await this.customerRepository.find({
+      where: {and: [{isDeleted: false}, {or: clauses}]} as object,
+      fields: {id: true} as object,
+    });
+    return customers.map(c => String(c.id));
+  }
+
+  private async fetchCreditRows(
+    customerIdFilter: string[] | null,
+    fetchCap: number,
+  ): Promise<[WalletTransactionRow[], number]> {
+    const where: object = {
+      status: PaymentRequestStatus.SUCCESS,
+      ...(customerIdFilter ? {customerId: {inq: customerIdFilter}} : {}),
+    };
+    const [requests, total] = await Promise.all([
+      this.rechargeRequestRepository.find({where, order: ['createdAt DESC'], limit: fetchCap}),
+      this.rechargeRequestRepository.count(where),
+    ]);
+
+    const rows: WalletTransactionRow[] = requests.map(request => ({
+      id: `recharge:${request.id}`,
+      date: request.createdAt ?? null,
+      transactionType: 'credit',
+      amount: Number(request.amount) || 0,
+      customerId: String(request.customerId),
+      customerName: '',
+      customerMobile: '',
+      storeId: request.storeId ?? null,
+      shiftId: request.shiftId ?? null,
+      reference: request.requestNumber,
+      remarks: request.remarks ?? '',
+      performedBy: request.performedBy ?? null,
+    }));
+    return [rows, total.count];
+  }
+
+  private async fetchDebitRows(
+    customerIdFilter: string[] | null,
+    fetchCap: number,
+  ): Promise<[WalletTransactionRow[], number]> {
+    let walletIdFilter: string[] | undefined;
+    if (customerIdFilter) {
+      const wallets = await this.walletRepository.find({
+        where: {customerId: {inq: customerIdFilter}} as object,
+        fields: {id: true, customerId: true} as object,
+      });
+      walletIdFilter = wallets.map(w => String(w.id));
+      if (!walletIdFilter.length) return [[], 0];
+    }
+
+    const where: object = {
+      transactionType: WalletTransactionType.DEBIT,
+      referenceType: ReferenceType.ORDER,
+      isDeleted: false,
+      ...(walletIdFilter ? {walletId: {inq: walletIdFilter}} : {}),
+    };
+    const [transactions, total] = await Promise.all([
+      this.walletTransactionRepository.find({where, order: ['transactionDate DESC'], limit: fetchCap}),
+      this.walletTransactionRepository.count(where),
+    ]);
+    if (!transactions.length) return [[], total.count];
+
+    const walletIds = [...new Set(transactions.map(t => String(t.walletId)))];
+    const wallets = await this.walletRepository.find({
+      where: {id: {inq: walletIds}} as object,
+      fields: {id: true, customerId: true} as object,
+    });
+    const customerIdByWalletId = new Map(wallets.map(w => [String(w.id), String(w.customerId)]));
+
+    const orderIds = [...new Set(transactions.map(t => t.referenceId).filter(Boolean))] as string[];
+    const orders = orderIds.length
+      ? await this.orderRepository.find({
+          where: {id: {inq: orderIds}} as object,
+          fields: {id: true, orderNumber: true, storeId: true, shiftId: true} as object,
+        })
+      : [];
+    const orderById = new Map(orders.map(o => [String(o.id), o]));
+
+    const rows: WalletTransactionRow[] = transactions.map(txn => {
+      const order = txn.referenceId ? orderById.get(String(txn.referenceId)) : undefined;
+      return {
+        id: `txn:${txn.id}`,
+        date: txn.transactionDate ?? null,
+        transactionType: 'debit',
+        amount: Number(txn.amount) || 0,
+        customerId: customerIdByWalletId.get(String(txn.walletId)) ?? '',
+        customerName: '',
+        customerMobile: '',
+        storeId: order?.storeId ?? null,
+        shiftId: order?.shiftId ?? null,
+        reference: order?.orderNumber ?? '—',
+        remarks: txn.remarks ?? '',
+        performedBy: null,
+      };
+    });
+    return [rows, total.count];
+  }
+
+  private async loadCustomerDisplayInfo(
+    customerIds: string[],
+  ): Promise<Map<string, {name: string; mobile: string}>> {
+    if (!customerIds.length) return new Map();
+
+    const customers = await this.customerRepository.find({
+      where: {id: {inq: customerIds}} as object,
+      fields: {id: true, firstName: true, lastName: true, userId: true} as object,
+    });
+    const userIds = [...new Set(customers.map(c => String(c.userId)).filter(Boolean))];
+    const users = userIds.length
+      ? await this.usersRepository.find({
+          where: {id: {inq: userIds}} as object,
+          fields: {id: true, phone: true} as object,
+        })
+      : [];
+    const phoneByUserId = new Map(users.map(u => [String(u.id), u.phone ?? '']));
+
+    return new Map(
+      customers.map(c => [
+        String(c.id),
+        {
+          name: [c.firstName, c.lastName].filter(Boolean).join(' ') || '—',
+          mobile: phoneByUserId.get(String(c.userId)) || '—',
+        },
+      ]),
+    );
   }
 }

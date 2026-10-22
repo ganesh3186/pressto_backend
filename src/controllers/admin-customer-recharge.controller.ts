@@ -1,7 +1,9 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
+import {repository} from '@loopback/repository';
 import {
   get,
+  HttpErrors,
   param,
   post,
   requestBody,
@@ -10,7 +12,10 @@ import {
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PaymentMode} from '../models/payment-mode.enum';
+import {ShiftStatus} from '../models/shift-status.enum';
+import {ShiftRepository} from '../repositories';
 import {SecurityDepositService} from '../services/security-deposit.service';
+import {StoreScopeService} from '../services/store-scope.service';
 import {WalletService} from '../services/wallet.service';
 
 export class AdminCustomerRechargeController {
@@ -19,7 +24,41 @@ export class AdminCustomerRechargeController {
     private walletService: WalletService,
     @inject('services.security-deposit')
     private securityDepositService: SecurityDepositService,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
+    @repository(ShiftRepository)
+    private shiftRepository: ShiftRepository,
   ) {}
+
+  /**
+   * Shared gate for every staff-initiated (admin-panel) wallet recharge —
+   * resolves which store this recharge is for, then requires an OPEN shift
+   * there before any money moves. Applies to every role, no exceptions
+   * (including super_admin): "shift closed" means nobody recharges at that
+   * store, not just counter roles (unlike the generic ShiftGuard on the
+   * frontend, which only locks out ccc/cce/cci/store_exec).
+   *
+   * Never applied to the customer's own self-service app top-up
+   * (CustomerRechargeController) — that has no store/shift concept.
+   */
+  private async requireOpenShiftForRecharge(
+    currentUser: UserProfile,
+    requestedStoreId?: string,
+  ): Promise<{storeId: string; shiftId: string}> {
+    const storeId = await this.storeScopeService.resolveCallerStoreId(
+      currentUser[securityId],
+      requestedStoreId,
+    );
+    const shift = await this.shiftRepository.findOne({
+      where: {storeId, status: ShiftStatus.OPEN} as object,
+    });
+    if (!shift) {
+      throw new HttpErrors.BadRequest(
+        'Open a shift at this store before recharging a wallet.',
+      );
+    }
+    return {storeId, shiftId: shift.id};
+  }
 
   // ─── Admin Wallet Recharge ────────────────────────────────────────────────
 
@@ -40,20 +79,27 @@ export class AdminCustomerRechargeController {
               amount: {type: 'number', minimum: 1},
               paymentMode: {type: 'string', enum: Object.values(PaymentMode)},
               remarks: {type: 'string'},
+              storeId: {
+                type: 'string',
+                description: 'Required only if the caller is bound to more than one store.',
+              },
             },
           },
         },
       },
     })
-    body: {amount: number; paymentMode: PaymentMode; remarks?: string},
+    body: {amount: number; paymentMode: PaymentMode; remarks?: string; storeId?: string},
   ): Promise<object> {
     const performedBy = currentUser[securityId];
+    const {storeId, shiftId} = await this.requireOpenShiftForRecharge(currentUser, body.storeId);
     const result = await this.walletService.adminRecharge(
       customerId,
       body.amount,
       body.paymentMode,
       performedBy,
       body.remarks,
+      storeId,
+      shiftId,
     );
     return {
       message: 'Wallet recharged successfully.',
@@ -75,6 +121,7 @@ export class AdminCustomerRechargeController {
   @post('/admin/customers/{customerId}/wallet/recharge/initiate-gateway')
   @response(200, {description: 'Pending wallet recharge request created, for a PGLink to attach to'})
   async adminWalletRechargeInitiateGateway(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('customerId') customerId: string,
     @requestBody({
       content: {
@@ -82,18 +129,28 @@ export class AdminCustomerRechargeController {
           schema: {
             type: 'object',
             required: ['amount'],
-            properties: {amount: {type: 'number', minimum: 1}, remarks: {type: 'string'}},
+            properties: {
+              amount: {type: 'number', minimum: 1},
+              remarks: {type: 'string'},
+              storeId: {
+                type: 'string',
+                description: 'Required only if the caller is bound to more than one store.',
+              },
+            },
           },
         },
       },
     })
-    body: {amount: number; remarks?: string},
+    body: {amount: number; remarks?: string; storeId?: string},
   ): Promise<object> {
+    const {storeId, shiftId} = await this.requireOpenShiftForRecharge(currentUser, body.storeId);
     const rechargeRequest = await this.walletService.initiateRecharge(
       customerId,
       body.amount,
       PaymentMode.GATEWAY,
       body.remarks,
+      storeId,
+      shiftId,
     );
     return {rechargeRequest};
   }
@@ -233,5 +290,23 @@ export class AdminCustomerRechargeController {
     @param.query.number('skip') skip = 0,
   ): Promise<object> {
     return this.securityDepositService.getDepositHistory(customerId, limit, skip);
+  }
+
+  // ─── Wallet Transactions (Wallet > Transactions admin page) ──────────────
+  // Deliberately unscoped — every caller with wallet_transactions:read sees
+  // every transaction system-wide, same posture as the Customer list. No
+  // store/cluster/region filtering by design (see conversation history).
+  @authenticate('jwt')
+  @authorize({permissions: ['wallet_transactions:read']})
+  @get('/admin/wallet/transactions')
+  @response(200, {description: 'Wallet transactions ledger (recharges + order redemptions)'})
+  async walletTransactions(
+    @param.query.string('customerName') customerName?: string,
+    @param.query.string('mobile') mobile?: string,
+    @param.query.string('status') status?: 'credit' | 'debit',
+    @param.query.number('limit') limit = 50,
+    @param.query.number('skip') skip = 0,
+  ): Promise<object> {
+    return this.walletService.getAllTransactions({customerName, mobile, status, limit, skip});
   }
 }
