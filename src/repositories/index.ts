@@ -58,6 +58,7 @@ export * from './store.repository';
 export * from './service-process-mapping.repository';
 export * from './service.repository';
 export * from './stain.repository';
+export * from './store-monthly-target.repository';
 export * from './store-price-override.repository';
 export * from './store-service-mapping.repository';
 export * from './user-roles.repository';

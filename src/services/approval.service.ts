@@ -281,12 +281,21 @@ export class ApprovalService {
     const garment = await this.garmentRepo.findById(garmentId);
     const orderItem = await this.orderItemRepo.findById(garment.orderItemId);
     const order = await this.orderRepo.findById(orderItem.orderId);
-    const item = await this.itemRepo.findById(orderItem.itemId);
+    // findOne, not findById — the catalog row can be gone (e.g. after a
+    // staging->production catalog reconciliation that replaced every item's
+    // id), and a missing item must not block a return the customer is
+    // physically owed money for.
+    const item = await this.itemRepo.findOne({where: {id: orderItem.itemId}});
     const siblingGarments = await this.garmentRepo.find({
       where: {orderItemId: orderItem.id, isDeleted: false},
     });
     const siblingGarmentIds = siblingGarments.map(row => row.id);
-    const isMeasurement = Boolean(item.isMeasurement);
+    // Without the catalog row, fall back to whether this garment itself
+    // carries a length/width — a measurement item always has both recorded
+    // on the garment (see Garment model), so that's a reliable proxy.
+    const isMeasurement = item
+      ? Boolean(item.isMeasurement)
+      : garment.length != null && garment.width != null;
     const itemPrice = calculateMeasurementPieceBasePrice(
       orderItem.unitPrice,
       garment.length,
@@ -1696,6 +1705,9 @@ export class ApprovalService {
     // then apply the order's delivery-tier uplift — identical to order creation.
     let newBasePrice = Number(orderItem.basePrice) || 0;
     let newResolvedPrice = Number(orderItem.resolvedPrice) || 0;
+    // Display snapshot only (see OrderItem.serviceName) — resolved alongside
+    // pricing since both need toServiceId's row, but never blocks the upgrade.
+    let newServiceName: string | undefined;
     if (toServiceId) {
       try {
         const pricing = await this.orderService.resolvePricing(
@@ -1711,6 +1723,7 @@ export class ApprovalService {
         newBasePrice = Number(orderItem.basePrice) || 0;
         newResolvedPrice = newBasePrice;
       }
+      newServiceName = (await this.serviceRepo.findOne({where: {id: toServiceId}}))?.name;
     }
     // Base-only per-unit reference (no add-ons folded in) — same meaning as
     // OrderItem.unitPrice everywhere else (order.service.ts's createOrder).
@@ -1816,6 +1829,7 @@ export class ApprovalService {
         id: upgradedOrderItemId,
         quantity: 1,
         serviceId: toServiceId,
+        serviceName: newServiceName,
         basePrice: newBasePrice,
         resolvedPrice: newResolvedPrice,
         unitPrice: newUnitPrice,
@@ -1835,6 +1849,7 @@ export class ApprovalService {
     } else if (toServiceId) {
       await this.orderItemRepo.updateById(orderItemId, {
         serviceId: toServiceId,
+        serviceName: newServiceName,
         basePrice: newBasePrice,
         resolvedPrice: newResolvedPrice,
         unitPrice: newUnitPrice,

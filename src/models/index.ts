@@ -77,6 +77,7 @@ export * from './store.model';
 export * from './service-process-mapping.model';
 export * from './service.model';
 export * from './stain.model';
+export * from './store-monthly-target.model';
 export * from './store-price-override.model';
 export * from './store-service-mapping.model';
 export * from './user-roles.model';

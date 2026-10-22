@@ -64,6 +64,17 @@ export class WalletRechargeRequest extends Entity {
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   performedBy?: string;
 
+  // Store + shift this recharge was collected at — only ever set for an
+  // admin-panel (in-store) recharge; null for the customer's own
+  // self-service app top-up, which has no store/shift concept. See
+  // WalletService.adminRecharge / AdminCustomerRechargeController's
+  // open-shift gate, which resolves and requires both before crediting.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  storeId?: string;
+
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  shiftId?: string;
+
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: Date;
 

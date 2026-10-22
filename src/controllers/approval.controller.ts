@@ -206,8 +206,11 @@ export class ApprovalController {
         : [];
 
       const itemNameById = new Map(items.map(i => [i.id, i.name]));
+      // Prefer the OrderItem's own frozen snapshot — the catalog row this
+      // order was actually created against may since have been renamed or
+      // removed (see OrderItem.itemName).
       const itemNameByOrderItem = new Map(
-        orderItems.map(oi => [oi.id, itemNameById.get(oi.itemId) ?? null]),
+        orderItems.map(oi => [oi.id, oi.itemName ?? itemNameById.get(oi.itemId) ?? null]),
       );
 
       return {
@@ -309,7 +312,7 @@ export class ApprovalController {
       ...req,
       garmentTag: garment.garmentTagNumber,
       garmentStatus: garment.status,
-      itemName: item?.name ?? null,
+      itemName: orderItem?.itemName ?? item?.name ?? null,
       orderNumber: (order as any)?.orderNumber ?? null,
       orderId: orderItem?.orderId ?? null,
       returnCalculation,

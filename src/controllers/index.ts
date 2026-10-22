@@ -26,6 +26,7 @@ export * from './region.controller';
 export * from './roles.controller';
 export * from './service-category.controller';
 export * from './store.controller';
+export * from './store-monthly-target.controller';
 export * from './service-item-mapping.controller';
 export * from './service-process-mapping.controller';
 export * from './service.controller';

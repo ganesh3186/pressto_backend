@@ -124,8 +124,8 @@ export class PickupHandoverController {
           return {
             id,
             garmentTagNumber: garment?.garmentTagNumber ?? null,
-            itemName: orderItem ? itemNameById.get(orderItem.itemId) ?? null : null,
-            serviceName: orderItem ? serviceNameById.get(orderItem.serviceId) ?? null : null,
+            itemName: orderItem ? orderItem.itemName ?? itemNameById.get(orderItem.itemId) ?? null : null,
+            serviceName: orderItem ? orderItem.serviceName ?? serviceNameById.get(orderItem.serviceId) ?? null : null,
           };
         }),
       });

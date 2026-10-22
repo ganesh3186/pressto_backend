@@ -635,10 +635,14 @@ export class ShiftController {
   // until rider cash is confirmed received by the store, payments only
   // (never refunds).
   //
-  // Wallet recharges (top-ups) have no store/shift field at all — only who
-  // processed it and when — so they're scoped by performedBy = this
-  // shift's own opener within the same window, matching the one-cashier-
-  // per-shift confirmed setup.
+  // Wallet recharges (top-ups) carry their own shiftId (set at recharge
+  // time by AdminCustomerRechargeController's open-shift gate — see
+  // WalletService.adminRecharge), so they're scoped to THIS shift
+  // directly — correct even when a second employee shares the same open
+  // shift (one open shift per store, not per cashier; see Shift's own doc
+  // comment), unlike the old performedBy-based guess. The old
+  // performedBy + [openedAt, windowEnd] heuristic survives as a fallback
+  // only for recharges from before this column existed (shiftId null).
   //
   // ppVoucher and Wallet Collections' own upi/card have no further
   // PaymentMode source beyond what's summed here and stay operator-typed.
@@ -771,9 +775,17 @@ export class ShiftController {
 
     const recharges = await this.walletRechargeRequestRepository.find({
       where: {
-        performedBy: shift.userId,
         status: PaymentRequestStatus.SUCCESS,
-        createdAt: {between: [shift.openedAt, windowEnd]},
+        or: [
+          {shiftId: shift.id},
+          {
+            and: [
+              {shiftId: null},
+              {performedBy: shift.userId},
+              {createdAt: {between: [shift.openedAt, windowEnd]}},
+            ],
+          },
+        ],
       } as object,
     });
     const walletCollections = {cash: 0, card: 0, upi: 0, netBanking: 0};

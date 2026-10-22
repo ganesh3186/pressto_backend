@@ -19,6 +19,7 @@ describe('on-account order creation', () => {
         estimatedDurationInDays: 0,
       }),
       itemRepo: {findById: async () => ({isMeasurement: false})},
+      serviceRepo: {findOne: async () => ({name: 'Test Service'})},
       couponService: {
         evaluateReferralCoupon: async () => null,
         evaluateNewCustomerCoupon: async () => null,

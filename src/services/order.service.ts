@@ -1467,6 +1467,8 @@ export class OrderService {
     const itemPricings: Array<{
       serviceId: string;
       itemId: string;
+      serviceName?: string;
+      itemName?: string;
       quantity: number;
       basePrice: number;
       appliedPercentage: number | null;
@@ -1624,6 +1626,11 @@ export class OrderService {
         ? null
         : await this.itemRepo.findById(item.itemId);
       const isMeasurement = Boolean(catalogItem?.isMeasurement);
+      // Display snapshot only (see OrderItem.itemName/serviceName) — never
+      // blocks pricing, so a lookup failure just leaves the name unset.
+      const catalogService = rejected
+        ? null
+        : await this.serviceRepo.findOne({where: {id: item.serviceId}});
 
       const unitAreas: number[] = [];
       if (!rejected && isMeasurement) {
@@ -1748,6 +1755,8 @@ export class OrderService {
 
       itemPricings.push({
         ...item,
+        itemName: catalogItem?.name,
+        serviceName: catalogService?.name,
         basePrice: rejected ? 0 : pricing.basePrice,
         appliedPercentage: pricing.appliedPercentage,
         priceSource: pricing.priceSource,
@@ -2074,6 +2083,8 @@ export class OrderService {
             orderId: order.id,
             serviceId: item.serviceId,
             itemId: item.itemId,
+            serviceName: item.serviceName,
+            itemName: item.itemName,
             quantity: item.quantity,
             basePrice: item.basePrice,
             appliedPercentage: item.appliedPercentage ?? undefined,
@@ -2515,6 +2526,8 @@ export class OrderService {
             orderId: reworkOrder.id,
             serviceId: source.serviceId,
             itemId: source.itemId,
+            serviceName: source.serviceName,
+            itemName: source.itemName,
             quantity,
             // Priced at zero throughout — this is the free redo.
             basePrice: 0,
@@ -3083,6 +3096,16 @@ export class OrderService {
             }
           : {};
 
+        // A new line (no existing match) needs its display snapshot resolved
+        // fresh — an existing line's serviceId/itemId never change (lineKey
+        // IS service+item), so its stored name is still correct as-is.
+        const newLineNames = existing
+          ? undefined
+          : await Promise.all([
+              this.serviceRepo.findOne({where: {id: desired.serviceId}}),
+              this.itemRepo.findById(desired.itemId),
+            ]).then(([svc, itm]) => ({serviceName: svc?.name, itemName: itm?.name}));
+
         // Note: estimatedDurationInDays is deliberately not stored — OrderItem
         // has no such column. Creation only uses it in memory to derive the
         // order's delivery date, which an edit leaves alone (see below).
@@ -3112,6 +3135,8 @@ export class OrderService {
                   orderId,
                   serviceId: desired.serviceId,
                   itemId: desired.itemId,
+                  serviceName: newLineNames?.serviceName,
+                  itemName: newLineNames?.itemName,
                   ...fields,
                 },
                 {transaction: tx},
@@ -5125,9 +5150,12 @@ export class OrderService {
       ),
       serviceId: oi.serviceId,
       standardTurnaroundDays: standardDaysByItem.get(oi.id) ?? 3,
-      serviceName: serviceMap.get(oi.serviceId)?.name ?? null,
+      // Prefer the OrderItem's own frozen snapshot — the catalog row this
+      // order was actually created against may since have been renamed or
+      // removed (see OrderItem.itemName/serviceName).
+      serviceName: oi.serviceName ?? serviceMap.get(oi.serviceId)?.name ?? null,
       itemId: oi.itemId,
-      itemName: itemMap.get(oi.itemId)?.name ?? null,
+      itemName: oi.itemName ?? itemMap.get(oi.itemId)?.name ?? null,
       // Drives the inspection popup's length/width fields (curtains etc,
       // billed by area) — the frontend reads this straight off each item.
       isMeasurement: itemMap.get(oi.itemId)?.isMeasurement ?? false,
@@ -6081,6 +6109,8 @@ export class OrderService {
             orderId: subOrder.id,
             serviceId: oi.serviceId,
             itemId: oi.itemId,
+            serviceName: oi.serviceName,
+            itemName: oi.itemName,
             quantity: qty,
             basePrice: oi.basePrice,
             priceSource: oi.priceSource,
