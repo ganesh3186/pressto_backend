@@ -916,9 +916,9 @@ export class GarmentController {
         // Prefer the OrderItem's own frozen snapshot — the catalog row this
         // order was actually created against may since have been renamed or
         // removed (see OrderItem.itemName/serviceName).
-        itemName: orderItem.itemName ?? (item as any)?.name ?? null,
+        itemName: orderItem.itemName?.trim() ? orderItem.itemName.trim() : item?.name ?? null,
         serviceId: orderItem.serviceId ?? null,
-        serviceName: orderItem.serviceName ?? (service as any)?.name ?? null,
+        serviceName: orderItem.serviceName?.trim() ? orderItem.serviceName.trim() : service?.name ?? null,
       };
     });
   }
