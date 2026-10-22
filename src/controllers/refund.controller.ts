@@ -13,7 +13,8 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {RefundBankDetails} from '../models/refund-due.model';
 import {RefundMethod} from '../models/refund-method.enum';
-import {RefundDueRepository} from '../repositories';
+import {ShiftStatus} from '../models/shift-status.enum';
+import {RefundDueRepository, ShiftRepository} from '../repositories';
 import {ApprovalService} from '../services/approval.service';
 import {StoreScopeService} from '../services/store-scope.service';
 
@@ -29,6 +30,7 @@ export class RefundController {
     @inject('services.store-scope')
     private storeScopeService: StoreScopeService,
     @inject('services.approval') private approvalService: ApprovalService,
+    @repository(ShiftRepository) private shiftRepo: ShiftRepository,
   ) {}
 
   // ─── List refunds due for an order ────────────────────────────────────────
@@ -80,6 +82,7 @@ export class RefundController {
             required: ['method'],
             properties: {
               method: {type: 'string', enum: Object.values(RefundMethod)},
+              cashShiftId: {type: 'string', format: 'uuid'},
               bankDetails: {
                 type: 'object',
                 properties: {
@@ -95,14 +98,23 @@ export class RefundController {
         },
       },
     })
-    body: {method: RefundMethod; bankDetails?: RefundBankDetails},
+    body: {method: RefundMethod; bankDetails?: RefundBankDetails; cashShiftId?: string},
   ): Promise<object> {
     if (!body?.method) throw new HttpErrors.BadRequest('method is required.');
+    if (body.method === RefundMethod.CASH && body.cashShiftId) {
+      const cashShift = await this.shiftRepo.findById(body.cashShiftId);
+      const scope = await this.storeScopeService.resolve(currentUser);
+      if (cashShift.status !== ShiftStatus.OPEN ||
+        !this.storeScopeService.allows(scope, cashShift.storeId)) {
+        throw new HttpErrors.Forbidden('Cash payout shift is not open or accessible.');
+      }
+    }
 
     const refundDue = await this.approvalService.selectPayoutMethod({
       refundDueId: id,
       method: body.method,
       bankDetails: body.bankDetails,
+      cashShiftId: body.method === RefundMethod.CASH ? body.cashShiftId : undefined,
       requestedBy: currentUser[securityId],
     });
 

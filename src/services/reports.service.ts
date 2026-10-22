@@ -380,10 +380,10 @@ export class ReportsService {
     };
     if (!storeIds.length) return empty;
 
-    // Payments carry no storeId — they reach a store through their order,
-    // and an order raised months ago can still be paid inside this
-    // window, so the order set deliberately is NOT date-filtered.
-    const [orders, walletRows, onAccountInvoiceRows] = await Promise.all([
+    // Payments reach a store through their order, except cash refunds with
+    // a payout shift. Old orders can still be paid in this window, so the
+    // order set is deliberately not date-filtered.
+    const [orders, cashShifts, walletRows, onAccountInvoiceRows] = await Promise.all([
       this.orderRepo.find({
         where: {storeId: {inq: storeIds}} as object,
         fields: {
@@ -395,12 +395,17 @@ export class ReportsService {
           customerId: true,
         } as object,
       }),
+      this.shiftRepo.find({
+        where: {storeId: {inq: storeIds}} as object,
+        fields: {id: true, storeId: true, storeCode: true, storeName: true, closureNo: true} as object,
+      }),
       this.buildWalletTopUpRows(storeIds, from, to),
       this.buildOnAccountInvoiceRows(storeIds, from, to),
     ]);
 
     const orderById = new Map(orders.map(o => [o.id, o]));
-    const [payments, onAccountInvoiceNumberByOrderId] = await Promise.all([
+    const cashShiftById = new Map(cashShifts.map(shift => [shift.id, shift]));
+    const [orderPayments, cashPayouts, onAccountInvoiceNumberByOrderId] = await Promise.all([
       orders.length
         ? this.paymentTransactionRepo.find({
             where: {
@@ -410,8 +415,33 @@ export class ReportsService {
             order: ['paymentDate DESC'],
           })
         : [],
+      cashShifts.length
+        ? this.paymentTransactionRepo.find({
+            where: {
+              cashShiftId: {inq: cashShifts.map(shift => shift.id)},
+              transactionType: 'refund',
+              paymentMode: PaymentMode.CASH,
+              paymentDate: {between: [from, to]},
+            } as object,
+          })
+        : [],
       this.mapOnAccountInvoiceNumbers(orders.map(o => o.id)),
     ]);
+    const payments = [...new Map([...orderPayments, ...cashPayouts]
+      .filter(payment => payment.transactionType !== 'refund' ||
+        payment.paymentMode !== PaymentMode.CASH || !payment.cashShiftId ||
+        cashShiftById.has(payment.cashShiftId))
+      .map(payment => [payment.id, payment])).values()];
+    const missingOrderIds = [...new Set(payments.map(payment => payment.orderId)
+      .filter(id => !orderById.has(id)))];
+    if (missingOrderIds.length) {
+      const payoutOrders = await this.orderRepo.find({
+        where: {id: {inq: missingOrderIds}} as object,
+        fields: {id: true, orderNumber: true, storeId: true, shiftId: true,
+          placedByName: true, customerId: true} as object,
+      });
+      payoutOrders.forEach(order => orderById.set(order.id, order));
+    }
 
     if (!payments.length && !walletRows.length && !onAccountInvoiceRows.length) return empty;
 
@@ -496,7 +526,9 @@ export class ReportsService {
       const order = orderById.get(txn.orderId);
       const isRefund = txn.transactionType === 'refund';
       const value = Number(txn.amount) || 0;
-      const shift = order?.shiftId ? shiftById.get(String(order.shiftId)) : undefined;
+      const cashShift = isRefund && txn.paymentMode === PaymentMode.CASH && txn.cashShiftId
+        ? cashShiftById.get(txn.cashShiftId) : undefined;
+      const shift = cashShift ?? (order?.shiftId ? shiftById.get(String(order.shiftId)) : undefined);
       const customer = order?.customerId ? customerById.get(String(order.customerId)) : undefined;
       // This order was billed through a consolidated On Account invoice —
       // show the same `On Account - <invoiceNumber>` label the billing-
@@ -507,7 +539,9 @@ export class ReportsService {
 
       return {
         id: String(txn.id),
-        storeName: order?.storeId ? (storeById.get(String(order.storeId)) ?? '—') : '—',
+        storeName: cashShift
+          ? (cashShift.storeName ?? cashShift.storeCode ?? storeById.get(cashShift.storeId) ?? '—')
+          : order?.storeId ? (storeById.get(String(order.storeId)) ?? '—') : '—',
         date: txn.paymentDate ?? null,
         // closureNo exists only once a shift has been closed; an open
         // shift has no closure number yet, which is not missing data.

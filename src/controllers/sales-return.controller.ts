@@ -21,6 +21,7 @@ import {GarmentStatus} from '../models/garment-status.enum';
 import {Order} from '../models/order.model';
 import {RefundDueStatus} from '../models/refund-due-status.enum';
 import {RefundMethod} from '../models/refund-method.enum';
+import {ShiftStatus} from '../models/shift-status.enum';
 import {RefundBankDetails} from '../models/refund-due.model';
 import {
   CustomerRepository,
@@ -34,6 +35,7 @@ import {
   OrderStatusHistoryRepository,
   PaymentTransactionRepository,
   SalesReturnRepository,
+  ShiftRepository,
   ChallanRepository,
   RefundDueRepository,
 } from '../repositories';
@@ -143,6 +145,7 @@ export class SalesReturnController {
     @inject('services.store-scope')
     private storeScopeService: StoreScopeService,
     @inject('services.approval') private approvalService: ApprovalService,
+    @repository(ShiftRepository) private shiftRepo: ShiftRepository,
   ) {}
 
   private async findInvoiceForOrder(orderId: string) {
@@ -249,6 +252,7 @@ export class SalesReturnController {
               // Picked up front — only ever used if this return leaves a
               // refund due; approve() pays it out immediately with this.
               refundMethod: {type: 'string', enum: Object.values(RefundMethod)},
+              cashShiftId: {type: 'string', format: 'uuid'},
               bankDetails: {
                 type: 'object',
                 properties: {
@@ -273,6 +277,7 @@ export class SalesReturnController {
         amount: number;
       }>;
       refundMethod?: string;
+      cashShiftId?: string;
       bankDetails?: RefundBankDetails;
     },
   ): Promise<object> {
@@ -421,6 +426,24 @@ export class SalesReturnController {
     // money. Defaults to wallet so an older/other caller that omits this
     // entirely still gets a sane, harmless choice.
     const refundMethod = body.refundMethod ?? RefundMethod.WALLET;
+    if (refundMethod === RefundMethod.CASH) {
+      if (body.cashShiftId) {
+        const cashShift = await this.shiftRepo.findById(body.cashShiftId);
+        const scope = await this.storeScopeService.resolve(currentUser);
+        if (cashShift.status !== ShiftStatus.OPEN ||
+          !this.storeScopeService.allows(scope, cashShift.storeId)) {
+          throw new HttpErrors.Forbidden('Cash payout shift is not open or accessible.');
+        }
+      }
+      const {refundAmount} = await this._previewCreditNote(
+        {orderId, creditAmount} as SalesReturn,
+        order,
+      );
+      const available = await this.approvalService.availableCashForOrder(orderId, body.cashShiftId);
+      if (refundAmount > 0 && (available == null || refundAmount > available)) {
+        throw new HttpErrors.BadRequest('Cash refund exceeds available cash in the store.');
+      }
+    }
     if (refundMethod === RefundMethod.BANK_ACCOUNT) {
       const b = body.bankDetails;
       if (
@@ -454,6 +477,7 @@ export class SalesReturnController {
       status: SalesReturnStatus.PENDING,
       requestedBy: currentUser[securityId],
       refundMethod,
+      cashShiftId: refundMethod === RefundMethod.CASH ? body.cashShiftId : undefined,
       bankDetails:
         refundMethod === RefundMethod.BANK_ACCOUNT
           ? body.bankDetails
@@ -613,6 +637,11 @@ export class SalesReturnController {
       ? await this.customerRepo.find({where: {id: {inq: customerIds}}})
       : [];
     const customerById = new Map(customers.map(c => [c.id, c]));
+    const cashShiftIds = [...new Set(paged.map(sr => sr.cashShiftId).filter((id): id is string => Boolean(id)))];
+    const cashShifts = cashShiftIds.length
+      ? await this.shiftRepo.find({where: {id: {inq: cashShiftIds}}})
+      : [];
+    const cashShiftById = new Map(cashShifts.map(shift => [shift.id, shift]));
 
     const rows = await Promise.all(
       paged.map(async sr => {
@@ -646,6 +675,10 @@ export class SalesReturnController {
           refundAmount: preview.refundAmount,
           newBalanceDue: preview.newBalanceDue,
           refundMethod: sr.refundMethod,
+          cashStoreLabel: sr.cashShiftId
+            ? [cashShiftById.get(sr.cashShiftId)?.storeCode,
+              cashShiftById.get(sr.cashShiftId)?.storeName].filter(Boolean).join(' — ')
+            : null,
           creditAppliedAs: sr.creditAppliedAs,
           bankDetails: sr.bankDetails,
         };
@@ -697,6 +730,12 @@ export class SalesReturnController {
     // human sign-off here.
     const {newOrderTotal, refundAmount, newBalanceDue} =
       await this._previewCreditNote(record, order);
+    if (refundAmount > 0 && record.refundMethod === RefundMethod.CASH) {
+      const available = await this.approvalService.availableCashForOrder(record.orderId, record.cashShiftId);
+      if (available == null || refundAmount > available) {
+        throw new HttpErrors.BadRequest('Cash refund exceeds available cash in the store.');
+      }
+    }
     const invoice = record.invoiceId
       ? await this.invoiceRepo.findById(record.invoiceId)
       : await this.findInvoiceForOrder(record.orderId);
@@ -850,6 +889,7 @@ export class SalesReturnController {
         orderId: record.orderId,
         amount: refundAmount,
         method: record.refundMethod ?? RefundMethod.WALLET,
+        cashShiftId: record.cashShiftId,
         bankDetails: record.bankDetails as RefundBankDetails | undefined,
         remarks: `Sales Return Credit Note: ${record.creditNoteNumber}`,
       });

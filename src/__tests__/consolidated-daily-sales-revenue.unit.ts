@@ -165,6 +165,7 @@ describe('consolidated daily sales revenue', () => {
         ],
       },
       buildWalletTopUpRows: async () => [],
+      shiftRepo: {find: async () => []},
       invoiceRepo: {
         find: async () => [
           {

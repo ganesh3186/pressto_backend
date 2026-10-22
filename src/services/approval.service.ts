@@ -23,6 +23,9 @@ import {ServiceRepository} from '../repositories/service.repository';
 import {WalletRepository} from '../repositories/wallet.repository';
 import {WalletTransactionRepository} from '../repositories/wallet-transaction.repository';
 import {RefundDueRepository} from '../repositories/refund-due.repository';
+import {RiderCashHandoverRepository} from '../repositories/rider-cash-handover.repository';
+import {ShiftRepository} from '../repositories/shift.repository';
+import {WalletRechargeRequestRepository} from '../repositories/wallet-recharge-request.repository';
 import {SystemNotificationService} from './system-notification.service';
 import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
@@ -40,6 +43,10 @@ import {RefundDue, RefundBankDetails} from '../models/refund-due.model';
 import {RefundDueStatus} from '../models/refund-due-status.enum';
 import {RefundReason} from '../models/refund-reason.enum';
 import {RefundMethod} from '../models/refund-method.enum';
+import {PaymentRequestStatus} from '../models/payment-request-status.enum';
+import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
+import {ShiftStatus} from '../models/shift-status.enum';
+import {Shift} from '../models/shift.model';
 import {Order} from '../models/order.model';
 import {
   APPROVAL_ROLE_ROUTING,
@@ -263,6 +270,11 @@ export class ApprovalService {
     @repository(WalletTransactionRepository)
     private walletTransactionRepo: WalletTransactionRepository,
     @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
+    @repository(ShiftRepository) private shiftRepo: ShiftRepository,
+    @repository(RiderCashHandoverRepository)
+    private riderCashHandoverRepo: RiderCashHandoverRepository,
+    @repository(WalletRechargeRequestRepository)
+    private walletRechargeRequestRepo: WalletRechargeRequestRepository,
     @inject('services.audit') private auditService: AuditService,
     @inject('services.order') private orderService: OrderService,
     @inject('services.system-notification', {optional: true})
@@ -576,6 +588,7 @@ export class ApprovalService {
     refundDueId: string;
     method: RefundMethod;
     bankDetails?: RefundBankDetails;
+    cashShiftId?: string;
     requestedBy: string;
   }): Promise<RefundDue> {
     const refundDue = await this.refundDueRepo.findById(params.refundDueId);
@@ -596,6 +609,13 @@ export class ApprovalService {
         throw new HttpErrors.BadRequest(
           'Bank account refunds need accountHolderName, bankName, accountNumber, and ifscCode.',
         );
+      }
+    }
+
+    if (params.method === RefundMethod.CASH) {
+      const available = await this.availableCashForOrder(refundDue.orderId, params.cashShiftId);
+      if (available == null || money(reconciledRefundDue.amount) > available) {
+        throw new HttpErrors.BadRequest('Cash refund exceeds available cash in the store.');
       }
     }
 
@@ -621,6 +641,7 @@ export class ApprovalService {
     await this.refundDueRepo.updateById(refundDue.id, {
       status: RefundDueStatus.REQUESTED,
       method: params.method,
+      cashShiftId: params.method === RefundMethod.CASH ? params.cashShiftId : undefined,
       bankDetails:
         params.method === RefundMethod.BANK_ACCOUNT
           ? params.bankDetails
@@ -1273,11 +1294,23 @@ export class ApprovalService {
     orderId: string;
     amount: number;
     method: string;
+    cashShiftId?: string;
     bankDetails?: RefundBankDetails;
     remarks: string;
   }): Promise<void> {
     const {v4} = await import('uuid');
     const amount = money(params.amount);
+    let cashShiftId = params.cashShiftId;
+    if (params.method !== RefundMethod.WALLET && params.method !== RefundMethod.BANK_ACCOUNT) {
+      // shortcut: parallel cash approvals can race after this check, add a shift-row lock if approvals become concurrent.
+      const cashShift = await this.cashPayoutShift(params.orderId, cashShiftId);
+      cashShiftId = cashShift?.id;
+      if (!cashShift) throw new HttpErrors.BadRequest('No open shift for the cash payout store.');
+      const available = await this.availableCashForOrder(params.orderId, cashShiftId);
+      if (available == null || amount > available) {
+        throw new HttpErrors.BadRequest('Cash refund exceeds available cash in the store.');
+      }
+    }
 
     if (params.method === RefundMethod.WALLET) {
       await this._creditWallet(
@@ -1318,9 +1351,83 @@ export class ApprovalService {
         paymentMode: PaymentMode.CASH,
         transactionType: 'refund',
         amount,
+        cashShiftId,
         paymentDate: new Date(),
       });
     }
+  }
+
+  private async cashPayoutShift(orderId: string, cashShiftId?: string): Promise<Shift | null> {
+    const order = await this.orderRepo.findById(orderId);
+    const selected = cashShiftId
+      ? await this.shiftRepo.findById(cashShiftId)
+      : await this.shiftRepo.findOne({where: {storeId: order.storeId, status: ShiftStatus.OPEN}});
+    if (!selected || selected.status === ShiftStatus.OPEN) return selected;
+    return this.shiftRepo.findOne({where: {storeId: selected.storeId, status: ShiftStatus.OPEN}});
+  }
+
+  async availableCashForOrder(orderId: string, cashShiftId?: string): Promise<number | null> {
+    const shift = await this.cashPayoutShift(orderId, cashShiftId);
+    if (!shift) return null;
+
+    const orders = await this.orderRepo.find({
+      where: {storeId: shift.storeId},
+      fields: {id: true},
+    });
+    const now = new Date();
+    const [payments, crossStoreRefunds, handovers, recharges] = await Promise.all([
+      orders.length
+        ? this.paymentRepo.find({
+            where: {
+              orderId: {inq: orders.map(row => row.id)},
+              paymentMode: PaymentMode.CASH,
+              riderId: null,
+              paymentDate: {between: [shift.openedAt, now]},
+            } as object,
+          })
+        : [],
+      this.paymentRepo.find({
+        where: {
+          cashShiftId: shift.id,
+          paymentMode: PaymentMode.CASH,
+          transactionType: 'refund',
+          paymentDate: {between: [shift.openedAt, now]},
+        } as object,
+      }),
+      this.riderCashHandoverRepo.find({
+        where: {
+          handoverToStoreId: shift.storeId,
+          status: RiderCashHandoverStatus.CONFIRMED,
+          confirmedAt: {between: [shift.openedAt, now]},
+          isDeleted: false,
+        },
+      }),
+      this.walletRechargeRequestRepo.find({
+        where: {
+          paymentMode: PaymentMode.CASH,
+          status: PaymentRequestStatus.SUCCESS,
+          or: [
+            {shiftId: shift.id},
+            {shiftId: null, storeId: null, performedBy: shift.userId,
+              createdAt: {between: [shift.openedAt, now]}},
+          ],
+        } as object,
+      }),
+    ]);
+    const sourceOrderIds = new Set(orders.map(row => row.id));
+    const cash =
+      payments.reduce(
+        (sum, payment) =>
+          sum + (payment.transactionType === 'refund'
+            ? (!payment.cashShiftId || payment.cashShiftId === shift.id ? -money(payment.amount) : 0)
+            : money(payment.amount)),
+        0,
+      ) +
+      crossStoreRefunds.reduce((sum, refund) =>
+        sum - (sourceOrderIds.has(refund.orderId) ? 0 : money(refund.amount)), 0) +
+      handovers.reduce((sum, handover) => sum + money(handover.totalAmount), 0) +
+      recharges.reduce((sum, recharge) => sum + money(recharge.amount), 0);
+    return Math.max(0, money(cash));
   }
 
   /**
@@ -1348,6 +1455,7 @@ export class ApprovalService {
       orderId: refundDue.orderId,
       amount,
       method: method ?? RefundMethod.CASH,
+      cashShiftId: refundDue.cashShiftId,
       bankDetails: refundDue.bankDetails,
       remarks: `Refund payout — ${refundDue.sourceLabel ?? refundDue.reason} (approval ${request.id})`,
     });

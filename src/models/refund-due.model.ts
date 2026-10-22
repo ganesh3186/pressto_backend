@@ -59,6 +59,9 @@ export class RefundDue extends Entity {
   @property({type: 'string'})
   method?: string;
 
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  cashShiftId?: string;
+
   // Only populated when method === 'bank_account'
   @property({type: 'object', postgresql: {dataType: 'jsonb'}})
   bankDetails?: RefundBankDetails;

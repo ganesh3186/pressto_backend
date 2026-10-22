@@ -29,6 +29,10 @@ export class PaymentTransaction extends Entity {
   @property({type: 'string', default: 'payment'})
   transactionType?: string;
 
+  // Shift whose till paid a cash refund, which may differ from the order's store.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  cashShiftId?: string;
+
   @property({type: 'string'})
   transactionReference?: string;
 

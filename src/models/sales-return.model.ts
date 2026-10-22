@@ -71,6 +71,9 @@ export class SalesReturn extends Entity {
   @property({type: 'string', default: 'wallet'})
   refundMethod?: string;
 
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  cashShiftId?: string;
+
   // Only populated when refundMethod === 'bank_account'.
   @property({type: 'object', postgresql: {dataType: 'jsonb'}})
   bankDetails?: object;
