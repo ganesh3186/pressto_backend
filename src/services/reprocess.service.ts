@@ -50,6 +50,7 @@ export interface RaiseReprocessInput {
   source: ReprocessSource;
   /** Defaults to 'in_store' — see ReprocessContactChannel above. */
   contactChannel?: ReprocessContactChannel;
+  deliveryDate?: string;
 }
 
 /**
@@ -90,6 +91,14 @@ export class ReprocessService {
       throw new HttpErrors.BadRequest('Describe the problem in remarks when the reason is "Other".');
     }
 
+    const deliveryDate = input.deliveryDate ? new Date(input.deliveryDate) : null;
+    if (
+      input.deliveryDate &&
+      (!deliveryDate || !Number.isFinite(deliveryDate.getTime()) || deliveryDate <= new Date())
+    ) {
+      throw new HttpErrors.BadRequest('Choose a future delivery date and time.');
+    }
+
     await this.assertWithinWindow(order.id, order.deliveryDate);
 
     const garmentIds = await this.resolveGarmentIds(order.id, input.garmentIds);
@@ -112,6 +121,7 @@ export class ReprocessService {
         garmentIds,
         source: input.source,
         contactChannel: input.contactChannel ?? 'in_store',
+        ...(deliveryDate ? {deliveryDate: deliveryDate.toISOString()} : {}),
         originalOrderNumber: order.orderNumber,
       },
     });

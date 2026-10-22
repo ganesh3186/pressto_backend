@@ -1576,6 +1576,7 @@ export class ApprovalService {
       createdBy: performedBy,
       reason: typeof metadata.reason === 'string' ? metadata.reason : undefined,
       remarks: request.requestReason,
+      deliveryDate: typeof metadata.deliveryDate === 'string' ? metadata.deliveryDate : undefined,
     });
 
     // Recorded on the request so staff can jump straight to the rework order.

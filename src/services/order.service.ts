@@ -2445,6 +2445,7 @@ export class OrderService {
     createdBy: string;
     reason?: string;
     remarks?: string;
+    deliveryDate?: string;
   }): Promise<{order: Order; garmentsCreated: number}> {
     const {v4} = await import('uuid');
 
@@ -2452,6 +2453,11 @@ export class OrderService {
       where: {id: params.originalOrderId, isDeleted: false},
     });
     if (!original) throw new HttpErrors.NotFound('Original order not found.');
+
+    const deliveryDate = params.deliveryDate ? new Date(params.deliveryDate) : undefined;
+    if (deliveryDate && !Number.isFinite(deliveryDate.getTime())) {
+      throw new HttpErrors.BadRequest('deliveryDate is not a valid date.');
+    }
 
     const garments = await this.garmentRepo.find({
       where: {id: {inq: params.garmentIds}, isDeleted: false} as any,
@@ -2500,6 +2506,7 @@ export class OrderService {
           reprocessOfOrderId: original.id,
           expressMultiplier: 1,
           deliveryType: original.deliveryType,
+          deliveryDate,
           deliveryTypePercentage: 0,
           subtotal: 0,
           discountAmount: 0,

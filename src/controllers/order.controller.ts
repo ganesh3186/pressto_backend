@@ -1501,6 +1501,7 @@ export class OrderController {
                   'order the moment this is approved, same as always. Anything else defers ' +
                   'that until a linked pickup actually brings the garment back.',
               },
+              deliveryDate: {type: 'string', format: 'date-time'},
             },
           },
         },
@@ -1512,6 +1513,7 @@ export class OrderController {
       mediaIds?: string[];
       garmentIds?: string[];
       contactChannel?: ReprocessContactChannel;
+      deliveryDate?: string;
     },
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser);
@@ -1524,6 +1526,7 @@ export class OrderController {
       requestedBy: currentUser[securityId],
       source: 'store',
       contactChannel: body.contactChannel,
+      deliveryDate: body.deliveryDate,
     });
   }
 

@@ -258,6 +258,7 @@ export class ApprovalController {
         // garment is at the store yet. See reprocess.service.ts's
         // ReprocessContactChannel.
         contactChannel: metadata.contactChannel ?? null,
+        deliveryDate: metadata.deliveryDate ?? null,
         reworkOrderId: metadata.reworkOrderId ?? null,
         reworkOrderNumber: metadata.reworkOrderNumber ?? null,
         media,

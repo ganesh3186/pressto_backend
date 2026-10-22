@@ -345,6 +345,7 @@ export class PickupHandoverController {
       createdBy: performedBy,
       reason: typeof meta.reason === 'string' ? meta.reason : undefined,
       remarks: approval.requestReason,
+      deliveryDate: typeof meta.deliveryDate === 'string' ? meta.deliveryDate : undefined,
     });
 
     await this.orderRepo.updateById(result.order.id, {pickupSource: pickupRequest.source});
