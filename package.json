@@ -40,6 +40,8 @@
     "migrate:split-on-account": "node scripts/backfill-split-on-account.cjs",
     "migrate:pickup-order-links": "node scripts/drop-legacy-pickup-delivery-index.cjs",
     "migrate:bag-capacity": "node scripts/set-bag-capacity-500.cjs",
+    "migrate:backfill-store-monthly-targets": "node scripts/backfill-store-monthly-targets.cjs",
+    "migrate:drop-store-target-columns": "node scripts/drop-store-target-columns.cjs",
     "preseed": "npm run build",
     "seed": "node ./dist/seed",
     "preseed:new-permissions": "npm run build",
