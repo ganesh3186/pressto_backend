@@ -1,4 +1,3 @@
-import {authenticate} from '@loopback/authentication';
 import {Filter, repository} from '@loopback/repository';
 import {get, getModelSchemaRef, param, response} from '@loopback/rest';
 import {CountryCode} from '../models';
@@ -10,7 +9,6 @@ export class CountryCodeController {
     public countryCodeRepository: CountryCodeRepository,
   ) {}
 
-  @authenticate('jwt')
   @get('/country-codes')
   @response(200, {
     description: 'Active country dialing codes for phone number selectors',

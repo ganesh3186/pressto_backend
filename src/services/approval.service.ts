@@ -2491,7 +2491,15 @@ export class ApprovalService {
         })
       : null;
 
-    const fromServiceId = orderItem?.serviceId;
+    const originalOrderItem =
+      request.status !== ApprovalRequestStatus.PENDING
+        ? (request.metadata?._revertSnapshot as RevertSnapshot | undefined)
+            ?.orderItem
+        : undefined;
+    const fromServiceId =
+      (request.metadata?.fromServiceId as string | undefined) ??
+      originalOrderItem?.serviceId ??
+      orderItem?.serviceId;
     const toServiceId = request.metadata?.toServiceId as string | undefined;
     const requestedAddlIds =
       (request.metadata?.additionalServiceIds as string[] | undefined) ?? [];
@@ -2537,8 +2545,18 @@ export class ApprovalService {
     // follows) actually change the quote.
     const newAddlIds = requestedAddlIds.filter(sid => !alreadyAttachedIds.has(sid));
 
-    const currentResolvedPrice = Number(orderItem?.resolvedPrice) || 0;
-    const currentUnitPrice = Number(orderItem?.unitPrice) || 0;
+    const currentResolvedPrice =
+      Number(
+        request.metadata?.fromResolvedPrice ??
+          originalOrderItem?.resolvedPrice ??
+          orderItem?.resolvedPrice,
+      ) || 0;
+    const currentUnitPrice =
+      Number(
+        request.metadata?.fromUnitPrice ??
+          originalOrderItem?.unitPrice ??
+          orderItem?.unitPrice,
+      ) || 0;
     let currentTotal = currentUnitPrice;
 
     let newResolvedPrice = currentResolvedPrice;

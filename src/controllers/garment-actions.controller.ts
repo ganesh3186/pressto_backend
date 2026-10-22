@@ -213,6 +213,9 @@ export class GarmentActionsController {
       requestReason: body.remarks,
       mediaIds: body.mediaIds,
       metadata: {
+        fromServiceId: orderItem.serviceId,
+        fromResolvedPrice: orderItem.resolvedPrice,
+        fromUnitPrice: orderItem.unitPrice,
         ...(toService ? {toServiceId: toService.id, toServiceName: (toService as any).name} : {}),
         ...(newAddlIds.length
           ? {

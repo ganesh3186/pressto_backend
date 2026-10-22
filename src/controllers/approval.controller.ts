@@ -19,6 +19,7 @@ import {
   OrderRepository,
   PaymentTransactionRepository,
   RefundDueRepository,
+  ServiceRepository,
 } from '../repositories';
 import {ApprovalService} from '../services/approval.service';
 import {StoreScopeService} from '../services/store-scope.service';
@@ -35,6 +36,7 @@ export class ApprovalController {
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
+    @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -112,6 +114,21 @@ export class ApprovalController {
     });
   }
 
+  private async customerDetails(customerId?: string) {
+    const customer = customerId
+      ? await this.customerRepo.findOne({
+          where: {id: customerId},
+          include: [{relation: 'user', scope: {fields: {id: true, phone: true, countryCode: true}}}],
+        })
+      : null;
+    return {
+      customerName: customer ? `${customer.firstName} ${customer.lastName ?? ''}`.trim() : null,
+      customerPhone: customer?.user?.phone
+        ? `${customer.user.countryCode ?? ''} ${customer.user.phone}`.trim()
+        : null,
+    };
+  }
+
   private async enrichRequest(req: ApprovalRequest): Promise<object> {
     // mediaIds alone are useless to a client — always expand them to real
     // URLs, even for non-garment requests (payments carry cheque photos).
@@ -157,16 +174,13 @@ export class ApprovalController {
       req.type === ApprovalRequestType.ORDER_ITEMS_DOWNGRADE
     ) {
       const order = await this.orderRepo.findOne({where: {id: req.entityId}});
-      const customer = order?.customerId
-        ? await this.customerRepo.findOne({where: {id: order.customerId}})
-        : null;
       return {
         ...req,
         orderId: req.entityId,
         orderNumber: (order as any)?.orderNumber ?? null,
         orderStatus: order?.status ?? null,
         customerId: order?.customerId ?? null,
-        customerName: customer ? `${customer.firstName} ${customer.lastName}`.trim() : null,
+        ...await this.customerDetails(order?.customerId),
         media,
       };
     }
@@ -218,6 +232,7 @@ export class ApprovalController {
         orderId: req.entityId,
         orderNumber: (order as any)?.orderNumber ?? null,
         orderStatus: order?.status ?? null,
+        ...await this.customerDetails(order?.customerId),
         // One row per piece, so the approver can see exactly what is being redone.
         garments: garments.map(g => ({
           id: g.id,
@@ -294,6 +309,20 @@ export class ApprovalController {
       orderItem?.orderId ? this.orderRepo.findOne({where: {id: orderItem.orderId}}) : Promise.resolve(null),
       orderItem?.itemId ? this.itemRepo.findOne({where: {id: orderItem.itemId}}) : Promise.resolve(null),
     ]);
+    const metadata = (req.metadata ?? {}) as {
+      toServiceId?: string;
+      toServiceName?: string;
+      additionalServiceIds?: string[];
+      additionalServiceNames?: string[];
+    };
+    const toServiceName = req.type === ApprovalRequestType.UPGRADE_SERVICE && metadata.toServiceId
+      ? metadata.toServiceName ?? (await this.serviceRepo.findOne({where: {id: metadata.toServiceId}}))?.name
+      : null;
+    const additionalServiceNames = req.type === ApprovalRequestType.UPGRADE_SERVICE && metadata.additionalServiceIds?.length
+      ? await Promise.all(metadata.additionalServiceIds.map(async (id, index) =>
+          metadata.additionalServiceNames?.[index] ?? (await this.serviceRepo.findOne({where: {id}}))?.name,
+        ))
+      : metadata.additionalServiceNames ?? [];
     // calculateGarmentReturnAmount() throws (ENTITY_NOT_FOUND) if this
     // garment's order item points at an item/order/garment row that no
     // longer exists — a handful of historical requests hit this from data
@@ -315,6 +344,10 @@ export class ApprovalController {
       itemName: orderItem?.itemName ?? item?.name ?? null,
       orderNumber: (order as any)?.orderNumber ?? null,
       orderId: orderItem?.orderId ?? null,
+      ...await this.customerDetails(order?.customerId),
+      requestedService: req.type === ApprovalRequestType.UPGRADE_SERVICE
+        ? [toServiceName, ...additionalServiceNames].filter(Boolean).join(', ') || null
+        : null,
       returnCalculation,
       returnAmount: returnCalculation?.returnAmount ?? null,
       media,

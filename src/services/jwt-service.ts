@@ -68,6 +68,9 @@ export class JWTService implements TokenService {
 
     try {
       const decrypted: any = await this.verifyJwt(token);
+      if (typeof decrypted?.id !== 'string' || !decrypted.id.trim()) {
+        throw new HttpErrors.Unauthorized('Token has no user ID');
+      }
 
       const userProfile: UserProfile = {
         [securityId]: decrypted.id,

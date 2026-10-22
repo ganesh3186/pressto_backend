@@ -56,7 +56,7 @@ export interface VerifyGatewayPaymentInput {
  */
 @injectable({scope: BindingScope.TRANSIENT})
 export class RazorpayService {
-  private client: Razorpay;
+  private razorpayClient?: Razorpay;
 
   constructor(
     @repository(GatewayPaymentLinkRepository)
@@ -70,8 +70,13 @@ export class RazorpayService {
     @inject('services.wallet') private walletService: WalletService,
     @inject('services.security-deposit') private securityDepositService: SecurityDepositService,
     @inject('services.whatsapp') private whatsAppService: WhatsAppService,
-  ) {
-    this.client = new Razorpay({
+  ) {}
+
+  private get client(): Razorpay {
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      throw new HttpErrors.ServiceUnavailable('Razorpay is not configured.');
+    }
+    return this.razorpayClient ??= new Razorpay({
       // Razorpay's own SDK field names — snake_case is their API's shape,
       // not this codebase's convention (mirrors the same suppress-comment
       // pattern already used in email.service.ts for a third-party shape).

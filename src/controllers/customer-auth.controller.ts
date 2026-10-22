@@ -124,7 +124,7 @@ export class CustomerAuthController {
     //     the one signal a public endpoint can trust without an operator or
     //     an OTP step; a partial match (phone right, email wrong, or missing)
     //     is treated as a stranger and rejected, not silently linked.
-    const orConditions: object[] = [{phone: body.phone}];
+    const orConditions: object[] = [{phone: body.phone, countryCode: body.countryCode}];
     if (body.email) orConditions.push({email: body.email});
     const existingUser = await this.usersRepository.findOne({
       where: {or: orConditions},
@@ -148,7 +148,8 @@ export class CustomerAuthController {
         );
       }
 
-      const phoneMatches = existingUser.phone === body.phone;
+      const phoneMatches =
+        existingUser.phone === body.phone && existingUser.countryCode === body.countryCode;
       const emailMatches =
         Boolean(body.email) &&
         Boolean(existingUser.email) &&
