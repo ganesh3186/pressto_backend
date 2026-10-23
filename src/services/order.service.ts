@@ -5811,7 +5811,7 @@ export class OrderService {
       chargesByGarment.set(row.garmentId, list);
     }
 
-    // Pricing can change while every moved garment is still awaiting processing.
+    // Pricing can change until a moved garment is ready.
     const canChangeTier = canChangeSplitTier(
       order.status,
       garments.map(g => g.status as GarmentStatus),

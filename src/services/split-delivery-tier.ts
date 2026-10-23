@@ -12,15 +12,26 @@ export function canChangeSplitTier(
   orderStatus: OrderStatus | undefined,
   garmentStatuses: GarmentStatus[],
 ): boolean {
+  const changeableStatuses = [
+    GarmentStatus.RECEIVED,
+    GarmentStatus.IN_INSPECTION,
+    GarmentStatus.IN_PROCESS,
+    GarmentStatus.QUALITY_CHECK,
+  ];
   return (
     [
       OrderStatus.DRAFT,
       OrderStatus.CONFIRMED,
       OrderStatus.RECEIVED_AT_STORE,
       OrderStatus.IN_INSPECTION,
+      OrderStatus.IN_PROCESS,
+      OrderStatus.QUALITY_CHECK,
+      OrderStatus.READY,
     ].includes(orderStatus as OrderStatus) &&
-    garmentStatuses.every(status =>
-      [GarmentStatus.RECEIVED, GarmentStatus.IN_INSPECTION].includes(status),
+    garmentStatuses.some(status => changeableStatuses.includes(status)) &&
+    garmentStatuses.every(
+      status =>
+        status === GarmentStatus.READY || changeableStatuses.includes(status),
     )
   );
 }

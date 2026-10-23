@@ -146,7 +146,7 @@ describe('split delivery tier', () => {
     ).to.equal(DeliveryType.LIGHTNING);
   });
 
-  it('keeps a higher tier after processing and preserves tier for a time-only change', () => {
+  it('keeps a higher tier after ready and preserves tier for a time-only change', () => {
     const sameDay = new Date('2026-09-12T12:00:00Z');
     expect(
       resolveSplitDeliveryTier(
@@ -170,7 +170,7 @@ describe('split delivery tier', () => {
     ).to.equal(DeliveryType.LIGHTNING);
   });
 
-  it('does not add rush charges after processing begins', () => {
+  it('does not add rush charges after ready', () => {
     expect(
       resolveSplitDeliveryTier(
         '2026-09-14T00:00:00Z',
@@ -184,7 +184,7 @@ describe('split delivery tier', () => {
     ).to.equal(DeliveryType.STANDARD);
   });
 
-  it('allows tier changes through inspection, before processing starts', () => {
+  it('allows tier changes with processing and ready garments, but not when all are ready', () => {
     expect(
       canChangeSplitTier(OrderStatus.IN_INSPECTION, [GarmentStatus.RECEIVED]),
     ).to.equal(true);
@@ -195,18 +195,59 @@ describe('split delivery tier', () => {
     ).to.equal(true);
     expect(
       canChangeSplitTier(OrderStatus.IN_PROCESS, [GarmentStatus.RECEIVED]),
-    ).to.equal(false);
+    ).to.equal(true);
     expect(
       canChangeSplitTier(OrderStatus.QUALITY_CHECK, [GarmentStatus.RECEIVED]),
-    ).to.equal(false);
+    ).to.equal(true);
     expect(
       canChangeSplitTier(OrderStatus.READY, [GarmentStatus.RECEIVED]),
-    ).to.equal(false);
+    ).to.equal(true);
     expect(
       canChangeSplitTier(OrderStatus.IN_INSPECTION, [GarmentStatus.IN_PROCESS]),
-    ).to.equal(false);
+    ).to.equal(true);
+    expect(
+      canChangeSplitTier(OrderStatus.QUALITY_CHECK, [GarmentStatus.QUALITY_CHECK]),
+    ).to.equal(true);
     expect(
       canChangeSplitTier(OrderStatus.IN_INSPECTION, [GarmentStatus.READY]),
     ).to.equal(false);
+    expect(
+      canChangeSplitTier(OrderStatus.IN_PROCESS, [
+        GarmentStatus.IN_PROCESS,
+        GarmentStatus.READY,
+      ]),
+    ).to.equal(true);
+    expect(
+      canChangeSplitTier(OrderStatus.READY, [
+        GarmentStatus.IN_PROCESS,
+        GarmentStatus.READY,
+      ]),
+    ).to.equal(true);
+    expect(
+      canChangeSplitTier(OrderStatus.READY, [GarmentStatus.READY]),
+    ).to.equal(false);
+    expect(
+      canChangeSplitTier(OrderStatus.IN_PROCESS, [
+        GarmentStatus.IN_PROCESS,
+        GarmentStatus.OUT_FOR_DELIVERY,
+      ]),
+    ).to.equal(false);
+  });
+
+  it('changes the date-based tier for a processing and ready selection', () => {
+    expect(
+      resolveSplitDeliveryTier(
+        '2026-09-14T00:00:00Z',
+        originalDelivery,
+        received,
+        DeliveryType.STANDARD,
+        3,
+        true,
+        canChangeSplitTier(OrderStatus.READY, [
+          GarmentStatus.IN_PROCESS,
+          GarmentStatus.READY,
+        ]),
+      ),
+    ).to.equal(DeliveryType.EXPRESS);
   });
 });
