@@ -114,6 +114,10 @@ const ORDER_UNIT_SCHEMA = {
       items: ADDITIONAL_CHARGE_SELECTION_SCHEMA,
     },
     instructions: {type: 'string' as const},
+    itemPhotoMediaIds: {
+      type: 'array' as const,
+      items: {type: 'string' as const, format: 'uuid' as const},
+    },
     qrPrintCount: {type: 'integer' as const, minimum: 1},
     rejectedAtIntake: {type: 'boolean' as const},
     rejectionReason: {type: 'string' as const},

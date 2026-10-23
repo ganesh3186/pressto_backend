@@ -10,6 +10,7 @@ import {
   priceEditedLine,
   resolveEditUnitAreas,
   resolveEditUnitServiceIds,
+  splitEditIntakeReturns,
 } from '../services/order-item-edit-units';
 
 const STARCH = 'starch';
@@ -18,6 +19,134 @@ const prices: Record<string, number> = {[STARCH]: 50, [FOLD]: 30};
 const servicePrice = (id: string) => prices[id] ?? 0;
 
 describe('editing order items per unit (PUT /orders/{id}/items)', () => {
+  it('keeps a declined piece separate and free of services and charges', () => {
+    const [accepted, returned] = splitEditIntakeReturns([{
+      serviceId: 'clean', itemId: 'shirt', quantity: 2,
+      rejectedAtIntake: true,
+      additionalServiceIds: [STARCH], additionalChargeIds: ['hanger'],
+      units: [
+        {additionalServiceIds: [STARCH]},
+        {rejectedAtIntake: true, rejectionReason: 'customer_declined', rejectionRemarks: 'At counter'},
+      ],
+    }]);
+    expect(accepted.quantity).to.equal(1);
+    expect(accepted.rejectedAtIntake).to.equal(false);
+    expect(returned).to.containEql({
+      quantity: 1, rejectedAtIntake: true, rejectionReason: 'customer_declined',
+      rejectionRemarks: 'At counter', additionalServiceIds: [], additionalChargeIds: [],
+    });
+    expect(priceEditedLine({
+      resolvedPrice: 0, deliveryMultiplier: 1, unitServiceIds: [[]], servicePrice,
+    }).totalPrice).to.equal(0);
+  });
+
+  it('does not tag an item returned at intake during an edit', async () => {
+    let created = false;
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      orderItemRepo: {find: async () => [{id: 'returned', quantity: 1, rejectedAtIntake: true}]},
+      garmentRepo: {count: async () => ({count: 0}), create: async () => {created = true;}},
+    }) as OrderService;
+    const autoCreate = service as unknown as {
+      autoCreateGarments: (orderId: string, changedBy: string, makeId: () => string) => Promise<object[]>;
+    };
+    const garments = await autoCreate.autoCreateGarments('order-1', 'staff-1', () => 'id');
+    expect(garments).to.eql([]);
+    expect(created).to.equal(false);
+  });
+
+  it('removes legacy tags from an intake return even when its quantity stays the same', async () => {
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      garmentRepo: {find: async () => [{id: 'old-tag', garmentTagNumber: 'GT1', status: 'received'}]},
+    }) as OrderService;
+    const collect = service as unknown as {
+      collectRemovableGarments: (items: object[], desired: Map<string, object>, key: (serviceId: string, itemId: string, rejected?: boolean) => string) => Promise<{id: string}[]>;
+    };
+    const key = (serviceId: string, itemId: string, rejected?: boolean) => `${serviceId}::${itemId}::${Boolean(rejected)}`;
+    const desired = new Map([[key('clean', 'kids', true), {quantity: 1}]]);
+    const removed = await collect.collectRemovableGarments(
+      [{id: 'return-row', serviceId: 'clean', itemId: 'kids', quantity: 1, rejectedAtIntake: true}],
+      desired,
+      key,
+    );
+    expect(removed.map(garment => garment.id)).to.eql(['old-tag']);
+  });
+
+  it('keeps an edited intake return at zero in the saved order item', async () => {
+    let saved: Record<string, unknown> = {};
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      orderRepo: {findOne: async () => ({
+        id: 'order-1', storeId: 'store-1', customerId: 'customer-1',
+        status: OrderStatus.RECEIVED_AT_STORE, deliveryTypePercentage: 0,
+      })},
+      orderItemRepo: {
+        find: async () => [{
+          id: 'returned-1', serviceId: 'clean', itemId: 'kids',
+          quantity: 1, rejectedAtIntake: true,
+        }],
+        updateById: async (_id: string, fields: Record<string, unknown>) => {saved = fields;},
+      },
+      orderItemChargeRepo: {deleteAll: async () => {}},
+      garmentRepo: {find: async () => []},
+      dataSource: {beginTransaction: async () => ({commit: async () => {}, rollback: async () => {}})},
+      statusHistoryRepo: {create: async () => {}},
+      assertItemsHaveRequiredAdditionalServices: async () => {},
+      getReprocessOriginalLines: async () => new Map(),
+      collectRemovableGarments: async () => [],
+      resolveAdditionalChargePercentage: async () => 0,
+      resolvePricing: async () => ({basePrice: 135, resolvedPrice: 135, priceSource: 'catalog'}),
+      normalizeAdditionalCharges: () => [],
+      autoCreateGarments: async () => [],
+      recalculateOrderTotals: async () => ({totalAmount: 0}),
+    }) as OrderService;
+
+    await service.updateOrderItems('order-1', [{
+      serviceId: 'clean', itemId: 'kids', quantity: 1,
+      units: [{rejectedAtIntake: true, rejectionReason: 'customer_declined'}],
+    }], 'staff-1');
+    expect(saved).to.containEql({
+      rejectedAtIntake: true, rejectionReason: 'customer_declined',
+      unitPrice: 0, totalPrice: 0, basePrice: 0, resolvedPrice: 0,
+    });
+  });
+
+  it('saves the return photo when a new declined item is added in an edit', async () => {
+    let savedReturn: Record<string, unknown> = {};
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      orderRepo: {findOne: async () => ({
+        id: 'order-1', storeId: 'store-1', customerId: 'customer-1',
+        status: OrderStatus.RECEIVED_AT_STORE, deliveryTypePercentage: 0,
+      })},
+      orderItemRepo: {find: async () => [], create: async () => ({id: 'returned-1'})},
+      orderItemChargeRepo: {deleteAll: async () => {}},
+      garmentRepo: {find: async () => []},
+      serviceRepo: {findOne: async () => ({name: 'Clean'})},
+      itemRepo: {findById: async () => ({name: 'Shirt/Kids'})},
+      intakeRejectedRepo: {create: async (record: Record<string, unknown>) => {savedReturn = record;}},
+      dataSource: {beginTransaction: async () => ({commit: async () => {}, rollback: async () => {}})},
+      statusHistoryRepo: {create: async () => {}},
+      assertItemsHaveRequiredAdditionalServices: async () => {},
+      getReprocessOriginalLines: async () => new Map(),
+      collectRemovableGarments: async () => [],
+      resolveAdditionalChargePercentage: async () => 0,
+      resolvePricing: async () => ({basePrice: 135, resolvedPrice: 135, priceSource: 'catalog'}),
+      normalizeAdditionalCharges: () => [],
+      autoCreateGarments: async () => [],
+      recalculateOrderTotals: async () => ({totalAmount: 0}),
+    }) as OrderService;
+
+    await service.updateOrderItems('order-1', [{
+      serviceId: 'clean', itemId: 'kids', quantity: 1,
+      units: [{
+        rejectedAtIntake: true, rejectionReason: 'customer_declined',
+        itemPhotoMediaIds: ['photo-1'],
+      }],
+    }], 'staff-1');
+    expect(savedReturn).to.containEql({
+      orderItemId: 'returned-1', reason: 'customer_declined', mediaIds: ['photo-1'],
+      status: 'resolved', outcome: 'return_to_customer',
+    });
+  });
+
   it('rejects an incomplete or unconfigured Express charge', async () => {
     const service = Object.assign(Object.create(OrderService.prototype), {
       orderRepo: {findOne: async () => ({status: OrderStatus.RECEIVED_AT_STORE, deliveryTypePercentage: 0})},

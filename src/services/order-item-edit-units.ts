@@ -16,6 +16,40 @@ export interface EditOrderUnitInput {
   instructions?: string;
   length?: number;
   width?: number;
+  rejectedAtIntake?: boolean;
+  rejectionReason?: string;
+  rejectionRemarks?: string;
+  itemPhotoMediaIds?: string[];
+}
+
+export function splitEditIntakeReturns<T extends {
+  quantity: number;
+  units?: EditOrderUnitInput[];
+  additionalServiceIds?: string[];
+  additionalChargeIds?: EditAdditionalChargeSelection[];
+  rejectedAtIntake?: boolean;
+  rejectionReason?: string;
+  rejectionRemarks?: string;
+}>(items: T[]): T[] {
+  return items.flatMap(item => {
+    const rejectedUnits = item.units?.filter(unit => unit.rejectedAtIntake) ?? [];
+    if (!rejectedUnits.length) return [item];
+    const acceptedUnits = item.units?.filter(unit => !unit.rejectedAtIntake) ?? [];
+    const acceptedCount = acceptedUnits.length + Math.max(0, item.quantity - (item.units?.length ?? 0));
+    return [
+      ...(acceptedCount ? [{...item, quantity: acceptedCount, units: acceptedUnits, rejectedAtIntake: false}] : []),
+      {
+        ...item,
+        quantity: rejectedUnits.length,
+        units: rejectedUnits,
+        additionalServiceIds: [],
+        additionalChargeIds: [],
+        rejectedAtIntake: true,
+        rejectionReason: rejectedUnits[0]?.rejectionReason,
+        rejectionRemarks: rejectedUnits.map(unit => unit.rejectionRemarks).filter(Boolean).join('; ') || undefined,
+      },
+    ];
+  });
 }
 
 export interface EditLineGarment {
