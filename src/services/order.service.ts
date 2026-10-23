@@ -1106,6 +1106,7 @@ export class OrderService {
       totalAmount = roundRupee(taxableAmount + taxAmount);
 
       const orderTotalsChanged =
+        Number(order.subtotal ?? 0) !== subtotal ||
         Number(order.discountAmount ?? 0) !== discount ||
         Number(order.taxAmount ?? 0) !== taxAmount ||
         Number(order.totalAmount ?? 0) !== totalAmount;

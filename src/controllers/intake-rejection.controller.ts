@@ -12,12 +12,14 @@ import {
 } from '../models/intake-rejected-item.model';
 import {GarmentStatus} from '../models/garment-status.enum';
 import {
+  ChallanRepository,
   GarmentRepository,
   GarmentStatusHistoryRepository,
   IntakeRejectedItemRepository,
   OrderItemRepository,
   OrderRepository,
 } from '../repositories';
+import {OrderService} from '../services/order.service';
 import {StoreScopeService} from '../services/store-scope.service';
 
 export class IntakeRejectionController {
@@ -27,6 +29,8 @@ export class IntakeRejectionController {
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
+    @repository(ChallanRepository) private challanRepo: ChallanRepository,
+    @inject('services.order') private orderService: OrderService,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
@@ -116,6 +120,9 @@ export class IntakeRejectionController {
         resolvedBy: currentUser[securityId],
         resolvedAt: new Date(),
       } as Partial<IntakeRejectedItem>);
+
+      const challan = await this.challanRepo.findOne({where: {orderId}});
+      if (challan) await this.orderService.syncChallanTotalsForOrder(orderId, challan);
 
       return {message: 'Garment rejected at intake and returned to customer.', record};
     }
