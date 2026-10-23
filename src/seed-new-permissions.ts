@@ -300,8 +300,14 @@ const NEW_PERMISSIONS: {permission: string; description: string}[] = [
     description: 'View the Mode Of Payment report',
   },
   {
-    permission: 'report_consolidated_daily_sales:read',
-    description: 'View the Consolidated Daily Sales report',
+    // Renamed from report_consolidated_daily_sales:read — "Consolidated
+    // Daily Sales" is reserved for a different, not-yet-built report; this
+    // is the one store managers/finance already use day to day. Existing
+    // live databases are migrated by scripts/rename-daily-sales-permission.cjs
+    // (a plain string rename on the permissions row — role_permissions
+    // links by id, so no role loses this permission).
+    permission: 'report_daily_sales:read',
+    description: 'View the Daily Sales report',
   },
   {
     permission: 'report_on_account_billing:read',
@@ -410,7 +416,7 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // full set. Individual reports can still be revoked per role in the
       // role-permission matrix.
       'report_mode_of_payment:read',
-      'report_consolidated_daily_sales:read',
+      'report_daily_sales:read',
       'report_on_account_billing:read',
       'report_pending_payments:read',
       'report_pending_tickets:read',
@@ -522,7 +528,7 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       'dashboard:read',
       // Reports: oversight role, so the full read-only set.
       'report_mode_of_payment:read',
-      'report_consolidated_daily_sales:read',
+      'report_daily_sales:read',
       'report_on_account_billing:read',
       'report_pending_payments:read',
       'report_pending_tickets:read',
@@ -557,7 +563,7 @@ const ROLE_GRANTS: {roleValue: string; permissions: string[]}[] = [
       // Reports: the money-reconciliation set. No pending-tickets — what
       // is still in the plant is an operations question, not a finance one.
       'report_mode_of_payment:read',
-      'report_consolidated_daily_sales:read',
+      'report_daily_sales:read',
       'report_on_account_billing:read',
       'report_pending_payments:read',
       'report_petty_cash_expense:read',

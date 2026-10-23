@@ -27,6 +27,7 @@ import {
   RegionRepository,
   ServiceRepository,
   ShiftRepository,
+  StoreMonthlyTargetRepository,
   StoreRepository,
   UsersRepository,
   WalletRechargeRequestRepository,
@@ -173,6 +174,10 @@ type DailySalesRow = {
   pmuRevenue: number;
   p2dRevenue: number;
   revenue: number;
+  // Store's monthly revenue target (StoreMonthlyTarget), spread evenly
+  // across that month's days — e.g. a ₹31,000 January target becomes
+  // ₹1,000/day. null when no target is set for that store+month.
+  targetRevenue: number | null;
   discount: number;
   taxes: number;
   totalSales: number;
@@ -331,6 +336,8 @@ export class ReportsService {
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(GstTaxConfigurationRepository)
     private gstTaxConfigurationRepo: GstTaxConfigurationRepository,
+    @repository(StoreMonthlyTargetRepository)
+    private storeMonthlyTargetRepo: StoreMonthlyTargetRepository,
   ) {}
 
   /**
@@ -1294,14 +1301,19 @@ export class ReportsService {
   }
 
   /**
-   * Consolidated Daily Sales — one row per closed shift per store per
+   * Daily Sales — one row per closed shift per store per
    * day, with the operator-entered closing collections.
    *
    * Only CLOSED shifts appear: an open shift has no closing form yet, so
    * it has no reconciled collections to report.
+   *
+   * Named "Daily Sales" (not "Consolidated Daily Sales" — that name is
+   * reserved for a different, not-yet-built report) — see
+   * scripts/rename-daily-sales-permission.cjs for the permission-string
+   * migration that went with this rename.
    */
   /**
-   * Consolidated Daily Sales — one row per (store, closure day), matching
+   * Daily Sales — one row per (store, closure day), matching
    * the Pulse spec's own example (multiple closure numbers/remarks joined
    * into one row when a store had more than one shift that day).
    *
@@ -1321,7 +1333,7 @@ export class ReportsService {
    * or pay-later payment is invisible to it. Summed here from the actual
    * PaymentTransaction rows for each shift's orders instead.
    */
-  async buildConsolidatedDailySales(params: {
+  async buildDailySales(params: {
     storeIds: string[];
     from: Date;
     to: Date;
@@ -1329,7 +1341,7 @@ export class ReportsService {
     const {storeIds, from, to} = params;
     if (!storeIds.length) return emptyPaged();
 
-    const [shifts, storeCtx] = await Promise.all([
+    const [shifts, storeCtx, monthlyTargets] = await Promise.all([
       this.shiftRepo.find({
         where: {
           storeId: {inq: storeIds},
@@ -1339,8 +1351,32 @@ export class ReportsService {
         order: ['closedAt ASC'],
       }),
       this.buildStoreContext(storeIds),
+      this.storeMonthlyTargetRepo.find({
+        where: {
+          storeId: {inq: storeIds},
+          year: {between: [from.getFullYear(), to.getFullYear()]},
+          isDeleted: false,
+        } as object,
+      }),
     ]);
     if (!shifts.length) return emptyPaged();
+
+    // Per-day target = that month's revenueTarget / days in that month
+    // (e.g. a ₹31,000 January target -> ₹1,000/day). Keyed by storeId so
+    // the lookup below only needs the row's own date to resolve it.
+    const targetPerDay = new Map<string, number>();
+    for (const target of monthlyTargets) {
+      if (target.revenueTarget == null) continue;
+      const daysInMonth = new Date(target.year, target.month, 0).getDate();
+      targetPerDay.set(
+        `${target.storeId}|${target.year}|${target.month}`,
+        Number(target.revenueTarget) / daysInMonth,
+      );
+    }
+    const resolveTargetRevenue = (storeId: string, date: Date): number | null => {
+      const key = `${storeId}|${date.getFullYear()}|${date.getMonth() + 1}`;
+      return targetPerDay.has(key) ? targetPerDay.get(key)! : null;
+    };
 
     // One order/payment fetch for every shift in the page, instead of one
     // pair of queries per shift — then sliced in memory per shift window
@@ -1512,6 +1548,7 @@ export class ReportsService {
           pmuRevenue: 0,
           p2dRevenue: 0,
           revenue: 0,
+          targetRevenue: resolveTargetRevenue(String(shift.storeId), new Date(shift.closedAt)),
           discount: 0,
           taxes: 0,
           totalSales: 0,
@@ -1622,6 +1659,7 @@ export class ReportsService {
         pmuRevenue: sum(r => r.pmuRevenue),
         p2dRevenue: sum(r => r.p2dRevenue),
         revenue: sum(r => r.revenue),
+        targetRevenue: sum(r => r.targetRevenue ?? 0),
         discount: sum(r => r.discount),
         taxes: sum(r => r.taxes),
         totalSales: sum(r => r.totalSales),

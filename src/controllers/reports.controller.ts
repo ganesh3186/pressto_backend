@@ -209,14 +209,14 @@ export class ReportsController {
   @authenticate('jwt')
   @authorize({
     roles: ['super_admin'],
-    permissions: ['report_consolidated_daily_sales:read'],
+    permissions: ['report_daily_sales:read'],
   })
-  @get('/reports/consolidated-daily-sales')
+  @get('/reports/daily-sales')
   @response(200, {
     description:
-      'Consolidated Daily Sales — closing collections per store per day',
+      'Daily Sales — closing collections per store per day',
   })
-  async consolidatedDailySales(
+  async dailySales(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
     @param.query.string('storeIds') storeIds?: string,
@@ -224,7 +224,7 @@ export class ReportsController {
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<object> {
     const {from, to} = resolveWindow(dateFrom, dateTo);
-    const report = await this.reportsService.buildConsolidatedDailySales({
+    const report = await this.reportsService.buildDailySales({
       storeIds: await this.resolveReportStoreIds(currentUser, storeId, storeIds),
       from,
       to,

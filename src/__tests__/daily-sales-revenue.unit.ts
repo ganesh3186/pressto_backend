@@ -3,7 +3,7 @@ import {ReportsService} from '../services/reports.service';
 import {OrderType} from '../models/order-type.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
 
-describe('consolidated daily sales revenue', () => {
+describe('daily sales revenue', () => {
   it('keeps on-account and normal invoice channel totals aligned with closure revenue', async () => {
     const openedAt = new Date('2026-10-01T09:00:00Z');
     const closedAt = new Date('2026-10-01T17:00:00Z');
@@ -81,9 +81,10 @@ describe('consolidated daily sales revenue', () => {
           {invoiceId: 'on-account', orderId: 'order-b', orderTotal: 50.25},
         ],
       },
+      storeMonthlyTargetRepo: {find: async () => []},
     }) as ReportsService;
 
-    const report = await service.buildConsolidatedDailySales({
+    const report = await service.buildDailySales({
       storeIds: ['store-a'],
       from: openedAt,
       to: closedAt,
@@ -134,9 +135,10 @@ describe('consolidated daily sales revenue', () => {
       orderRepo: {find: async () => []},
       paymentTransactionRepo: {find: async () => []},
       invoiceRepo: {find: async () => []},
+      storeMonthlyTargetRepo: {find: async () => []},
     }) as ReportsService;
 
-    const report = await service.buildConsolidatedDailySales({
+    const report = await service.buildDailySales({
       storeIds: ['store-a'],
       from: openedAt,
       to: closedAt,

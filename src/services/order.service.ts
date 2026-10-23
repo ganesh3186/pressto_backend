@@ -3532,11 +3532,16 @@ export class OrderService {
     changedBy: string,
     remarks: string,
   ): Promise<void> {
+    // Stops at READY deliberately — OUT_FOR_DELIVERY/DELIVERED are reached
+    // through their own dispatch/handover flows (deliveryOrder bookkeeping,
+    // cascading every garment, etc.), never by walking this generic path.
     const PATH = [
       OrderStatus.CONFIRMED,
       OrderStatus.RECEIVED_AT_STORE,
       OrderStatus.IN_INSPECTION,
       OrderStatus.IN_PROCESS,
+      OrderStatus.QUALITY_CHECK,
+      OrderStatus.READY,
     ];
     const current = (await this.orderRepo.findById(orderId)).status!;
     const targetIdx = PATH.indexOf(target);
@@ -6069,6 +6074,14 @@ export class OrderService {
     allocatedPayment = parseFloat(allocatedPayment.toFixed(2));
     parentAllocatedPayment = parseFloat(parentAllocatedPayment.toFixed(2));
 
+    // Set below, once garments have actually moved off this order — the
+    // parent's own status can only lag behind what its SURVIVING garments
+    // already reached (e.g. stuck in_process behind 3 garments that just
+    // left, while its other 2 were already ready). Caught up after commit
+    // via the normal changeStatus()-backed path, so it still writes a real
+    // status-history row and fires the usual notification.
+    let parentRecomputedStatus: OrderStatus | null = null;
+
     const tx = await this.dataSource.beginTransaction({
       isolationLevel: 'READ COMMITTED' as any,
     });
@@ -6201,6 +6214,35 @@ export class OrderService {
         }
       }
 
+      // Recompute the parent's own status from what's actually LEFT on it,
+      // now that the split garments have been reassigned to the sub-order
+      // above. Reads every garment still on the parent (not just the ones
+      // touched by this split) — the parent is only as far along as its
+      // overall slowest surviving garment, same bottleneck rule used
+      // everywhere else. Can only ever move forward or stay put: removing
+      // garments from a set can't make what's left look any SLOWER than it
+      // already was, so no extra guard is needed before acting on it below.
+      const remainingParentItems = await this.orderItemRepo.find(
+        {where: {orderId}},
+        {transaction: tx},
+      );
+      const remainingParentGarments = remainingParentItems.length
+        ? await this.garmentRepo.find(
+            {
+              where: {
+                orderItemId: {inq: remainingParentItems.map(oi => oi.id)},
+                isDeleted: false,
+              } as any,
+            },
+            {transaction: tx},
+          )
+        : [];
+      const parentBottleneck = deriveGarmentGroupStatus(
+        remainingParentGarments.map(g => g.status),
+      );
+      parentRecomputedStatus =
+        (parentBottleneck && GARMENT_TO_ORDER_STATUS[parentBottleneck]) || null;
+
       // Reduce parent order financials. Subtotal drops by the ORIGINAL value of
       // the moved garments (oldSubOrderSubtotal), not the child's re-tiered price.
       const parentNewSubtotal = parseFloat(
@@ -6261,6 +6303,20 @@ export class OrderService {
       await this.generateChallanForOrder(subOrder.id, createdBy, tx);
 
       await tx.commit();
+
+      // Outside the transaction (and after it's safely committed) because
+      // changeStatus()/stepOrderForward() do their own independent
+      // read-modify-write and must see the post-split row, not a
+      // mid-transaction one. A no-op when the parent's status already
+      // matches or is ahead of what its surviving garments reached.
+      if (parentRecomputedStatus && parentRecomputedStatus !== order.status) {
+        await this.stepOrderForward(
+          orderId,
+          parentRecomputedStatus,
+          createdBy,
+          `Status caught up after split ${subOrderNumber} — remaining item(s) had already reached this stage`,
+        );
+      }
 
       return {
         message: `Split order ${subOrderNumber} created successfully.`,

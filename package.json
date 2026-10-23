@@ -44,6 +44,7 @@
     "migrate:bag-capacity": "node scripts/set-bag-capacity-500.cjs",
     "migrate:backfill-store-monthly-targets": "node scripts/backfill-store-monthly-targets.cjs",
     "migrate:drop-store-target-columns": "node scripts/drop-store-target-columns.cjs",
+    "migrate:rename-daily-sales-permission": "node scripts/rename-daily-sales-permission.cjs",
     "preseed": "npm run build",
     "seed": "node ./dist/seed",
     "preseed:new-permissions": "npm run build",

@@ -570,7 +570,7 @@
     },
     {
       "roleValue": "admin_it",
-      "permission": "report_consolidated_daily_sales:read"
+      "permission": "report_daily_sales:read"
     },
     {
       "roleValue": "admin_it",

@@ -16,7 +16,7 @@ describe('report store filters', () => {
         captured.push(storeIds);
         return {rows: [], totalCount: 0, totals: {}};
       },
-      buildConsolidatedDailySales: async ({storeIds}: {storeIds: string[]}) => {
+      buildDailySales: async ({storeIds}: {storeIds: string[]}) => {
         captured.push(storeIds);
         return {rows: [], totalCount: 0, totals: {}};
       },
@@ -54,7 +54,7 @@ describe('report store filters', () => {
     );
 
   const requestDailySales = (storeId?: string, storeIds?: string) =>
-    controller.consolidatedDailySales(
+    controller.dailySales(
       user,
       storeId,
       storeIds,
@@ -62,7 +62,7 @@ describe('report store filters', () => {
       '2026-10-02',
     );
 
-  it('applies the same scoped multi-store filter to consolidated daily sales', async () => {
+  it('applies the same scoped multi-store filter to daily sales', async () => {
     global = false;
     await requestDailySales();
     await requestDailySales(undefined, 'store-b, store-c');
