@@ -619,18 +619,42 @@ export class RiderPickupController {
       request.bagId,
       ...(request.actualItemsByService ?? []).map(line => line.bagId),
     ]).filter((id): id is string => !!id))];
-    const bags = bagIds.length
-      ? await this.bagRepository.find({where: {id: {inq: bagIds}}})
-      : [];
+    const categoryIds = [...new Set(requests.flatMap(request =>
+      (request.itemCategoryEstimate ?? []).map(line => line.itemCategoryId),
+    ).filter(Boolean))];
+    const serviceIds = [...new Set(requests.flatMap(request => [
+      ...(request.itemCategoryEstimate ?? []).map(line => line.serviceId),
+      ...(request.actualItemsByService ?? []).map(line => line.serviceId),
+    ]).filter((id): id is string => !!id))];
+    const [bags, itemCategories, serviceCategories, services] = await Promise.all([
+      bagIds.length ? this.bagRepository.find({where: {id: {inq: bagIds}}}) : [],
+      categoryIds.length ? this.itemCategoryRepository.find({where: {id: {inq: categoryIds}} as object}) : [],
+      categoryIds.length ? this.serviceCategoryRepository.find({where: {id: {inq: categoryIds}} as object}) : [],
+      serviceIds.length ? this.serviceRepository.find({where: {id: {inq: serviceIds}} as object}) : [],
+    ]);
     const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
+    const categoryNameById = new Map([
+      ...serviceCategories.map(category => [category.id, category.name] as const),
+      ...itemCategories.map(category => [category.id, category.name] as const),
+    ]);
+    const serviceNameById = new Map(services.map(service => [service.id, service.name]));
     return requests.map(request => {
       const {bagId, actualItemsByService, ...publicRequest} = request;
       return {
         ...publicRequest,
         bagNumber: bagId ? bagNumberById.get(bagId) ?? null : null,
+        ...(request.itemCategoryEstimate ? {itemCategoryEstimate: request.itemCategoryEstimate.map(line => ({
+          ...line,
+          itemCategoryName: categoryNameById.get(line.itemCategoryId) ?? null,
+          serviceName: line.serviceId ? serviceNameById.get(line.serviceId) ?? null : null,
+        }))} : {}),
         ...(actualItemsByService ? {actualItemsByService: actualItemsByService.map(line => {
           const {bagId: lineBagId, ...publicLine} = line;
-          return {...publicLine, bagNumber: lineBagId ? bagNumberById.get(lineBagId) ?? null : null};
+          return {
+            ...publicLine,
+            serviceName: line.serviceName ?? serviceNameById.get(line.serviceId) ?? null,
+            bagNumber: lineBagId ? bagNumberById.get(lineBagId) ?? null : null,
+          };
         })} : {}),
       };
     });
