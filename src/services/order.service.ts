@@ -16,6 +16,7 @@ import {
   priceEditedLine,
   resolveEditUnitAreas,
   resolveEditUnitServiceIds,
+  splitEditIntakeReturns,
 } from './order-item-edit-units';
 import {PresstoDataSource} from '../datasources';
 import {Order} from '../models/order.model';
@@ -68,7 +69,9 @@ import {
   DeliveryOrderRepository,
   DeliveryTypeConfigurationRepository,
   InvoiceRepository,
+  IntakeRejectedItemRepository,
   ItemRepository,
+  MediaRepository,
   PickupRequestRepository,
   ProcessStepRepository,
   SalesReturnRepository,
@@ -113,6 +116,7 @@ import {
 } from './split-delivery-tier';
 import {calculateSplitDiscounts} from './split-order-discount';
 import {GarmentImageType} from '../models/garment-image-type.enum';
+import {IntakeRejectionOutcome, IntakeRejectionReason, IntakeRejectionStatus} from '../models/intake-rejected-item.model';
 import {CouponEvaluationSuccess, CouponService} from './coupon.service';
 import {
   NotificationService,
@@ -312,6 +316,9 @@ export class OrderService {
     private approvalRequestRepo: ApprovalRequestRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
+    @repository(IntakeRejectedItemRepository)
+    private intakeRejectedRepo: IntakeRejectedItemRepository,
+    @repository(MediaRepository) private mediaRepo: MediaRepository,
     @repository(CouponRepository) private couponRepo: CouponRepository,
     @repository(CouponRedemptionRepository)
     private couponRedemptionRepo: CouponRedemptionRepository,
@@ -741,7 +748,7 @@ export class OrderService {
     items: {
       serviceId: string;
       additionalServiceIds?: string[];
-      units?: {additionalServiceIds?: string[]}[];
+      units?: {additionalServiceIds?: string[]; rejectedAtIntake?: boolean}[];
     }[],
   ): Promise<void> {
     const serviceIds = [...new Set(items.map(i => i.serviceId))];
@@ -762,7 +769,8 @@ export class OrderService {
         (item.units ?? []).some(unit =>
           Boolean(unit.additionalServiceIds?.length),
         );
-      if (service?.hasOwnProcess === false && !hasAdditionalService) {
+      const allRejected = item.units?.length && item.units.every(unit => unit.rejectedAtIntake);
+      if (service?.hasOwnProcess === false && !hasAdditionalService && !allRejected) {
         throw new HttpErrors.BadRequest(
           `"${service.name}" has no process of its own — select at least one additional service for this item.`,
         );
@@ -1106,6 +1114,7 @@ export class OrderService {
       totalAmount = roundRupee(taxableAmount + taxAmount);
 
       const orderTotalsChanged =
+        Number(order.subtotal ?? 0) !== subtotal ||
         Number(order.discountAmount ?? 0) !== discount ||
         Number(order.taxAmount ?? 0) !== taxAmount ||
         Number(order.totalAmount ?? 0) !== totalAmount;
@@ -2077,7 +2086,7 @@ export class OrderService {
 
       // Order items + item-level charges
       const createdItems = [];
-      for (const item of itemPricings) {
+      for (const [itemIndex, item] of itemPricings.entries()) {
         const orderItem = await this.orderItemRepo.create(
           {
             orderId: order.id,
@@ -2125,6 +2134,17 @@ export class OrderService {
         }
 
         createdItems.push(orderItem);
+        if (item.rejectedAtIntake) {
+          const mediaIds = (workingItems[itemIndex].units ?? []).flatMap(unit => unit.itemPhotoMediaIds ?? []);
+          await this.intakeRejectedRepo.create({
+            id: v4(), orderId: order.id, orderItemId: orderItem.id,
+            reason: (item.rejectionReason as IntakeRejectionReason) || IntakeRejectionReason.OTHER,
+            remarks: item.rejectionRemarks, mediaIds, handledBy: createdBy,
+            status: IntakeRejectionStatus.RESOLVED,
+            outcome: IntakeRejectionOutcome.RETURN_TO_CUSTOMER,
+            resolvedBy: createdBy, resolvedAt: new Date(),
+          }, {transaction: tx});
+        }
       }
 
       // Order-level charges
@@ -2662,6 +2682,9 @@ export class OrderService {
       specialInstructions?: string;
       specialInstructionMediaIds?: string[];
       remarks?: string;
+      rejectedAtIntake?: boolean;
+      rejectionReason?: string;
+      rejectionRemarks?: string;
       /**
        * Per-piece selections, one per unit of quantity. `id` is the garment id of
        * an existing piece. A unit's own additionalServiceIds / additionalChargeIds
@@ -2708,21 +2731,26 @@ export class OrderService {
 
     await this.assertItemsHaveRequiredAdditionalServices(desiredItems);
 
-    // A line is identified by service + item, matching how POS keys its cart.
-    const lineKey = (serviceId: string, itemId: string) =>
-      `${serviceId}::${itemId}`;
-    const desiredByKey = new Map(
-      desiredItems.map(i => [lineKey(i.serviceId, i.itemId), i]),
-    );
-    if (desiredByKey.size !== desiredItems.length) {
+    // A mixed line is split just as it is on creation. Keep accepted and
+    // declined records distinct so editing never creates a tag or charge for
+    // a piece that was returned at the counter.
+    const splitItems = splitEditIntakeReturns(desiredItems);
+    const baseLineKey = (serviceId: string, itemId: string) => `${serviceId}::${itemId}`;
+    const lineKey = (serviceId: string, itemId: string, rejectedAtIntake?: boolean) =>
+      `${baseLineKey(serviceId, itemId)}::${Boolean(rejectedAtIntake)}`;
+    const sourceKeys = desiredItems.map(i => baseLineKey(i.serviceId, i.itemId));
+    if (new Set(sourceKeys).size !== sourceKeys.length) {
       throw new HttpErrors.BadRequest(
         'The same service and item appears twice — merge them into one line.',
       );
     }
+    const desiredByKey = new Map(
+      splitItems.map(i => [lineKey(i.serviceId, i.itemId, i.rejectedAtIntake), i]),
+    );
 
     const existingItems = await this.orderItemRepo.find({where: {orderId}});
     const existingByKey = new Map(
-      existingItems.map(oi => [lineKey(oi.serviceId, oi.itemId), oi]),
+      existingItems.map(oi => [lineKey(oi.serviceId, oi.itemId, oi.rejectedAtIntake), oi]),
     );
     const originalReprocessByKey = await this.getReprocessOriginalLines(order);
     if (order.reprocessOfOrderId && !originalReprocessByKey.size) {
@@ -2740,7 +2768,7 @@ export class OrderService {
     if (order.reprocessOfOrderId && removableGarments.length) {
       const removedIds = new Set(removableGarments.map(g => g.id));
       for (const [key, original] of originalReprocessByKey) {
-        const existing = existingByKey.get(key);
+        const existing = existingByKey.get(`${key}::false`);
         if (!existing) continue;
         const garments = await this.garmentRepo.find({
           where: {orderItemId: existing.id, isDeleted: false},
@@ -2769,7 +2797,7 @@ export class OrderService {
         removableGarments.map(g => String(g.id)),
       );
       const removedLineRows = existingItems.filter(
-        oi => !desiredByKey.has(lineKey(oi.serviceId, oi.itemId)),
+        oi => !desiredByKey.has(lineKey(oi.serviceId, oi.itemId, oi.rejectedAtIntake)),
       );
       const removedAddonRows: Array<{
         garmentId: string;
@@ -2778,7 +2806,7 @@ export class OrderService {
       }> = [];
       for (const existing of existingItems) {
         const desired = desiredByKey.get(
-          lineKey(existing.serviceId, existing.itemId),
+          lineKey(existing.serviceId, existing.itemId, existing.rejectedAtIntake),
         );
         if (!desired) continue; // whole-line removal — already captured above
 
@@ -2958,7 +2986,8 @@ export class OrderService {
         const quantity = Number(desired.quantity);
         const units = desired.units;
         const existing = existingByKey.get(key);
-        const originalReprocessLine = originalReprocessByKey.get(key);
+        const originalReprocessLine = originalReprocessByKey.get(baseLineKey(desired.serviceId, desired.itemId));
+        const rejected = desired.rejectedAtIntake === true;
         const freeReprocessLine =
           Boolean(originalReprocessLine && existing) &&
           Number(existing?.basePrice) === 0 &&
@@ -2988,11 +3017,9 @@ export class OrderService {
         );
 
         // Per-unit additional services — a unit's own list wins, else the line list.
-        const unitServiceIds = resolveEditUnitServiceIds(
-          quantity,
-          units,
-          desired.additionalServiceIds,
-        );
+        const unitServiceIds = rejected
+          ? Array.from({length: quantity}, () => [] as string[])
+          : resolveEditUnitServiceIds(quantity, units, desired.additionalServiceIds);
         const originalServices = originalReprocessLine?.additionalServiceIds ?? [];
         const servicePriceById = new Map<string, number>();
         for (const addlServiceId of new Set(unitServiceIds.flat())) {
@@ -3023,7 +3050,7 @@ export class OrderService {
           }));
 
         // Measurement items are billed per unit area, exactly as at creation.
-        const catalogItem = await this.itemRepo.findById(desired.itemId);
+        const catalogItem = rejected ? null : await this.itemRepo.findById(desired.itemId);
         const measurement = catalogItem?.isMeasurement
           ? resolveEditUnitAreas(
               quantity,
@@ -3034,11 +3061,11 @@ export class OrderService {
           : null;
 
         const {unitPrice, totalPrice} = priceEditedLine({
-          resolvedPrice: freeReprocessLine ? 0 : pricing.resolvedPrice,
+          resolvedPrice: rejected || freeReprocessLine ? 0 : pricing.resolvedPrice,
           deliveryMultiplier,
           unitServiceIds,
           servicePrice,
-          unitBasePrice: freeReprocessLine
+          unitBasePrice: freeReprocessLine && !rejected
             ? slot => (freeSlots.has(slot) ? 0 : pricing.resolvedPrice)
             : undefined,
           unitAreas: measurement?.areas,
@@ -3046,13 +3073,13 @@ export class OrderService {
 
         // Additional charges: garment-wise selections are authoritative when any
         // unit sends them; otherwise the legacy line-level selection applies.
-        const perUnitCharges = hasEditUnitCharges(units);
+        const perUnitCharges = !rejected && hasEditUnitCharges(units);
         const unitChargeSelections = Array.from({length: quantity}, (_, slot) =>
           this.normalizeAdditionalCharges(units?.[slot]?.additionalChargeIds),
         );
         const billingChargeSelections = perUnitCharges
           ? this.normalizeAdditionalCharges(unitChargeSelections.flat())
-          : this.normalizeAdditionalCharges(desired.additionalChargeIds);
+          : this.normalizeAdditionalCharges(rejected ? [] : desired.additionalChargeIds);
         const chargeUnitAmountById = new Map<string, number>();
         for (const {additionalChargeId: chargeId} of billingChargeSelections) {
           const charge = await this.additionalChargeRepo.findById(chargeId);
@@ -3118,15 +3145,18 @@ export class OrderService {
         // order's delivery date, which an edit leaves alone (see below).
         const fields = {
           quantity: desired.quantity,
-          basePrice: freeReprocessLine ? 0 : pricing.basePrice,
+          basePrice: rejected || freeReprocessLine ? 0 : pricing.basePrice,
           appliedPercentage: pricing.appliedPercentage ?? undefined,
           priceSource: pricing.priceSource,
-          resolvedPrice: freeReprocessLine ? 0 : pricing.resolvedPrice,
+          resolvedPrice: rejected || freeReprocessLine ? 0 : pricing.resolvedPrice,
           unitPrice,
           totalPrice,
           specialInstructions: desired.specialInstructions,
           specialInstructionMediaIds: desired.specialInstructionMediaIds,
           remarks: desired.remarks,
+          rejectedAtIntake: rejected,
+          rejectionReason: rejected ? desired.rejectionReason || existing?.rejectionReason || IntakeRejectionReason.OTHER : undefined,
+          rejectionRemarks: rejected ? desired.rejectionRemarks ?? existing?.rejectionRemarks : undefined,
           additionalServiceIds: desired.additionalServiceIds,
           ...pendingFields,
         };
@@ -3149,6 +3179,18 @@ export class OrderService {
                 {transaction: tx},
               )
             ).id;
+
+        if (rejected && !existing) {
+          const mediaIds = (units ?? []).flatMap(unit => unit.itemPhotoMediaIds ?? []);
+          await this.intakeRejectedRepo.create({
+            id: v4(), orderId, orderItemId,
+            reason: (desired.rejectionReason as IntakeRejectionReason) || IntakeRejectionReason.OTHER,
+            remarks: desired.rejectionRemarks, mediaIds, handledBy: changedBy,
+            status: IntakeRejectionStatus.RESOLVED,
+            outcome: IntakeRejectionOutcome.RETURN_TO_CUSTOMER,
+            resolvedBy: changedBy, resolvedAt: new Date(),
+          }, {transaction: tx});
+        }
 
         // Item-level charges are replaced wholesale — simpler than diffing, and
         // they are always sent together with the line.
@@ -3237,7 +3279,7 @@ export class OrderService {
 
       // ── Lines that leave ───────────────────────────────────────────────────
       for (const existing of existingItems) {
-        if (desiredByKey.has(lineKey(existing.serviceId, existing.itemId)))
+        if (desiredByKey.has(lineKey(existing.serviceId, existing.itemId, existing.rejectedAtIntake)))
           continue;
         await this.orderItemChargeRepo.deleteAll(
           {orderItemId: existing.id} as any,
@@ -3326,17 +3368,19 @@ export class OrderService {
       serviceId: string;
       itemId: string;
       quantity: number;
+      rejectedAtIntake?: boolean;
     }[],
     desiredByKey: Map<string, {quantity: number; units?: EditOrderUnitInput[]}>,
-    lineKey: (serviceId: string, itemId: string) => string,
+    lineKey: (serviceId: string, itemId: string, rejectedAtIntake?: boolean) => string,
   ) {
     const shrinking = existingItems
       .map(oi => {
-        const desired = desiredByKey.get(lineKey(oi.serviceId, oi.itemId));
+        const desired = desiredByKey.get(lineKey(oi.serviceId, oi.itemId, oi.rejectedAtIntake));
         const targetQty = desired ? Number(desired.quantity) : 0;
         return {
           orderItem: oi,
-          drop: oi.quantity - targetQty,
+          // Older edits tagged intake returns; remove every such legacy tag.
+          drop: oi.rejectedAtIntake ? Number.POSITIVE_INFINITY : oi.quantity - targetQty,
           units: desired?.units,
         };
       })
@@ -4290,6 +4334,7 @@ export class OrderService {
     let garmentSeq = baseCount.count;
 
     for (const item of orderItems) {
+      if (item.rejectedAtIntake) continue;
       // Check how many garments already exist (idempotent — skip if already created)
       const existing = await this.garmentRepo.count({
         orderItemId: item.id,
@@ -4443,17 +4488,14 @@ export class OrderService {
     if (params.excludeStatuses?.length)
       baseConditions.push({status: {nin: params.excludeStatuses}});
     if (params.orderType) baseConditions.push({orderType: params.orderType});
-    if (params.dateFrom || params.dateTo) {
-      const range: Record<string, string> = {};
-      if (params.dateFrom) range.gte = params.dateFrom;
-      if (params.dateTo) {
-        // Date filters represent whole local calendar days. A bare YYYY-MM-DD
-        // otherwise compares at midnight and excludes nearly the entire end day.
-        range.lte = /^\d{4}-\d{2}-\d{2}$/.test(params.dateTo)
-          ? new Date(`${params.dateTo}T23:59:59.999`).toISOString()
-          : params.dateTo;
-      }
-      baseConditions.push({createdAt: range});
+    if (params.dateFrom) baseConditions.push({createdAt: {gte: params.dateFrom}});
+    if (params.dateTo) {
+      // Date filters represent whole local calendar days. A bare YYYY-MM-DD
+      // otherwise compares at midnight and excludes nearly the entire end day.
+      const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(params.dateTo)
+        ? new Date(`${params.dateTo}T23:59:59.999`).toISOString()
+        : params.dateTo;
+      baseConditions.push({createdAt: {lte: dateTo}});
     }
 
     if (params.search) {
@@ -4857,6 +4899,17 @@ export class OrderService {
       createdByUser?.fullName || createdByUser?.username || null;
 
     const orderItemIds = orderItems.map(i => i.id);
+    const intakeReturns = orderItems.some(item => item.rejectedAtIntake)
+      ? await this.intakeRejectedRepo.find({where: {orderId}})
+      : [];
+    const returnMediaIds = [...new Set(intakeReturns.flatMap(row => row.mediaIds ?? []))];
+    const returnMedia = returnMediaIds.length
+      ? await this.mediaRepo.find({where: {id: {inq: returnMediaIds}, isActive: true}})
+      : [];
+    const returnMediaById = new Map(returnMedia
+      .filter(file => file.fileType.startsWith('image/'))
+      .map(file => [file.id, file.fileUrl]));
+    const intakeReturnsByItem = new Map(intakeReturns.map(row => [row.orderItemId, row]));
     const standardDaysByItem = await this.getSplitStandardDays(orderItems);
     const additionalSvcIds = orderItems.flatMap(
       i => (i.additionalServiceIds as string[] | null) ?? [],
@@ -5177,6 +5230,11 @@ export class OrderService {
       rejectedAtIntake: oi.rejectedAtIntake ?? false,
       rejectionReason: oi.rejectionReason ?? null,
       rejectionRemarks: oi.rejectionRemarks ?? null,
+      itemPhotos: oi.rejectedAtIntake
+        ? (intakeReturnsByItem.get(oi.id)?.mediaIds ?? [])
+          .map(mediaId => ({mediaId, fileUrl: returnMediaById.get(mediaId)}))
+          .filter(photo => photo.fileUrl)
+        : [],
       basePrice: oi.basePrice,
       resolvedPrice: oi.resolvedPrice,
       unitPrice: oi.unitPrice,
