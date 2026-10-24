@@ -2458,7 +2458,7 @@ export class OrderService {
   // never a reopening of the delivered one, whose garments are terminal and
   // whose record should stay a true account of the first pass.
   //
-  // Created when the reprocess request is raised; remote pieces enter the factory after pickup.
+  // Staff requests create the ticket immediately; customer requests create it on approval.
 
   async createReworkOrder(params: {
     originalOrderId: string;

@@ -1,5 +1,5 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {ApprovalActionRepository} from '../repositories/approval-action.repository';
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
@@ -277,6 +277,7 @@ export class ApprovalService {
     private walletRechargeRequestRepo: WalletRechargeRequestRepository,
     @inject('services.audit') private auditService: AuditService,
     @inject('services.order') private orderService: OrderService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
     @inject('services.system-notification', {optional: true})
     private systemNotificationService?: SystemNotificationService,
   ) {}
@@ -473,6 +474,7 @@ export class ApprovalService {
     }
     const {v4} = await import('uuid');
     const assignedToRole = APPROVAL_ROLE_ROUTING[params.type];
+    const staffReprocess = params.type === ApprovalRequestType.REPROCESS && params.metadata?.source !== 'customer';
 
     const options = transaction ? {transaction} : undefined;
     const request = await this.approvalRequestRepo.create({
@@ -482,7 +484,8 @@ export class ApprovalService {
       entityId: params.entityId,
       requestedBy: params.requestedBy,
       assignedToRole,
-      status: ApprovalRequestStatus.PENDING,
+      status: staffReprocess ? ApprovalRequestStatus.APPROVED : ApprovalRequestStatus.PENDING,
+      ...(staffReprocess ? {resolvedAt: new Date()} : {}),
       requestReason: params.requestReason,
       mediaIds: params.mediaIds,
       metadata: params.metadata,
@@ -495,6 +498,16 @@ export class ApprovalService {
       remarks: `Request created for ${params.type} on ${params.entityType} ${params.entityId}`,
       performedBy: params.requestedBy,
     }, options);
+
+    if (staffReprocess) {
+      await this.approvalAuditLogRepo.create({
+        id: v4(),
+        approvalRequestId: request.id,
+        eventType: 'approved',
+        remarks: 'Staff reprocess started; no approval required.',
+        performedBy: params.requestedBy,
+      }, options);
+    }
 
     if (this.systemNotificationService && params.type !== ApprovalRequestType.REPROCESS) {
       this._resolveApprovalNotificationContext(request)
@@ -529,7 +542,7 @@ export class ApprovalService {
       await this._ensureReturnBillingApplied(request, params.requestedBy);
     }
 
-    if (params.type === ApprovalRequestType.REPROCESS && params.entityType === 'order') {
+    if (staffReprocess && params.entityType === 'order') {
       await this.createPostDeliveryReprocessOrder(request, params.requestedBy, transaction);
       return this.approvalRequestRepo.findById(request.id, undefined, options);
     }
@@ -723,6 +736,9 @@ export class ApprovalService {
     onBehalfOfCustomerId?: string;
   }): Promise<ApprovalRequest> {
     const request = await this.approvalRequestRepo.findById(params.requestId);
+    if (request.type === ApprovalRequestType.REPROCESS && request.entityType === 'order' && request.metadata?.source === 'customer') {
+      return this.resolveCustomerReprocess(params);
+    }
     if (request.status !== ApprovalRequestStatus.PENDING) {
       throw new HttpErrors.BadRequest(
         `Approval request is already ${request.status}.`,
@@ -788,7 +804,7 @@ export class ApprovalService {
       remarks: params.comments,
     });
 
-    // Reprocessing already started when the request was raised; its decision is audit only.
+    // Store and in-pipeline reprocessing already started when requested; their decision records history only.
     if (request.type !== ApprovalRequestType.REPROCESS) {
       if (params.action === ApprovalActionType.APPROVED) {
         await this._applyApproveEffect(request, params.performedBy);
@@ -814,6 +830,64 @@ export class ApprovalService {
         });
     }
 
+    return resolved;
+  }
+
+  private async resolveCustomerReprocess(params: {
+    requestId: string;
+    action: ApprovalActionType;
+    performedBy: string;
+    comments?: string;
+    mediaIds?: string[];
+    approvalSource?: string;
+    onBehalfOfCustomerId?: string;
+  }): Promise<ApprovalRequest> {
+    const tx = await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
+    let resolved: ApprovalRequest;
+    let createdTicket = false;
+    try {
+      await this.dataSource.execute('SELECT id FROM public.approval_request WHERE id = $1 FOR UPDATE', [params.requestId], {transaction: tx});
+      const request = await this.approvalRequestRepo.findById(params.requestId, undefined, {transaction: tx});
+      if (request.status !== ApprovalRequestStatus.PENDING) {
+        throw new HttpErrors.BadRequest(`Approval request is already ${request.status}.`);
+      }
+      const {v4} = await import('uuid');
+      const options = {transaction: tx};
+      await this.approvalActionRepo.create({
+        id: v4(), approvalRequestId: request.id, action: params.action,
+        performedBy: params.performedBy, comments: params.comments,
+        mediaIds: params.mediaIds, approvalSource: params.approvalSource,
+        onBehalfOfCustomerId: params.onBehalfOfCustomerId,
+      }, options);
+      if (params.action === ApprovalActionType.APPROVED && !request.metadata?.reworkOrderId) {
+        await this.createPostDeliveryReprocessOrder(request, params.performedBy, tx);
+        createdTicket = true;
+      }
+      await this.approvalRequestRepo.updateById(request.id, {
+        status: params.action === ApprovalActionType.APPROVED ? ApprovalRequestStatus.APPROVED : ApprovalRequestStatus.REJECTED,
+        resolvedAt: new Date(), updatedAt: new Date(),
+      }, options);
+      await this.approvalAuditLogRepo.create({
+        id: v4(), approvalRequestId: request.id, eventType: params.action,
+        remarks: params.comments, performedBy: params.performedBy,
+      }, options);
+      resolved = await this.approvalRequestRepo.findById(request.id, undefined, options);
+      await tx.commit();
+    } catch (err) {
+      await tx.rollback();
+      throw err;
+    }
+    await this.auditService.log({
+      entityType: 'order', entityId: resolved.entityId,
+      actionType: `approval_${params.action}`, performedBy: params.performedBy,
+      before: {approvalStatus: ApprovalRequestStatus.PENDING},
+      after: {approvalStatus: resolved.status, approvalRequestId: params.requestId},
+      remarks: params.comments,
+    }).catch(err => console.error('Failed to log customer reprocess decision:', err));
+    if (createdTicket) {
+      this.notifyReprocessPickupRequired(resolved)
+        .catch(err => console.error('Failed to send reprocess pickup notification:', err));
+    }
     return resolved;
   }
 
@@ -1503,7 +1577,7 @@ export class ApprovalService {
 
   // ─── Reprocess: reset process logs + return garment to in_process ──────────
 
-  /** Create the free rework ticket immediately, preserving the delivered original. */
+  /** Create a free rework ticket, preserving the delivered original. */
   async createPostDeliveryReprocessOrder(
     request: ApprovalRequest,
     performedBy: string,
@@ -1571,6 +1645,12 @@ export class ApprovalService {
         garmentCount: garmentIds.length,
       }).catch(err => console.error('Failed to send reprocess pickup notification:', err));
     }
+  }
+
+  async notifyCustomerReprocessApprovalRequired(request: ApprovalRequest): Promise<void> {
+    if (!this.systemNotificationService) return;
+    const context = await this._resolveApprovalNotificationContext(request);
+    await this.systemNotificationService.notifyApprovalRequired(request, request.requestReason, context);
   }
 
   /** Return an in-pipeline garment to processing while keeping its request for audit. */

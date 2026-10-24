@@ -22,7 +22,8 @@ export async function repairLegacyReprocess(apply = false): Promise<void> {
       `SELECT a.id, a.entitytype, a.entityid, a.requestedby
        FROM public.approval_request a
        WHERE a.type = 'reprocess' AND a.status IN ('pending', 'approved')
-         AND ((a.entitytype = 'order' AND a.metadata->>'reworkOrderId' IS NULL)
+         AND ((a.entitytype = 'order' AND a.metadata->>'reworkOrderId' IS NULL
+           AND (a.status <> 'pending' OR a.metadata->>'source' IS DISTINCT FROM 'customer'))
            OR (a.entitytype = 'garment' AND EXISTS (
              SELECT 1 FROM public.garment g WHERE g.id = a.entityid AND g.status = 'on_hold'
            )))

@@ -5,6 +5,7 @@ import {get, HttpErrors, param, post, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {BagStatus} from '../models/bag-status.enum';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {PickupHandoverStatus} from '../models/pickup-handover-status.enum';
 import {PickupHandoverTargetType} from '../models/pickup-handover-target-type.enum';
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
@@ -332,6 +333,9 @@ export class PickupHandoverController {
       await this.orderService.receiveReworkOrder(orderId, performedBy, tx);
       await this.orderRepo.updateById(orderId, {pickupSource: pickupRequest.source}, {transaction: tx});
       return {orderId, orderNumber: String(meta.reworkOrderNumber ?? '')};
+    }
+    if (approval.status !== ApprovalRequestStatus.APPROVED) {
+      throw new HttpErrors.Conflict('Approve the reprocess request before receiving its pickup.');
     }
     const garmentIds = Array.isArray(meta.garmentIds) ? (meta.garmentIds as string[]) : [];
     if (!garmentIds.length) return null;

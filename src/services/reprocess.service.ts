@@ -135,15 +135,22 @@ export class ReprocessService {
       status: order.status,
       changedAt: new Date(),
       changedBy: input.requestedBy,
-      remarks: `Reprocess requested (${input.reason}) for ${garmentIds.length} item(s); free rework ticket created`,
+      remarks: `Reprocess requested (${input.reason}) for ${garmentIds.length} item(s); ${input.source === 'customer' ? 'awaiting approval' : 'free rework ticket created'}`,
       }, {transaction: tx});
 
       await tx.commit();
-      this.approvalService.notifyReprocessPickupRequired(request)
-        .catch(err => console.error('Failed to send reprocess pickup notification:', err));
+      if (input.source === 'customer') {
+        this.approvalService.notifyCustomerReprocessApprovalRequired(request)
+          .catch(err => console.error('Failed to notify for reprocess approval:', err));
+      } else {
+        this.approvalService.notifyReprocessPickupRequired(request)
+          .catch(err => console.error('Failed to send reprocess pickup notification:', err));
+      }
 
       return {
-        message: 'Reprocess request recorded. Free rework ticket created.',
+        message: input.source === 'customer'
+          ? 'Reprocess request submitted for review. A free rework ticket will be created if approved.'
+          : 'Reprocess request recorded. Free rework ticket created.',
         request,
         garmentIds,
       };
@@ -236,6 +243,9 @@ export class ReprocessService {
       if (!overlap.length) continue;
       if (!reworkOrderId) {
         if (request.status === ApprovalRequestStatus.REJECTED) continue;
+        if (request.status === ApprovalRequestStatus.PENDING && request.metadata?.source === 'customer') {
+          throw new HttpErrors.Conflict('A reprocess request for one or more of these items is pending approval.');
+        }
         throw new HttpErrors.Conflict('An earlier reprocess request for these items needs its free ticket restored.');
       }
       const reworkOrder = await this.orderRepo.findOne({where: {id: reworkOrderId as string, isDeleted: false}}, tx ? {transaction: tx} : undefined);

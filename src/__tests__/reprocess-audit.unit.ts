@@ -1,4 +1,5 @@
 import {expect} from '@loopback/testlab';
+import {IsolationLevel} from '@loopback/repository';
 import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {PickupRequestController} from '../controllers/pickup-request.controller';
 import {PickupHandoverController} from '../controllers/pickup-handover.controller';
@@ -17,7 +18,7 @@ import {ApprovalService} from '../services/approval.service';
 import {OrderService} from '../services/order.service';
 import {ReprocessService} from '../services/reprocess.service';
 
-describe('reprocess approval is audit only', () => {
+describe('reprocess approval flow', () => {
   it('locks the original order and rolls back when ticket creation fails', async () => {
     const steps: string[] = [];
     const transaction = {
@@ -118,6 +119,7 @@ describe('reprocess approval is audit only', () => {
 
   it('creates and returns the rework ticket when the audit request is created', async () => {
     let request: ApprovalRequest;
+    const events: string[] = [];
     const transaction = {} as NonNullable<Parameters<ApprovalService['createRequest']>[1]>;
     const service = Object.assign(Object.create(ApprovalService.prototype), {
       approvalRequestRepo: {
@@ -126,13 +128,14 @@ describe('reprocess approval is audit only', () => {
           request = new ApprovalRequest(data);
           return request;
         },
-        findById: async (_id: string, _filter: unknown, options: {transaction: unknown}) => {
-          expect(options.transaction).to.equal(transaction);
+        findById: async (_id: string, _filter: unknown, options?: {transaction: unknown}) => {
+          if (options) expect(options.transaction).to.equal(transaction);
           return request;
         },
       },
-      approvalAuditLogRepo: {create: async (_data: unknown, options: {transaction: unknown}) => {
+      approvalAuditLogRepo: {create: async (data: {eventType: string}, options: {transaction: unknown}) => {
         expect(options.transaction).to.equal(transaction);
+        events.push(data.eventType);
       }},
       createPostDeliveryReprocessOrder: async (_request: unknown, _by: string, tx: unknown) => {
         expect(tx).to.equal(transaction);
@@ -145,8 +148,124 @@ describe('reprocess approval is audit only', () => {
       requestedBy: 'staff-1', metadata: {garmentIds: ['garment-1']},
     }, transaction);
 
-    expect(created.status).to.equal(ApprovalRequestStatus.PENDING);
+    expect(created.status).to.equal(ApprovalRequestStatus.APPROVED);
     expect(created.metadata?.reworkOrderId).to.equal('ticket-1');
+    expect(events).to.eql(['created', 'approved']);
+    await expect(service.resolve({requestId: created.id, action: ApprovalActionType.APPROVED, performedBy: 'manager-1'}))
+      .to.be.rejectedWith(/already approved/);
+  });
+
+  it('records an in-store garment reprocess without a pending approval', async () => {
+    const service = Object.assign(Object.create(ApprovalService.prototype), {
+      approvalRequestRepo: {create: async (data: Partial<ApprovalRequest>) => new ApprovalRequest(data)},
+      approvalAuditLogRepo: {create: async () => ({})},
+    }) as ApprovalService;
+    const request = await service.createRequest({
+      type: ApprovalRequestType.REPROCESS, entityType: 'garment', entityId: 'garment-1',
+      requestedBy: 'staff-1',
+    });
+    expect(request.status).to.equal(ApprovalRequestStatus.APPROVED);
+    expect(request.resolvedAt).to.be.instanceOf(Date);
+  });
+
+  it('leaves a customer reprocess pending without creating a ticket', async () => {
+    const transaction = {} as NonNullable<Parameters<ApprovalService['createRequest']>[1]>;
+    const service = Object.assign(Object.create(ApprovalService.prototype), {
+      approvalRequestRepo: {create: async (data: Partial<ApprovalRequest>) => new ApprovalRequest(data)},
+      approvalAuditLogRepo: {create: async () => ({})},
+      createPostDeliveryReprocessOrder: async () => { throw new Error('ticket created before approval'); },
+    }) as ApprovalService;
+    const request = await service.createRequest({
+      type: ApprovalRequestType.REPROCESS, entityType: 'order', entityId: 'order-1',
+      requestedBy: 'customer-1', metadata: {garmentIds: ['garment-1'], source: 'customer'},
+    }, transaction);
+    expect(request.status).to.equal(ApprovalRequestStatus.PENDING);
+    expect(request.metadata?.reworkOrderId).to.equal(undefined);
+  });
+
+  for (const action of [ApprovalActionType.APPROVED, ApprovalActionType.REJECTED]) {
+    it(`${action} a customer request ${action === ApprovalActionType.APPROVED ? 'creates' : 'does not create'} the ticket`, async () => {
+      const steps: string[] = [];
+      const request = new ApprovalRequest({
+        id: 'request-1', type: ApprovalRequestType.REPROCESS, entityType: 'order', entityId: 'order-1',
+        requestedBy: 'customer-1', assignedToRole: 'store_exec', status: ApprovalRequestStatus.PENDING,
+        metadata: {source: 'customer', garmentIds: ['garment-1']},
+      });
+      const tx = {commit: async () => { steps.push('commit'); }, rollback: async () => { steps.push('rollback'); }};
+      const service = Object.assign(Object.create(ApprovalService.prototype), {
+        dataSource: {beginTransaction: async (options: {isolationLevel: IsolationLevel}) => {
+          expect(options.isolationLevel).to.equal(IsolationLevel.READ_COMMITTED);
+          return tx;
+        }, execute: async () => { steps.push('lock'); }},
+        approvalRequestRepo: {
+          findById: async () => request,
+          updateById: async (_id: string, changes: Partial<ApprovalRequest>) => {
+            steps.push('status'); Object.assign(request, changes);
+          },
+        },
+        approvalActionRepo: {create: async () => { steps.push('action'); }},
+        approvalAuditLogRepo: {create: async () => { steps.push('audit'); }},
+        createPostDeliveryReprocessOrder: async () => {
+          steps.push('ticket'); request.metadata = {...request.metadata, reworkOrderId: 'ticket-1'};
+        },
+        auditService: {log: async () => ({})},
+        notifyReprocessPickupRequired: async () => {},
+      }) as ApprovalService;
+      const resolved = await service.resolve({requestId: request.id, action, performedBy: 'staff-1'});
+      expect(resolved.status).to.equal(action === ApprovalActionType.APPROVED
+        ? ApprovalRequestStatus.APPROVED : ApprovalRequestStatus.REJECTED);
+      expect(resolved.metadata?.reworkOrderId).to.equal(action === ApprovalActionType.APPROVED ? 'ticket-1' : undefined);
+      expect(steps).to.eql(action === ApprovalActionType.APPROVED
+        ? ['lock', 'action', 'ticket', 'status', 'audit', 'commit']
+        : ['lock', 'action', 'status', 'audit', 'commit']);
+    });
+  }
+
+  it('keeps a customer request pending when ticket creation fails during approval', async () => {
+    const steps: string[] = [];
+    const request = new ApprovalRequest({
+      id: 'request-1', type: ApprovalRequestType.REPROCESS, entityType: 'order', entityId: 'order-1',
+      requestedBy: 'customer-1', assignedToRole: 'store_exec', status: ApprovalRequestStatus.PENDING,
+      metadata: {source: 'customer', garmentIds: ['garment-1']},
+    });
+    const service = Object.assign(Object.create(ApprovalService.prototype), {
+      dataSource: {
+        beginTransaction: async () => ({commit: async () => { steps.push('commit'); }, rollback: async () => { steps.push('rollback'); }}),
+        execute: async () => { steps.push('lock'); },
+      },
+      approvalRequestRepo: {
+        findById: async () => request,
+        updateById: async () => { steps.push('status'); },
+      },
+      approvalActionRepo: {create: async () => { steps.push('action'); }},
+      createPostDeliveryReprocessOrder: async () => { throw new Error('ticket write failed'); },
+    }) as ApprovalService;
+    await expect(service.resolve({requestId: request.id, action: ApprovalActionType.APPROVED, performedBy: 'staff-1'}))
+      .to.be.rejectedWith(/ticket write failed/);
+    expect(request.status).to.equal(ApprovalRequestStatus.PENDING);
+    expect(steps).to.eql(['lock', 'action', 'rollback']);
+  });
+
+  it('does not create another ticket for a legacy customer request already linked to one', async () => {
+    const request = new ApprovalRequest({
+      id: 'request-1', type: ApprovalRequestType.REPROCESS, entityType: 'order', entityId: 'order-1',
+      requestedBy: 'customer-1', assignedToRole: 'store_exec', status: ApprovalRequestStatus.PENDING,
+      metadata: {source: 'customer', garmentIds: ['garment-1'], reworkOrderId: 'ticket-1'},
+    });
+    const tx = {commit: async () => {}, rollback: async () => {}};
+    const service = Object.assign(Object.create(ApprovalService.prototype), {
+      dataSource: {beginTransaction: async () => tx, execute: async () => []},
+      approvalRequestRepo: {
+        findById: async () => request,
+        updateById: async (_id: string, changes: Partial<ApprovalRequest>) => Object.assign(request, changes),
+      },
+      approvalActionRepo: {create: async () => ({})},
+      approvalAuditLogRepo: {create: async () => ({})},
+      createPostDeliveryReprocessOrder: async () => { throw new Error('duplicate ticket'); },
+      auditService: {log: async () => ({})},
+    }) as ApprovalService;
+    const resolved = await service.resolve({requestId: request.id, action: ApprovalActionType.APPROVED, performedBy: 'staff-1'});
+    expect(resolved.metadata?.reworkOrderId).to.equal('ticket-1');
   });
 
   it('creates a remote free ticket before any approval decision', async () => {
@@ -305,6 +424,36 @@ describe('reprocess approval is audit only', () => {
     expect((result as {pickupRequest: {id: string}}).pickupRequest.id).to.equal('pickup-1');
     existingPickup = true;
     await expect(controller.create(input)).to.be.rejectedWith(/pickup.*already exists/);
+  });
+
+  it('blocks pickup scheduling for a customer request awaiting approval', async () => {
+    const controller = Object.assign(Object.create(PickupRequestController.prototype), {
+      approvalRequestRepository: {findOne: async () => ({
+        id: 'request-1', status: ApprovalRequestStatus.PENDING,
+        metadata: {source: 'customer', garmentIds: ['garment-1']},
+      })},
+      pickupRequestService: {createRequest: async () => { throw new Error('pickup created early'); }},
+    }) as PickupRequestController;
+    await expect(controller.create({
+      isReworkPickup: true, reworkOfOrderId: 'order-1', reworkApprovalRequestId: 'request-1',
+      customerName: 'Customer', customerMobile: '9999999999', address: 'Home',
+      requestedDate: '2026-10-25', slot: 'Morning', source: PickupRequestSource.WEB,
+    })).to.be.rejectedWith(/Approve the reprocess request/);
+  });
+
+  it('blocks handover from creating a ticket before customer approval', async () => {
+    const controller = Object.assign(Object.create(PickupHandoverController.prototype), {
+      approvalRequestRepo: {findOne: async () => ({
+        status: ApprovalRequestStatus.PENDING,
+        metadata: {source: 'customer', garmentIds: ['garment-1']},
+      })},
+      orderService: {createReworkOrder: async () => { throw new Error('ticket created early'); }},
+    }) as PickupHandoverController;
+    const receive = (controller as unknown as {
+      _createReworkOrderForPickup: (pickup: object, by: string, tx: object) => Promise<unknown>;
+    })._createReworkOrderForPickup.bind(controller);
+    await expect(receive({reworkOfOrderId: 'order-1', reworkApprovalRequestId: 'request-1'}, 'staff-1', {}))
+      .to.be.rejectedWith(/Approve the reprocess request/);
   });
 
   for (const action of [ApprovalActionType.APPROVED, ApprovalActionType.REJECTED]) {
