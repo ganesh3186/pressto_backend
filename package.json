@@ -38,6 +38,7 @@
     "migrate:store-prefix-lock": "node scripts/add-store-prefix-lock.cjs",
     "migrate:dashboard-indexes": "node scripts/add-dashboard-indexes.cjs",
     "migrate:approved-damaged-garments": "node scripts/backfill-approved-damaged-garments.cjs",
+    "repair:legacy-reprocess": "node dist/repair-legacy-reprocess.js",
     "migrate:order-item-names": "node scripts/backfill-order-item-names.cjs",
     "migrate:split-on-account": "node scripts/backfill-split-on-account.cjs",
     "migrate:pickup-order-links": "node scripts/drop-legacy-pickup-delivery-index.cjs",

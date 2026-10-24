@@ -7,6 +7,7 @@ import {authorize} from '../authorization';
 import {ApprovalActionType} from '../models/approval-action-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {ApprovalRequest} from '../models/approval-request.model';
 import {ReprocessReason, REPROCESS_REASON_LABELS} from '../models/reprocess-reason.enum';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
@@ -14,15 +15,18 @@ import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.rep
 import {
   CustomerRepository,
   GarmentRepository,
+  GarmentStatusHistoryRepository,
   ItemRepository,
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
+  PickupRequestRepository,
   RefundDueRepository,
   ServiceRepository,
 } from '../repositories';
 import {ApprovalService} from '../services/approval.service';
 import {StoreScopeService} from '../services/store-scope.service';
+import {GarmentStatus} from '../models/garment-status.enum';
 
 export class ApprovalController {
   constructor(
@@ -30,8 +34,11 @@ export class ApprovalController {
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @repository(ApprovalAuditLogRepository) private approvalAuditLogRepo: ApprovalAuditLogRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(GarmentStatusHistoryRepository)
+    private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
+    @repository(PickupRequestRepository) private pickupRequestRepo: PickupRequestRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
@@ -191,6 +198,16 @@ export class ApprovalController {
     if (req.entityType === 'order') {
       const order = await this.orderRepo.findOne({where: {id: req.entityId}});
       const metadata = (req.metadata ?? {}) as Record<string, unknown>;
+      const reworkOrder = req.type === ApprovalRequestType.REPROCESS && metadata.reworkOrderId
+        ? await this.orderRepo.findOne({where: {id: String(metadata.reworkOrderId), isDeleted: false}})
+        : null;
+      const activeReworkPickup = req.type === ApprovalRequestType.REPROCESS
+        ? await this.pickupRequestRepo.findOne({where: {
+          reworkApprovalRequestId: req.id,
+          isDeleted: false,
+          status: {nin: [PickupRequestStatus.CANCELLED, PickupRequestStatus.NOT_SERVICEABLE]},
+        } as object})
+        : null;
       const reasonCode = req.type === ApprovalRequestType.REPROCESS && typeof metadata.reason === 'string'
         ? metadata.reason
         : '';
@@ -261,6 +278,8 @@ export class ApprovalController {
         deliveryDate: metadata.deliveryDate ?? null,
         reworkOrderId: metadata.reworkOrderId ?? null,
         reworkOrderNumber: metadata.reworkOrderNumber ?? null,
+        reworkOrderStatus: reworkOrder?.status ?? null,
+        hasActiveReworkPickup: Boolean(activeReworkPickup),
         media,
       };
     }
@@ -302,6 +321,15 @@ export class ApprovalController {
     const garment = await this.garmentRepo.findOne({where: {id: req.entityId}});
     if (!garment) return {...req, media};
 
+    const reprocessHistory = req.type === ApprovalRequestType.REPROCESS
+      ? await this.garmentStatusHistoryRepo.findOne({where: {
+        garmentId: garment.id,
+        status: GarmentStatus.IN_PROCESS,
+        remarks: {like: 'Reprocess%'} as object,
+        ...(req.createdAt ? {changedAt: {gte: req.createdAt}} : {}),
+      } as object})
+      : null;
+
     const orderItem = garment.orderItemId
       ? await this.orderItemRepo.findOne({where: {id: garment.orderItemId}})
       : null;
@@ -342,6 +370,7 @@ export class ApprovalController {
       ...req,
       garmentTag: garment.garmentTagNumber,
       garmentStatus: garment.status,
+      reprocessApplied: Boolean(reprocessHistory),
       itemName: orderItem?.itemName ?? item?.name ?? null,
       orderNumber: (order as any)?.orderNumber ?? null,
       orderId: orderItem?.orderId ?? null,
@@ -392,6 +421,9 @@ export class ApprovalController {
       metadata?: Record<string, unknown>;
     },
   ): Promise<object> {
+    if (body.type === ApprovalRequestType.REPROCESS) {
+      throw new HttpErrors.BadRequest('Use the order or garment reprocess endpoint to start reprocessing.');
+    }
     const request = await this.approvalService.createRequest({
       ...body,
       requestedBy: currentUser[securityId],

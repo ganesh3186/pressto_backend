@@ -55,6 +55,7 @@ import {
 } from '../models/approval-request.model';
 import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
+import {PresstoDataSource} from '../datasources/pressto.datasource';
 
 // What status to set on the garment immediately when a request is CREATED.
 // Requests that need a decision park the garment on ON_HOLD, so work does not
@@ -66,7 +67,6 @@ const GARMENT_STATUS_ON_CREATE: Partial<
   [ApprovalRequestType.UPGRADE_SERVICE]: GarmentStatus.ON_HOLD,
   [ApprovalRequestType.RETURN_ITEM]: GarmentStatus.RETURNED_TO_CUSTOMER,
   [ApprovalRequestType.ITEM_DAMAGED]: GarmentStatus.ON_HOLD,
-  [ApprovalRequestType.REPROCESS]: GarmentStatus.ON_HOLD,
   [ApprovalRequestType.PROCESS_AT_RISK]: GarmentStatus.ON_HOLD,
 };
 
@@ -464,10 +464,17 @@ export class ApprovalService {
     requestReason?: string;
     mediaIds?: string[];
     metadata?: Record<string, unknown>;
-  }): Promise<ApprovalRequest> {
+  }, transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>): Promise<ApprovalRequest> {
+    const reprocessGarmentIds = params.metadata?.garmentIds;
+    if (params.type === ApprovalRequestType.REPROCESS && params.entityType === 'order' &&
+      (!Array.isArray(reprocessGarmentIds) || !reprocessGarmentIds.length ||
+        reprocessGarmentIds.some(id => typeof id !== 'string'))) {
+      throw new HttpErrors.BadRequest('An order reprocess request must name the garments to redo.');
+    }
     const {v4} = await import('uuid');
     const assignedToRole = APPROVAL_ROLE_ROUTING[params.type];
 
+    const options = transaction ? {transaction} : undefined;
     const request = await this.approvalRequestRepo.create({
       id: v4(),
       type: params.type,
@@ -479,7 +486,7 @@ export class ApprovalService {
       requestReason: params.requestReason,
       mediaIds: params.mediaIds,
       metadata: params.metadata,
-    });
+    }, options);
 
     await this.approvalAuditLogRepo.create({
       id: v4(),
@@ -487,9 +494,9 @@ export class ApprovalService {
       eventType: 'created',
       remarks: `Request created for ${params.type} on ${params.entityType} ${params.entityId}`,
       performedBy: params.requestedBy,
-    });
+    }, options);
 
-    if (this.systemNotificationService) {
+    if (this.systemNotificationService && params.type !== ApprovalRequestType.REPROCESS) {
       this._resolveApprovalNotificationContext(request)
         .then(context =>
           this.systemNotificationService!.notifyApprovalRequired(
@@ -520,6 +527,11 @@ export class ApprovalService {
 
     if (params.type === ApprovalRequestType.RETURN_ITEM && params.entityType === 'garment') {
       await this._ensureReturnBillingApplied(request, params.requestedBy);
+    }
+
+    if (params.type === ApprovalRequestType.REPROCESS && params.entityType === 'order') {
+      await this.createPostDeliveryReprocessOrder(request, params.requestedBy, transaction);
+      return this.approvalRequestRepo.findById(request.id, undefined, options);
     }
 
     return request;
@@ -727,7 +739,9 @@ export class ApprovalService {
     // Photograph every row the effects below are about to touch, BEFORE they run.
     // This is what a later revert restores from — reconstructing it from audit_log
     // after the fact would be guesswork.
-    const revertSnapshot = await this._captureSnapshot(request);
+    const revertSnapshot = request.type === ApprovalRequestType.REPROCESS
+      ? undefined
+      : await this._captureSnapshot(request);
 
     await this.approvalActionRepo.create({
       id: v4(),
@@ -744,7 +758,9 @@ export class ApprovalService {
       status: newStatus,
       resolvedAt: new Date(),
       updatedAt: new Date(),
-      metadata: {...(request.metadata ?? {}), _revertSnapshot: revertSnapshot},
+      metadata: revertSnapshot
+        ? {...(request.metadata ?? {}), _revertSnapshot: revertSnapshot}
+        : request.metadata,
     });
 
     await this.approvalAuditLogRepo.create({
@@ -772,13 +788,16 @@ export class ApprovalService {
       remarks: params.comments,
     });
 
-    if (params.action === ApprovalActionType.APPROVED) {
-      await this._applyApproveEffect(request, params.performedBy);
-    } else {
-      await this._applyRejectEffect(request, params.performedBy, params.action);
+    // Reprocessing already started when the request was raised; its decision is audit only.
+    if (request.type !== ApprovalRequestType.REPROCESS) {
+      if (params.action === ApprovalActionType.APPROVED) {
+        await this._applyApproveEffect(request, params.performedBy);
+      } else {
+        await this._applyRejectEffect(request, params.performedBy, params.action);
+      }
     }
 
-    if (this.systemNotificationService) {
+    if (this.systemNotificationService && request.type !== ApprovalRequestType.REPROCESS) {
       this._resolveApprovalNotificationContext(request)
         .then(context =>
           this.systemNotificationService!.notifyApprovalResolved(
@@ -804,17 +823,6 @@ export class ApprovalService {
     request: ApprovalRequest,
     performedBy: string,
   ): Promise<void> {
-    // Post-delivery reprocess is raised against the ORDER, not a garment — the
-    // pieces have left the building and their garments are terminal. Handled
-    // before the garment guard below, which would otherwise drop it.
-    if (
-      request.type === ApprovalRequestType.REPROCESS &&
-      request.entityType === 'order'
-    ) {
-      await this._applyPostDeliveryReprocess(request, performedBy);
-      return;
-    }
-
     // Cheque/PDC payments are raised against the ORDER (no garment involved,
     // and no PaymentTransaction exists yet — see order.service.ts's
     // pendingApprovalPayments). Handled before the garment guard below.
@@ -873,13 +881,6 @@ export class ApprovalService {
         performedBy,
         garment.id,
       );
-    }
-
-    // Reprocess approved: reset the process logs and send the garment back into
-    // processing so the workshop redoes every step. The garment_status_history
-    // entry written below is the trail the client sees for the reprocess.
-    if (request.type === ApprovalRequestType.REPROCESS) {
-      await this._applyReprocess(request, performedBy);
     }
 
     // Older pending requests may predate the immediate billing adjustment.
@@ -1502,16 +1503,11 @@ export class ApprovalService {
 
   // ─── Reprocess: reset process logs + return garment to in_process ──────────
 
-  /**
-   * Post-delivery reprocess approved: raise the free rework order.
-   *
-   * The original order and its garments are left exactly as they are — they are
-   * the record of the first pass, and a delivered garment has no legal next
-   * status. The rework runs on new garments with new tags.
-   */
-  private async _applyPostDeliveryReprocess(
+  /** Create the free rework ticket immediately, preserving the delivered original. */
+  async createPostDeliveryReprocessOrder(
     request: ApprovalRequest,
     performedBy: string,
+    transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
   ): Promise<void> {
     const metadata = (request.metadata ?? {}) as Record<string, unknown>;
     const garmentIds = Array.isArray(metadata.garmentIds)
@@ -1524,52 +1520,10 @@ export class ApprovalService {
       );
     }
 
-    // The garment is only physically at the store right now for an in-store
-    // request. Anything else (phone/whatsapp/other) means the customer still
-    // has it — approving just records the decision; the ₹0 rework order gets
-    // created later, once a linked pickup actually brings it back (see the
-    // pickup-handover confirm flow, which calls createReworkOrder directly).
     const contactChannel =
       typeof metadata.contactChannel === 'string'
         ? metadata.contactChannel
         : 'in_store';
-    if (contactChannel !== 'in_store') {
-      const {v4} = await import('uuid');
-      await this.approvalAuditLogRepo.create({
-        id: v4(),
-        approvalRequestId: request.id,
-        eventType: 'reprocess_approved_awaiting_pickup',
-        remarks:
-          `Reprocess approved (${contactChannel}) — no order created yet, ` +
-          `awaiting a pickup to bring the garment(s) back.`,
-        performedBy,
-      });
-
-      if (this.systemNotificationService) {
-        const order = await this.orderRepo.findOne({where: {id: request.entityId}});
-        const channelLabel =
-          contactChannel === 'whatsapp'
-            ? 'WhatsApp'
-            : contactChannel === 'phone'
-              ? 'On Call'
-              : 'Other';
-        this.systemNotificationService
-          .notifyReprocessPickupRequired({
-            orderId: request.entityId,
-            orderNumber: order?.orderNumber ?? (metadata.originalOrderNumber as string),
-            storeId: order?.storeId,
-            contactChannel,
-            channelLabel,
-            garmentCount: garmentIds.length,
-          })
-          .catch(err => {
-            console.error('Failed to send reprocess pickup notification:', err);
-          });
-      }
-
-      return;
-    }
-
     const result = await this.orderService.createReworkOrder({
       originalOrderId: request.entityId,
       garmentIds,
@@ -1577,7 +1531,8 @@ export class ApprovalService {
       reason: typeof metadata.reason === 'string' ? metadata.reason : undefined,
       remarks: request.requestReason,
       deliveryDate: typeof metadata.deliveryDate === 'string' ? metadata.deliveryDate : undefined,
-    });
+      awaitingPickup: contactChannel !== 'in_store',
+    }, transaction);
 
     // Recorded on the request so staff can jump straight to the rework order.
     await this.approvalRequestRepo.updateById(request.id, {
@@ -1586,52 +1541,50 @@ export class ApprovalService {
         reworkOrderId: result.order.id,
         reworkOrderNumber: result.order.orderNumber,
       },
-    });
+    }, transaction ? {transaction} : undefined);
 
     const {v4} = await import('uuid');
     await this.approvalAuditLogRepo.create({
       id: v4(),
       approvalRequestId: request.id,
       eventType: 'reprocess_order_created',
-      remarks:
-        `Free rework order ${result.order.orderNumber} created with ` +
-        `${result.garmentsCreated} garment(s).`,
+      remarks: `Free rework ticket ${result.order.orderNumber} created for ${garmentIds.length} garment(s).`,
       performedBy,
-    });
+    }, transaction ? {transaction} : undefined);
+    if (!transaction) this.notifyReprocessPickupRequired(request)
+      .catch(err => console.error('Failed to send reprocess pickup notification:', err));
   }
 
-  private async _applyReprocess(
-    request: ApprovalRequest,
-    performedBy: string,
-  ): Promise<void> {
-    await this._resetProcessLogsAndReprocess(
-      request.entityId,
-      performedBy,
-      request.requestReason,
-      request.id,
-    );
+  async notifyReprocessPickupRequired(request: ApprovalRequest): Promise<void> {
+    const metadata = (request.metadata ?? {}) as Record<string, unknown>;
+    const contactChannel = typeof metadata.contactChannel === 'string' ? metadata.contactChannel : 'in_store';
+    const garmentIds = Array.isArray(metadata.garmentIds) ? metadata.garmentIds : [];
+    if (contactChannel !== 'in_store' && this.systemNotificationService) {
+      const order = await this.orderRepo.findOne({where: {id: request.entityId}});
+      const channelLabel = contactChannel === 'whatsapp' ? 'WhatsApp' : contactChannel === 'phone' ? 'On Call' : 'Other';
+      this.systemNotificationService.notifyReprocessPickupRequired({
+        orderId: request.entityId,
+        orderNumber: order?.orderNumber ?? (metadata.originalOrderNumber as string),
+        storeId: order?.storeId,
+        contactChannel,
+        channelLabel,
+        garmentCount: garmentIds.length,
+      }).catch(err => console.error('Failed to send reprocess pickup notification:', err));
+    }
   }
 
-  /**
-   * Send a garment back into processing without raising an approval request
-   * at all. For a garment that hasn't left the store yet, a reprocess is a
-   * normal workflow correction, not a decision that needs a store exec's
-   * sign-off — that gating is reserved for the genuinely consequential case,
-   * a garment already dispatched or delivered (see
-   * GarmentActionsController.requestReprocess for the status check, and
-   * _applyPostDeliveryReprocess for the separate, still approval-gated,
-   * order-level after-delivery flow).
-   */
+  /** Return an in-pipeline garment to processing while keeping its request for audit. */
   async applyReprocessDirectly(
     garmentId: string,
     performedBy: string,
     reason?: string,
+    transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
   ): Promise<void> {
     await this._resetProcessLogsAndReprocess(
       garmentId,
       performedBy,
       reason,
-      undefined,
+      transaction,
     );
   }
 
@@ -1639,10 +1592,11 @@ export class ApprovalService {
     garmentId: string,
     performedBy: string,
     reason: string | undefined,
-    requestId: string | undefined,
+    transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
   ): Promise<void> {
     // Reset every process-step log back to pending so the full process runs again.
-    const logs = await this.processLogRepo.find({where: {garmentId} as any});
+    const options = transaction ? {transaction} : undefined;
+    const logs = await this.processLogRepo.find({where: {garmentId} as any}, options);
     for (const log of logs) {
       // eslint-disable-next-line no-await-in-loop
       await this.processLogRepo.updateById(log.id, {
@@ -1652,18 +1606,17 @@ export class ApprovalService {
         completedAt: undefined,
         completedBy: undefined,
         qrScanned: false,
-      } as any);
+      } as any, options);
     }
 
     const reasonSuffix = reason ? ` — reason: ${reason}` : '';
-    const remarks = requestId
-      ? `Reprocess approved (request ${requestId}) — garment sent back for reprocessing${reasonSuffix}`
-      : `Reprocess requested — garment sent back for reprocessing (still in-store, no approval needed)${reasonSuffix}`;
+    const remarks = `Reprocess requested — garment sent back for reprocessing${reasonSuffix}`;
     await this._updateGarmentStatus(
       garmentId,
       GarmentStatus.IN_PROCESS,
       performedBy,
       remarks,
+      transaction,
     );
   }
 
@@ -2193,6 +2146,9 @@ export class ApprovalService {
     reason?: string;
   }): Promise<{request: ApprovalRequest; notes: string[]}> {
     const request = await this.approvalRequestRepo.findById(params.requestId);
+    if (request.type === ApprovalRequestType.REPROCESS) {
+      throw new HttpErrors.BadRequest('Reprocess decisions are audit records and cannot be reverted.');
+    }
     if (request.status === ApprovalRequestStatus.PENDING) {
       throw new HttpErrors.BadRequest(
         'This request is still pending — there is nothing to revert.',
@@ -2275,12 +2231,6 @@ export class ApprovalService {
     ) {
       notes.push(
         'This downgrade had already been applied to the order (items, garments and totals changed) and has NOT been undone — reverting only reopens the request. Correct the order manually if the removed service/add-on needs to be reinstated.',
-      );
-    }
-
-    if (request.type === ApprovalRequestType.REPROCESS) {
-      notes.push(
-        "The reprocess approval had reset this garment's process steps to pending. Those steps are left as they are — reverting does not restore prior step progress.",
       );
     }
 
@@ -2792,9 +2742,11 @@ export class ApprovalService {
     status: GarmentStatus,
     changedBy: string,
     remarks: string,
+    transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
   ): Promise<void> {
     const {v4} = await import('uuid');
-    await this.garmentRepo.updateById(garmentId, {status});
+    const options = transaction ? {transaction} : undefined;
+    await this.garmentRepo.updateById(garmentId, {status}, options);
     await this.garmentStatusHistoryRepo.create({
       id: v4(),
       garmentId,
@@ -2802,7 +2754,7 @@ export class ApprovalService {
       changedAt: new Date(),
       changedBy,
       remarks,
-    });
+    }, options);
   }
 
   /**

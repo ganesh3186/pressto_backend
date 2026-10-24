@@ -1,15 +1,16 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {get, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
-import {GARMENT_STATUS_RANK, GarmentStatus} from '../models/garment-status.enum';
+import {GarmentStatus} from '../models/garment-status.enum';
 import {ApprovalService} from '../services/approval.service';
 import {StoreScopeService} from '../services/store-scope.service';
 import {OrderService} from '../services/order.service';
+import {PresstoDataSource} from '../datasources/pressto.datasource';
 import {GarmentAdditionalServiceRepository} from '../repositories/garment-additional-service.repository';
 import {
   ApprovalRequestRepository,
@@ -25,6 +26,7 @@ export class GarmentActionsController {
     @inject('services.approval') private approvalService: ApprovalService,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
     @inject('services.order') private orderService: OrderService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
@@ -346,7 +348,7 @@ export class GarmentActionsController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['approval:create']})
   @post('/garments/{id}/action/reprocess')
-  @response(200, {description: 'Reprocess approval request raised'})
+  @response(200, {description: 'Garment sent for reprocessing; audit request recorded'})
   async requestReprocess(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -366,35 +368,31 @@ export class GarmentActionsController {
     body: {remarks?: string; mediaIds?: string[]},
   ): Promise<object> {
     await this.storeScopeService.assertGarmentEditable(id, currentUser);
-    const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}});
-    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    const tx = await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
+    try {
+      await this.dataSource.execute('SELECT id FROM public.garment WHERE id = $1 FOR UPDATE', [id], {transaction: tx});
+      const garment = await this.garmentRepo.findOne({where: {id, isDeleted: false}}, {transaction: tx});
+      if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+      if (![GarmentStatus.RECEIVED, GarmentStatus.IN_INSPECTION, GarmentStatus.IN_PROCESS,
+        GarmentStatus.QUALITY_CHECK, GarmentStatus.READY].includes(garment.status as GarmentStatus)) {
+        throw new HttpErrors.BadRequest('Only an item still in the store can be reprocessed here. Use the delivered order reprocess request after delivery.');
+      }
 
-    // A garment still somewhere in the pipeline (rank 0-4, i.e. anything before
-    // out_for_delivery) hasn't left the store yet — reprocessing it is a normal
-    // workflow correction, not a decision that needs a store exec's sign-off.
-    // Approval-gating is reserved for a garment already dispatched/delivered:
-    // on_hold and returned_to_customer (rank -1) fall through to it too, since
-    // those are already special-cased states, not plain pipeline stages.
-    const garmentRank = GARMENT_STATUS_RANK[garment.status as GarmentStatus] ?? -1;
-    const isPreDispatch = garmentRank >= 0 && garmentRank < GARMENT_STATUS_RANK[GarmentStatus.OUT_FOR_DELIVERY];
-
-    if (isPreDispatch) {
-      await this.approvalService.applyReprocessDirectly(id, currentUser[securityId], body.remarks);
-      return {message: 'Garment sent back for reprocessing.'};
+      const request = await this.approvalService.createRequest({
+        type: ApprovalRequestType.REPROCESS,
+        entityType: 'garment',
+        entityId: id,
+        requestedBy: currentUser[securityId],
+        requestReason: body.remarks,
+        mediaIds: body.mediaIds,
+      }, tx);
+      await this.approvalService.applyReprocessDirectly(id, currentUser[securityId], body.remarks, tx);
+      await tx.commit();
+      return {message: 'Garment sent back for reprocessing. Audit request recorded.', request};
+    } catch (err) {
+      await tx.rollback();
+      throw err;
     }
-
-    await this._guardNoPendingRequest(id, ApprovalRequestType.REPROCESS);
-
-    const request = await this.approvalService.createRequest({
-      type: ApprovalRequestType.REPROCESS,
-      entityType: 'garment',
-      entityId: id,
-      requestedBy: currentUser[securityId],
-      requestReason: body.remarks,
-      mediaIds: body.mediaIds,
-    });
-
-    return {message: 'Reprocess request raised. Awaiting store exec approval.', request};
   }
 
   // ─── Mark Ready to Dispatch ───────────────────────────────────────────────

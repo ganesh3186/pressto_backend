@@ -16,6 +16,7 @@ import {
   priceEditedLine,
   resolveEditUnitAreas,
   resolveEditUnitServiceIds,
+  resolveFreeReprocessSlots,
   splitEditIntakeReturns,
 } from './order-item-edit-units';
 import {PresstoDataSource} from '../datasources';
@@ -2457,7 +2458,7 @@ export class OrderService {
   // never a reopening of the delivered one, whose garments are terminal and
   // whose record should stay a true account of the first pass.
   //
-  // Called from the approval effect, once a store exec has approved the request.
+  // Created when the reprocess request is raised; remote pieces enter the factory after pickup.
 
   async createReworkOrder(params: {
     originalOrderId: string;
@@ -2466,7 +2467,8 @@ export class OrderService {
     reason?: string;
     remarks?: string;
     deliveryDate?: string;
-  }): Promise<{order: Order; garmentsCreated: number}> {
+    awaitingPickup?: boolean;
+  }, transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>): Promise<{order: Order; garmentsCreated: number}> {
     const {v4} = await import('uuid');
 
     const original = await this.orderRepo.findOne({
@@ -2508,21 +2510,20 @@ export class OrderService {
     const orderNumber = await this.resolveNextOrderNumber(original.storeId);
     const now = new Date();
 
-    const tx = await this.dataSource.beginTransaction({
+    const tx = transaction ?? await this.dataSource.beginTransaction({
       isolationLevel: 'READ COMMITTED' as any,
     });
     let reworkOrder: Order;
+    let garmentsCreated = 0;
     try {
-      // Every money field is zero by design — the customer already paid for this
-      // work once. Starts at received_at_store because the pieces are physically
-      // back with us.
+      // Every money field is zero by design — the customer already paid for this work once.
       reworkOrder = await this.orderRepo.create(
         {
           orderNumber,
           customerId: original.customerId,
           storeId: original.storeId,
           orderType: original.orderType,
-          status: OrderStatus.RECEIVED_AT_STORE,
+          status: params.awaitingPickup ? OrderStatus.CONFIRMED : OrderStatus.RECEIVED_AT_STORE,
           reprocessOfOrderId: original.id,
           expressMultiplier: 1,
           deliveryType: original.deliveryType,
@@ -2573,10 +2574,12 @@ export class OrderService {
         {
           id: v4(),
           orderId: reworkOrder.id,
-          status: OrderStatus.RECEIVED_AT_STORE,
+          status: params.awaitingPickup ? OrderStatus.CONFIRMED : OrderStatus.RECEIVED_AT_STORE,
           changedAt: now,
           changedBy: params.createdBy,
-          remarks: `Free rework raised against ${original.orderNumber}`,
+          remarks: params.awaitingPickup
+            ? `Free rework ticket raised against ${original.orderNumber}; awaiting pickup`
+            : `Free rework raised against ${original.orderNumber}`,
         },
         {transaction: tx},
       );
@@ -2594,21 +2597,42 @@ export class OrderService {
         {transaction: tx},
       );
 
-      await tx.commit();
+      // Include the fresh tags in the same transaction as the ticket.
+      if (!params.awaitingPickup) {
+        garmentsCreated = (await this.autoCreateGarments(reworkOrder.id, params.createdBy, v4, tx)).length;
+      }
+      if (!transaction) await tx.commit();
     } catch (err) {
-      await tx.rollback();
+      if (!transaction) await tx.rollback();
       throw err;
     }
+    return {order: reworkOrder, garmentsCreated};
+  }
 
-    // Fresh garments with new tags — the originals stay delivered. Outside the
-    // transaction because autoCreateGarments manages its own tag sequence.
-    const created = await this.autoCreateGarments(
-      reworkOrder.id,
-      params.createdBy,
-      v4,
-    );
-
-    return {order: reworkOrder, garmentsCreated: created.length};
+  async receiveReworkOrder(
+    orderId: string,
+    receivedBy: string,
+    transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<void> {
+    const tx = transaction ?? await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
+    try {
+      await this.dataSource.execute('SELECT id FROM public.orders WHERE id = $1 FOR UPDATE', [orderId], {transaction: tx});
+      const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}}, {transaction: tx});
+      if (!order || !order.reprocessOfOrderId) throw new HttpErrors.NotFound('Active rework ticket not found.');
+      if (order.status !== OrderStatus.CONFIRMED) throw new HttpErrors.Conflict('This rework ticket is no longer awaiting pickup.');
+      const {v4} = await import('uuid');
+      await this.autoCreateGarments(orderId, receivedBy, v4, tx);
+      await this.orderRepo.updateById(orderId, {status: OrderStatus.RECEIVED_AT_STORE}, {transaction: tx});
+      await this.statusHistoryRepo.create({
+        id: v4(), orderId, status: OrderStatus.RECEIVED_AT_STORE,
+        changedAt: new Date(), changedBy: receivedBy,
+        remarks: 'Rework pickup received at store',
+      }, {transaction: tx});
+      if (!transaction) await tx.commit();
+    } catch (err) {
+      if (!transaction) await tx.rollback();
+      throw err;
+    }
   }
 
   // ─── Edit Order Items ───────────────────────────────────────────────────────
@@ -3010,11 +3034,9 @@ export class OrderService {
             ? keptGarments.slice(0, originalReprocessLine!.quantity).map(g => g.id)
             : [],
         );
-        const freeSlots = new Set(
-          slotPlan.garmentBySlot.flatMap((garment, slot) =>
-            garment && freeGarmentIds.has(garment.id) ? [slot] : [],
-          ),
-        );
+        const freeSlots = freeReprocessLine
+          ? resolveFreeReprocessSlots(slotPlan, freeGarmentIds, originalReprocessLine!.quantity)
+          : new Set<number>();
 
         // Per-unit additional services — a unit's own list wins, else the line list.
         const unitServiceIds = rejected
@@ -4319,13 +4341,15 @@ export class OrderService {
     orderId: string,
     changedBy: string,
     v4: () => string,
+    tx?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
   ): Promise<object[]> {
-    const orderItems = await this.orderItemRepo.find({where: {orderId}});
+    const options = tx ? {transaction: tx} : undefined;
+    const orderItems = await this.orderItemRepo.find({where: {orderId}}, options);
     const now = new Date();
     const created: object[] = [];
 
     // Fetch once so the sequence stays consistent across multiple creates
-    const baseCount = await this.garmentRepo.count();
+    const baseCount = await this.garmentRepo.count(undefined, options);
     let garmentSeq = baseCount.count;
 
     for (const item of orderItems) {
@@ -4334,7 +4358,7 @@ export class OrderService {
       const existing = await this.garmentRepo.count({
         orderItemId: item.id,
         isDeleted: false,
-      });
+      }, options);
       const toCreate = item.quantity - existing.count;
       if (toCreate <= 0) continue;
 
@@ -4346,7 +4370,7 @@ export class OrderService {
           orderItemId: item.id,
           garmentTagNumber,
           status: GarmentStatus.RECEIVED,
-        });
+        }, options);
 
         await this.garmentStatusHistoryRepo.create({
           id: v4(),
@@ -4355,7 +4379,7 @@ export class OrderService {
           changedAt: now,
           changedBy,
           remarks: 'Auto-created on order receive',
-        });
+        }, options);
 
         // existing.count + i is this garment's true position among the
         // line's units — garments for one line can be created across
@@ -4366,12 +4390,14 @@ export class OrderService {
           item,
           existing.count + i,
           v4,
+          tx,
         );
         await this.createUnitAdditionalCharges(
           garment.id,
           item,
           existing.count + i,
           v4,
+          tx,
         );
 
         created.push(garment);
@@ -5050,7 +5076,7 @@ export class OrderService {
         : Promise.resolve([]),
     ]);
     const pendingApprovalByGarment = new Map(
-      pendingApprovals.map(a => [a.entityId, a.type]),
+      pendingApprovals.filter(a => a.type !== ApprovalRequestType.REPROCESS).map(a => [a.entityId, a.type]),
     );
 
     // ── Garments currently away at another store via an active transfer ──────

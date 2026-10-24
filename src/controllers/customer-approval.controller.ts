@@ -178,12 +178,11 @@ export class CustomerApprovalController {
   }
 
   // ─── Report a problem with a delivered order ───────────────────────────────
-  // The customer's own way in. Same request and same approval queue as the
-  // counter's — only the recorded source differs.
+  // The customer's own way in. The free ticket is created immediately; the request is audit only.
 
   @authenticate('jwt')
   @post('/profile/customer/orders/{orderId}/reprocess-request')
-  @response(200, {description: 'Reprocess request raised, awaiting store approval'})
+  @response(200, {description: 'Reprocess request recorded and free ticket created'})
   async requestReprocess(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('orderId') orderId: string,
@@ -230,9 +229,7 @@ export class CustomerApprovalController {
       mediaIds: body.mediaIds,
       requestedBy: currentUser[securityId],
       source: 'customer',
-      // A customer raising this themselves is never standing in the store —
-      // always defer the rework order until a pickup actually brings the
-      // garment back, never the immediate in_store path.
+      // Customer-reported pieces need pickup before the ticket enters the factory.
       contactChannel: 'other',
     });
   }
@@ -277,7 +274,7 @@ export class CustomerApprovalController {
           reason: metadata.reason ?? null,
           remarks: request.requestReason ?? null,
           garmentIds: Array.isArray(metadata.garmentIds) ? metadata.garmentIds : [],
-          // Present once approved — the free rework order raised from this.
+          // The free ticket is linked when the reprocess request is raised.
           reworkOrderId: metadata.reworkOrderId ?? null,
           reworkOrderNumber: metadata.reworkOrderNumber ?? null,
           media: media[index],

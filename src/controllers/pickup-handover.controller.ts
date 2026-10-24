@@ -1,6 +1,6 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {get, HttpErrors, param, post, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
@@ -25,6 +25,7 @@ import {
   ServiceRepository,
 } from '../repositories';
 import {OrderService} from '../services/order.service';
+import {PresstoDataSource} from '../datasources/pressto.datasource';
 
 /**
  * Admin-facing surface for the store side of "Handover orders" — the
@@ -50,6 +51,7 @@ export class PickupHandoverController {
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(ServiceCategoryRepository) private serviceCategoryRepo: ServiceCategoryRepository,
     @inject('services.order') private orderService: OrderService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
   /**
@@ -312,30 +314,25 @@ export class PickupHandoverController {
     return {handover, items};
   }
 
-  /**
-   * A rework pickup's garment has just arrived — create the ₹0 rework order
-   * now, same as the in-store flow's immediate path
-   * (ApprovalService._applyPostDeliveryReprocess), just triggered from here
-   * instead of from approval time. Links the pickup and the original
-   * approval back to the new order atomically with the rest of the confirm
-   * action, rather than the racy two-step PATCH a normal order relies on.
-   * Returns null (and leaves everything else in the batch to proceed
-   * normally) if anything about the link looks stale — e.g. a second
-   * handover somehow already fulfilled it — rather than failing the whole
-   * batch over one bad pickup.
-   */
+  /** Receive a free rework ticket, or create one for a request from before tickets were immediate. */
   private async _createReworkOrderForPickup(
     pickupRequest: PickupRequest,
     performedBy: string,
+    tx: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
   ): Promise<{orderId: string; orderNumber: string} | null> {
     if (!pickupRequest.reworkOfOrderId || !pickupRequest.reworkApprovalRequestId) return null;
 
     const approval = await this.approvalRequestRepo.findOne({
       where: {id: pickupRequest.reworkApprovalRequestId} as object,
-    });
+    }, {transaction: tx});
     if (!approval) return null;
     const meta = (approval.metadata ?? {}) as Record<string, unknown>;
-    if (meta.reworkOrderId) return null; // already fulfilled — don't double-create
+    if (meta.reworkOrderId) {
+      const orderId = String(meta.reworkOrderId);
+      await this.orderService.receiveReworkOrder(orderId, performedBy, tx);
+      await this.orderRepo.updateById(orderId, {pickupSource: pickupRequest.source}, {transaction: tx});
+      return {orderId, orderNumber: String(meta.reworkOrderNumber ?? '')};
+    }
     const garmentIds = Array.isArray(meta.garmentIds) ? (meta.garmentIds as string[]) : [];
     if (!garmentIds.length) return null;
 
@@ -346,13 +343,13 @@ export class PickupHandoverController {
       reason: typeof meta.reason === 'string' ? meta.reason : undefined,
       remarks: approval.requestReason,
       deliveryDate: typeof meta.deliveryDate === 'string' ? meta.deliveryDate : undefined,
-    });
+    }, tx);
 
-    await this.orderRepo.updateById(result.order.id, {pickupSource: pickupRequest.source});
+    await this.orderRepo.updateById(result.order.id, {pickupSource: pickupRequest.source}, {transaction: tx});
 
     await this.approvalRequestRepo.updateById(approval.id, {
       metadata: {...meta, reworkOrderId: result.order.id, reworkOrderNumber: result.order.orderNumber},
-    });
+    }, {transaction: tx});
 
     const {v4} = await import('uuid');
     await this.approvalAuditLogRepo.create({
@@ -363,7 +360,7 @@ export class PickupHandoverController {
         `Free rework order ${result.order.orderNumber} created with ` +
         `${result.garmentsCreated} garment(s) after pickup ${pickupRequest.pickupNumber ?? pickupRequest.id} was received.`,
       performedBy,
-    });
+    }, {transaction: tx});
 
     return {orderId: result.order.id, orderNumber: result.order.orderNumber};
   }
@@ -378,58 +375,61 @@ export class PickupHandoverController {
     @param.path.string('id') id: string,
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
-    const handover = await this.handoverRepo.findOne({where: {id, isDeleted: false}});
-    if (!handover) throw new HttpErrors.NotFound('Handover not found.');
-    if (handover.status !== PickupHandoverStatus.PENDING) {
-      throw new HttpErrors.BadRequest(`This handover is already ${handover.status}.`);
-    }
-    if (handover.handoverToType === PickupHandoverTargetType.RIDER) {
-      throw new HttpErrors.BadRequest(
-        'This handover is directed to a rider, not a store — it must be confirmed by that rider, not here.',
-      );
-    }
-
-    const items = await this.handoverItemRepo.find({where: {pickupHandoverId: id} as object});
-    const reworkOrdersCreated: Array<{orderId: string; orderNumber: string}> = [];
-    for (const item of items) {
-      const pickupRequest = await this.pickupRequestRepo.findOne({where: {id: item.pickupRequestId}});
-      if (!pickupRequest) continue;
-
-      let reworkOrder: {orderId: string; orderNumber: string} | null = null;
-      if (pickupRequest.isReworkPickup) {
-        reworkOrder = await this._createReworkOrderForPickup(pickupRequest, currentUser[securityId]);
-        if (reworkOrder) reworkOrdersCreated.push(reworkOrder);
+    const tx = await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
+    try {
+      await this.dataSource.execute('SELECT id FROM public.pickup_handover WHERE id = $1 FOR UPDATE', [id], {transaction: tx});
+      const handover = await this.handoverRepo.findOne({where: {id, isDeleted: false}}, {transaction: tx});
+      if (!handover) throw new HttpErrors.NotFound('Handover not found.');
+      if (handover.status !== PickupHandoverStatus.PENDING) {
+        throw new HttpErrors.BadRequest(`This handover is already ${handover.status}.`);
+      }
+      if (handover.handoverToType === PickupHandoverTargetType.RIDER) {
+        throw new HttpErrors.BadRequest(
+          'This handover is directed to a rider, not a store — it must be confirmed by that rider, not here.',
+        );
       }
 
-      await this.pickupRequestRepo.updateById(pickupRequest.id, {
-        status: PickupRequestStatus.RECEIVED_AT_STORE,
-        ...(reworkOrder ? {convertedOrderId: reworkOrder.orderId} : {}),
-      });
+      const items = await this.handoverItemRepo.find({where: {pickupHandoverId: id} as object}, {transaction: tx});
+      const reworkOrdersCreated: Array<{orderId: string; orderNumber: string}> = [];
+      for (const item of items) {
+        const pickupRequest = await this.pickupRequestRepo.findOne({where: {id: item.pickupRequestId}}, {transaction: tx});
+        if (!pickupRequest) continue;
 
-      // One bag per service now — release every bag this pickup actually
-      // used (each actualItemsByService line's bagId), plus the legacy
-      // top-level bagId for back-compat with rows written before per-service
-      // bags existed. A Set collapses the (expected) overlap where bagId is
-      // just the first service's bag, so nothing is released twice.
-      const bagIdsToRelease = new Set<string>();
-      if (pickupRequest.bagId) bagIdsToRelease.add(pickupRequest.bagId);
-      (pickupRequest.actualItemsByService ?? []).forEach(line => line.bagId && bagIdsToRelease.add(line.bagId));
+        let reworkOrder: {orderId: string; orderNumber: string} | null = null;
+        if (pickupRequest.isReworkPickup) {
+          reworkOrder = await this._createReworkOrderForPickup(pickupRequest, currentUser[securityId], tx);
+          if (reworkOrder) reworkOrdersCreated.push(reworkOrder);
+        }
 
-      for (const bagId of bagIdsToRelease) {
-        await this.bagRepo.updateById(bagId, {
-          status: BagStatus.AVAILABLE,
-          itemCount: 0,
-          currentPickupRequestId: null as unknown as string,
-        });
+        await this.pickupRequestRepo.updateById(pickupRequest.id, {
+          status: PickupRequestStatus.RECEIVED_AT_STORE,
+          ...(reworkOrder ? {convertedOrderId: reworkOrder.orderId} : {}),
+        }, {transaction: tx});
+
+        // Release every bag used by this pickup, including legacy bagId.
+        const bagIdsToRelease = new Set<string>();
+        if (pickupRequest.bagId) bagIdsToRelease.add(pickupRequest.bagId);
+        (pickupRequest.actualItemsByService ?? []).forEach(line => line.bagId && bagIdsToRelease.add(line.bagId));
+
+        for (const bagId of bagIdsToRelease) {
+          await this.bagRepo.updateById(bagId, {
+            status: BagStatus.AVAILABLE,
+            itemCount: 0,
+            currentPickupRequestId: null as unknown as string,
+          }, {transaction: tx});
+        }
       }
+
+      await this.handoverRepo.updateById(id, {
+        status: PickupHandoverStatus.CONFIRMED,
+        confirmedAt: new Date(),
+        confirmedBy: currentUser[securityId],
+      }, {transaction: tx});
+      await tx.commit();
+      return {message: 'Pickup handover confirmed received.', reworkOrdersCreated};
+    } catch (err) {
+      await tx.rollback();
+      throw err;
     }
-
-    await this.handoverRepo.updateById(id, {
-      status: PickupHandoverStatus.CONFIRMED,
-      confirmedAt: new Date(),
-      confirmedBy: currentUser[securityId],
-    });
-
-    return {message: 'Pickup handover confirmed received.', reworkOrdersCreated};
   }
 }
