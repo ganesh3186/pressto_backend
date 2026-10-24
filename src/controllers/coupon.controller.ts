@@ -33,6 +33,7 @@ interface CouponBody {
   minRequirementValue?: number;
   newCustomerOrderLimit?: number;
   isReferralCode?: boolean;
+  hideFromTicketList?: boolean;
   startDate: string;
   endDate: string;
   maxUsesPerCustomer?: number;
@@ -89,6 +90,8 @@ export class CouponController {
   ): Promise<object> {
     const code = body.code.trim().toUpperCase();
     if (!code) throw new HttpErrors.BadRequest('Coupon code is required.');
+    if (body.isReferralCode && body.hideFromTicketList)
+      throw new HttpErrors.BadRequest('Referral coupons cannot be hidden for manual code entry.');
     const existing = await this.couponRepository.findOne({where: {code} as object});
     if (existing) throw new HttpErrors.Conflict(`Coupon code ${code} already exists.`);
     this.assertValidMinRequirement(body.minRequirementType, body.minRequirementValue);
@@ -232,6 +235,9 @@ export class CouponController {
   ): Promise<object> {
     const existing = await this.couponRepository.findOne({where: {id, isDeleted: false}});
     if (!existing) throw new HttpErrors.NotFound('Coupon not found.');
+    if ((body.isReferralCode ?? existing.isReferralCode) &&
+      (body.hideFromTicketList ?? existing.hideFromTicketList))
+      throw new HttpErrors.BadRequest('Referral coupons cannot be hidden for manual code entry.');
 
     // Validate the EFFECTIVE pair post-patch, not just whatever this one
     // request happens to touch — a patch that only sends minRequirementValue

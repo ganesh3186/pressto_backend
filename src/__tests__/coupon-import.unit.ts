@@ -18,6 +18,10 @@ describe('coupon bulk import', () => {
     expect(valid.coupon.code).to.equal('WELCOME10');
     expect(valid.coupon.discountValue).to.equal(10);
 
+    const hidden = parseCouponImportRow({...validRow, hideFromTicketList: 'true'});
+    expect(hidden.errors).to.eql([]);
+    expect(hidden.coupon.hideFromTicketList).to.equal(true);
+
     const invalid = parseCouponImportRow({
       ...validRow,
       discountValue: '110',
@@ -27,6 +31,13 @@ describe('coupon bulk import', () => {
     expect(invalid.errors).to.containEql(
       'endDate must be a valid YYYY-MM-DD date',
     );
+    expect(parseCouponImportRow({...validRow, hideFromTicketList: 'yes'}).errors)
+      .to.containEql('hideFromTicketList must be true or false');
+    expect(parseCouponImportRow({
+      ...validRow,
+      isReferralCode: 'true',
+      hideFromTicketList: 'true',
+    }).errors).to.containEql('Referral coupons cannot be hidden for manual code entry');
   });
 
   it('reports duplicate rows and creates nothing when any row is invalid', async () => {

@@ -100,7 +100,7 @@ export function parseCouponImportRow(row: CouponImportRow): {
   number('maxUsesPerCustomer', false, true, 1);
   number('maxUsesTotal', false, true, 1);
 
-  for (const key of ['isReferralCode', 'isActive']) {
+  for (const key of ['isReferralCode', 'hideFromTicketList', 'isActive']) {
     const raw = value(key).toLowerCase();
     if (raw && raw !== 'true' && raw !== 'false')
       errors.push(`${key} must be true or false`);
@@ -108,6 +108,8 @@ export function parseCouponImportRow(row: CouponImportRow): {
   }
   if (coupon.isReferralCode && coupon.newCustomerOrderLimit)
     errors.push('isReferralCode and newCustomerOrderLimit cannot both be set');
+  if (coupon.isReferralCode && coupon.hideFromTicketList)
+    errors.push('Referral coupons cannot be hidden for manual code entry');
 
   for (const key of ['startDate', 'endDate']) {
     const raw = value(key);

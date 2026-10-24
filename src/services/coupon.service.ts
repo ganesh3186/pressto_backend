@@ -428,6 +428,7 @@ export class CouponService {
         isActive: true,
         isDeleted: false,
         isReferralCode: false,
+        hideFromTicketList: false,
         newCustomerOrderLimit: {neq: null},
       } as object,
     });

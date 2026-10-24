@@ -164,6 +164,10 @@ export class Coupon extends Entity {
   @property({type: 'boolean', default: false})
   isReferralCode?: boolean;
 
+  // Hidden from the Create Ticket picker; staff may still apply its code.
+  @property({type: 'boolean', default: false})
+  hideFromTicketList?: boolean;
+
   @property({type: 'boolean', default: true})
   isActive?: boolean;
 

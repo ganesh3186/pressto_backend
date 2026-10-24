@@ -32,6 +32,7 @@
     "migrate": "node ./dist/migrate",
     "migrate:customer-persona": "node scripts/add-customer-persona-column.cjs",
     "migrate:coupon-order-fields": "node scripts/add-coupon-order-fields.cjs",
+    "migrate:coupon-ticket-visibility": "node scripts/add-coupon-ticket-visibility.cjs",
     "migrate:delivery-order-failure-remarks": "node scripts/add-delivery-order-failure-remarks.cjs",
     "migrate:store-targets": "node scripts/add-store-targets.cjs",
     "migrate:cash-payout-shifts": "node scripts/add-cash-payout-shift-columns.cjs",
@@ -88,6 +89,7 @@
     "README.md",
     "dist",
     "src",
+    "scripts/add-coupon-ticket-visibility.cjs",
     "!*/__tests__"
   ],
   "dependencies": {
