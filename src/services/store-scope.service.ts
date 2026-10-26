@@ -16,6 +16,7 @@ import {
   TransferRepository,
 } from '../repositories';
 import {Employee} from '../models';
+import {OrderStatus} from '../models/order-status.enum';
 
 /** Scope levels a role can declare (Roles.scope). super_admin ignores these. */
 type RoleScope = 'store' | 'cluster' | 'region';
@@ -358,13 +359,18 @@ export class StoreScopeService {
    */
   async assertGarmentEditable(garmentId: string, currentUser: UserProfile): Promise<void> {
     const scope = await this.resolve(currentUser);
-    if (scope.global) return;
-
     const garment = await this.garmentRepo.findOne({
       where: {id: garmentId, isDeleted: false} as object,
-      fields: {id: true, activeTransferId: true} as object,
+      fields: {id: true, orderItemId: true, activeTransferId: true} as object,
     });
     if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    const orderItem = await this.orderItemRepo.findOne({where: {id: garment.orderItemId} as object});
+    const order = orderItem ? await this.orderRepo.findOne({where: {id: orderItem.orderId} as object}) : null;
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (order.status === OrderStatus.DRAFT) {
+      throw new HttpErrors.Conflict('Submit the draft before processing its garments.');
+    }
+    if (scope.global) return;
     if (!garment.activeTransferId) return;
 
     const transfer = await this.transferRepo.findOne({

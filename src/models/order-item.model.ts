@@ -111,6 +111,9 @@ export class OrderItem extends Entity {
     amount: number;
   }>>;
 
+  @property({type: 'array', itemType: 'object', postgresql: {dataType: 'jsonb'}})
+  draftUnitInspections?: object[];
+
   // Reject-at-intake: the customer brought this piece but it was declined at the
   // counter — recorded so the order shows it came in, priced at ₹0, and never
   // given a garment or put through processing. No approval flow.

@@ -11,6 +11,8 @@ export type EditAdditionalChargeSelection =
 export interface EditOrderUnitInput {
   /** Garment id of an existing piece; absent for a piece added in this edit. */
   id?: string;
+  brandId?: string;
+  colorId?: string;
   additionalServiceIds?: string[];
   additionalChargeIds?: EditAdditionalChargeSelection[];
   instructions?: string;
@@ -20,6 +22,9 @@ export interface EditOrderUnitInput {
   rejectionReason?: string;
   rejectionRemarks?: string;
   itemPhotoMediaIds?: string[];
+  stainMarks?: Array<{stainId: string; remarks?: string; mediaIds?: string[]}>;
+  damageMarks?: Array<{damageId: string; remarks?: string; mediaIds?: string[]}>;
+  qrPrintCount?: number;
 }
 
 export function splitEditIntakeReturns<T extends {

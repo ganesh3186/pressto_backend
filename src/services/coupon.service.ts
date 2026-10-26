@@ -1,6 +1,7 @@
 import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
-import {Coupon} from '../models/coupon.model';
+import {Coupon, CouponPricingSnapshot} from '../models/coupon.model';
+import {PresstoDataSource} from '../datasources';
 import {CouponDiscountType} from '../models/coupon-discount-type.enum';
 import {CouponMinRequirementType} from '../models/coupon-min-requirement-type.enum';
 import {Customer} from '../models/customer.model';
@@ -34,6 +35,7 @@ export interface CouponEvaluationInput {
   // directly-typed input.couponCode at order creation) leaves this unset
   // and gets rejected above.
   allowReferralCoupon?: boolean;
+  excludeOrderId?: string;
 }
 
 export interface CouponEvaluationSuccess {
@@ -46,6 +48,7 @@ export interface CouponEvaluationSuccess {
   eligibleSubtotal: number;
   discountAmount: number;
   qualifyingItemIndexes: number[];
+  pricingSnapshot: CouponPricingSnapshot;
 }
 
 export interface CouponEvaluationFailure {
@@ -60,6 +63,8 @@ export interface MultiCouponEvaluationInput {
   customerId: string;
   storeId: string;
   items: CouponEvaluationItem[];
+  excludeOrderId?: string;
+  allowReferralCouponCodes?: string[];
 }
 
 export interface MultiCouponEvaluationSuccess {
@@ -100,6 +105,16 @@ function fail(reason: string): CouponEvaluationFailure {
   return {valid: false, reason};
 }
 
+export function snapshotCouponPricing(coupon: Coupon): CouponPricingSnapshot {
+  const {id, code, name, discountType, discountValue, maxDiscountAmount,
+    minQualifyingItems, minRequirementType, minRequirementValue,
+    serviceCategoryIds, serviceIds, itemCategoryIds, itemIds} = coupon;
+  return {id, code, name, discountType, discountValue, maxDiscountAmount,
+    minQualifyingItems, minRequirementType, minRequirementValue,
+    serviceCategoryIds: serviceCategoryIds?.slice(), serviceIds: serviceIds?.slice(),
+    itemCategoryIds: itemCategoryIds?.slice(), itemIds: itemIds?.slice()};
+}
+
 /**
  * Single source of truth for "is this coupon usable, by this customer, at
  * this store, against these order lines, and for how much" — called by
@@ -126,12 +141,16 @@ export class CouponService {
     @repository(OrderRepository) private orderRepo: OrderRepository,
   ) {}
 
-  async evaluate(input: CouponEvaluationInput): Promise<CouponEvaluationResult> {
+  // A booked redemption keeps its entitlement after expiry; item eligibility still applies on edits.
+  async evaluate(input: CouponEvaluationInput, existingRedemption = false,
+    bookedCoupon?: CouponPricingSnapshot): Promise<CouponEvaluationResult> {
     const normalizedCode = input.couponCode.trim().toUpperCase();
-    const coupon = await this.couponRepo.findOne({
-      where: {code: normalizedCode, isActive: true, isDeleted: false} as object,
+    const coupon = bookedCoupon ? new Coupon(bookedCoupon) : await this.couponRepo.findOne({
+      where: {code: normalizedCode,
+        ...(existingRedemption ? {} : {isActive: true, isDeleted: false})} as object,
     });
     if (!coupon) return fail('Coupon not found.');
+    const pricingSnapshot = bookedCoupon ? {...bookedCoupon} : snapshotCouponPricing(coupon);
 
     // A referral coupon is only ever attached via registration
     // (CustomerAuthController.register / CustomerController.create →
@@ -139,25 +158,26 @@ export class CouponService {
     // customer's first order (OrderService.createOrder, passing
     // allowReferralCoupon: true) — never typed in manually at checkout,
     // by staff or the customer themselves.
-    if (coupon.isReferralCode && !input.allowReferralCoupon) {
+    if (coupon.isReferralCode && !input.allowReferralCoupon && !existingRedemption) {
       return fail('This coupon can only be applied through referral registration, not entered manually.');
     }
 
-    if (!this.isWithinValidityWindow(coupon)) return fail('This coupon is not currently valid.');
+    if (!existingRedemption) {
+      if (!this.isWithinValidityWindow(coupon)) return fail('This coupon is not currently valid.');
+      const usageReason = await this.usageCapacityReason(coupon, input.customerId, input.excludeOrderId);
+      if (usageReason) return fail(usageReason);
+      const geoReason = await this.geoScopeReason(coupon, input.storeId);
+      if (geoReason) return fail(geoReason);
+      const audienceReason = await this.audienceScopeReason(coupon, input.customerId);
+      if (audienceReason) return fail(audienceReason);
+    }
 
-    const usageReason = await this.usageCapacityReason(coupon, input.customerId);
-    if (usageReason) return fail(usageReason);
-
-    const geoReason = await this.geoScopeReason(coupon, input.storeId);
-    if (geoReason) return fail(geoReason);
-
-    const audienceReason = await this.audienceScopeReason(coupon, input.customerId);
-    if (audienceReason) return fail(audienceReason);
-
-    if (coupon.newCustomerOrderLimit != null) {
+    if (!existingRedemption && coupon.newCustomerOrderLimit != null) {
       const priorOrderCount = await this.orderRepo.count({
         customerId: input.customerId,
         isDeleted: false,
+        status: {neq: 'draft'},
+        ...(input.excludeOrderId ? {id: {neq: input.excludeOrderId}} : {}),
       } as object);
       if (priorOrderCount.count >= coupon.newCustomerOrderLimit) {
         return fail(`This coupon is only available for a customer's first ${coupon.newCustomerOrderLimit} order(s).`);
@@ -185,6 +205,14 @@ export class CouponService {
         : [];
       const serviceCategoryById = new Map(services.map(s => [s.id, s.serviceCategoryId]));
       const itemCategoryById = new Map(items.map(it => [it.id, it.itemCategoryId]));
+      for (const [id, categoryId] of Object.entries(bookedCoupon?.serviceCategoryById ?? {}))
+        serviceCategoryById.set(id, categoryId);
+      for (const [id, categoryId] of Object.entries(bookedCoupon?.itemCategoryById ?? {}))
+        itemCategoryById.set(id, categoryId);
+      if (hasServiceCategoryScope)
+        pricingSnapshot.serviceCategoryById = Object.fromEntries(serviceCategoryById);
+      if (hasItemCategoryScope)
+        pricingSnapshot.itemCategoryById = Object.fromEntries(itemCategoryById);
 
       qualifyingItemIndexes = [];
       input.items.forEach((line, idx) => {
@@ -277,6 +305,7 @@ export class CouponService {
       eligibleSubtotal,
       discountAmount,
       qualifyingItemIndexes,
+      pricingSnapshot,
     };
   }
 
@@ -291,7 +320,10 @@ export class CouponService {
    * itself already uses for an invalid code. No cap on how many codes may
    * be combined, beyond what actually fits the order without overlapping.
    */
-  async evaluateMultiple(input: MultiCouponEvaluationInput): Promise<MultiCouponEvaluationResult> {
+  async evaluateMultiple(
+    input: MultiCouponEvaluationInput, existingRedemptions = false,
+    bookedCoupons?: Array<CouponPricingSnapshot | undefined>,
+  ): Promise<MultiCouponEvaluationResult> {
     const normalizedCodes = input.couponCodes.map(c => c.trim().toUpperCase());
     if (new Set(normalizedCodes).size !== normalizedCodes.length) {
       return fail('The same coupon code was entered more than once.');
@@ -299,13 +331,14 @@ export class CouponService {
 
     const results: CouponEvaluationSuccess[] = [];
     for (const couponCode of input.couponCodes) {
-      // eslint-disable-next-line no-await-in-loop
       const evaluation = await this.evaluate({
         couponCode,
         customerId: input.customerId,
         storeId: input.storeId,
         items: input.items,
-      });
+        excludeOrderId: input.excludeOrderId,
+        allowReferralCoupon: input.allowReferralCouponCodes?.includes(couponCode.trim().toUpperCase()),
+      }, existingRedemptions, bookedCoupons?.[results.length]);
       if (!evaluation.valid) return fail(`${couponCode.trim().toUpperCase()}: ${evaluation.reason}`);
       results.push(evaluation);
     }
@@ -383,6 +416,7 @@ export class CouponService {
     const priorOrderCount = await this.orderRepo.count({
       customerId: customer.id,
       isDeleted: false,
+      status: {neq: 'draft'},
     } as object);
     if (priorOrderCount.count > 0) return undefined;
 
@@ -466,7 +500,8 @@ export class CouponService {
     // ones with newCustomerOrderLimit set do, checked below).
     const needsOrderCount = candidates.some(c => c.newCustomerOrderLimit != null);
     const priorOrderCount = needsOrderCount
-      ? (await this.orderRepo.count({customerId, isDeleted: false} as object)).count
+      ? (await this.orderRepo.count({customerId, isDeleted: false,
+        status: {neq: 'draft'}} as object)).count
       : 0;
 
     const eligible: EligibleCouponDisplay[] = [];
@@ -517,8 +552,25 @@ export class CouponService {
     return now >= start && now <= end;
   }
 
-  private async usageCapacityReason(coupon: Coupon, customerId: string): Promise<string | null> {
-    if (coupon.maxUsesTotal != null && (coupon.totalUsesCount ?? 0) >= coupon.maxUsesTotal) {
+  async redemptionCapacityReason(
+    couponId: string, customerId: string,
+    transaction: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+    excludeOrderId?: string,
+  ): Promise<string | null> {
+    const coupon = await this.couponRepo.findById(couponId, undefined, {transaction});
+    return this.usageCapacityReason(coupon, customerId, excludeOrderId, transaction);
+  }
+
+  private async usageCapacityReason(
+    coupon: Coupon, customerId: string, excludeOrderId?: string,
+    transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<string | null> {
+    const options = {transaction};
+    const ownRedemption = excludeOrderId ? await this.couponRedemptionRepo.findOne({
+      where: {couponId: coupon.id, orderId: excludeOrderId,
+        isReversed: false, isProvisional: false} as object,
+    }, options) : null;
+    if (coupon.maxUsesTotal != null && (coupon.totalUsesCount ?? 0) - (ownRedemption ? 1 : 0) >= coupon.maxUsesTotal) {
       return 'This coupon has reached its usage limit.';
     }
     if (coupon.maxUsesPerCustomer != null) {
@@ -526,8 +578,9 @@ export class CouponService {
         couponId: coupon.id,
         customerId,
         isReversed: false,
-      } as object);
-      if (usedByCustomer.count >= coupon.maxUsesPerCustomer) {
+        isProvisional: false,
+      } as object, options);
+      if (usedByCustomer.count - (ownRedemption?.customerId === customerId ? 1 : 0) >= coupon.maxUsesPerCustomer) {
         return "You've already used this coupon the maximum number of times.";
       }
     }

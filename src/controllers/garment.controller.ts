@@ -149,6 +149,9 @@ export class GarmentController {
   ): Promise<object> {
     const order = await this.orderRepository.findOne({where: {id: orderId, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (order.status === OrderStatus.DRAFT) {
+      throw new HttpErrors.Conflict('Submit the draft before registering garments.');
+    }
 
     const orderItem = await this.orderItemRepository.findOne({where: {id: orderItemId, orderId}});
     if (!orderItem) throw new HttpErrors.NotFound('Order item not found.');
@@ -821,7 +824,8 @@ export class GarmentController {
     if (!order) return;
 
     // Terminal orders don't get auto-synced
-    if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.CANCELLED) return;
+    if (order.status === OrderStatus.DRAFT || order.status === OrderStatus.DELIVERED ||
+      order.status === OrderStatus.CANCELLED) return;
 
     const allItems = await this.orderItemRepository.find({where: {orderId: order.id}});
     const allItemIds = allItems.map(i => i.id);

@@ -70,7 +70,7 @@ export class StoreController {
         'application/json': {
           schema: getModelSchemaRef(Store, {
             title: 'NewStore',
-            exclude: ['id', 'code', 'createdAt', 'updatedAt', 'deletedAt'],
+            exclude: ['id', 'code', 'orderNumberSequence', 'createdAt', 'updatedAt', 'deletedAt'],
           }),
         },
       },
@@ -90,6 +90,7 @@ export class StoreController {
     if (!normalizedPrefix) throw new HttpErrors.BadRequest('Store prefix is required.');
     store.storePrefix = normalizedPrefix;
     store.isPrefixLocked = false;
+    store.orderNumberSequence = 0;
     store.code = `STR${String(maxNum + 1).padStart(3, '0')}`;
     return this.storeRepository.create(store);
   }
@@ -144,8 +145,8 @@ export class StoreController {
     store: Store,
     @param.where(Store) where?: Where<Store>,
   ): Promise<Count> {
-    if (store.storePrefix !== undefined || store.isPrefixLocked !== undefined) {
-      throw new HttpErrors.BadRequest('Store prefixes cannot be changed in bulk.');
+    if (store.storePrefix !== undefined || store.isPrefixLocked !== undefined || store.orderNumberSequence !== undefined) {
+      throw new HttpErrors.BadRequest('Store numbering cannot be changed in bulk.');
     }
     return this.storeRepository.updateAll(store, where);
   }
@@ -186,8 +187,8 @@ export class StoreController {
     })
     store: Partial<Store>,
   ): Promise<void> {
-    if (store.isPrefixLocked !== undefined) {
-      throw new HttpErrors.BadRequest('The prefix lock cannot be changed directly.');
+    if (store.isPrefixLocked !== undefined || store.orderNumberSequence !== undefined) {
+      throw new HttpErrors.BadRequest('Store numbering cannot be changed directly.');
     }
     const current = await this.storeRepository.findById(id);
     if (store.name) {

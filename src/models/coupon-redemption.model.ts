@@ -1,15 +1,14 @@
 import {belongsTo, Entity, model, property} from '@loopback/repository';
-import {Coupon} from './coupon.model';
+import {Coupon, CouponPricingSnapshot} from './coupon.model';
 import {Customer} from './customer.model';
 import {Order} from './order.model';
 
-// Append-only audit row — one per (order, coupon) pair; an order that
+// Redemption record — one per (order, coupon) pair; an order that
 // combined several coupons (OrderService.createOrder's couponCodes) gets
 // one row per coupon. Authoritative record of "who used what coupon, on
 // which order, for how much", used to enforce maxUsesPerCustomer/
 // maxUsesTotal and to power the admin redemption-history view.
-// isReversed/reversedAt are reserved for a future order-cancellation
-// integration — nothing sets them yet.
+// Draft edits reverse the previous selection before recording the replacement.
 @model({
   settings: {
     postgresql: {table: 'coupon_redemption', schema: 'public'},
@@ -38,12 +37,18 @@ export class CouponRedemption extends Entity {
   @property({type: 'string', required: true})
   discountType: string;
 
-  // Actual rupee amount deducted on that order.
+  // Current rupee amount deducted; bookingSnapshot preserves the original.
   @property({type: 'number', required: true, postgresql: {dataType: 'numeric'}})
   discountAmount: number;
 
+  @property({type: 'object', postgresql: {dataType: 'jsonb'}})
+  bookingSnapshot?: {bookedDiscountAmount: number; coupon?: CouponPricingSnapshot};
+
   @property({type: 'boolean', default: false})
   isReversed?: boolean;
+
+  @property({type: 'boolean', default: false})
+  isProvisional?: boolean;
 
   @property({type: 'date'})
   reversedAt?: Date;

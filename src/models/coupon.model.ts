@@ -194,6 +194,15 @@ export class Coupon extends Entity {
   }
 }
 
+export type CouponPricingSnapshot = Pick<Coupon,
+  'id' | 'code' | 'name' | 'discountType' | 'discountValue' |
+  'maxDiscountAmount' | 'minQualifyingItems' | 'minRequirementType' |
+  'minRequirementValue' | 'serviceCategoryIds' | 'serviceIds' |
+  'itemCategoryIds' | 'itemIds'> & {
+    serviceCategoryById?: Record<string, string>;
+    itemCategoryById?: Record<string, string>;
+  };
+
 export interface CouponRelations {}
 
 export type CouponWithRelations = Coupon & CouponRelations;

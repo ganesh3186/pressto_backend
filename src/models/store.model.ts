@@ -39,7 +39,7 @@ export class Store extends Entity {
 
   // Client-chosen, distinct from `code` above (which is server-generated,
   // internal, and never surfaced in the Store Master UI). This is what
-  // gets embedded in new order numbers (`{storePrefix}-{MMYY}-{seq}`) —
+  // gets embedded in new order numbers (`{storePrefix}-{MMYY}N-{seq}`) —
   // nullable because existing stores start without one; order creation is
   // blocked at that store until an admin sets it.
   @property({type: 'string'})
@@ -47,6 +47,9 @@ export class Store extends Entity {
 
   @property({type: 'boolean', default: false})
   isPrefixLocked?: boolean;
+
+  @property({type: 'number', default: 0, postgresql: {dataType: 'bigint'}})
+  orderNumberSequence?: number;
 
   @property({type: 'string', required: true})
   storeType: string;
