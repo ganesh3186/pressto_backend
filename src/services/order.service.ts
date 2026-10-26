@@ -14,6 +14,7 @@ import {
   orderGarmentsForRemoval,
   planEditUnitSlots,
   priceEditedLine,
+  priceEditedAdditionalService,
   resolveEditUnitAreas,
   resolveEditUnitServiceIds,
   resolveFreeReprocessSlots,
@@ -599,6 +600,13 @@ export class OrderService {
     }
     const base = Number(mapping.basePrice);
     const estimatedDurationInDays = mapping.estimatedDurationInDays ?? null;
+    const assertPricedAdditionalService = (price: number) => {
+      if (options.additional && !(price > 0)) {
+        throw new HttpErrors.BadRequest(
+          `Additional service is unavailable at Rs.0 for serviceId: ${serviceId}, itemId: ${itemId}.`,
+        );
+      }
+    };
 
     // Priority 0: an active price-override coupon for this exact
     // (serviceId, itemId) — auto-applied, never selected/redeemed (see
@@ -611,6 +619,7 @@ export class OrderService {
       customerId,
     );
     if (couponOverridePrice != null) {
+      assertPricedAdditionalService(couponOverridePrice);
       return {
         basePrice: base,
         resolvedPrice: couponOverridePrice,
@@ -630,14 +639,18 @@ export class OrderService {
       const value = row?.percentage;
       return value != null ? Number(value) : null;
     };
-    const uplift = (pct: number, source: 'store' | 'cluster' | 'region') => ({
-      basePrice: base,
-      // Percentage is an uplift on base (30 = +30%). 0 = no change. First match wins.
-      resolvedPrice: parseFloat((base * (1 + pct / 100)).toFixed(2)),
-      appliedPercentage: pct,
-      priceSource: source as 'store' | 'cluster' | 'region' | 'base',
-      estimatedDurationInDays,
-    });
+    const uplift = (pct: number, source: 'store' | 'cluster' | 'region') => {
+      const resolvedPrice = parseFloat((base * (1 + pct / 100)).toFixed(2));
+      assertPricedAdditionalService(resolvedPrice);
+      return {
+        basePrice: base,
+        // Percentage is an uplift on base (30 = +30%). 0 = no change. First match wins.
+        resolvedPrice,
+        appliedPercentage: pct,
+        priceSource: source as 'store' | 'cluster' | 'region' | 'base',
+        estimatedDurationInDays,
+      };
+    };
 
     // Priority 1: store override
     const override = await this.storePriceOverrideRepo.findOne({
@@ -667,6 +680,7 @@ export class OrderService {
     }
 
     // Fallback: base price as-is
+    assertPricedAdditionalService(base);
     return {
       basePrice: base,
       resolvedPrice: base,
@@ -3464,14 +3478,17 @@ export class OrderService {
 
         // Garments that survive this edit, oldest tag first, paired with the unit
         // slot each one describes (by garment id, else by position).
-        const keptGarments = existing
+        const previousGarments = existing
           ? (
               await this.garmentRepo.find({
                 where: {orderItemId: existing.id, isDeleted: false} as any,
                 order: ['garmentTagNumber ASC'],
               })
-            ).filter(garment => !removableGarmentIds.has(String(garment.id)))
+            )
           : [];
+        const keptGarments = previousGarments.filter(
+          garment => !removableGarmentIds.has(String(garment.id)),
+        );
         const slotPlan = planEditUnitSlots(quantity, units, keptGarments);
         // Rework garments were tagged first; later paid pieces have newer tags.
         const freeGarmentIds = new Set(
@@ -3488,25 +3505,42 @@ export class OrderService {
           ? Array.from({length: quantity}, () => [] as string[])
           : resolveEditUnitServiceIds(quantity, units, desired.additionalServiceIds);
         const originalServices = originalReprocessLine?.additionalServiceIds ?? [];
-        const servicePriceById = new Map<string, number>();
+        const previousServiceRows = unitServiceIds.some(ids => ids.length) && keptGarments.length
+          ? await this.garmentAdditionalServiceRepo.find({
+              where: {garmentId: {inq: keptGarments.map(garment => garment.id)}, isDeleted: false} as any,
+            })
+          : [];
+        const previousServicesBySlot = unitServiceIds.map((ids, slot) => {
+          if (!ids.length) return [];
+          const garment = slotPlan.garmentBySlot[slot];
+          if (garment) {
+            return previousServiceRows.filter(row => row.garmentId === garment.id);
+          }
+          return previousGarments.length === 0 && slot < Number(existing?.quantity)
+            ? existing?.pendingUnitAdditionalServices?.[slot] ?? []
+            : [];
+        });
+        const servicePriceById = new Map<string, number[]>();
         for (const addlServiceId of new Set(unitServiceIds.flat())) {
           const addl = await this.resolvePricing(
             order.storeId!,
             addlServiceId,
             desired.itemId,
             order.customerId,
-            {
-              additional: true,
-            },
           );
-          servicePriceById.set(addlServiceId, addl.resolvedPrice);
+          servicePriceById.set(addlServiceId, priceEditedAdditionalService(
+            addlServiceId,
+            addl.resolvedPrice,
+            unitServiceIds,
+            previousServicesBySlot,
+          ));
         }
         const servicePrice = (serviceId: string, slot?: number) =>
           slot !== undefined &&
           freeSlots.has(slot) &&
           originalServices.includes(serviceId)
             ? 0
-            : servicePriceById.get(serviceId) ?? 0;
+            : servicePriceById.get(serviceId)?.[slot ?? 0] ?? 0;
         const unitServiceRows = (slot: number | undefined) =>
           (slot === undefined
             ? (desired.additionalServiceIds ?? [])

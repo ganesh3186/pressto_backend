@@ -158,6 +158,23 @@ export function resolveEditUnitServiceIds(
   );
 }
 
+export function priceEditedAdditionalService(
+  serviceId: string,
+  resolvedPrice: number,
+  unitServiceIds: string[][],
+  previousServicesBySlot: Array<Array<{serviceId: string; amount: number}>>,
+): number[] {
+  return unitServiceIds.map((ids, slot) => {
+    if (!ids.includes(serviceId)) return 0;
+    if (resolvedPrice > 0) return resolvedPrice;
+    const previous = previousServicesBySlot[slot]?.find(row => row.serviceId === serviceId);
+    if (!previous) {
+      throw new HttpErrors.BadRequest(`Additional service ${serviceId} is unavailable at Rs.0 for this item.`);
+    }
+    return Number(previous.amount);
+  });
+}
+
 /** True when the caller sent garment-wise charge selections for this line. */
 export function hasEditUnitCharges(
   units: EditOrderUnitInput[] | undefined,
