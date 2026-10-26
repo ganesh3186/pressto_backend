@@ -123,6 +123,20 @@ export function planEditUnitSlots<G extends EditLineGarment>(
   return {garmentBySlot, newSlots, unassignedGarments: remaining};
 }
 
+export function resolveFreeReprocessSlots<G extends EditLineGarment>(
+  plan: EditUnitSlotPlan<G>,
+  freeGarmentIds: Set<string>,
+  originalQuantity: number,
+): Set<number> {
+  const freeSlots = new Set(plan.garmentBySlot.flatMap((garment, slot) =>
+    garment && freeGarmentIds.has(garment.id) ? [slot] : [],
+  ));
+  for (const slot of plan.newSlots.slice(0, Math.max(0, originalQuantity - freeSlots.size))) {
+    freeSlots.add(slot);
+  }
+  return freeSlots;
+}
+
 /**
  * Additional services per unit slot: a unit's own list wins (an explicit empty list
  * means "none"); a unit that sends no list — or a caller that sends no units at all —

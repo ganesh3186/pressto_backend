@@ -1,9 +1,10 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {Filter, repository} from '@loopback/repository';
+import {Filter, IsolationLevel, repository} from '@loopback/repository';
 import {del, get, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
+import {PresstoDataSource} from '../datasources';
 import {Coupon, CouponDiscountType, CouponMinRequirementType} from '../models';
 import {
   CouponCustomerRepository,
@@ -17,6 +18,7 @@ import {
   UsersRepository,
 } from '../repositories';
 import {CouponService} from '../services/coupon.service';
+import {CouponImportRow, parseCouponImportRow} from './coupon-import';
 
 interface CouponBody {
   code: string;
@@ -31,6 +33,7 @@ interface CouponBody {
   minRequirementValue?: number;
   newCustomerOrderLimit?: number;
   isReferralCode?: boolean;
+  hideFromTicketList?: boolean;
   startDate: string;
   endDate: string;
   maxUsesPerCustomer?: number;
@@ -58,6 +61,7 @@ export class CouponController {
     @repository(ItemRepository) private itemRepository: ItemRepository,
     @repository(UsersRepository) private usersRepository: UsersRepository,
     @inject('services.coupon') private couponService: CouponService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
   // minRequirementValue only means anything alongside a minRequirementType —
@@ -86,6 +90,8 @@ export class CouponController {
   ): Promise<object> {
     const code = body.code.trim().toUpperCase();
     if (!code) throw new HttpErrors.BadRequest('Coupon code is required.');
+    if (body.isReferralCode && body.hideFromTicketList)
+      throw new HttpErrors.BadRequest('Referral coupons cannot be hidden for manual code entry.');
     const existing = await this.couponRepository.findOne({where: {code} as object});
     if (existing) throw new HttpErrors.Conflict(`Coupon code ${code} already exists.`);
     this.assertValidMinRequirement(body.minRequirementType, body.minRequirementValue);
@@ -99,6 +105,89 @@ export class CouponController {
       updatedBy: currentUser[securityId],
     });
     return {message: 'Coupon created.', coupon};
+  }
+
+  private async inspectImport(rows: CouponImportRow[]) {
+    if (!Array.isArray(rows) || rows.length < 1 || rows.length > 500) {
+      throw new HttpErrors.BadRequest('Upload between 1 and 500 coupon rows.');
+    }
+    const parsed = rows.map((row, index) => {
+      const result = parseCouponImportRow(
+        row && typeof row === 'object' && !Array.isArray(row) ? row : {},
+      );
+      return {row: index + 2, ...result};
+    });
+    const codes = parsed
+      .map(item => item.coupon.code as string)
+      .filter(Boolean);
+    const existing = codes.length
+      ? await this.couponRepository.find({
+          where: {code: {inq: codes}} as object,
+          fields: {code: true} as object,
+        })
+      : [];
+    const existingCodes = new Set(existing.map(coupon => coupon.code));
+    const seen = new Set<string>();
+    for (const item of parsed) {
+      const code = item.coupon.code as string;
+      if (!code) continue;
+      if (seen.has(code)) item.errors.push('code is duplicated in this file');
+      if (existingCodes.has(code)) item.errors.push('code already exists');
+      seen.add(code);
+    }
+    const errors = parsed
+      .filter(item => item.errors.length)
+      .map(({row, coupon, errors: messages}) => ({
+        row,
+        code: coupon.code,
+        errors: messages,
+      }));
+    return {
+      valid: errors.length === 0,
+      total: rows.length,
+      errors,
+      coupons: parsed.map(item => item.coupon),
+    };
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['coupon:create']})
+  @post('/coupons/bulk/validate')
+  @response(200, {description: 'Coupon import validation result'})
+  async validateBulk(@requestBody() body: {rows: CouponImportRow[]}) {
+    const {coupons: _coupons, ...result} = await this.inspectImport(body?.rows);
+    return result;
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['coupon:create']})
+  @post('/coupons/bulk/upload')
+  @response(200, {description: 'Coupons created from validated import'})
+  async uploadBulk(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody() body: {rows: CouponImportRow[]},
+  ) {
+    const result = await this.inspectImport(body?.rows);
+    if (!result.valid)
+      throw new HttpErrors.BadRequest(JSON.stringify({errors: result.errors}));
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
+    try {
+      await this.couponRepository.createAll(
+        result.coupons.map(coupon => ({
+          ...coupon,
+          createdBy: currentUser[securityId],
+          updatedBy: currentUser[securityId],
+        })),
+        {transaction: tx},
+      );
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+    return {message: `${result.total} coupons created.`, count: result.total};
   }
 
   // ─── List ─────────────────────────────────────────────────────────────────
@@ -146,6 +235,9 @@ export class CouponController {
   ): Promise<object> {
     const existing = await this.couponRepository.findOne({where: {id, isDeleted: false}});
     if (!existing) throw new HttpErrors.NotFound('Coupon not found.');
+    if ((body.isReferralCode ?? existing.isReferralCode) &&
+      (body.hideFromTicketList ?? existing.hideFromTicketList))
+      throw new HttpErrors.BadRequest('Referral coupons cannot be hidden for manual code entry.');
 
     // Validate the EFFECTIVE pair post-patch, not just whatever this one
     // request happens to touch — a patch that only sends minRequirementValue

@@ -1466,13 +1466,12 @@ export class OrderController {
       windowDays: reprocessWindowDays(),
     };
   }
-  // Customer says a delivered item was not done properly. Raises an approval
-  // request; on approval a free ₹0 rework order is created automatically.
+  // A delivered item needs a redo: create the free ticket and an audit request together.
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:update']})
   @post('/orders/{id}/reprocess-request')
-  @response(200, {description: 'Reprocess request raised, awaiting approval'})
+  @response(200, {description: 'Reprocess request recorded and free ticket created'})
   async requestReprocess(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -1501,9 +1500,8 @@ export class OrderController {
                 type: 'string',
                 enum: ['in_store', 'phone', 'whatsapp', 'other'],
                 description:
-                  'How the customer got in touch. "in_store" (default) creates the ₹0 rework ' +
-                  'order the moment this is approved, same as always. Anything else defers ' +
-                  'that until a linked pickup actually brings the garment back.',
+                  'How the customer got in touch. The free ticket is created immediately. ' +
+                  'In-store pieces can begin processing; other channels need a pickup first.',
               },
               deliveryDate: {type: 'string', format: 'date-time'},
             },

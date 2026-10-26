@@ -15,8 +15,9 @@ import {RiderPincodeMappingWithRelations} from '../models/rider-pincode-mapping.
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {DeliveryType} from '../models/delivery-type.enum';
-import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
+import {OrderStatus} from '../models/order-status.enum';
 import {
   ApprovalRequestRepository,
   BagRepository,
@@ -257,8 +258,8 @@ export class PickupRequestController {
                 type: 'boolean',
                 description:
                   'This pickup is to bring back a garment for a free rework, not a new paid ' +
-                  'order — requires reworkOfOrderId and reworkApprovalRequestId. Confirming ' +
-                  'this pickup creates the ₹0 rework order directly.',
+                  'order — requires reworkOfOrderId and reworkApprovalRequestId. The free ' +
+                  'rework ticket is created immediately for staff requests or after customer request approval.',
               },
               reworkOfOrderId: {type: 'string', format: 'uuid'},
               reworkApprovalRequestId: {type: 'string', format: 'uuid'},
@@ -296,12 +297,22 @@ export class PickupRequestController {
       if (!approval) {
         throw new HttpErrors.NotFound('No matching reprocess request found for this order.');
       }
-      if (approval.status !== ApprovalRequestStatus.APPROVED) {
-        throw new HttpErrors.BadRequest('This reprocess request has not been approved yet.');
+      const reworkOrderId = (approval.metadata as Record<string, unknown> | undefined)?.reworkOrderId;
+      if (!reworkOrderId && approval.status !== ApprovalRequestStatus.APPROVED) {
+        throw new HttpErrors.Conflict('Approve the reprocess request before scheduling its pickup.');
       }
-      if ((approval.metadata as Record<string, unknown> | undefined)?.reworkOrderId) {
-        throw new HttpErrors.Conflict('This reprocess request already has a rework order.');
+      if (reworkOrderId) {
+        const reworkOrder = await this.orderRepository.findOne({where: {id: String(reworkOrderId), isDeleted: false}});
+        if (!reworkOrder || reworkOrder.status !== OrderStatus.CONFIRMED) {
+          throw new HttpErrors.Conflict('This rework ticket has already been received or completed.');
+        }
       }
+      const existingPickup = await this.pickupRequestRepository.findOne({where: {
+        reworkApprovalRequestId: approval.id,
+        isDeleted: false,
+        status: {nin: [PickupRequestStatus.CANCELLED, PickupRequestStatus.NOT_SERVICEABLE]},
+      } as object});
+      if (existingPickup) throw new HttpErrors.Conflict('A pickup for this rework ticket already exists.');
     }
 
     const {slotId, ...rest} = body;

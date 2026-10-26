@@ -577,7 +577,7 @@ export class SystemNotificationService {
   }
 
   /**
-   * Trigger: When a reprocess request is approved for garments currently at customer's home
+   * Trigger: When a remote reprocess request creates a free ticket for garments at customer's home
    * (contact channel is whatsapp, phone/on call, or other).
    * Alerts store staff and logistics coordinators that a pickup request needs to be scheduled.
    */
@@ -600,7 +600,7 @@ export class SystemNotificationService {
       await this.notifyUsers(
         {
           title: 'Schedule Pickup for Reprocess',
-          body: `Reprocess approved for ${orderRef}${itemsCount} via ${channel}. Please generate a pickup request to collect the garment(s).`,
+          body: `Free rework ticket created for ${orderRef}${itemsCount} via ${channel}. Please generate a pickup request to collect the garment(s).`,
           template: 'reprocess_pickup_required',
           pathname: '/dashboard/logistics/pickups',
           extraDetails: {

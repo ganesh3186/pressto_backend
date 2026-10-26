@@ -1,5 +1,5 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
@@ -13,19 +13,15 @@ import {
   OrderStatusHistoryRepository,
 } from '../repositories';
 import {ApprovalService} from './approval.service';
+import {PresstoDataSource} from '../datasources/pressto.datasource';
 
 /** Who started the request — the same flow serves both. */
 export type ReprocessSource = 'customer' | 'store';
 
 /**
- * How the customer got in touch, and — critically — whether the garment is
- * physically at the store yet. 'in_store' is the only value where it is:
- * approving the request immediately creates the ₹0 rework order, exactly as
- * before this field existed. Every other value means the piece is still at
- * the customer's home — approving just records the decision, and the rework
- * order only gets created later, once a linked pickup actually brings the
- * garment back (see ApprovalService._applyPostDeliveryReprocess and the
- * pickup-handover confirm flow).
+ * How the customer got in touch, and whether the garment is physically at the
+ * store yet. Remote requests create a ticket immediately, but pickup receipt
+ * is required before their garments enter the factory.
  *
  * Named "contactChannel," not "requestSource" — that name is already taken
  * by the `source` field above (who raised it: customer vs store), and
@@ -71,6 +67,7 @@ export class ReprocessService {
     @repository(ApprovalRequestRepository)
     private approvalRequestRepo: ApprovalRequestRepository,
     @inject('services.approval') private approvalService: ApprovalService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
   async raiseRequest(input: RaiseReprocessInput): Promise<object> {
@@ -103,11 +100,17 @@ export class ReprocessService {
 
     const garmentIds = await this.resolveGarmentIds(order.id, input.garmentIds);
 
-    // A second request for the same pieces while one is still pending would
-    // create two rework orders for one complaint.
-    await this.assertNoPendingRequest(order.id, garmentIds);
+    const tx = await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
+    try {
+      // Serialize rework requests for this order across API processes.
+      await this.dataSource.execute('SELECT id FROM public.orders WHERE id = $1 FOR UPDATE', [order.id], {transaction: tx});
+      const lockedOrder = await this.orderRepo.findById(order.id, undefined, {transaction: tx});
+      if (lockedOrder.status !== OrderStatus.DELIVERED) {
+        throw new HttpErrors.Conflict('This order is no longer delivered. Refresh it before requesting reprocess.');
+      }
+      await this.assertNoActiveReworkTicket(order.id, garmentIds, tx);
 
-    const request = await this.approvalService.createRequest({
+      const request = await this.approvalService.createRequest({
       type: ApprovalRequestType.REPROCESS,
       // Order-scoped, unlike the in-pipeline garment reprocess: the delivered
       // garments are terminal and the rework lands on a new order.
@@ -124,22 +127,37 @@ export class ReprocessService {
         ...(deliveryDate ? {deliveryDate: deliveryDate.toISOString()} : {}),
         originalOrderNumber: order.orderNumber,
       },
-    });
+      }, tx);
 
-    await this.statusHistoryRepo.create({
+      await this.statusHistoryRepo.create({
       id: (await import('uuid')).v4(),
       orderId: order.id,
       status: order.status,
       changedAt: new Date(),
       changedBy: input.requestedBy,
-      remarks: `Reprocess requested (${input.reason}) for ${garmentIds.length} item(s) — awaiting approval`,
-    });
+      remarks: `Reprocess requested (${input.reason}) for ${garmentIds.length} item(s); ${input.source === 'customer' ? 'awaiting approval' : 'free rework ticket created'}`,
+      }, {transaction: tx});
 
-    return {
-      message: 'Reprocess request raised. Awaiting store exec approval.',
-      request,
-      garmentIds,
-    };
+      await tx.commit();
+      if (input.source === 'customer') {
+        this.approvalService.notifyCustomerReprocessApprovalRequired(request)
+          .catch(err => console.error('Failed to notify for reprocess approval:', err));
+      } else {
+        this.approvalService.notifyReprocessPickupRequired(request)
+          .catch(err => console.error('Failed to send reprocess pickup notification:', err));
+      }
+
+      return {
+        message: input.source === 'customer'
+          ? 'Reprocess request submitted for review. A free rework ticket will be created if approved.'
+          : 'Reprocess request recorded. Free rework ticket created.',
+        request,
+        garmentIds,
+      };
+    } catch (err) {
+      await tx.rollback();
+      throw err;
+    }
   }
 
   /**
@@ -200,33 +218,39 @@ export class ReprocessService {
     return requested;
   }
 
-  /**
-   * Blocks a duplicate while one is still pending. Repeat requests are allowed
-   * once the previous one has been resolved — a piece can genuinely come back
-   * twice.
-   */
-  private async assertNoPendingRequest(orderId: string, garmentIds: string[]): Promise<void> {
-    const pending = await this.approvalRequestRepo.find({
+  /** Blocks overlapping rework tickets until the previous rework is delivered. */
+  private async assertNoActiveReworkTicket(
+    orderId: string,
+    garmentIds: string[],
+    tx?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<void> {
+    const requests = await this.approvalRequestRepo.find({
       where: {
         type: ApprovalRequestType.REPROCESS,
         entityType: 'order',
         entityId: orderId,
-        status: ApprovalRequestStatus.PENDING,
       } as any,
-    });
-    if (!pending.length) return;
+    }, tx ? {transaction: tx} : undefined);
+    if (!requests.length) return;
 
     const requested = new Set(garmentIds);
-    for (const request of pending) {
+    for (const request of requests) {
       const already = ((request.metadata ?? {}) as Record<string, unknown>).garmentIds;
+      const reworkOrderId = ((request.metadata ?? {}) as Record<string, unknown>).reworkOrderId;
       const overlap = Array.isArray(already)
         ? (already as string[]).filter(id => requested.has(id))
         : [];
-      if (overlap.length) {
-        throw new HttpErrors.Conflict(
-          'A reprocess request for one or more of these items is already awaiting approval.',
-        );
+      if (!overlap.length) continue;
+      if (!reworkOrderId) {
+        if (request.status === ApprovalRequestStatus.REJECTED) continue;
+        if (request.status === ApprovalRequestStatus.PENDING && request.metadata?.source === 'customer') {
+          throw new HttpErrors.Conflict('A reprocess request for one or more of these items is pending approval.');
+        }
+        throw new HttpErrors.Conflict('An earlier reprocess request for these items needs its free ticket restored.');
       }
+      const reworkOrder = await this.orderRepo.findOne({where: {id: reworkOrderId as string, isDeleted: false}}, tx ? {transaction: tx} : undefined);
+      if (!reworkOrder || [OrderStatus.DELIVERED, OrderStatus.CANCELLED, OrderStatus.RETURNED].includes(reworkOrder.status as OrderStatus)) continue;
+      throw new HttpErrors.Conflict('A rework ticket for one or more of these items is already active.');
     }
   }
 }

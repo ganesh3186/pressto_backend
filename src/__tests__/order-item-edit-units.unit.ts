@@ -10,6 +10,7 @@ import {
   priceEditedLine,
   resolveEditUnitAreas,
   resolveEditUnitServiceIds,
+  resolveFreeReprocessSlots,
   splitEditIntakeReturns,
 } from '../services/order-item-edit-units';
 
@@ -214,6 +215,19 @@ describe('editing order items per unit (PUT /orders/{id}/items)', () => {
   });
 
   describe('priceEditedLine', () => {
+    it('keeps original remote rework pieces free before pickup creates tags', () => {
+      const slots = resolveFreeReprocessSlots(planEditUnitSlots(3, undefined, []), new Set(), 2);
+      const result = priceEditedLine({
+        resolvedPrice: 0,
+        deliveryMultiplier: 1,
+        unitServiceIds: [[], [], []],
+        servicePrice,
+        unitBasePrice: slot => slots.has(slot) ? 0 : 100,
+      });
+      expect([...slots]).to.eql([0, 1]);
+      expect(result.perUnitTotalPrices).to.eql([0, 0, 100]);
+    });
+
     it('charges a new reprocess piece while keeping the original piece free', () => {
       const result = priceEditedLine({
         resolvedPrice: 0,

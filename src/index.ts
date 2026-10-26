@@ -8,6 +8,7 @@ export * from './application';
 export async function main(options: ApplicationConfig = {}) {
   const app = new presstoBackendApplication(options);
   await app.boot();
+  await require('../scripts/add-coupon-ticket-visibility.cjs').addCouponTicketVisibility();
   await app.start();
   const url = app.restServer.url;
   console.log(`Server is running at ${url}`);
