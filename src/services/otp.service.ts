@@ -1,15 +1,49 @@
 import {inject, injectable} from '@loopback/core';
+import {repository} from '@loopback/repository';
+import {HttpErrors} from '@loopback/rest';
+import {randomInt} from 'crypto';
+import {UsersRepository} from '../repositories/users.repository';
 import {EmailService} from './email.service';
+import {BcryptHasher} from './hash.password.bcrypt';
+import {WhatsAppService} from './whatsapp.service';
 
 @injectable()
 export class OtpService {
   constructor(
     @inject('services.email.send')
     public emailService: EmailService,
+    @repository(UsersRepository)
+    private usersRepository: UsersRepository,
+    @inject('service.hasher')
+    private hasher: BcryptHasher,
+    @inject('services.whatsapp')
+    private whatsAppService: WhatsAppService,
   ) {}
 
   generateOtp(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    return randomInt(100000, 1000000).toString();
+  }
+
+  /** Caller resolves the customer/rider account before issuing its login code. */
+  async sendLoginOtp(user: {id: string; phone: string; countryCode: string}) {
+    const otp = this.generateOtp();
+    const hashedOtp = await this.hasher.hashPassword(otp);
+    const expiry = new Date(Date.now() + 10 * 60 * 1000);
+    await this.usersRepository.updateById(user.id, {
+      loginOtp: hashedOtp,
+      loginOtpExpires: expiry,
+    });
+    const accepted = await this.whatsAppService.sendTemplateMessage({
+      to: user.countryCode + user.phone,
+      templateId: 'pulse_login_otp_221026',
+      bodyParams: [otp],
+    });
+    if (!accepted) {
+      throw new HttpErrors.ServiceUnavailable(
+        'Could not send the login code on WhatsApp. Please try again later.',
+      );
+    }
+    return {message: 'Login code requested on WhatsApp', expiresInSeconds: 600};
   }
 
   async sendOtpEmail(email: string, otp: string): Promise<void> {

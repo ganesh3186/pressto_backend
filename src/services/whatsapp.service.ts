@@ -15,27 +15,32 @@ import type {
   CustomerPhoneRepository,
   OrderRepository,
   OrderItemRepository,
-  ItemRepository,
   StoreRepository,
   PaymentTransactionRepository,
   PickupRequestRepository,
   PickupDeliverySlotRepository,
   InvoiceRepository,
+  InvoiceOrderLinkRepository,
+  OrderHandoverRepository,
+  RiderRepository,
+  UsersRepository,
 } from '../repositories';
 
 // Provider-approved names must remain byte-for-byte unchanged.
 /* eslint-disable @typescript-eslint/naming-convention */
 const TEMPLATES = {
   pulse_pickupreq: {parameters: 4, document: false},
-  pulse_riderscheduled: {parameters: 4, document: false},
-  pulse_ordercreated: {parameters: 6, document: false},
-  pulse_paymentreceived: {parameters: 6, document: true},
-  pulse_readyforcollection: {parameters: 5, document: false},
-  pulse_deliveredcomplete: {parameters: 6, document: true},
-  pulse_collectedcomplete: {parameters: 5, document: true},
-  pulse_walletrecharge: {parameters: 4, document: false},
-  pulse_walletredeem: {parameters: 5, document: false},
-  pulse_paymentlink: {parameters: 4, document: false},
+  pulse_rider_scheduled_221026: {parameters: 4, document: false},
+  pulse_order_created_221026: {parameters: 5, document: true},
+  pulse_payment_received_manual_221026: {parameters: 5, document: true},
+  pulse_ready_for_collection_automatic_221026: {parameters: 5, document: false},
+  pulse_delivery_by_rider_complete_221026: {parameters: 6, document: false},
+  pulse_delivery_to_customer_complete_221026: {parameters: 5, document: false},
+  pulse_wallet_recharge_221026: {parameters: 4, document: false},
+  // V2's visible body has four placeholders; its support number is static text.
+  pulse_wallet_redeem_221026: {parameters: 4, document: false},
+  pulse_paymentlink_221026: {parameters: 5, document: false},
+  pulse_login_otp_221026: {parameters: 1, document: false},
 } as const;
 /* eslint-enable @typescript-eslint/naming-convention */
 export type CustomerWhatsAppTemplate = keyof typeof TEMPLATES;
@@ -86,8 +91,6 @@ export class WhatsAppService {
     private getOrders: Getter<OrderRepository>,
     @repository.getter('OrderItemRepository')
     private getOrderItems: Getter<OrderItemRepository>,
-    @repository.getter('ItemRepository')
-    private getItems: Getter<ItemRepository>,
     @repository.getter('StoreRepository')
     private getStores: Getter<StoreRepository>,
     @repository.getter('PaymentTransactionRepository')
@@ -100,6 +103,14 @@ export class WhatsAppService {
     private getPickupSlots: Getter<PickupDeliverySlotRepository>,
     @inject('services.order-summary-pdf')
     private orderSummaries: OrderSummaryPdfService,
+    @repository.getter('InvoiceOrderLinkRepository')
+    private getInvoiceLinks: Getter<InvoiceOrderLinkRepository>,
+    @repository.getter('OrderHandoverRepository')
+    private getHandovers: Getter<OrderHandoverRepository>,
+    @repository.getter('RiderRepository')
+    private getRiders: Getter<RiderRepository>,
+    @repository.getter('UsersRepository')
+    private getUsers: Getter<UsersRepository>,
   ) {}
 
   private warnOnce(key: string, message: string) {
@@ -158,7 +169,7 @@ export class WhatsAppService {
     const selected = phones.find(p => this.phone(p.phone, p.countryCode));
     if (!selected) return undefined;
     return {
-      name: [customer.firstName, customer.lastName].filter(Boolean).join(' '),
+      name: customer.firstName.trim(),
       to: this.phone(selected.phone, selected.countryCode)!,
     };
   }
@@ -178,6 +189,37 @@ export class WhatsAppService {
 
   private money(value: unknown): string {
     return (Number(value) || 0).toFixed(2);
+  }
+
+  private currency(value: unknown): string {
+    return (
+      '₹' +
+      (Number(value) || 0).toLocaleString('en-IN', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })
+    );
+  }
+
+  private dateTime(value: Date | string | undefined): string {
+    if (!value || Number.isNaN(new Date(value).getTime())) return '';
+    return new Date(value).toLocaleString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+  }
+
+  private storeCollection(order: Order): boolean {
+    return order.deliveryMethod
+      ? order.deliveryMethod === OrderDeliveryMethod.STORE_PICKUP
+      : [OrderType.STORE_DROPOFF, OrderType.HOME_PICKUP].includes(
+          order.orderType,
+        );
   }
 
   private async balance(order: Order): Promise<number> {
@@ -201,52 +243,53 @@ export class WhatsAppService {
     );
   }
 
-  private async items(orderId: string): Promise<string> {
+  private async itemCount(orderId: string): Promise<string> {
     const rows = await (await this.getOrderItems()).find({where: {orderId}});
-    if (!rows.length) return 'No items';
-    const items = await (
-      await this.getItems()
-    ).find({where: {id: {inq: [...new Set(rows.map(r => r.itemId))]}}});
-    const names = new Map(items.map(i => [i.id, i.name]));
-    return rows
-      .map(r => String(r.quantity) + ' x ' + (names.get(r.itemId) ?? 'Item'))
-      .join(', ');
+    return String(
+      rows.reduce(
+        (count, row) =>
+          count +
+          (row.rejectedAtIntake ? 0 : Math.max(0, Number(row.quantity) || 0)),
+        0,
+      ),
+    );
   }
 
-  private async document(
-    kind: 'RECEIPT' | 'INVOICE',
-    order: Order,
-    paymentId = '',
-  ): Promise<WhatsAppTemplateMedia | undefined> {
-    const pattern =
-      process.env['WHATSAPP_' + kind + '_DOCUMENT_URL_TEMPLATE']?.trim();
-    if (!pattern) return undefined;
-    let invoiceId = '';
-    if (pattern.includes('{invoiceId}')) {
-      const invoice = await (
-        await this.getInvoices()
-      ).findOne({where: {orderId: order.id}, order: ['createdAt DESC']});
-      invoiceId = invoice?.id ?? '';
-      if (!invoiceId) return undefined;
-    }
-    const url = pattern
-      .split('{orderId}')
-      .join(encodeURIComponent(order.id))
-      .split('{paymentId}')
-      .join(encodeURIComponent(paymentId))
-      .split('{invoiceId}')
-      .join(encodeURIComponent(invoiceId));
-    if (/\{[^}]+\}/.test(url) || (kind === 'RECEIPT' && !paymentId))
-      return undefined;
+  private async invoice(orderId: string) {
+    const invoices = await this.getInvoices();
+    const direct = await invoices.findOne({
+      where: {orderId},
+      order: ['createdAt DESC'],
+    });
+    if (direct) return direct;
+    const link = await (
+      await this.getInvoiceLinks()
+    ).findOne({where: {orderId}});
+    return link ? invoices.findOne({where: {id: link.invoiceId}}) : null;
+  }
+
+  private documentUrl(value: string): boolean {
     try {
-      if (new URL(url).protocol !== 'https:') return undefined;
+      const url = new URL(value);
+      return (
+        ['http:', 'https:'].includes(url.protocol) &&
+        !url.username &&
+        !url.password
+      );
     } catch {
-      return undefined;
+      return false;
     }
+  }
+
+  private async invoiceDocument(
+    order: Order,
+    invoiceId: string,
+  ): Promise<WhatsAppTemplateMedia> {
+    const url = await this.orderSummaries.createForInvoice(order.id, invoiceId);
     return {
       type: 'document',
       url,
-      fileName: kind.toLowerCase() + '-' + order.orderNumber + '.pdf',
+      fileName: 'invoice-' + order.orderNumber + '.pdf',
     };
   }
 
@@ -277,13 +320,7 @@ export class WhatsAppService {
       );
       return false;
     }
-    if (input.media) {
-      try {
-        if (new URL(input.media.url).protocol !== 'https:') return false;
-      } catch {
-        return false;
-      }
-    }
+    if (input.media && !this.documentUrl(input.media.url)) return false;
     const components: object[] = [];
     if (input.media)
       components.push({
@@ -302,6 +339,17 @@ export class WhatsAppService {
       type: 'body',
       parameters: input.bodyParams.map(text => ({type: 'text', text})),
     });
+    if (input.templateId === 'pulse_login_otp_221026') {
+      if (!/^\d{6}$/.test(input.bodyParams[0])) return false;
+      components.push({
+        type: 'button',
+        // Provider payload field must keep its documented spelling.
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        sub_type: 'url',
+        index: '0',
+        parameters: [{type: 'text', text: input.bodyParams[0]}],
+      });
+    }
     const apiUrl = process.env.WHATSAPP_API_URL?.trim();
     const language = process.env.WHATSAPP_TEMPLATE_LANGUAGE?.trim();
     const requestConfig = {
@@ -395,12 +443,12 @@ export class WhatsAppService {
       if (!recipient) return undefined;
       return {
         to: recipient.to,
-        templateId: 'pulse_walletrecharge',
+        templateId: 'pulse_wallet_recharge_221026',
         bodyParams: [
           recipient.name,
-          this.money(input.amount),
-          this.date(input.date),
-          this.money(input.balance),
+          this.currency(input.amount),
+          input.transactionId,
+          this.currency(input.balance),
         ],
       };
     });
@@ -420,13 +468,12 @@ export class WhatsAppService {
       if (!recipient) return undefined;
       return {
         to: recipient.to,
-        templateId: 'pulse_walletredeem',
+        templateId: 'pulse_wallet_redeem_221026',
         bodyParams: [
           recipient.name,
+          this.currency(input.amount),
           order.orderNumber,
-          this.money(input.amount),
-          this.date(input.date),
-          this.money(input.balance),
+          this.currency(input.balance),
         ],
       };
     });
@@ -456,12 +503,13 @@ export class WhatsAppService {
       if (!recipient) return undefined;
       return {
         to: recipient.to,
-        templateId: 'pulse_paymentlink',
+        templateId: 'pulse_paymentlink_221026',
         bodyParams: [
           recipient.name,
           order.orderNumber,
-          this.money(link.amount),
+          this.currency(link.amount),
           link.shortUrl!,
+          this.dateTime(link.expiresAt),
         ],
       };
     });
@@ -471,11 +519,7 @@ export class WhatsAppService {
     orderId: string,
     event: 'created' | 'ready' | 'delivered' | 'collected',
   ) {
-    if (
-      (event === 'delivered' || event === 'collected') &&
-      !this.attachmentsEnabled()
-    )
-      return;
+    if (event === 'created' && !this.attachmentsEnabled()) return;
     await this.once(
       'order:' + orderId + ':' + (event === 'collected' ? 'delivered' : event),
       async () => {
@@ -502,59 +546,97 @@ export class WhatsAppService {
           return undefined;
         const recipient = await this.customer(order.customerId);
         if (!recipient) return undefined;
-        const items = await this.items(order.id);
+        const store = await (await this.getStores()).findById(order.storeId);
         if (event === 'created') {
           const ticketUrl = await this.orderSummaries.createForOrder(order.id);
           return {
             to: recipient.to,
-            templateId: 'pulse_ordercreated',
+            templateId: 'pulse_order_created_221026',
             bodyParams: [
               recipient.name,
+              store.name,
               order.orderNumber,
-              items,
-              this.money(order.totalAmount),
+              await this.itemCount(order.id),
               this.date(order.deliveryDate),
-              // Send the full URL as text, without HTML/Markdown link syntax.
-              // A URL button requires a separately approved template component.
-              ticketUrl,
+            ],
+            media: {
+              type: 'document' as const,
+              url: ticketUrl,
+              fileName: 'ticket-' + order.orderNumber + '.pdf',
+            },
+          };
+        }
+        if (event === 'ready') {
+          // V2's automatic collection message is for counter collection.
+          // Rider-delivery assignment templates are a separate rollout.
+          if (!this.storeCollection(order)) return undefined;
+          const due = await this.balance(order);
+          return {
+            to: recipient.to,
+            templateId: 'pulse_ready_for_collection_automatic_221026',
+            bodyParams: [
+              recipient.name,
+              await this.itemCount(order.id),
+              order.orderNumber,
+              store.name,
+              due > 0 ? this.currency(due) : 'Nil, already paid',
             ],
           };
         }
-        const due = await this.balance(order);
-        if (event === 'ready') {
-          const store = await (await this.getStores()).findById(order.storeId);
+        const handover = await (
+          await this.getHandovers()
+        ).findOne({
+          where: {orderId, isDeleted: false},
+          order: ['handedOverAt DESC'],
+        });
+        // Completion templates promise the actual recipient and event time.
+        // Never substitute the sender's current time or invent a collector.
+        const completedAt = this.dateTime(
+          handover?.handedOverAt ?? handover?.createdAt,
+        );
+        if (!handover?.collectorName?.trim() || !completedAt) {
+          this.warnOnce(
+            'handover-details',
+            '[WhatsAppService] Saved handover recipient/time unavailable.',
+          );
+          return undefined;
+        }
+        const collected = event === 'collected' || this.storeCollection(order);
+        if (collected)
           return {
             to: recipient.to,
-            templateId: 'pulse_readyforcollection',
+            templateId: 'pulse_delivery_to_customer_complete_221026',
             bodyParams: [
               recipient.name,
               order.orderNumber,
-              items,
-              this.money(due),
+              handover.collectorName,
+              completedAt,
               store.name,
             ],
           };
-        }
-        const collected =
-          event === 'collected' ||
-          order.deliveryMethod === OrderDeliveryMethod.STORE_PICKUP ||
-          (!order.deliveryMethod &&
-            [OrderType.STORE_DROPOFF, OrderType.HOME_PICKUP].includes(
-              order.orderType,
-            ));
-        const bodyParams = [recipient.name, order.orderNumber, items];
-        if (!collected) bodyParams.push(this.date(new Date()));
-        bodyParams.push(
-          this.money(order.totalAmount),
-          due > 0 ? 'Balance due: INR ' + this.money(due) : 'Paid',
-        );
+        const actor = await (
+          await this.getUsers()
+        ).findOne({
+          where: {id: handover.handedOverBy},
+          fields: {fullName: true},
+        });
+        const actorName = actor?.fullName?.trim();
+        const riderName = actorName?.length
+          ? actorName
+          : order.assignedRiderName?.trim();
+        if (!riderName) return undefined;
+        const supportPhone = process.env.WHATSAPP_SUPPORT_PHONE?.trim();
         return {
           to: recipient.to,
-          templateId: collected
-            ? 'pulse_collectedcomplete'
-            : 'pulse_deliveredcomplete',
-          bodyParams,
-          media: await this.document('INVOICE', order),
+          templateId: 'pulse_delivery_by_rider_complete_221026',
+          bodyParams: [
+            recipient.name,
+            order.orderNumber,
+            riderName,
+            handover.collectorName,
+            completedAt,
+            supportPhone?.length ? supportPhone : '1800229199',
+          ],
         };
       },
     );
@@ -571,20 +653,25 @@ export class WhatsAppService {
       if (!order) return undefined;
       const recipient = await this.customer(order.customerId);
       if (!recipient) return undefined;
+      const invoice = await this.invoice(order.id);
+      if (!invoice?.invoiceNumber?.trim()) {
+        this.warnOnce(
+          'payment-invoice',
+          '[WhatsAppService] Payment notification requires a generated invoice.',
+        );
+        return undefined;
+      }
       return {
         to: recipient.to,
-        templateId: 'pulse_paymentreceived',
+        templateId: 'pulse_payment_received_manual_221026',
         bodyParams: [
           recipient.name,
-          order.orderNumber,
           this.money(payment.amount),
+          order.orderNumber,
           payment.paymentMode.replace(/_/g, ' '),
-          payment.transactionReference?.trim()
-            ? payment.transactionReference
-            : payment.id,
-          this.money(await this.balance(order)),
+          invoice.invoiceNumber,
         ],
-        media: await this.document('RECEIPT', order, payment.id),
+        media: await this.invoiceDocument(order, invoice.id),
       };
     });
   }
@@ -626,21 +713,46 @@ export class WhatsAppService {
           const timeSlot =
             slot?.startTime?.trim() && slot?.endTime?.trim()
               ? `${slot.startTime.trim()} - ${slot.endTime.trim()}`
-              : 'Not specified';
-          if (timeSlot === 'Not specified') {
+              : '';
+          if (!timeSlot) {
             this.warnOnce(
               'pickup-slot-times',
               '[WhatsAppService] Pickup slot start/end times unavailable.',
             );
+            return undefined;
+          }
+          const rider = await (
+            await this.getRiders()
+          ).findOne({
+            where: {id: pickup.assignedRiderId, isDeleted: false},
+            fields: {userId: true},
+          });
+          const user = rider
+            ? await (
+                await this.getUsers()
+              ).findOne({
+                where: {id: rider.userId, isDeleted: false},
+                fields: {countryCode: true, phone: true},
+              })
+            : null;
+          const riderPhone = user?.phone
+            ? this.phone(user.phone, user.countryCode)
+            : undefined;
+          if (!riderPhone) {
+            this.warnOnce(
+              'rider-phone',
+              '[WhatsAppService] Assigned rider contact unavailable.',
+            );
+            return undefined;
           }
           return {
             to: recipient.to,
-            templateId: 'pulse_riderscheduled',
+            templateId: 'pulse_rider_scheduled_221026',
             bodyParams: [
               recipient.name,
-              pickup.pickupNumber ?? pickup.id,
-              timeSlot,
               pickup.assignedRiderName,
+              riderPhone,
+              timeSlot,
             ],
           };
         }

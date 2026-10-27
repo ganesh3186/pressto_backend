@@ -1,7 +1,7 @@
 import {inject} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
 import {HttpErrors, post, requestBody, response} from '@loopback/rest';
-import {securityId} from '@loopback/security';
+import {securityId, UserProfile} from '@loopback/security';
 import {PresstoDataSource} from '../datasources';
 import {
   CustomerRepository,
@@ -12,6 +12,7 @@ import {
 import {CouponService} from '../services/coupon.service';
 import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {JWTService} from '../services/jwt-service';
+import {OtpService} from '../services/otp.service';
 import {SecurityDepositService} from '../services/security-deposit.service';
 import {WalletService} from '../services/wallet.service';
 import {PROTECTED_ROLES, sortCustomerRoleFirst} from '../utils/role-guard';
@@ -38,6 +39,8 @@ export class CustomerAuthController {
     private walletService: WalletService,
     @inject('services.security-deposit')
     private securityDepositService: SecurityDepositService,
+    @inject('services.OtpService')
+    private otpService: OtpService,
   ) {}
 
   private async generateUniqueUsername(email: string | undefined, fullName: string): Promise<string> {
@@ -265,20 +268,7 @@ export class CustomerAuthController {
       throw new HttpErrors.BadRequest('No customer record associated with this user.');
     }
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const hashedOtp = await this.hasher.hashPassword(otp);
-
-    const expiry = new Date();
-    expiry.setMinutes(expiry.getMinutes() + 10);
-
-    await this.usersRepository.updateById(user.id, {
-      loginOtp: hashedOtp,
-      loginOtpExpires: expiry,
-    });
-
-    // TODO: Replace with SMS service in production
-    return {message: 'OTP sent', otp};
+    return this.otpService.sendLoginOtp(user);
   }
 
   // ---------------------------------------Verify OTP------------------------------------
@@ -348,7 +338,7 @@ export class CustomerAuthController {
       phone: user.phone,
       roles,
     };
-    const token = await this.jwtService.generateToken(userProfile as any);
+    const token = await this.jwtService.generateToken(userProfile as UserProfile);
 
     return {
       token,

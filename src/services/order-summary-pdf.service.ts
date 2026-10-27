@@ -7,6 +7,7 @@ import path from 'path';
 import PDFDocument from 'pdfkit';
 import {STORAGE_DIRECTORY} from '../keys';
 import {Customer, CustomerAddress, Order, Store} from '../models';
+import {Invoice} from '../models/invoice.model';
 import type {
   BrandRepository,
   ColorRepository,
@@ -15,6 +16,10 @@ import type {
   CustomerRepository,
   StoreRepository,
   WalletRepository,
+  InvoiceRepository,
+  InvoiceOrderLinkRepository,
+  RefundDueRepository,
+  UsersRepository,
 } from '../repositories';
 import type {OrderService} from './order.service';
 
@@ -48,6 +53,7 @@ interface SummaryDetails {
     totalPrice: number;
     unitPrice?: number;
     isMeasurement?: boolean;
+    deliveryMultiplier?: number;
     rejectedAtIntake?: boolean;
     additionalServices?: ReceiptExtra[];
     additionalCharges?: ReceiptExtra[];
@@ -55,15 +61,17 @@ interface SummaryDetails {
   }[];
   orderCharges?: ReceiptExtra[];
   paymentTransactions?: {
+    amount?: number;
     paymentMode: string;
     transactionType?: string;
     transactionReference?: string;
   }[];
+  statusHistory?: {status?: string; changedAt?: Date; createdAt?: Date}[];
   totalCollected: number;
   balanceDue: number;
 }
 
-/** Generates only order-created summaries; no Media or order relation writes. */
+/** Shared 80 mm ticket/invoice PDFs; no Media or order relation writes. */
 export class OrderSummaryPdfService {
   constructor(
     @inject(STORAGE_DIRECTORY) private storageDirectory: string,
@@ -83,6 +91,14 @@ export class OrderSummaryPdfService {
     private getBrands: Getter<BrandRepository>,
     @repository.getter('ColorRepository')
     private getColors: Getter<ColorRepository>,
+    @repository.getter('InvoiceRepository')
+    private getInvoices: Getter<InvoiceRepository>,
+    @repository.getter('InvoiceOrderLinkRepository')
+    private getInvoiceLinks: Getter<InvoiceOrderLinkRepository>,
+    @repository.getter('RefundDueRepository')
+    private getRefunds: Getter<RefundDueRepository>,
+    @repository.getter('UsersRepository')
+    private getUsers: Getter<UsersRepository>,
   ) {}
 
   private secret(): string {
@@ -95,9 +111,15 @@ export class OrderSummaryPdfService {
     return secret;
   }
 
-  private signature(fileName: string, expires: string): Buffer {
+  private signature(
+    fileName: string,
+    expires: string,
+    invoice = false,
+  ): Buffer {
     return createHmac('sha256', this.secret())
-      .update(`order-summary\n${fileName}\n${expires}`)
+      .update(
+        `${invoice ? 'invoice' : 'order-summary'}\n${fileName}\n${expires}`,
+      )
       .digest();
   }
 
@@ -121,6 +143,30 @@ export class OrderSummaryPdfService {
   }
 
   async createForOrder(orderId: string): Promise<string> {
+    return this.createDocument(orderId);
+  }
+
+  async createForInvoice(orderId: string, invoiceId: string): Promise<string> {
+    const invoice = await (await this.getInvoices()).findById(invoiceId);
+    const links = invoice.isConsolidated
+      ? await (
+          await this.getInvoiceLinks()
+        ).find({where: {invoiceId}, order: ['createdAt ASC']})
+      : [];
+    const orderIds = links.length
+      ? links.map(link => link.orderId)
+      : [invoice.orderId];
+    if (!orderIds.includes(orderId)) {
+      throw new HttpErrors.Forbidden('Invoice does not belong to this ticket.');
+    }
+    return this.createDocument(orderId, invoice, orderIds);
+  }
+
+  private async createDocument(
+    orderId: string,
+    invoice?: Invoice,
+    orderIds = [orderId],
+  ): Promise<string> {
     // Validate configuration before creating files or querying receipt data.
     const base = this.baseUrl();
     this.secret();
@@ -136,9 +182,48 @@ export class OrderSummaryPdfService {
         'ORDER_SUMMARY_LINK_TTL_SECONDS must be between 60 and 31536000.',
       );
     }
-    const details = (await (
-      await this.getOrders()
-    ).getOrderDetails(orderId)) as SummaryDetails;
+    const orders = await this.getOrders();
+    const entries = await Promise.all(
+      orderIds.map(
+        async id => (await orders.getOrderDetails(id)) as SummaryDetails,
+      ),
+    );
+    const primary =
+      entries.find(entry => entry.order.id === (invoice?.orderId ?? orderId)) ??
+      entries[0];
+    if (
+      entries.some(entry => entry.order.customerId !== primary.order.customerId)
+    ) {
+      throw new HttpErrors.Forbidden(
+        'Invoice tickets must belong to the same customer.',
+      );
+    }
+    const combined = entries.length > 1;
+    const details: SummaryDetails = combined
+      ? {
+          ...primary,
+          order: {
+            ...primary.order,
+            orderNumber: entries
+              .map(entry => entry.order.orderNumber)
+              .join(', '),
+          } as SummaryDetails['order'],
+          items: entries.flatMap(entry =>
+            entry.items.map(item => ({
+              ...item,
+              itemName: `[${entry.order.orderNumber}] ${item.itemName ?? ''}`,
+              deliveryMultiplier:
+                1 + Number(entry.order.deliveryTypePercentage ?? 0) / 100,
+            })),
+          ),
+          orderCharges: entries.flatMap(entry => entry.orderCharges ?? []),
+          paymentTransactions: entries.flatMap(
+            entry => entry.paymentTransactions ?? [],
+          ),
+          totalCollected: Number(invoice?.amountReceived ?? 0),
+          balanceDue: Number(invoice?.balanceDue ?? 0),
+        }
+      : primary;
     const store = await (
       await this.getStores()
     ).findById(details.order.storeId);
@@ -168,41 +253,63 @@ export class OrderSummaryPdfService {
         ? colorNames.get(garment.colorId)
         : undefined;
     }
-    const [customer, addresses, phones, wallet] = await Promise.all([
-      (await this.getCustomers()).findById(customerId),
-      (await this.getAddresses()).find({
-        where: {customerId, isDeleted: false, isActive: true},
-        order: ['isDefault DESC', 'createdAt ASC'],
-      }),
-      (await this.getPhones()).find({
-        where: {customerId, isDeleted: false, isActive: true},
-        order: ['isPrimary DESC', 'createdAt ASC'],
-      }),
-      (await this.getWallets()).findOne({where: {customerId}}),
-    ]);
+    const [customer, addresses, phones, wallet, refunds, servedBy] =
+      await Promise.all([
+        (await this.getCustomers()).findById(customerId),
+        (await this.getAddresses()).find({
+          where: {customerId, isDeleted: false, isActive: true},
+          order: ['isDefault DESC', 'createdAt ASC'],
+        }),
+        (await this.getPhones()).find({
+          where: {customerId, isDeleted: false, isActive: true},
+          order: ['isPrimary DESC', 'createdAt ASC'],
+        }),
+        (await this.getWallets()).findOne({where: {customerId}}),
+        invoice
+          ? (await this.getRefunds()).find({where: {orderId: {inq: orderIds}}})
+          : [],
+        invoice?.generatedBy
+          ? (await this.getUsers()).findOne({
+              where: {id: invoice.generatedBy},
+              fields: {fullName: true},
+            })
+          : null,
+      ]);
     const fileName = `${randomUUID()}.pdf`;
-    const directory = path.join(this.storageDirectory, 'order-summaries');
+    const folder = invoice ? 'invoices' : 'order-summaries';
+    const directory = path.join(this.storageDirectory, folder);
     await fs.mkdir(directory, {recursive: true});
     const filePath = path.join(directory, fileName);
     await fs.writeFile(
       filePath,
-      await this.render(details, store, {
-        customer,
-        addresses,
-        phone: phones[0]?.phone ?? details.order.customer?.phone,
-        walletBalance: Number(wallet?.currentBalance ?? 0),
-      }),
+      await this.render(
+        details,
+        store,
+        {
+          customer,
+          addresses,
+          phone: phones[0]?.phone ?? details.order.customer?.phone,
+          walletBalance: Number(wallet?.currentBalance ?? 0),
+          refundAmount: refunds.reduce(
+            (sum, refund) => sum + Number(refund.amount ?? 0),
+            0,
+          ),
+          servedBy: servedBy?.fullName,
+          delivered: entries.every(entry => entry.order.status === 'delivered'),
+        },
+        invoice,
+      ),
       {
         flag: 'wx',
         mode: 0o600,
       },
     );
     const expires = String(Math.floor(Date.now() / 1000) + configuredTtl);
-    base.pathname = `${base.pathname.replace(/\/$/, '')}/documents/order-summaries/${fileName}`;
+    base.pathname = `${base.pathname.replace(/\/$/, '')}/documents/${folder}/${fileName}`;
     base.searchParams.set('expires', expires);
     base.searchParams.set(
       'signature',
-      this.signature(fileName, expires).toString('hex'),
+      this.signature(fileName, expires, Boolean(invoice)).toString('hex'),
     );
     return base.toString();
   }
@@ -211,6 +318,23 @@ export class OrderSummaryPdfService {
     fileName: string,
     expires: string,
     signature: string,
+  ): Promise<Buffer> {
+    return this.readDocument(fileName, expires, signature, false);
+  }
+
+  async readSignedInvoice(
+    fileName: string,
+    expires: string,
+    signature: string,
+  ): Promise<Buffer> {
+    return this.readDocument(fileName, expires, signature, true);
+  }
+
+  private async readDocument(
+    fileName: string,
+    expires: string,
+    signature: string,
+    invoice: boolean,
   ): Promise<Buffer> {
     if (
       !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.pdf$/.test(
@@ -223,7 +347,7 @@ export class OrderSummaryPdfService {
     if (
       !timingSafeEqual(
         Buffer.from(signature, 'hex'),
-        this.signature(fileName, expires),
+        this.signature(fileName, expires, invoice),
       )
     ) {
       throw new HttpErrors.Forbidden('Invalid document link.');
@@ -233,7 +357,11 @@ export class OrderSummaryPdfService {
     }
     try {
       return await fs.readFile(
-        path.join(this.storageDirectory, 'order-summaries', fileName),
+        path.join(
+          this.storageDirectory,
+          invoice ? 'invoices' : 'order-summaries',
+          fileName,
+        ),
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -251,7 +379,11 @@ export class OrderSummaryPdfService {
       addresses: CustomerAddress[];
       phone?: string | null;
       walletBalance: number;
+      refundAmount?: number;
+      servedBy?: string;
+      delivered?: boolean;
     },
+    invoice?: Invoice,
   ): Promise<Buffer> {
     // Match thermal-receipt.js: 80 mm paper, 6 mm side insets, same field order.
     const width = (80 * 72) / 25.4;
@@ -284,7 +416,9 @@ export class OrderSummaryPdfService {
         'Bold',
         path.join(__dirname, '../data/fonts/Roboto-Bold.ttf'),
       );
-      doc.info.Title = `Ticket ${details.order.orderNumber}`;
+      doc.info.Title = invoice
+        ? `Invoice ${invoice.invoiceNumber}`
+        : `Ticket ${details.order.orderNumber}`;
       doc.info.Author = 'Pressto';
       const text = (value: unknown): string =>
         value === undefined || value === null || value === ''
@@ -476,11 +610,38 @@ export class OrderSummaryPdfService {
       pair('Store Name: ' + store.name, 'State Code: -');
       center('GSTN: 27AAECP3228Q2ZX', false, 7.5);
       rule();
-      center('TICKET', true, 9);
+      center(
+        invoice
+          ? invoice.isConsolidated
+            ? 'COMBINED TAX INVOICE'
+            : 'TAX INVOICE'
+          : 'TICKET',
+        true,
+        9,
+      );
       rule();
-      field('Ticket #:', order.orderNumber);
-      field('Date:', date(order.createdAt));
-      field('Expected Delivery:', date(order.deliveryDate));
+      if (invoice) {
+        field('Inv No.:', invoice.invoiceNumber);
+        field('Inv Date:', date(invoice.createdAt));
+        field('Ticket No.:', order.orderNumber);
+        field('Delivery Status:', context.delivered ? 'Delivered' : 'Pending');
+      } else {
+        field('Ticket #:', order.orderNumber);
+        field('Date:', date(order.createdAt));
+      }
+      const deliveredHistory = details.statusHistory?.find(
+        entry => entry.status === 'delivered',
+      );
+      field(
+        invoice && context.delivered ? 'Delivery Date:' : 'Expected Delivery:',
+        date(
+          invoice && context.delivered
+            ? (deliveredHistory?.changedAt ??
+                deliveredHistory?.createdAt ??
+                order.updatedAt)
+            : order.deliveryDate,
+        ),
+      );
       field(
         'Delivery Type:',
         String(order.deliveryType ?? 'standard')
@@ -495,7 +656,7 @@ export class OrderSummaryPdfService {
           ? 'P2D'
           : 'STORE',
       );
-      field('Served By:', order.receivedByName);
+      field('Served By:', context.servedBy ?? order.receivedByName);
       rule();
       center('CUSTOMER/CLIENT', true);
       rule();
@@ -522,30 +683,51 @@ export class OrderSummaryPdfService {
       tableRow(headings, true);
       let itemCount = 0;
       let serviceCount = 0;
-      type Line = {cells: string[]; extras: ReceiptExtra[]; returned: boolean};
+      type Line = {
+        cells: string[];
+        extras: ReceiptExtra[];
+        returned: boolean;
+        returnedAtIntake: boolean;
+      };
       const lines: Line[] = [];
       for (const item of details.items) {
         const quantity = Math.max(1, num(item.quantity));
-        itemCount += quantity;
         const garments = item.garments ?? [];
+        const pieceCount = Math.max(quantity, garments.length);
+        itemCount += pieceCount;
+        const billable = Array.from(
+          {length: pieceCount},
+          (_, i) =>
+            !item.rejectedAtIntake &&
+            garments[i]?.status !== 'returned_to_customer',
+        );
+        const billableCount = billable.filter(Boolean).length;
         const pieceServices = Array.from(
-          {length: quantity},
+          {length: pieceCount},
           (_, i) => garments[i]?.additionalServices ?? [],
         );
         const serviceSum = pieceServices
+          .filter((_, i) => billable[i])
           .flat()
           .reduce((sum, extra) => sum + num(extra.amount), 0);
+        const serviceMultiplier =
+          item.deliveryMultiplier ??
+          1 + num(order.deliveryTypePercentage) / 100;
         const useBase =
           !item.isMeasurement &&
           Math.abs(
-            num(item.unitPrice) * quantity + serviceSum - num(item.totalPrice),
+            num(item.unitPrice) * billableCount +
+              serviceSum * serviceMultiplier -
+              num(item.totalPrice),
           ) < 0.02;
-        const areas = Array.from({length: quantity}, (_, i) => {
+        const areas = Array.from({length: pieceCount}, (_, i) => {
           const area = num(garments[i]?.length) * num(garments[i]?.width);
           return area > 0 ? area : 1;
         });
-        const totalArea = areas.reduce((sum, area) => sum + area, 0);
-        for (let i = 0; i < quantity; i++) {
+        const totalArea =
+          areas.reduce((sum, area, i) => sum + (billable[i] ? area : 0), 0) ||
+          areas.reduce((sum, area) => sum + area, 0);
+        for (let i = 0; i < pieceCount; i++) {
           const garment = garments[i];
           const services = pieceServices[i];
           const charges = garment?.additionalCharges ?? [];
@@ -558,8 +740,10 @@ export class OrderSummaryPdfService {
           const base = item.isMeasurement
             ? (num(item.totalPrice) / totalArea) * area - extraTotal
             : useBase
-              ? num(item.unitPrice)
-              : num(item.totalPrice) / quantity - extraTotal;
+              ? num(item.unitPrice) +
+                extraTotal * serviceMultiplier -
+                extraTotal
+              : num(item.totalPrice) / Math.max(1, billableCount) - extraTotal;
           const description =
             [item.itemName, item.serviceName].filter(Boolean).join(' - ') ||
             '-';
@@ -571,7 +755,7 @@ export class OrderSummaryPdfService {
             : 'Hanger';
           const remarks = instructions
             .replace(
-              /^(Hanging|Packaging)(,\s*(Hanging|Packaging))*\s*(\u2014\s*)?/i,
+              /^(Hanging|Packaging)(,\s*(Hanging|Packaging))*\s*([-\u2014]\s*)?/i,
               '',
             )
             .trim();
@@ -590,6 +774,8 @@ export class OrderSummaryPdfService {
             .filter(Boolean)
             .join('\n');
           const rejected = Boolean(item.rejectedAtIntake);
+          const returned =
+            rejected || garment?.status === 'returned_to_customer';
           const pending =
             rejected ||
             ['delivered', 'returned_to_customer'].includes(
@@ -604,10 +790,11 @@ export class OrderSummaryPdfService {
               '1',
               String(pending),
               money(base / area),
-              money(rejected ? 0 : base),
+              money(returned ? 0 : base),
             ],
             extras: [...services, ...charges],
-            returned: rejected,
+            returned,
+            returnedAtIntake: rejected,
           });
         }
         for (const charge of item.additionalCharges ?? []) {
@@ -622,6 +809,7 @@ export class OrderSummaryPdfService {
             ],
             extras: [],
             returned: Boolean(item.rejectedAtIntake),
+            returnedAtIntake: Boolean(item.rejectedAtIntake),
           });
         }
       }
@@ -680,42 +868,146 @@ export class OrderSummaryPdfService {
       renderLines(lines.filter(line => !line.returned));
       if (!lines.some(line => !line.returned))
         tableRow(['-', '', '', '', '', '']);
-      if (lines.some(line => line.returned)) {
+      if (lines.some(line => line.returned && !line.returnedAtIntake)) {
+        rule();
+        center('RETURNED ITEMS', true);
+        tableRow(headings, true);
+        renderLines(
+          lines.filter(line => line.returned && !line.returnedAtIntake),
+        );
+      }
+      if (lines.some(line => line.returnedAtIntake)) {
         rule();
         center('RETURNED AT INTAKE', true);
         tableRow(headings, true);
-        renderLines(lines.filter(line => line.returned));
+        renderLines(lines.filter(line => line.returnedAtIntake));
       }
       rule();
       for (const charge of details.orderCharges ?? [])
         pair(text(charge.name), money(charge.amount));
-      pair('Estimated Sub-Total:', money(order.subtotal));
-      const discount = num(order.discountAmount);
+      const hasReturns = lines.some(
+        line => line.returned && !line.returnedAtIntake,
+      );
+      const liveInvoiceTotals = Boolean(
+        invoice &&
+        !invoice.isConsolidated &&
+        hasReturns &&
+        num(order.totalAmount) > 0,
+      );
+      let subtotal =
+        invoice && !liveInvoiceTotals
+          ? num(invoice.subtotal)
+          : num(order.subtotal);
+      const discount =
+        invoice && !liveInvoiceTotals
+          ? num(invoice.discount)
+          : num(order.discountAmount);
+      let cgst =
+        invoice && !liveInvoiceTotals
+          ? num(invoice.cgst)
+          : Math.round(num(order.taxAmount) * 50) / 100;
+      let sgst =
+        invoice && !liveInvoiceTotals
+          ? num(invoice.sgst)
+          : num(order.taxAmount) - cgst;
+      const total =
+        invoice && !liveInvoiceTotals
+          ? num(invoice.totalAmount)
+          : num(order.totalAmount);
+      const activeItems = lines
+        .filter(line => !line.returned)
+        .reduce(
+          (sum, line) =>
+            sum +
+            num(line.cells[5]) +
+            line.extras.reduce((s, extra) => s + num(extra.amount), 0),
+          0,
+        );
+      const activeSubtotal =
+        activeItems +
+        (details.orderCharges ?? []).reduce(
+          (sum, charge) => sum + num(charge.amount),
+          0,
+        ) +
+        num(invoice?.deliveryCharge);
+      // Same legacy-tax recovery used by the frontend invoice printer.
+      if (
+        invoice &&
+        !invoice.isConsolidated &&
+        cgst + sgst === 0 &&
+        num(order.taxAmount) > 0 &&
+        Math.abs(total - num(order.totalAmount)) <= 1 &&
+        activeItems > 0 &&
+        Math.abs(activeSubtotal - discount + num(order.taxAmount) - total) <= 1
+      ) {
+        subtotal = activeSubtotal;
+        cgst = num(order.taxAmount) / 2;
+        sgst = num(order.taxAmount) / 2;
+      }
+      const est = invoice ? '' : 'Estimated ';
+      if (invoice && num(invoice.deliveryCharge) > 0)
+        pair('Delivery Charge:', money(invoice.deliveryCharge));
+      pair(`${est}Sub-Total:`, money(subtotal));
       const discountRate =
-        num(order.subtotal) > 0
-          ? Number(((discount / num(order.subtotal)) * 100).toFixed(2))
-          : 0;
+        subtotal > 0 ? Number(((discount / subtotal) * 100).toFixed(2)) : 0;
       pair(
         discountRate > 0 ? `Discount @${discountRate}%` : 'Discount:',
         money(discount),
       );
       if (discount > 0)
-        pair(
-          'Estimated Discounted Total:',
-          money(num(order.subtotal) - discount),
-        );
-      const cgst = Math.round(num(order.taxAmount) * 50) / 100;
-      pair('Estimated CGST @9%', money(cgst));
-      pair('Estimated SGST @9%', money(num(order.taxAmount) - cgst));
-      rule(true);
-      pair('TOTAL ESTIMATED VALUE (Rs.):', whole(order.totalAmount), true);
+        pair(`${est}Discounted Total:`, money(subtotal - discount));
+      pair(`${est}CGST @9%`, money(cgst));
+      pair(`${est}SGST @9%`, money(sgst));
       rule(true);
       pair(
+        invoice ? 'TOTAL (Rs.):' : 'TOTAL ESTIMATED VALUE (Rs.):',
+        whole(total),
+        true,
+      );
+      rule(true);
+      // A consolidated invoice can bill remaining balances after older ticket
+      // payments/refunds. Its own balances are authoritative; do not charge or
+      // refund those historical ticket transactions a second time here.
+      const paidRefund = invoice?.isConsolidated
+        ? 0
+        : (details.paymentTransactions ?? [])
+            .filter(payment => payment.transactionType === 'refund')
+            .reduce((sum, payment) => sum + num(payment.amount), 0);
+      const incoming = (details.paymentTransactions ?? [])
+        .filter(payment => payment.transactionType !== 'refund')
+        .reduce((sum, payment) => sum + num(payment.amount), 0);
+      const grossPaid = invoice?.isConsolidated
+        ? num(invoice.amountReceived)
+        : Math.max(
+            num(invoice?.amountReceived),
+            num(details.totalCollected),
+            incoming,
+          );
+      const refund = invoice?.isConsolidated
+        ? 0
+        : Math.max(
+            num(context.refundAmount),
+            paidRefund,
+            grossPaid - num(details.totalCollected),
+          );
+      const paid = invoice?.isConsolidated
+        ? num(invoice.amountReceived)
+        : paidRefund > 0
+          ? Math.max(0, grossPaid - paidRefund)
+          : Math.max(num(details.totalCollected), grossPaid - refund);
+      const preciseTotal = Math.max(0, subtotal - discount) + cgst + sgst;
+      const balanceTotal =
+        Math.round(preciseTotal) === total ? preciseTotal : total;
+      const pending = invoice?.isConsolidated
+        ? Math.max(0, num(invoice.balanceDue))
+        : paidRefund > 0
+          ? Math.max(0, balanceTotal - paid)
+          : Math.max(0, num(details.balanceDue));
+      pair(
         'Payment Status:',
-        details.totalCollected <= 0
+        paid <= 0
           ? 'Unpaid'
-          : Math.round(details.totalCollected) >=
-              Math.round(num(order.totalAmount))
+          : Math.round(paid) >= Math.round(total)
             ? 'Paid'
             : 'Partial Paid',
       );
@@ -746,13 +1038,18 @@ export class OrderSummaryPdfService {
           ),
         ].join(', '),
       );
-      pair('Collected Amount:', whole(details.totalCollected));
+      if (!invoice) pair('Collected Amount:', whole(details.totalCollected));
       const references = payments
         .map(p => p.transactionReference)
         .filter(Boolean)
         .join(', ');
       if (references) pair('Transaction Reference ID:', references);
-      pair('Pending Amount:', whole(details.balanceDue), true);
+      if (invoice && refund > 0)
+        pair(
+          paidRefund > 0 ? 'Already Refunded:' : 'Refund Amount:',
+          '- ' + whole(refund),
+        );
+      pair('Pending Amount:', whole(pending), true);
       rule();
       pair('Items: ' + itemCount, 'Services: ' + serviceCount);
       rule();
