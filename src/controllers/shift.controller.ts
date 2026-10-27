@@ -581,11 +581,16 @@ export class ShiftController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts')
-  @response(200, {description: 'Shifts, filtered by store/status'})
+  @response(200, {description: 'Shifts, filtered by store/status, paginated'})
   async find(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId?: string,
     @param.query.string('status') status?: ShiftStatus,
+    @param.query.string('search') search?: string,
+    @param.query.string('closedFrom') closedFrom?: string,
+    @param.query.string('closedTo') closedTo?: string,
+    @param.query.number('limit') limit = 25,
+    @param.query.number('skip') skip = 0,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(
@@ -596,12 +601,38 @@ export class ShiftController {
     const and: object[] = [];
     if (status) and.push({status});
     if (narrowedStoreIds) and.push({storeId: {inq: narrowedStoreIds}});
+    if (closedFrom) and.push({closedAt: {gte: new Date(`${closedFrom}T00:00:00`)}});
+    if (closedTo) and.push({closedAt: {lte: new Date(`${closedTo}T23:59:59.999`)}});
 
-    const shifts = await this.shiftRepository.find({
-      where: (and.length ? {and} : {}) as object,
-      order: ['openedAt DESC'],
-    });
-    return {shifts};
+    const term = search?.trim();
+    if (term) {
+      const orClauses: object[] = [
+        {storeCode: {ilike: `%${term}%`}},
+        {storeName: {ilike: `%${term}%`}},
+        {openingUserName: {ilike: `%${term}%`}},
+        {userName: {ilike: `%${term}%`}},
+        {closingUserName: {ilike: `%${term}%`}},
+      ];
+      // Shift numbers are stored as integers — ilike doesn't apply, so a
+      // purely numeric search matches either number exactly instead.
+      if (/^\d+$/.test(term)) {
+        const asNumber = Number(term);
+        orClauses.push({openingNo: asNumber}, {closureNo: asNumber});
+      }
+      and.push({or: orClauses});
+    }
+
+    const where = (and.length ? {and} : {}) as object;
+    const [shifts, totalCount] = await Promise.all([
+      this.shiftRepository.find({
+        where,
+        order: ['closedAt DESC', 'openedAt DESC'],
+        limit,
+        skip,
+      }),
+      this.shiftRepository.count(where),
+    ]);
+    return {shifts, totalCount: totalCount.count};
   }
 
   // ─── Detail ───────────────────────────────────────────────────────────────
@@ -610,9 +641,22 @@ export class ShiftController {
   @authorize({roles: ['super_admin'], permissions: ['shift:read']})
   @get('/shifts/{id}')
   @response(200, {description: 'Shift detail'})
-  async findById(@param.path.string('id') id: string): Promise<Shift> {
+  async findById(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<Shift> {
     const shift = await this.shiftRepository.findById(id);
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
+
+    // Same store-scope narrowing as find() — a cluster/store-scoped caller
+    // can only open the detail of a shift belonging to their own scope,
+    // same as they could only ever have listed it there to begin with.
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const allowedStoreIds = await this.storeScopeService.narrowStoreIds(scope, {});
+    if (allowedStoreIds && !allowedStoreIds.includes(shift.storeId)) {
+      throw new HttpErrors.NotFound('Shift not found.');
+    }
+
     return shift;
   }
 
