@@ -7,9 +7,7 @@ import {RiderRepository, UsersRepository} from '../repositories';
 import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {JWTService} from '../services/jwt-service';
 import {NotificationService} from '../services/notification.service';
-
-// How long a login OTP stays valid, in minutes.
-const OTP_TTL_MINUTES = 10;
+import {OtpService} from '../services/otp.service';
 
 /**
  * Rider app authentication — phone + OTP.
@@ -33,6 +31,8 @@ export class RiderAuthController {
     private jwtService: JWTService,
     @inject('services.notification')
     private notificationService: NotificationService,
+    @inject('services.OtpService')
+    private otpService: OtpService,
   ) {}
 
   /**
@@ -86,20 +86,7 @@ export class RiderAuthController {
   ): Promise<object> {
     const {user} = await this.resolveActiveRider(body.phone, body.countryCode);
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const hashedOtp = await this.hasher.hashPassword(otp);
-
-    const expiry = new Date();
-    expiry.setMinutes(expiry.getMinutes() + OTP_TTL_MINUTES);
-
-    await this.usersRepository.updateById(user.id, {
-      loginOtp: hashedOtp,
-      loginOtpExpires: expiry,
-    });
-
-    // TODO: send via SMS in production. Returned here so the app team can
-    // integrate now — same as the customer OTP flow.
-    return {message: 'OTP sent', otp};
+    return this.otpService.sendLoginOtp(user);
   }
 
   // ─── Verify OTP ───────────────────────────────────────────────────────────
