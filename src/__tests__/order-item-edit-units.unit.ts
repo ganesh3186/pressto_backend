@@ -7,6 +7,7 @@ import {
   hasEditUnitCharges,
   orderGarmentsForRemoval,
   planEditUnitSlots,
+  priceEditedAdditionalService,
   priceEditedLine,
   resolveEditUnitAreas,
   resolveEditUnitServiceIds,
@@ -20,6 +21,16 @@ const prices: Record<string, number> = {[STARCH]: 50, [FOLD]: 30};
 const servicePrice = (id: string) => prices[id] ?? 0;
 
 describe('editing order items per unit (PUT /orders/{id}/items)', () => {
+  it('keeps a saved zero-price extra on its original piece without offering it to a new piece', () => {
+    const selected = [['darning'], []];
+    const previous = [[{serviceId: 'darning', amount: 0}], []];
+    expect(priceEditedAdditionalService('darning', 0, selected, previous)).to.eql([0, 0]);
+    expect(() => priceEditedAdditionalService('darning', 0, [['darning'], ['darning']], previous))
+      .to.throw(/unavailable at Rs.0/);
+    expect(priceEditedAdditionalService('darning', 25, [['darning'], ['darning']], previous))
+      .to.eql([25, 25]);
+  });
+
   it('keeps a declined piece separate and free of services and charges', () => {
     const [accepted, returned] = splitEditIntakeReturns([{
       serviceId: 'clean', itemId: 'shirt', quantity: 2,

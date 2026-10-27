@@ -750,6 +750,29 @@ export class ApprovalService {
         ? ApprovalRequestStatus.APPROVED
         : ApprovalRequestStatus.REJECTED;
 
+    const approvedAdditionalServicePrices = new Map<string, number>();
+    if (newStatus === ApprovalRequestStatus.APPROVED && request.type === ApprovalRequestType.UPGRADE_SERVICE) {
+      const requestedIds = (request.metadata?.additionalServiceIds as string[] | undefined) ?? [];
+      if (requestedIds.length) {
+        const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
+        const orderItem = garment && await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
+        const order = orderItem && await this.orderRepo.findOne({where: {id: orderItem.orderId}});
+        if (!garment || !orderItem || !order) {
+          throw new HttpErrors.NotFound('Order or garment for this upgrade was not found.');
+        }
+        const attached = new Set((await this.garmentAdditionalServiceRepo.find({
+          where: {garmentId: garment.id, isDeleted: false} as any,
+        })).map(row => row.serviceId));
+        for (const id of new Set(requestedIds)) {
+          if (attached.has(id)) continue;
+          const price = await this.orderService.resolvePricing(
+            order.storeId!, id, orderItem.itemId, order.customerId, {additional: true},
+          );
+          approvedAdditionalServicePrices.set(id, price.resolvedPrice);
+        }
+      }
+    }
+
     const {v4} = await import('uuid');
 
     // Photograph every row the effects below are about to touch, BEFORE they run.
@@ -807,7 +830,7 @@ export class ApprovalService {
     // Store and in-pipeline reprocessing already started when requested; their decision records history only.
     if (request.type !== ApprovalRequestType.REPROCESS) {
       if (params.action === ApprovalActionType.APPROVED) {
-        await this._applyApproveEffect(request, params.performedBy);
+        await this._applyApproveEffect(request, params.performedBy, approvedAdditionalServicePrices);
       } else {
         await this._applyRejectEffect(request, params.performedBy, params.action);
       }
@@ -896,6 +919,7 @@ export class ApprovalService {
   private async _applyApproveEffect(
     request: ApprovalRequest,
     performedBy: string,
+    approvedAdditionalServicePrices: Map<string, number>,
   ): Promise<void> {
     // Cheque/PDC payments are raised against the ORDER (no garment involved,
     // and no PaymentTransaction exists yet — see order.service.ts's
@@ -954,6 +978,7 @@ export class ApprovalService {
         request,
         performedBy,
         garment.id,
+        approvedAdditionalServicePrices,
       );
     }
 
@@ -1823,6 +1848,7 @@ export class ApprovalService {
     request: ApprovalRequest,
     performedBy: string,
     garmentId: string,
+    approvedAdditionalServicePrices: Map<string, number>,
   ): Promise<void> {
     const toServiceId = request.metadata?.toServiceId as string | undefined;
     const requestedAddlIds =
@@ -1886,28 +1912,12 @@ export class ApprovalService {
     const alreadyAttachedIds = new Set(
       existingAddlServices.map(s => s.serviceId),
     );
-    // Resolved independently of the primary-service pricing above, same as
-    // order creation — an add-on that no longer prices (catalog changed
-    // since the request was raised) is skipped rather than blocking the
-    // whole approval.
     const newlyAddedAddlServices: Array<{serviceId: string; amount: number}> = [];
     for (const addlId of requestedAddlIds) {
       if (alreadyAttachedIds.has(addlId)) continue;
-      try {
-        const addlPricing = await this.orderService.resolvePricing(
-          order.storeId!,
-          addlId,
-          orderItem.itemId,
-          order.customerId,
-          {additional: true},
-        );
-        newlyAddedAddlServices.push({
-          serviceId: addlId,
-          amount: addlPricing.resolvedPrice,
-        });
-      } catch {
-        // Skip — no longer priceable for this item.
-      }
+      const amount = approvedAdditionalServicePrices.get(addlId);
+      if (amount == null) throw new HttpErrors.BadRequest(`Additional service ${addlId} is no longer priceable.`);
+      newlyAddedAddlServices.push({serviceId: addlId, amount});
     }
     const newAddlAmountSum =
       existingAddlAmountSum +

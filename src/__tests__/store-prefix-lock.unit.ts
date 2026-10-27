@@ -83,15 +83,53 @@ describe('store prefix lock', () => {
   it('rejects direct or bulk lock changes', async () => {
     const controller = Object.create(StoreController.prototype) as StoreController;
     await expect(controller.updateById('store-1', {isPrefixLocked: false})).to.be.rejectedWith(/cannot be changed directly/);
+    await expect(controller.updateById('store-1', {orderNumberSequence: 0})).to.be.rejectedWith(/cannot be changed directly/);
     await expect(controller.updateAll({storePrefix: 'NEW'} as Store)).to.be.rejectedWith(/cannot be changed in bulk/);
+    await expect(controller.updateAll({orderNumberSequence: 0} as Store)).to.be.rejectedWith(/cannot be changed in bulk/);
   });
 
   it('refuses order numbers when the prefix is blank', async () => {
+    const tx = {};
     const service = Object.assign(Object.create(OrderService.prototype), {
+      dataSource: {execute: async () => []},
       storeRepo: {findOne: async () => ({storePrefix: '   '})},
     }) as OrderService;
-    const resolve = service as unknown as {resolveNextOrderNumber: (storeId: string) => Promise<string>};
-    await expect(resolve.resolveNextOrderNumber('store-1')).to.be.rejectedWith(/no order number prefix/);
+    const resolve = service as unknown as {resolveNextOrderNumber: (storeId: string, tx: object) => Promise<string>};
+    await expect(resolve.resolveNextOrderNumber('store-1', tx)).to.be.rejectedWith(/no order number prefix/);
+  });
+
+  it('does not reuse an issued sequence after a draft moves away', async () => {
+    const tx = {};
+    const steps: string[] = [];
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      storeRepo: {
+        findOne: async (_filter: object, options: object) => {
+          expect(options).to.eql({transaction: tx});
+          steps.push('store');
+          return {storePrefix: 'ABC', orderNumberSequence: 5};
+        },
+        updateById: async (id: string, data: object, options: object) => {
+          expect(id).to.equal('store-1');
+          expect(data).to.eql({orderNumberSequence: 6});
+          expect(options).to.eql({transaction: tx});
+          steps.push('save');
+        },
+      },
+      dataSource: {execute: async (sql: string, params: string[], options: object) => {
+        expect(options).to.eql({transaction: tx});
+        expect(params).to.deepEqual(['store-1']);
+        if (sql.includes('FOR UPDATE')) {
+          steps.push('lock');
+          return [{id: 'store-1'}];
+        }
+        expect(sql).to.containEql('MAX(substring(ordernumber');
+        steps.push('sequence');
+        return [{seq: '3'}];
+      }},
+    }) as OrderService;
+    const resolve = service as unknown as {resolveNextOrderNumber: (storeId: string, tx: object) => Promise<string>};
+    expect(await resolve.resolveNextOrderNumber('store-1', tx)).to.match(/ABC-\d{4}N-0006/);
+    expect(steps).to.deepEqual(['lock', 'store', 'sequence', 'save']);
   });
 
   it('locks the prefix in the order transaction and detects a concurrent edit', async () => {

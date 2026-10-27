@@ -11,6 +11,8 @@ export type EditAdditionalChargeSelection =
 export interface EditOrderUnitInput {
   /** Garment id of an existing piece; absent for a piece added in this edit. */
   id?: string;
+  brandId?: string;
+  colorId?: string;
   additionalServiceIds?: string[];
   additionalChargeIds?: EditAdditionalChargeSelection[];
   instructions?: string;
@@ -20,6 +22,9 @@ export interface EditOrderUnitInput {
   rejectionReason?: string;
   rejectionRemarks?: string;
   itemPhotoMediaIds?: string[];
+  stainMarks?: Array<{stainId: string; remarks?: string; mediaIds?: string[]}>;
+  damageMarks?: Array<{damageId: string; remarks?: string; mediaIds?: string[]}>;
+  qrPrintCount?: number;
 }
 
 export function splitEditIntakeReturns<T extends {
@@ -151,6 +156,23 @@ export function resolveEditUnitServiceIds(
     {length: quantity},
     (_, slot) => units?.[slot]?.additionalServiceIds ?? lineServiceIds ?? [],
   );
+}
+
+export function priceEditedAdditionalService(
+  serviceId: string,
+  resolvedPrice: number,
+  unitServiceIds: string[][],
+  previousServicesBySlot: Array<Array<{serviceId: string; amount: number}>>,
+): number[] {
+  return unitServiceIds.map((ids, slot) => {
+    if (!ids.includes(serviceId)) return 0;
+    if (resolvedPrice > 0) return resolvedPrice;
+    const previous = previousServicesBySlot[slot]?.find(row => row.serviceId === serviceId);
+    if (!previous) {
+      throw new HttpErrors.BadRequest(`Additional service ${serviceId} is unavailable at Rs.0 for this item.`);
+    }
+    return Number(previous.amount);
+  });
 }
 
 /** True when the caller sent garment-wise charge selections for this line. */

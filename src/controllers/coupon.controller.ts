@@ -6,6 +6,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {Coupon, CouponDiscountType, CouponMinRequirementType} from '../models';
+import {OrderStatus} from '../models/order-status.enum';
 import {
   CouponCustomerRepository,
   CouponPriceOverrideRepository,
@@ -13,6 +14,7 @@ import {
   CouponRepository,
   CustomerRepository,
   ItemRepository,
+  OrderRepository,
   ServiceItemMappingRepository,
   ServiceRepository,
   UsersRepository,
@@ -59,6 +61,7 @@ export class CouponController {
     @repository(ServiceRepository) private serviceRepository: ServiceRepository,
     @repository(ServiceItemMappingRepository) private serviceItemMappingRepository: ServiceItemMappingRepository,
     @repository(ItemRepository) private itemRepository: ItemRepository,
+    @repository(OrderRepository) private orderRepository: OrderRepository,
     @repository(UsersRepository) private usersRepository: UsersRepository,
     @inject('services.coupon') private couponService: CouponService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
@@ -593,7 +596,7 @@ export class CouponController {
     if (!coupon) throw new HttpErrors.NotFound('Coupon not found.');
 
     const rows = await this.couponRedemptionRepository.find({
-      where: {couponId: id} as object,
+      where: {couponId: id, isProvisional: false} as object,
       order: ['createdAt DESC'],
     });
     const customerIds = [...new Set(rows.map(r => r.customerId))];
@@ -691,6 +694,7 @@ export class CouponController {
               couponCodes: {type: 'array', items: {type: 'string'}, minItems: 1},
               customerId: {type: 'string', format: 'uuid'},
               storeId: {type: 'string', format: 'uuid'},
+              existingDraftOrderId: {type: 'string', format: 'uuid'},
               items: {
                 type: 'array',
                 items: {
@@ -713,10 +717,27 @@ export class CouponController {
       couponCodes: string[];
       customerId: string;
       storeId: string;
+      existingDraftOrderId?: string;
       items: {serviceId: string; itemId: string; quantity: number; totalPrice: number}[];
     },
   ): Promise<object> {
-    return this.couponService.evaluateMultiple(body);
+    if (!body.existingDraftOrderId) return this.couponService.evaluateMultiple(body);
+    const draft = await this.orderRepository.findOne({
+      where: {id: body.existingDraftOrderId,
+        status: OrderStatus.DRAFT, isDeleted: false} as object,
+    });
+    if (!draft) {
+      return this.couponService.evaluateMultiple(body);
+    }
+    const redemptions = await this.couponRedemptionRepository.find({
+      where: {orderId: draft.id, isReversed: false} as object,
+    });
+    return this.couponService.evaluateMultiple({
+      ...body, excludeOrderId: draft.id,
+      allowReferralCouponCodes: redemptions
+        .filter(row => row.customerId === body.customerId)
+        .map(row => row.couponCodeSnapshot.toUpperCase()),
+    });
   }
 
   // ─── Referral preview (New Order screen, before submission) ───────────────

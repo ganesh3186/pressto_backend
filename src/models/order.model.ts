@@ -47,6 +47,19 @@ export class Order extends Entity {
   })
   status?: OrderStatus;
 
+  @property({type: 'object', postgresql: {dataType: 'jsonb'}})
+  draftEditorState?: {
+    selectedCustomerId?: string | null;
+    orderPlacedFor?: object | null;
+    inspectionStarted?: boolean;
+    pickupRequestId?: string | null;
+    pickupRequestContext?: object | null;
+    paymentTiming?: 'prepaid' | 'pay-later';
+    paymentMode?: 'on-account' | 'pay_later' | null;
+    deliveryDateAnchor?: string;
+    deliveryDateManuallySet?: boolean;
+  } | null;
+
   // Denormalized from PickupRequest.source the moment this order is linked
   // as that pickup's convertedOrderId (see PickupRequestController
   // .updateById) — set server-side, never client-supplied. Only ever

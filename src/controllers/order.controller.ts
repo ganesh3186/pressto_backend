@@ -29,6 +29,8 @@ import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.en
 import {
   BagRepository,
   CustomerAddressRepository,
+  CustomerFamilyGroupMemberRepository,
+  CustomerFamilyGroupRepository,
   CustomerRepository,
   DeliveryCustodyEventRepository,
   DeliveryOrderRepository,
@@ -118,6 +120,18 @@ const ORDER_UNIT_SCHEMA = {
       type: 'array' as const,
       items: {type: 'string' as const, format: 'uuid' as const},
     },
+    stainMarks: {type: 'array' as const, items: {type: 'object' as const,
+      required: ['stainId'], properties: {
+        stainId: {type: 'string' as const, format: 'uuid' as const},
+        remarks: {type: 'string' as const},
+        mediaIds: {type: 'array' as const, items: {type: 'string' as const, format: 'uuid' as const}},
+      }}},
+    damageMarks: {type: 'array' as const, items: {type: 'object' as const,
+      required: ['damageId'], properties: {
+        damageId: {type: 'string' as const, format: 'uuid' as const},
+        remarks: {type: 'string' as const},
+        mediaIds: {type: 'array' as const, items: {type: 'string' as const, format: 'uuid' as const}},
+      }}},
     qrPrintCount: {type: 'integer' as const, minimum: 1},
     rejectedAtIntake: {type: 'boolean' as const},
     rejectionReason: {type: 'string' as const},
@@ -170,6 +184,14 @@ const ORDER_ITEM_SCHEMA = {
   },
 };
 
+const EDIT_ORDER_ITEM_SCHEMA = {
+  ...ORDER_ITEM_SCHEMA,
+  properties: {
+    ...ORDER_ITEM_SCHEMA.properties,
+    units: {type: 'array' as const, items: EDIT_ORDER_UNIT_SCHEMA},
+  },
+};
+
 export class OrderController {
   constructor(
     @repository(OrderRepository)
@@ -196,6 +218,10 @@ export class OrderController {
     private riderRepository: RiderRepository,
     @repository(CustomerAddressRepository)
     private customerAddressRepository: CustomerAddressRepository,
+    @repository(CustomerFamilyGroupRepository)
+    private customerFamilyGroupRepository: CustomerFamilyGroupRepository,
+    @repository(CustomerFamilyGroupMemberRepository)
+    private customerFamilyGroupMemberRepository: CustomerFamilyGroupMemberRepository,
     @inject('services.customer-address')
     private customerAddressService: CustomerAddressService,
     @repository(PickupDeliverySlotRepository)
@@ -276,6 +302,7 @@ export class OrderController {
                 description:
                   'Set true to save the order as a draft without confirming it.',
               },
+              draftEditorState: {type: 'object'},
               deliveryType: {
                 type: 'string',
                 enum: Object.values(DeliveryType),
@@ -287,6 +314,7 @@ export class OrderController {
                 description:
                   'Customer contact (person coming on behalf of the customer)',
               },
+              familyGroupMemberId: {type: 'string', format: 'uuid'},
               expressMultiplier: {
                 type: 'number',
                 minimum: 1,
@@ -332,6 +360,7 @@ export class OrderController {
                 description:
                   'Bill this order on account when the customer is eligible.',
               },
+              couponCodes: {type: 'array', items: {type: 'string'}},
             },
           },
         },
@@ -339,6 +368,10 @@ export class OrderController {
     })
     body: CreateOrderInput,
   ): Promise<object> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (!this.storeScopeService.allows(scope, body.storeId)) {
+      throw new HttpErrors.NotFound('Store not found.');
+    }
     const createdBy = currentUser[securityId];
     const result = (await this.orderService.createOrder(body, createdBy)) as {
       order: {id: string};
@@ -1159,6 +1192,7 @@ export class OrderController {
     })
     body: {status: OrderStatus; remarks?: string},
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     const changedBy = currentUser[securityId];
     const result = await this.orderService.changeStatus(
       id,
@@ -1310,6 +1344,72 @@ export class OrderController {
   }
 
   // ─── Edit Order Items ─────────────────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @put('/orders/{id}/draft')
+  @response(200, {description: 'Draft ticket saved'})
+  async saveDraftOrder(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @requestBody({content: {'application/json': {schema: {
+      type: 'object',
+      required: ['customerId', 'orderType', 'orderLabelIds', 'items', 'additionalChargeIds', 'couponCodes', 'paymentIsOnAccount'],
+      properties: {
+        customerId: {type: 'string', format: 'uuid'},
+        storeId: {type: 'string', format: 'uuid'},
+        orderType: {type: 'string', enum: Object.values(OrderType)},
+        orderLabelIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+        specialInstructions: {type: 'string'},
+        remarks: {type: 'string'},
+        deliveryAddressId: {type: 'string', format: 'uuid', nullable: true},
+        deliveryAddress: {type: 'string'},
+        deliveryType: {type: 'string', enum: Object.values(DeliveryType)},
+        deliveryTypePercentage: {type: 'number', minimum: 0},
+        expressMultiplier: {type: 'number', minimum: 1},
+        deliveryDate: {type: 'string', format: 'date-time'},
+        items: {type: 'array', minItems: 1, items: EDIT_ORDER_ITEM_SCHEMA},
+        additionalChargeIds: {type: 'array', items: ADDITIONAL_CHARGE_SELECTION_SCHEMA},
+        couponCodes: {type: 'array', items: {type: 'string'}},
+        customerContactId: {type: 'string', format: 'uuid', nullable: true},
+        familyGroupMemberId: {type: 'string', format: 'uuid', nullable: true},
+        paymentIsOnAccount: {type: 'boolean'},
+        draftEditorState: {type: 'object'},
+      },
+    }}}})
+    body: Parameters<OrderService['saveDraftOrder']>[1],
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
+    if (body.storeId) {
+      const scope = await this.storeScopeService.resolve(currentUser);
+      if (!this.storeScopeService.allows(scope, body.storeId)) {
+        throw new HttpErrors.NotFound('Store not found.');
+      }
+    }
+    let deliveryAddressId = body.deliveryAddressId;
+    let deliveryAddress = body.deliveryAddress;
+    if (deliveryAddressId) {
+      const address = await this.customerAddressRepository.findOne({
+        where: {id: deliveryAddressId, isDeleted: false} as object,
+      });
+      if (!address) throw new HttpErrors.BadRequest('Delivery address not found.');
+      if (address.customerId !== body.customerId) {
+        const group = await this.customerFamilyGroupRepository.findOne({
+          where: {primaryCustomerId: address.customerId, isActive: true, isDeleted: false} as object,
+        });
+        const member = group ? await this.customerFamilyGroupMemberRepository.findOne({
+          where: {groupId: group.id, customerId: body.customerId, isActive: true, isDeleted: false} as object,
+        }) : null;
+        if (!member) throw new HttpErrors.BadRequest('Delivery address does not belong to this customer.');
+      }
+      deliveryAddress = this.customerAddressService.toDisplaySnapshot(address);
+    } else if (deliveryAddress !== undefined) {
+      deliveryAddressId = null;
+    }
+    return this.orderService.saveDraftOrder(id, {
+      ...body, deliveryAddressId, deliveryAddress,
+    }, currentUser[securityId]);
+  }
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:update']})
@@ -1744,6 +1844,7 @@ export class OrderController {
     })
     body: {payment?: OrderPaymentInput; walletAmount?: number},
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     if (!body.payment && !body.walletAmount) {
       throw new HttpErrors.BadRequest(
         'Provide at least one of payment or walletAmount.',

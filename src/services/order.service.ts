@@ -14,6 +14,7 @@ import {
   orderGarmentsForRemoval,
   planEditUnitSlots,
   priceEditedLine,
+  priceEditedAdditionalService,
   resolveEditUnitAreas,
   resolveEditUnitServiceIds,
   resolveFreeReprocessSlots,
@@ -40,6 +41,7 @@ import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
 import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.enum';
 import {OrderDeliveryMethod} from '../models/order-delivery-method.enum';
 import {OrderType} from '../models/order-type.enum';
+import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {WalletTransactionType} from '../models/wallet-transaction-type.enum';
 import {
   deriveGarmentGroupStatus,
@@ -189,6 +191,7 @@ export interface CreateOrderInput {
   orderType: OrderType;
   items: CreateOrderItemInput[];
   isDraft?: boolean;
+  draftEditorState?: Order['draftEditorState'];
   deliveryType?: DeliveryType; // standard | express | lightning
   additionalChargeIds?: AdditionalChargeSelection[];
   customerContactId?: string; // person who came on behalf of customer
@@ -361,11 +364,12 @@ export class OrderService {
     tx: any,
     v4: () => string,
   ): Promise<void> {
+    const options = tx ? {transaction: tx} : undefined;
     // Item-level photos → GarmentImage (imageType: inspection)
     for (const mediaId of unit.itemPhotoMediaIds ?? []) {
       await this.garmentImageRepo.create(
         {id: v4(), garmentId, mediaId, imageType: GarmentImageType.GENERAL},
-        {transaction: tx},
+        options,
       );
     }
 
@@ -379,12 +383,12 @@ export class OrderService {
           stainId: stainMark.stainId,
           remarks: stainMark.remarks,
         },
-        {transaction: tx},
+        options,
       );
       for (const mediaId of stainMark.mediaIds ?? []) {
         await this.garmentStainImageRepo.create(
           {id: v4(), garmentStainId: garmentStain.id, mediaId},
-          {transaction: tx},
+          options,
         );
       }
     }
@@ -399,15 +403,33 @@ export class OrderService {
           damageTypeId: damageMark.damageId,
           remarks: damageMark.remarks,
         },
-        {transaction: tx},
+        options,
       );
       for (const mediaId of damageMark.mediaIds ?? []) {
         await this.garmentDamageImageRepo.create(
           {id: v4(), garmentDamageId: garmentDamage.id, mediaId},
-          {transaction: tx},
+          options,
         );
       }
     }
+  }
+
+  private async replaceDraftGarmentInspection(
+    garmentId: string, unit: UnitInspectionInput, tx: any, v4: () => string,
+  ): Promise<void> {
+    const [stains, damages] = await Promise.all([
+      this.garmentStainRepo.find({where: {garmentId}}, {transaction: tx}),
+      this.garmentDamageRepo.find({where: {garmentId}}, {transaction: tx}),
+    ]);
+    if (stains.length) await this.garmentStainImageRepo.deleteAll(
+      {garmentStainId: {inq: stains.map(row => row.id)}} as object, {transaction: tx});
+    if (damages.length) await this.garmentDamageImageRepo.deleteAll(
+      {garmentDamageId: {inq: damages.map(row => row.id)}} as object, {transaction: tx});
+    await this.garmentStainRepo.deleteAll({garmentId}, {transaction: tx});
+    await this.garmentDamageRepo.deleteAll({garmentId}, {transaction: tx});
+    await this.garmentImageRepo.deleteAll(
+      {garmentId, imageType: GarmentImageType.GENERAL}, {transaction: tx});
+    await this.saveGarmentInspection(garmentId, unit, tx, v4);
   }
 
   /**
@@ -417,8 +439,7 @@ export class OrderService {
    * true position within the line (not just its index within this creation
    * batch, since garments for a line can be created across multiple calls).
    * Called from both garment-creation sites: the store-dropoff immediate
-   * path (inside createOrder()'s transaction) and autoCreateGarments (no
-   * transaction — called later, outside order creation).
+   * path and autoCreateGarments. Both pass their order transaction when available.
    */
   private async createUnitAdditionalServices(
     garmentId: string,
@@ -579,6 +600,13 @@ export class OrderService {
     }
     const base = Number(mapping.basePrice);
     const estimatedDurationInDays = mapping.estimatedDurationInDays ?? null;
+    const assertPricedAdditionalService = (price: number) => {
+      if (options.additional && !(price > 0)) {
+        throw new HttpErrors.BadRequest(
+          `Additional service is unavailable at Rs.0 for serviceId: ${serviceId}, itemId: ${itemId}.`,
+        );
+      }
+    };
 
     // Priority 0: an active price-override coupon for this exact
     // (serviceId, itemId) — auto-applied, never selected/redeemed (see
@@ -591,6 +619,7 @@ export class OrderService {
       customerId,
     );
     if (couponOverridePrice != null) {
+      assertPricedAdditionalService(couponOverridePrice);
       return {
         basePrice: base,
         resolvedPrice: couponOverridePrice,
@@ -610,14 +639,18 @@ export class OrderService {
       const value = row?.percentage;
       return value != null ? Number(value) : null;
     };
-    const uplift = (pct: number, source: 'store' | 'cluster' | 'region') => ({
-      basePrice: base,
-      // Percentage is an uplift on base (30 = +30%). 0 = no change. First match wins.
-      resolvedPrice: parseFloat((base * (1 + pct / 100)).toFixed(2)),
-      appliedPercentage: pct,
-      priceSource: source as 'store' | 'cluster' | 'region' | 'base',
-      estimatedDurationInDays,
-    });
+    const uplift = (pct: number, source: 'store' | 'cluster' | 'region') => {
+      const resolvedPrice = parseFloat((base * (1 + pct / 100)).toFixed(2));
+      assertPricedAdditionalService(resolvedPrice);
+      return {
+        basePrice: base,
+        // Percentage is an uplift on base (30 = +30%). 0 = no change. First match wins.
+        resolvedPrice,
+        appliedPercentage: pct,
+        priceSource: source as 'store' | 'cluster' | 'region' | 'base',
+        estimatedDurationInDays,
+      };
+    };
 
     // Priority 1: store override
     const override = await this.storePriceOverrideRepo.findOne({
@@ -647,6 +680,7 @@ export class OrderService {
     }
 
     // Fallback: base price as-is
+    assertPricedAdditionalService(base);
     return {
       basePrice: base,
       resolvedPrice: base,
@@ -737,6 +771,27 @@ export class OrderService {
       additionalChargeId,
       quantity,
     }));
+  }
+
+  private async lockCouponCodes(
+    codes: string[],
+    transaction: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<void> {
+    for (const code of [...new Set(codes.map(value => value.trim().toUpperCase()))].sort()) {
+      await this.dataSource.execute(
+        'SELECT id FROM public.coupon WHERE UPPER(code) = $1 FOR UPDATE',
+        [code], {transaction},
+      );
+    }
+  }
+
+  private async lockCustomerForOrder(
+    customerId: string,
+    transaction: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<void> {
+    await this.dataSource.execute(
+      'SELECT id FROM public.customer WHERE id = $1 FOR UPDATE', [customerId], {transaction},
+    );
   }
 
   /**
@@ -1317,18 +1372,17 @@ export class OrderService {
   }
 
   // ─── Order numbering ────────────────────────────────────────────────────────
-  // Shared by every place a new order (or sub-order) gets an orderNumber —
-  // previously three separately-duplicated `ORD${count+1}` snippets. Format:
-  // `{store.storePrefix}-{MMYY}-{seq}`, seq zero-padded to 4 digits, counted
-  // per store and never reset (MMYY is a label reflecting creation time, not
-  // a reset boundary — mirrors the count()+1 idiom already used everywhere
-  // else in this codebase for numbered entities, e.g. pickupNumber/
-  // deliveryNumber, so this doesn't introduce a new race-condition risk).
+  // N separates new numbers from older issued numbers lost when drafts moved stores.
 
-  private async resolveNextOrderNumber(storeId: string): Promise<string> {
+  private async resolveNextOrderNumber(
+    storeId: string,
+    tx: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<string> {
+    await this.dataSource.execute('SELECT id FROM public.store WHERE id = $1 FOR UPDATE',
+      [storeId], {transaction: tx});
     const store = await this.storeRepo.findOne({
       where: {id: storeId, isDeleted: false} as object,
-    });
+    }, {transaction: tx});
     if (!store) throw new HttpErrors.NotFound('Store not found.');
     if (!store.storePrefix?.trim()) {
       throw new HttpErrors.BadRequest(
@@ -1337,9 +1391,15 @@ export class OrderService {
     }
     const now = new Date();
     const mmyy = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getFullYear()).slice(-2)}`;
-    const count = await this.orderRepo.count({storeId} as object);
-    const seq = String(count.count + 1).padStart(4, '0');
-    return `${store.storePrefix}-${mmyy}-${seq}`;
+    const rows = await this.dataSource.execute(
+      `SELECT COALESCE(MAX(substring(ordernumber from '-([0-9]+)$')::bigint), 0) AS seq
+       FROM public.orders WHERE storeid = $1 AND ordernumber ~ '-[0-9]+$'`,
+      [storeId], {transaction: tx},
+    );
+    const nextSequence = Math.max(Number(store.orderNumberSequence) || 0, Number(rows[0].seq) || 0) + 1;
+    await this.storeRepo.updateById(storeId, {orderNumberSequence: nextSequence}, {transaction: tx});
+    const seq = String(nextSequence).padStart(4, '0');
+    return `${store.storePrefix}-${mmyy}N-${seq}`;
   }
 
   private async lockStorePrefix(
@@ -1362,11 +1422,18 @@ export class OrderService {
     createdBy: string,
   ): Promise<object> {
     const {v4} = await import('uuid');
+    if (input.isDraft && ((input.payments?.length ?? 0) > 0 || Number(input.walletAmount ?? 0) > 0)) {
+      throw new HttpErrors.BadRequest('Drafts cannot collect payment.');
+    }
 
     const customer = await this.customerRepo.findOne({
       where: {id: input.customerId, isDeleted: false},
     });
     if (!customer) throw new HttpErrors.NotFound('Customer not found.');
+    if (input.paymentIsOnAccount &&
+      customer.customerEntityType !== 'business' && customer.isOnAccountEligible !== true) {
+      throw new HttpErrors.BadRequest('This customer is not eligible for On Account billing.');
+    }
 
     const store = await this.storeRepo.findOne({
       where: {id: input.storeId, isDeleted: false},
@@ -1472,7 +1539,6 @@ export class OrderService {
 
     // ── Pricing ──
     const expressMultiplier = Math.max(1, Number(input.expressMultiplier ?? 1));
-    const orderNumber = await this.resolveNextOrderNumber(input.storeId);
 
     const itemPricings: Array<{
       serviceId: string;
@@ -1984,10 +2050,6 @@ export class OrderService {
       );
     }
 
-    const isOnAccountCustomer =
-      customer.customerEntityType === 'business' ||
-      customer.isOnAccountEligible === true;
-
     // Attribution only — not enforced. An order can still be created with
     // no open shift; this just attaches one when the creating cashier
     // happens to have one open at this store.
@@ -2005,6 +2067,16 @@ export class OrderService {
     });
 
     try {
+      await this.lockCustomerForOrder(input.customerId, tx);
+      const orderNumber = await this.resolveNextOrderNumber(input.storeId, tx);
+      if (!couponCodes.length && customer.referredByCouponId &&
+        couponResults[0]?.couponId === customer.referredByCouponId) {
+        const priorOrders = await this.orderRepo.count({customerId: input.customerId,
+          isDeleted: false, status: {neq: OrderStatus.DRAFT}} as object);
+        if (priorOrders.count > 0) {
+          throw new HttpErrors.Conflict('Referral coupon is only available on the first ticket. Review and retry.');
+        }
+      }
       // Determine initial status before creating the order record
       const isStoreDropoffOrder =
         input.orderType === OrderType.STORE_DROPOFF ||
@@ -2022,6 +2094,8 @@ export class OrderService {
           storeId: input.storeId,
           orderType: input.orderType,
           status: orderInitialStatus,
+          draftEditorState: input.isDraft && input.draftEditorState
+            ? {...input.draftEditorState, deliveryDateAnchor: new Date().toISOString()} : undefined,
           expressMultiplier,
           deliveryType: input.deliveryType,
           deliveryTypePercentage,
@@ -2045,7 +2119,7 @@ export class OrderService {
           // who simply paid another way). Read back later by the rider
           // delivery flow to skip payment collection for genuinely
           // on-account orders (see RiderDeliveryController.deliver()).
-          isOnAccount: isOnAccountCustomer && !!input.paymentIsOnAccount,
+          isOnAccount: !!input.paymentIsOnAccount,
           ...(couponResults.length
             ? {
                 // First coupon's id, for any older single-id consumer —
@@ -2061,8 +2135,31 @@ export class OrderService {
 
       await this.lockStorePrefix(input.storeId, orderNumber, tx);
 
+      await this.lockCouponCodes(couponResults.map(result => result.code), tx);
+      if (couponResults.length) {
+        const currentEvaluation = await this.couponService.evaluateMultiple({
+          couponCodes: couponResults.map(result => result.code),
+          customerId: input.customerId,
+          storeId: input.storeId,
+          excludeOrderId: order.id,
+          allowReferralCouponCodes: couponCodes.length ? [] : couponResults.map(result => result.code),
+          items: itemPricings.map(p => ({serviceId: p.serviceId, itemId: p.itemId,
+            quantity: p.quantity, totalPrice: p.totalPrice})),
+        });
+        if (!currentEvaluation.valid || currentEvaluation.coupons.some((result, index) =>
+          result.couponId !== couponResults[index].couponId ||
+          result.discountAmount !== couponResults[index].discountAmount ||
+          JSON.stringify(result.pricingSnapshot) !== JSON.stringify(couponResults[index].pricingSnapshot)
+        )) {
+          throw new HttpErrors.Conflict('Coupon changed while creating the ticket. Review and retry.');
+        }
+      }
       for (const result of couponResults) {
-        // eslint-disable-next-line no-await-in-loop
+        const capacityReason = await this.couponService.redemptionCapacityReason(
+          result.couponId, input.customerId, tx,
+        );
+        if (capacityReason) throw new HttpErrors.Conflict(capacityReason);
+        const coupon = await this.couponRepo.findById(result.couponId, undefined, {transaction: tx});
         await this.couponRedemptionRepo.create(
           {
             id: v4(),
@@ -2072,13 +2169,13 @@ export class OrderService {
             orderId: order.id,
             discountType: result.discountType,
             discountAmount: result.discountAmount,
+            isProvisional: !!input.isDraft,
+            bookingSnapshot: {bookedDiscountAmount: result.discountAmount,
+              coupon: result.pricingSnapshot},
           },
           {transaction: tx},
         );
-        // eslint-disable-next-line no-await-in-loop
-        const coupon = await this.couponRepo.findById(result.couponId);
-        // eslint-disable-next-line no-await-in-loop
-        await this.couponRepo.updateById(
+        if (!input.isDraft) await this.couponRepo.updateById(
           result.couponId,
           {totalUsesCount: (coupon.totalUsesCount ?? 0) + 1},
           {transaction: tx},
@@ -2108,6 +2205,7 @@ export class OrderService {
             additionalServiceIds: item.additionalServiceIds,
             pendingUnitAdditionalServices: item.pendingUnitAdditionalServices,
             pendingUnitAdditionalCharges: item.pendingUnitAdditionalCharges,
+            draftUnitInspections: input.isDraft ? workingItems[itemIndex].units ?? [] : undefined,
             rejectedAtIntake: item.rejectedAtIntake ?? false,
             rejectionReason: item.rejectionReason,
             rejectionRemarks: item.rejectionRemarks,
@@ -2186,6 +2284,8 @@ export class OrderService {
           // processing. It stays a ₹0 record on the order.
           if (inputItem?.rejectedAtIntake) continue;
 
+          const draftInspections = (orderItem.draftUnitInspections ?? []) as Array<UnitInspectionInput & {id?: string}>;
+
           for (let unitIdx = 0; unitIdx < orderItem.quantity; unitIdx++) {
             const unitInspection = inputItem.units?.[unitIdx];
             garmentSeq++;
@@ -2205,6 +2305,8 @@ export class OrderService {
               },
               {transaction: tx},
             );
+
+            if (input.isDraft) draftInspections[unitIdx] = {...(draftInspections[unitIdx] ?? {}), id: garment.id};
 
             await this.garmentStatusHistoryRepo.create(
               {
@@ -2243,6 +2345,8 @@ export class OrderService {
 
             createdGarments.push(garment);
           }
+          if (input.isDraft) await this.orderItemRepo.updateById(orderItem.id,
+            {draftUnitInspections: draftInspections}, {transaction: tx});
         }
       }
 
@@ -2383,6 +2487,53 @@ export class OrderService {
     );
   }
 
+  private async finalizeDraftCoupons(
+    order: Order,
+    tx: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<void> {
+    const redemptions = await this.couponRedemptionRepo.find({
+      where: {orderId: order.id, isReversed: false} as object,
+    }, {transaction: tx});
+    if (!redemptions.length) return;
+    if (redemptions.some(row => row.customerId !== order.customerId)) {
+      throw new HttpErrors.Conflict('Draft coupon belongs to a different customer. Review and save the draft before submitting.');
+    }
+    await this.lockCustomerForOrder(order.customerId, tx);
+    const customer = await this.customerRepo.findById(order.customerId, undefined, {transaction: tx});
+    if (customer.referredByCouponId && redemptions.some(row => row.couponId === customer.referredByCouponId)) {
+      const priorOrders = await this.orderRepo.count({customerId: order.customerId, isDeleted: false,
+        status: {neq: OrderStatus.DRAFT}, id: {neq: order.id}} as object, {transaction: tx});
+      if (priorOrders.count) {
+        throw new HttpErrors.Conflict('Referral coupon is only available on the first ticket. Review and save the draft.');
+      }
+    }
+    const codes = redemptions.map(row => row.couponCodeSnapshot);
+    await this.lockCouponCodes(codes, tx);
+    const items = await this.orderItemRepo.find({where: {orderId: order.id}}, {transaction: tx});
+    const evaluation = await this.couponService.evaluateMultiple({
+      couponCodes: codes, customerId: order.customerId, storeId: order.storeId,
+      excludeOrderId: order.id, allowReferralCouponCodes: codes,
+      items: items.map(item => ({serviceId: item.serviceId, itemId: item.itemId,
+        quantity: item.quantity, totalPrice: Number(item.totalPrice) || 0})),
+    });
+    if (!evaluation.valid || evaluation.coupons.length !== redemptions.length ||
+      evaluation.coupons.some((result, index) =>
+      result.couponId !== redemptions[index].couponId ||
+      result.discountAmount !== Number(redemptions[index].discountAmount))) {
+      throw new HttpErrors.Conflict('Draft coupon changed or expired. Review and save the draft before submitting.');
+    }
+    for (const redemption of redemptions) {
+      if (!redemption.isProvisional) continue;
+      const capacityReason = await this.couponService.redemptionCapacityReason(
+        redemption.couponId, order.customerId, tx);
+      if (capacityReason) throw new HttpErrors.Conflict(capacityReason);
+      const coupon = await this.couponRepo.findById(redemption.couponId, undefined, {transaction: tx});
+      await this.couponRedemptionRepo.updateById(redemption.id, {isProvisional: false}, {transaction: tx});
+      await this.couponRepo.updateById(redemption.couponId,
+        {totalUsesCount: (coupon.totalUsesCount ?? 0) + 1}, {transaction: tx});
+    }
+  }
+
   async changeStatus(
     orderId: string,
     newStatus: OrderStatus,
@@ -2395,8 +2546,13 @@ export class OrderService {
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
+    const directDraftReceipt = order.status === OrderStatus.DRAFT &&
+      newStatus === OrderStatus.RECEIVED_AT_STORE &&
+      (order.orderType === OrderType.STORE_DROPOFF || order.orderType === OrderType.STORE_DROPOFF_HOME_DELIVERY ||
+        (order.orderType?.startsWith('home_pickup') &&
+          Boolean(order.pickupRequestId || order.draftEditorState?.pickupRequestId)));
     const allowed = ORDER_STATUS_TRANSITIONS[order.status!];
-    if (!allowed.includes(newStatus)) {
+    if (!allowed.includes(newStatus) && !directDraftReceipt) {
       throw new HttpErrors.BadRequest(
         `Cannot move order from '${order.status}' to '${newStatus}'. Allowed: [${allowed.join(', ')}]`,
       );
@@ -2413,12 +2569,99 @@ export class OrderService {
       throw new HttpErrors.BadRequest('A failed delivery stop needs a new delivery run before dispatch or completion.');
     }
 
-    await this.orderRepo.updateById(orderId, {status: newStatus});
+    const confirmedAt = new Date();
+    if (newStatus === OrderStatus.RECEIVED_AT_STORE ||
+      (order.status === OrderStatus.DRAFT &&
+        (newStatus === OrderStatus.CONFIRMED || newStatus === OrderStatus.CANCELLED))) {
+      const tx = await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
+      let garments: object[] = [];
+      let previousStatus: OrderStatus;
+      try {
+        await this.dataSource.execute('SELECT id FROM public.orders WHERE id = $1 FOR UPDATE', [orderId], {transaction: tx});
+        const current = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}}, {transaction: tx});
+        if (!current) throw new HttpErrors.NotFound('Order not found.');
+        const currentDirectReceipt = current.status === OrderStatus.DRAFT &&
+          newStatus === OrderStatus.RECEIVED_AT_STORE &&
+          (current.orderType === OrderType.STORE_DROPOFF || current.orderType === OrderType.STORE_DROPOFF_HOME_DELIVERY ||
+            (current.orderType?.startsWith('home_pickup') &&
+              Boolean(current.pickupRequestId || current.draftEditorState?.pickupRequestId)));
+        if (!ORDER_STATUS_TRANSITIONS[current.status!].includes(newStatus) && !currentDirectReceipt) {
+          throw new HttpErrors.Conflict('Order status changed. Refresh and retry.');
+        }
+        previousStatus = current.status!;
+        if (current.status === OrderStatus.DRAFT) {
+          if (newStatus === OrderStatus.CANCELLED) {
+            const provisional = await this.couponRedemptionRepo.find({
+              where: {orderId, isReversed: false, isProvisional: true} as object,
+            }, {transaction: tx});
+            for (const redemption of provisional) {
+              await this.couponRedemptionRepo.updateById(redemption.id,
+                {isReversed: true, reversedAt: confirmedAt}, {transaction: tx});
+            }
+          } else {
+            if (currentDirectReceipt && current.orderType?.startsWith('home_pickup')) {
+              const pickupRequest = await this.pickupRequestRepo.findOne({
+                where: {id: current.pickupRequestId || current.draftEditorState?.pickupRequestId,
+                  isDeleted: false} as object,
+              }, {transaction: tx});
+              if (!pickupRequest || pickupRequest.status !== PickupRequestStatus.RECEIVED_AT_STORE ||
+                pickupRequest.storeId !== current.storeId ||
+                (pickupRequest.customerId && pickupRequest.customerId !== current.customerId)) {
+                throw new HttpErrors.Conflict('Receive the matching pickup request at this store before submitting its draft.');
+              }
+            }
+            if (current.deliveryDate) {
+              const anchor = current.draftEditorState?.deliveryDateAnchor ?? current.createdAt;
+              const savedAt = anchor ? new Date(anchor) : undefined;
+              const localDay = (date: Date) => date.toLocaleDateString('en-CA', {timeZone: 'Asia/Kolkata'});
+              if (!savedAt || !Number.isFinite(savedAt.getTime()) || localDay(savedAt) !== localDay(confirmedAt)) {
+                throw new HttpErrors.Conflict('Draft delivery date and speed need refreshing. Save the draft before submitting it.');
+              }
+            }
+            await this.finalizeDraftCoupons(current, tx);
+          }
+        }
+        if (newStatus === OrderStatus.RECEIVED_AT_STORE) {
+          garments = await this.autoCreateGarments(orderId, changedBy, v4, tx);
+        }
+        await this.orderRepo.updateById(orderId, {
+          status: newStatus,
+          ...(current.status === OrderStatus.DRAFT ? {draftEditorState: null,
+            ...(newStatus !== OrderStatus.CANCELLED ? {createdAt: confirmedAt} : {})} : {}),
+        }, {transaction: tx});
+        if (currentDirectReceipt) await this.statusHistoryRepo.create({
+          id: v4(), orderId, status: OrderStatus.CONFIRMED,
+          changedAt: confirmedAt, changedBy, remarks,
+        }, {transaction: tx});
+        await this.statusHistoryRepo.create({
+          id: v4(), orderId, status: newStatus, changedAt: confirmedAt, changedBy, remarks,
+        }, {transaction: tx});
+        await tx.commit();
+      } catch (error) {
+        await tx.rollback();
+        throw error;
+      }
+      this.notifyStatusChange(orderId, newStatus, previousStatus);
+      if (newStatus === OrderStatus.CANCELLED && order.assignedRiderId) {
+        this.notificationService.notifyRider(order.assignedRiderId, {
+          type: RIDER_NOTIFICATION_TYPES.DELIVERY_CANCELLED,
+          title: 'Delivery cancelled', body: `Order ${order.orderNumber ?? ''} has been cancelled.`,
+          data: {orderId},
+        }).catch(() => {});
+      }
+      return newStatus === OrderStatus.RECEIVED_AT_STORE ? {garments} : {};
+    }
+    await this.orderRepo.updateById(orderId, {
+      status: newStatus,
+      ...(order.status === OrderStatus.DRAFT ? {draftEditorState: null} : {}),
+      ...(order.status === OrderStatus.DRAFT && newStatus === OrderStatus.CONFIRMED
+        ? {createdAt: confirmedAt} : {}),
+    });
     await this.statusHistoryRepo.create({
       id: v4(),
       orderId,
       status: newStatus,
-      changedAt: new Date(),
+      changedAt: confirmedAt,
       changedBy,
       remarks,
     });
@@ -2441,12 +2684,6 @@ export class OrderService {
           data: {orderId},
         })
         .catch(() => {});
-    }
-
-    // Auto-create garments when order is received at store
-    if (newStatus === OrderStatus.RECEIVED_AT_STORE) {
-      const garments = await this.autoCreateGarments(orderId, changedBy, v4);
-      return {garments};
     }
 
     return {};
@@ -2507,7 +2744,6 @@ export class OrderService {
       );
     }
 
-    const orderNumber = await this.resolveNextOrderNumber(original.storeId);
     const now = new Date();
 
     const tx = transaction ?? await this.dataSource.beginTransaction({
@@ -2516,6 +2752,7 @@ export class OrderService {
     let reworkOrder: Order;
     let garmentsCreated = 0;
     try {
+      const orderNumber = await this.resolveNextOrderNumber(original.storeId, tx);
       // Every money field is zero by design — the customer already paid for this work once.
       reworkOrder = await this.orderRepo.create(
         {
@@ -2657,6 +2894,226 @@ export class OrderService {
     OrderStatus.IN_PROCESS,
   ]);
 
+  async updateDraftDetails(orderId: string, input: {
+    additionalChargeIds: AdditionalChargeSelection[];
+    couponCodes: string[];
+    customerContactId?: string | null;
+    familyGroupMemberId?: string | null;
+    paymentIsOnAccount: boolean;
+    draftEditorState?: Order['draftEditorState'];
+    autoApplyForChangedCustomer?: boolean;
+  }, transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>): Promise<object> {
+    const {v4} = await import('uuid');
+    const tx = transaction ?? await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
+    try {
+      if (!transaction) {
+        await this.dataSource.execute('SELECT id FROM public.orders WHERE id = $1 FOR UPDATE', [orderId], {transaction: tx});
+      }
+      const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}}, {transaction: tx});
+      if (!order) throw new HttpErrors.NotFound('Order not found.');
+      if (order.status !== OrderStatus.DRAFT) throw new HttpErrors.Conflict('Only drafts can be changed this way.');
+
+      const customer = await this.customerRepo.findById(order.customerId);
+      if (input.paymentIsOnAccount &&
+        customer.customerEntityType !== 'business' && customer.isOnAccountEligible !== true) {
+        throw new HttpErrors.BadRequest('This customer is not eligible for On Account billing.');
+      }
+      if (input.customerContactId && input.familyGroupMemberId) {
+        throw new HttpErrors.BadRequest('Select one person who placed the ticket.');
+      }
+      let placedBy: Partial<Order> = {
+        customerContactId: null as unknown as string, placedByFamilyGroupMemberId: null as unknown as string,
+        placedByName: null as unknown as string, placedByPhone: null as unknown as string,
+        placedByRelationship: null as unknown as ContactRelationship,
+      };
+      if (input.customerContactId) {
+        const contact = await this.customerContactRepo.findOne({
+          where: {id: input.customerContactId, customerId: order.customerId, isDeleted: false},
+        });
+        if (!contact) throw new HttpErrors.BadRequest('Customer contact not found for this customer.');
+        placedBy = {...placedBy, customerContactId: contact.id, placedByName: contact.name,
+          placedByPhone: contact.phone, placedByRelationship: contact.relationship};
+      } else if (input.familyGroupMemberId) {
+        const group = await this.familyGroupRepo.findOne({
+          where: {primaryCustomerId: order.customerId, isDeleted: false} as object,
+        });
+        const member = group ? await this.familyMemberRepo.findOne({
+          where: {id: input.familyGroupMemberId, groupId: group.id, isDeleted: false} as object,
+        }) : null;
+        if (!member) throw new HttpErrors.BadRequest('Family member not found for this customer.');
+        placedBy = {...placedBy, placedByFamilyGroupMemberId: member.id, placedByName: member.name,
+          placedByPhone: member.phone, placedByRelationship: member.relationship};
+      }
+
+      const items = await this.orderItemRepo.find({where: {orderId}}, {transaction: tx});
+      const previousRedemptions = await this.couponRedemptionRepo.find({
+        where: {orderId, isReversed: false} as object,
+      }, {transaction: tx});
+      const couponCodes = input.couponCodes.map(code => code.trim().toUpperCase()).filter(Boolean);
+      const couponItems = items.map(item => ({serviceId: item.serviceId, itemId: item.itemId,
+        quantity: item.quantity, totalPrice: Number(item.totalPrice) || 0}));
+      let autoCoupon: CouponEvaluationSuccess | undefined;
+      if (!couponCodes.length && input.autoApplyForChangedCustomer) {
+        autoCoupon = await this.couponService.evaluateReferralCoupon(customer, order.storeId, couponItems) ??
+          await this.couponService.evaluateNewCustomerCoupon(order.customerId, order.storeId, couponItems);
+      }
+      await this.lockCouponCodes([
+        ...couponCodes, ...previousRedemptions.map(row => row.couponCodeSnapshot),
+        ...(autoCoupon ? [autoCoupon.code] : []),
+      ], tx);
+      let couponResults: CouponEvaluationSuccess[] = [];
+      if (couponCodes.length || autoCoupon) {
+        const evaluation = await this.couponService.evaluateMultiple({
+          couponCodes: autoCoupon ? [autoCoupon.code] : couponCodes,
+          customerId: order.customerId, storeId: order.storeId,
+          excludeOrderId: orderId,
+          allowReferralCouponCodes: [
+            ...previousRedemptions.filter(row => row.customerId === order.customerId)
+              .map(row => row.couponCodeSnapshot.toUpperCase()),
+            ...(autoCoupon ? [autoCoupon.code] : []),
+          ],
+          items: couponItems,
+        });
+        if (!evaluation.valid) throw new HttpErrors.BadRequest(evaluation.reason);
+        if (autoCoupon && (evaluation.coupons[0]?.couponId !== autoCoupon.couponId ||
+          evaluation.coupons[0]?.discountAmount !== autoCoupon.discountAmount ||
+          JSON.stringify(evaluation.coupons[0]?.pricingSnapshot) !== JSON.stringify(autoCoupon.pricingSnapshot))) {
+          throw new HttpErrors.Conflict('Coupon changed while saving the draft. Review and retry.');
+        }
+        couponResults = evaluation.coupons;
+      }
+
+      const uplift = await this.resolveAdditionalChargePercentage(order.storeId);
+      const charges = [];
+      for (const {additionalChargeId, quantity} of this.normalizeAdditionalCharges(input.additionalChargeIds)) {
+        const charge = await this.additionalChargeRepo.findOne({
+          where: {id: additionalChargeId, isDeleted: false} as object,
+        });
+        if (!charge) throw new HttpErrors.BadRequest('Ticket charge not found.');
+        charges.push({additionalChargeId, quantity,
+          amount: parseFloat((this.applyAdditionalChargeUplift(Number(charge.defaultAmount), uplift) * quantity).toFixed(2))});
+      }
+
+      await this.orderChargeRepo.deleteAll({orderId}, {transaction: tx});
+      for (const charge of charges) {
+        await this.orderChargeRepo.create({id: v4(), orderId, ...charge}, {transaction: tx});
+      }
+      for (const redemption of previousRedemptions) {
+        await this.couponRedemptionRepo.updateById(redemption.id,
+          {isReversed: true, reversedAt: new Date()}, {transaction: tx});
+      }
+      for (const result of couponResults) {
+        await this.couponRedemptionRepo.create({id: v4(), couponId: result.couponId,
+          couponCodeSnapshot: result.code, customerId: order.customerId, orderId,
+          discountType: result.discountType, discountAmount: result.discountAmount,
+          isProvisional: true,
+          bookingSnapshot: {bookedDiscountAmount: result.discountAmount,
+            coupon: result.pricingSnapshot}}, {transaction: tx});
+      }
+      const usageChanges = new Map<string, number>();
+      for (const row of previousRedemptions) {
+        if (!row.isProvisional) usageChanges.set(row.couponId, (usageChanges.get(row.couponId) ?? 0) - 1);
+      }
+      for (const [couponId, change] of usageChanges) {
+        if (!change) continue;
+        const coupon = await this.couponRepo.findById(couponId, undefined, {transaction: tx});
+        await this.couponRepo.updateById(couponId,
+          {totalUsesCount: Math.max(0, (coupon.totalUsesCount ?? 0) + change)}, {transaction: tx});
+      }
+      await this.orderRepo.updateById(orderId, {
+        ...placedBy, isOnAccount: input.paymentIsOnAccount,
+        draftEditorState: {...(input.draftEditorState ?? order.draftEditorState ?? {}),
+          deliveryDateAnchor: new Date().toISOString()},
+        appliedCouponId: couponResults[0]?.couponId ?? null as unknown as string,
+        couponCode: couponResults.map(result => result.code).join(', ') || null as unknown as string,
+      }, {transaction: tx});
+      const totals = await this.recalculateOrderTotals(orderId, tx);
+      if (!transaction) await tx.commit();
+      return totals;
+    } catch (error) {
+      if (!transaction) await tx.rollback();
+      throw error;
+    }
+  }
+
+  async saveDraftOrder(orderId: string, input: {
+    customerId: string;
+    storeId?: string;
+    orderType: OrderType;
+    orderLabelIds: string[];
+    specialInstructions?: string;
+    remarks?: string;
+    deliveryAddressId?: string | null;
+    deliveryAddress?: string;
+    items: Parameters<OrderService['updateOrderItems']>[1];
+    deliveryType?: DeliveryType;
+    deliveryTypePercentage?: number;
+    expressMultiplier?: number;
+    deliveryDate?: string;
+    additionalChargeIds: AdditionalChargeSelection[];
+    couponCodes: string[];
+    customerContactId?: string | null;
+    familyGroupMemberId?: string | null;
+    paymentIsOnAccount: boolean;
+    draftEditorState?: Order['draftEditorState'];
+  }, changedBy: string): Promise<object> {
+    const {v4} = await import('uuid');
+    const tx = await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
+    try {
+      await this.dataSource.execute('SELECT id FROM public.orders WHERE id = $1 FOR UPDATE', [orderId], {transaction: tx});
+      const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}}, {transaction: tx});
+      if (!order) throw new HttpErrors.NotFound('Order not found.');
+      if (order.status !== OrderStatus.DRAFT) throw new HttpErrors.Conflict('Only drafts can be saved this way.');
+      await this.lockCustomerForOrder(input.customerId, tx);
+      const customer = await this.customerRepo.findOne({where: {id: input.customerId, isDeleted: false}});
+      if (!customer) throw new HttpErrors.BadRequest('Customer not found.');
+      if (input.paymentIsOnAccount &&
+        customer.customerEntityType !== 'business' && customer.isOnAccountEligible !== true) {
+        throw new HttpErrors.BadRequest('This customer is not eligible for On Account billing.');
+      }
+      const storeId = input.storeId || order.storeId;
+      const changingStore = order.storeId !== storeId;
+      const orderNumber = changingStore ? await this.resolveNextOrderNumber(storeId, tx) : undefined;
+      if (orderNumber) await this.lockStorePrefix(storeId, orderNumber, tx);
+      await this.orderRepo.updateById(orderId, {
+        customerId: input.customerId,
+        storeId,
+        ...(orderNumber ? {orderNumber} : {}),
+        orderType: input.orderType,
+        ...(input.specialInstructions !== undefined ? {specialInstructions: input.specialInstructions} : {}),
+        remarks: input.remarks ?? '',
+        ...(order.customerId !== input.customerId ? {
+          deliveryAddressId: null as unknown as string, deliveryAddress: '',
+        } : {}),
+        ...(input.deliveryAddressId !== undefined ? {deliveryAddressId: input.deliveryAddressId as string} : {}),
+        ...(input.deliveryAddress !== undefined ? {deliveryAddress: input.deliveryAddress} : {}),
+      }, {transaction: tx});
+      await this.orderLabelAssignmentRepo.deleteAll({orderId}, {transaction: tx});
+      for (const orderLabelId of input.orderLabelIds) {
+        await this.orderLabelAssignmentRepo.create({orderId, orderLabelId}, {transaction: tx});
+      }
+      await this.updateOrderItems(orderId, input.items, changedBy, {
+        deliveryType: input.deliveryType,
+        deliveryTypePercentage: input.deliveryTypePercentage,
+        expressMultiplier: input.expressMultiplier,
+        deliveryDate: input.deliveryDate,
+        transaction: tx,
+      });
+      const totals = await this.updateDraftDetails(orderId, {
+        ...input, autoApplyForChangedCustomer: order.customerId !== input.customerId || changingStore,
+      }, tx);
+      await this.statusHistoryRepo.create({
+        id: v4(), orderId, status: OrderStatus.DRAFT, changedAt: new Date(), changedBy,
+        remarks: 'Draft edited at counter',
+      }, {transaction: tx});
+      await tx.commit();
+      return totals;
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
   private async getReprocessOriginalLines(order: Order) {
     const lines = new Map<string, {quantity: number; additionalServiceIds: string[]}>();
     if (!order.reprocessOfOrderId) return lines;
@@ -2724,13 +3181,14 @@ export class OrderService {
       deliveryTypePercentage?: number;
       expressMultiplier?: number;
       deliveryDate?: string;
+      transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>;
     } = {},
   ): Promise<object> {
     const {v4} = await import('uuid');
 
     const order = await this.orderRepo.findOne({
       where: {id: orderId, isDeleted: false},
-    });
+    }, {transaction: options.transaction});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     if (!OrderService.ITEM_EDITABLE_STATUSES.has(order.status as OrderStatus)) {
@@ -2772,7 +3230,7 @@ export class OrderService {
       splitItems.map(i => [lineKey(i.serviceId, i.itemId, i.rejectedAtIntake), i]),
     );
 
-    const existingItems = await this.orderItemRepo.find({where: {orderId}});
+    const existingItems = await this.orderItemRepo.find({where: {orderId}}, {transaction: options.transaction});
     const existingByKey = new Map(
       existingItems.map(oi => [lineKey(oi.serviceId, oi.itemId, oi.rejectedAtIntake), oi]),
     );
@@ -2981,9 +3439,10 @@ export class OrderService {
       {length: number; width: number}[]
     >();
     const newGarmentInstructions = new Map<string, (string | undefined)[]>();
-    const tx = await this.dataSource.beginTransaction({
+    const tx = options.transaction ?? await this.dataSource.beginTransaction({
       isolationLevel: 'READ COMMITTED' as any,
     });
+    let totals: Awaited<ReturnType<OrderService['recalculateOrderTotals']>> | undefined;
 
     try {
       if (options.deliveryType || options.deliveryTypePercentage !== undefined ||
@@ -3019,14 +3478,17 @@ export class OrderService {
 
         // Garments that survive this edit, oldest tag first, paired with the unit
         // slot each one describes (by garment id, else by position).
-        const keptGarments = existing
+        const previousGarments = existing
           ? (
               await this.garmentRepo.find({
                 where: {orderItemId: existing.id, isDeleted: false} as any,
                 order: ['garmentTagNumber ASC'],
               })
-            ).filter(garment => !removableGarmentIds.has(String(garment.id)))
+            )
           : [];
+        const keptGarments = previousGarments.filter(
+          garment => !removableGarmentIds.has(String(garment.id)),
+        );
         const slotPlan = planEditUnitSlots(quantity, units, keptGarments);
         // Rework garments were tagged first; later paid pieces have newer tags.
         const freeGarmentIds = new Set(
@@ -3043,25 +3505,42 @@ export class OrderService {
           ? Array.from({length: quantity}, () => [] as string[])
           : resolveEditUnitServiceIds(quantity, units, desired.additionalServiceIds);
         const originalServices = originalReprocessLine?.additionalServiceIds ?? [];
-        const servicePriceById = new Map<string, number>();
+        const previousServiceRows = unitServiceIds.some(ids => ids.length) && keptGarments.length
+          ? await this.garmentAdditionalServiceRepo.find({
+              where: {garmentId: {inq: keptGarments.map(garment => garment.id)}, isDeleted: false} as any,
+            })
+          : [];
+        const previousServicesBySlot = unitServiceIds.map((ids, slot) => {
+          if (!ids.length) return [];
+          const garment = slotPlan.garmentBySlot[slot];
+          if (garment) {
+            return previousServiceRows.filter(row => row.garmentId === garment.id);
+          }
+          return previousGarments.length === 0 && slot < Number(existing?.quantity)
+            ? existing?.pendingUnitAdditionalServices?.[slot] ?? []
+            : [];
+        });
+        const servicePriceById = new Map<string, number[]>();
         for (const addlServiceId of new Set(unitServiceIds.flat())) {
           const addl = await this.resolvePricing(
             order.storeId!,
             addlServiceId,
             desired.itemId,
             order.customerId,
-            {
-              additional: true,
-            },
           );
-          servicePriceById.set(addlServiceId, addl.resolvedPrice);
+          servicePriceById.set(addlServiceId, priceEditedAdditionalService(
+            addlServiceId,
+            addl.resolvedPrice,
+            unitServiceIds,
+            previousServicesBySlot,
+          ));
         }
         const servicePrice = (serviceId: string, slot?: number) =>
           slot !== undefined &&
           freeSlots.has(slot) &&
           originalServices.includes(serviceId)
             ? 0
-            : servicePriceById.get(serviceId) ?? 0;
+            : servicePriceById.get(serviceId)?.[slot ?? 0] ?? 0;
         const unitServiceRows = (slot: number | undefined) =>
           (slot === undefined
             ? (desired.additionalServiceIds ?? [])
@@ -3180,6 +3659,7 @@ export class OrderService {
           rejectionReason: rejected ? desired.rejectionReason || existing?.rejectionReason || IntakeRejectionReason.OTHER : undefined,
           rejectionRemarks: rejected ? desired.rejectionRemarks ?? existing?.rejectionRemarks : undefined,
           additionalServiceIds: desired.additionalServiceIds,
+          ...(order.status === OrderStatus.DRAFT && units ? {draftUnitInspections: units} : {}),
           ...pendingFields,
         };
 
@@ -3275,6 +3755,15 @@ export class OrderService {
             slot === undefined ? undefined : measurement?.dimensions[slot];
           const instructions = slot === undefined ? undefined : units?.[slot]?.instructions;
           const garmentPatch = editedGarmentFields(garment, instructions, dims);
+          if (order.status === OrderStatus.DRAFT && slot !== undefined && units?.[slot]) {
+            const unit = units[slot];
+            Object.assign(garmentPatch, {
+              brandId: unit.brandId ?? null,
+              colorId: unit.colorId ?? null,
+              qrPrintCount: unit.qrPrintCount ?? 1,
+            });
+            await this.replaceDraftGarmentInspection(garment.id, unit, tx, v4);
+          }
           if (Object.keys(garmentPatch).length) {
             await this.garmentRepo.updateById(
               garment.id,
@@ -3284,7 +3773,6 @@ export class OrderService {
           }
         }
 
-        // shortcut: draft edits have no garments yet; persist per-unit remarks on OrderItem if needed there.
         if (slotPlan.newSlots.length) {
           newGarmentInstructions.set(
             String(orderItemId),
@@ -3320,11 +3808,16 @@ export class OrderService {
         );
       }
 
-      await tx.commit();
+      if (!options.transaction) {
+        totals = await this.recalculateOrderTotals(orderId, tx);
+        await tx.commit();
+      }
     } catch (err) {
-      await tx.rollback();
+      if (!options.transaction) await tx.rollback();
       throw err;
     }
+
+    if (options.transaction) return {message: 'Draft items updated.'};
 
     // Garments for added items and increased quantities. Runs outside the
     // transaction because autoCreateGarments manages its own sequence, and it
@@ -3358,15 +3851,13 @@ export class OrderService {
       }
     }
 
-    const totals = await this.recalculateOrderTotals(orderId);
-
     await this.statusHistoryRepo.create({
       id: v4(),
       orderId,
       status: order.status!,
       changedAt: new Date(),
       changedBy,
-      remarks: `Items edited at counter — total now ₹${totals.totalAmount}`,
+      remarks: `Items edited at counter — total now ₹${totals!.totalAmount}`,
     });
 
     return {
@@ -3442,19 +3933,23 @@ export class OrderService {
    * order, using the same rules as creation. Never lowers the total below what
    * has already been collected — refunds are a separate decision.
    */
-  private async recalculateOrderTotals(orderId: string) {
-    const order = await this.orderRepo.findById(orderId);
+  private async recalculateOrderTotals(
+    orderId: string,
+    transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ) {
+    const options = {transaction};
+    const order = await this.orderRepo.findById(orderId, undefined, options);
     const customer = await this.customerRepo.findById(order.customerId);
 
-    const items = await this.orderItemRepo.find({where: {orderId}});
+    const items = await this.orderItemRepo.find({where: {orderId}}, options);
     const itemIds = items.map(i => i.id);
     const [itemCharges, orderCharges] = await Promise.all([
       itemIds.length
         ? this.orderItemChargeRepo.find({
             where: {orderItemId: {inq: itemIds}} as any,
-          })
+          }, options)
         : Promise.resolve([]),
-      this.orderChargeRepo.find({where: {orderId}}),
+      this.orderChargeRepo.find({where: {orderId}}, options),
     ]);
 
     const itemsSubtotal = parseFloat(
@@ -3469,8 +3964,49 @@ export class OrderService {
     );
     const subtotal = parseFloat((itemsSubtotal + orderChargesTotal).toFixed(2));
 
-    const {discountAmount, discountType} =
-      await this.resolveCustomerAutoDiscount(subtotal, customer);
+    const redemptions = await this.couponRedemptionRepo.find({
+      where: {orderId, isReversed: false} as object,
+    }, options);
+    const bookedRedemptions = redemptions.filter(row => row.bookingSnapshot?.coupon);
+    if (bookedRedemptions.length && order.status !== OrderStatus.DRAFT) {
+      const evaluation = await this.couponService.evaluateMultiple({
+        couponCodes: bookedRedemptions.map(row => row.couponCodeSnapshot),
+        customerId: order.customerId, storeId: order.storeId,
+        items: items.map(item => ({serviceId: item.serviceId, itemId: item.itemId,
+          quantity: item.quantity, totalPrice: Number(item.totalPrice) || 0})),
+      }, true, bookedRedemptions.map(row => row.bookingSnapshot!.coupon));
+      if (!evaluation.valid) throw new HttpErrors.Conflict(`Coupon no longer applies: ${evaluation.reason}`);
+      for (const redemption of bookedRedemptions) {
+        const coupon = evaluation.coupons.find(result => result.couponId === redemption.couponId);
+        if (!coupon) throw new HttpErrors.Conflict('Coupon redemption no longer matches its coupon.');
+        // Keep the original booking amount recoverable when eligible items return.
+        const bookedAmount = Number(redemption.bookingSnapshot?.bookedDiscountAmount ?? redemption.discountAmount);
+        const discountAmount = Math.min(Number.isFinite(bookedAmount) ? bookedAmount : 0, coupon.discountAmount);
+        if (discountAmount !== Number(redemption.discountAmount)) {
+          await this.couponRedemptionRepo.updateById(redemption.id, {discountAmount}, options);
+          redemption.discountAmount = discountAmount;
+        }
+      }
+    }
+    if (order.status !== OrderStatus.DRAFT) {
+      let remaining = Math.max(0, subtotal - bookedRedemptions.reduce((sum, row) => sum + Number(row.discountAmount), 0));
+      for (const redemption of redemptions.filter(row => !row.bookingSnapshot?.coupon).sort((a, b) => a.id.localeCompare(b.id))) {
+        // shortcut: old bookings have no saved coupon rules; keep their booked rupees until original rule data exists.
+        const bookedAmount = Number(redemption.bookingSnapshot?.bookedDiscountAmount ?? redemption.discountAmount) || 0;
+        const discountAmount = Math.min(Math.max(0, bookedAmount), remaining);
+        if (!redemption.bookingSnapshot || discountAmount !== Number(redemption.discountAmount)) {
+          await this.couponRedemptionRepo.updateById(redemption.id, {
+            discountAmount, bookingSnapshot: {bookedDiscountAmount: bookedAmount},
+          }, options);
+          redemption.discountAmount = discountAmount;
+        }
+        remaining = Math.max(0, parseFloat((remaining - discountAmount).toFixed(2)));
+      }
+    }
+    const {discountAmount, discountType} = redemptions.length
+      ? {discountAmount: Math.min(subtotal, roundRupee(redemptions.reduce((sum, row) => sum + Number(row.discountAmount), 0))),
+        discountType: redemptions.length === 1 ? redemptions[0].discountType : 'coupon'}
+      : await this.resolveCustomerAutoDiscount(subtotal, customer);
 
     const gstConfig = await this.gstConfigRepo.findOne({
       where: {isActive: true, isDeleted: false},
@@ -3487,7 +4023,7 @@ export class OrderService {
 
     // Dropping the total below what the customer already paid would leave the
     // order owing them money, and the refund route is not decided yet.
-    const payments = await this.paymentTransactionRepo.find({where: {orderId}});
+    const payments = await this.paymentTransactionRepo.find({where: {orderId}}, options);
     const paid = payments.reduce(
       (s, p) =>
         s +
@@ -3516,7 +4052,7 @@ export class OrderService {
       discountType,
       taxAmount,
       totalAmount,
-    });
+    }, options);
 
     // Keep an already-generated invoice/challan in sync with the same
     // recompute — otherwise a tax invoice generated before this edit (e.g.
@@ -3526,7 +4062,7 @@ export class OrderService {
     // covers, not this order alone, so it's deliberately left untouched.
     const cgst = parseFloat((taxAmount / 2).toFixed(2));
     const sgst = parseFloat((taxAmount - cgst).toFixed(2));
-    const invoice = await this.invoiceRepo.findOne({where: {orderId} as object});
+    const invoice = await this.invoiceRepo.findOne({where: {orderId} as object}, options);
     if (invoice && !invoice.isConsolidated) {
       await this.invoiceRepo.updateById(invoice.id, {
         subtotal,
@@ -3536,9 +4072,9 @@ export class OrderService {
         totalAmount,
         balanceDue: rupeeBalance(totalAmount, collected),
         updatedAt: new Date(),
-      } as object);
+      } as object, options);
     }
-    const challan = await this.challanRepo.findOne({where: {orderId} as object});
+    const challan = await this.challanRepo.findOne({where: {orderId} as object}, options);
     if (challan) {
       await this.challanRepo.updateById(challan.id, {
         subtotal,
@@ -3547,7 +4083,7 @@ export class OrderService {
         sgst,
         totalAmount,
         updatedAt: new Date(),
-      } as object);
+      } as object, options);
     }
 
     return {
@@ -4368,6 +4904,8 @@ export class OrderService {
       if (toCreate <= 0) continue;
 
       for (let i = 0; i < toCreate; i++) {
+        const unitIndex = existing.count + i;
+        const inspection = (item.draftUnitInspections?.[unitIndex] ?? {}) as UnitInspectionInput;
         garmentSeq++;
         const garmentTagNumber = `GT${String(garmentSeq).padStart(8, '0')}`;
 
@@ -4375,7 +4913,15 @@ export class OrderService {
           orderItemId: item.id,
           garmentTagNumber,
           status: GarmentStatus.RECEIVED,
+          brandId: inspection.brandId,
+          colorId: inspection.colorId,
+          length: inspection.length,
+          width: inspection.width,
+          qrPrintCount: inspection.qrPrintCount ?? 1,
+          customerRemarks: inspection.instructions,
         }, options);
+
+        await this.saveGarmentInspection(garment.id, inspection, tx, v4);
 
         await this.garmentStatusHistoryRepo.create({
           id: v4(),
@@ -4886,6 +5432,7 @@ export class OrderService {
       paymentTransactions,
       splitChildren,
       orderLabelAssignments,
+      couponRedemptions,
     ] = await Promise.all([
       this.orderItemRepo.find({where: {orderId}}),
       this.orderChargeRepo.find({where: {orderId}}),
@@ -4904,6 +5451,7 @@ export class OrderService {
       this.orderLabelAssignmentRepo.find({
         where: {orderId, isDeleted: false} as any,
       }),
+      this.couponRedemptionRepo.find({where: {orderId, isReversed: false} as object}),
     ]);
 
     const orderLabels = orderLabelAssignments.length
@@ -4928,7 +5476,16 @@ export class OrderService {
     const intakeReturns = orderItems.some(item => item.rejectedAtIntake)
       ? await this.intakeRejectedRepo.find({where: {orderId}})
       : [];
-    const returnMediaIds = [...new Set(intakeReturns.flatMap(row => row.mediaIds ?? []))];
+    const draftMediaIds = order.status === OrderStatus.DRAFT
+      ? orderItems.flatMap(item => (item.draftUnitInspections ?? []).flatMap(raw => {
+        const unit = raw as UnitInspectionInput;
+        return [...(unit.itemPhotoMediaIds ?? []),
+          ...(unit.stainMarks ?? []).flatMap(mark => mark.mediaIds ?? []),
+          ...(unit.damageMarks ?? []).flatMap(mark => mark.mediaIds ?? [])];
+      })) : [];
+    const returnMediaIds = [...new Set([
+      ...intakeReturns.flatMap(row => row.mediaIds ?? []), ...draftMediaIds,
+    ])];
     const returnMedia = returnMediaIds.length
       ? await this.mediaRepo.find({where: {id: {inq: returnMediaIds}, isActive: true}})
       : [];
@@ -5280,7 +5837,23 @@ export class OrderService {
         quantity: Number(charge.quantity ?? 1),
       })),
       additionalCharges: chargesByItem.get(oi.id) ?? [],
-      units: (garmentsByItem.get(oi.id) ?? []).map(g => ({
+      units: order.status === OrderStatus.DRAFT && oi.draftUnitInspections?.length
+        ? (oi.draftUnitInspections as Array<UnitInspectionInput & {id?: string}>).map(unit => ({
+            ...unit,
+            garmentId: unit.id,
+            itemPhotos: (unit.itemPhotoMediaIds ?? [])
+              .map(mediaId => ({mediaId, fileUrl: returnMediaById.get(mediaId)}))
+              .filter(photo => photo.fileUrl),
+            stainMarks: (unit.stainMarks ?? []).map(mark => ({...mark,
+              images: (mark.mediaIds ?? [])
+                .map(mediaId => ({mediaId, fileUrl: returnMediaById.get(mediaId)}))
+                .filter(photo => photo.fileUrl)})),
+            damageMarks: (unit.damageMarks ?? []).map(mark => ({...mark,
+              images: (mark.mediaIds ?? [])
+                .map(mediaId => ({mediaId, fileUrl: returnMediaById.get(mediaId)}))
+                .filter(photo => photo.fileUrl)})),
+          }))
+        : (garmentsByItem.get(oi.id) ?? []).map(g => ({
         garmentId: g.id,
         garmentTagNumber: g.garmentTagNumber,
         additionalServices: servicesByGarment.get(g.id) ?? [],
@@ -5357,6 +5930,9 @@ export class OrderService {
         ...order,
         createdByName,
         receivedByName: createdByName,
+        couponRedemptions: couponRedemptions.map(row => ({
+          code: row.couponCodeSnapshot, discountAmount: row.discountAmount,
+        })),
         deliveredAt,
         orderLabels: orderLabels.map(l => ({
           id: l.id,
@@ -6073,7 +6649,6 @@ export class OrderService {
       : subOrderTotal;
 
     // Sub-order gets a normal order number, same store as the parent it split from
-    const subOrderNumber = await this.resolveNextOrderNumber(order.storeId);
 
     // Derive sub-order status from the earliest garment status in the split set
     const GARMENT_STATUS_PRIORITY: GarmentStatus[] = [
@@ -6171,6 +6746,7 @@ export class OrderService {
     });
     try {
       const now = new Date();
+      const subOrderNumber = await this.resolveNextOrderNumber(order.storeId, tx);
 
       const subOrder = await this.orderRepo.create(
         {
@@ -6632,6 +7208,9 @@ export class OrderService {
       where: {id: orderId, isDeleted: false},
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (order.status === OrderStatus.DRAFT) {
+      throw new HttpErrors.BadRequest('Drafts cannot collect payment.');
+    }
     if (order.status === OrderStatus.CANCELLED) {
       throw new HttpErrors.BadRequest(
         'Cannot add payment to a cancelled order.',
