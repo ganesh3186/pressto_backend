@@ -236,10 +236,14 @@ type ShiftClosingSnapshot = {
   // is stored-wallet-balance REDEMPTION against a ticket (no fresh money).
   walletCollections?: {cash?: number; card?: number; upi?: number; netBanking?: number};
   register?: {reimbursement?: number};
-  banking?: {supposed?: number; deposited?: number; cumulativeDiff?: number};
+  banking?: {supposed?: number; deposited?: number; inSafe?: number; cumulativeDiff?: number};
   pettyCash?: {cumulativeDiff?: number};
   ppVoucher?: {cumulativeDiff?: number};
   actualCashInTill?: {cumulativeDiff?: number};
+  itpv?: {
+    pReport?: {revenue?: ShiftRevenueCell; salesReturn?: ShiftRevenueCell};
+    zReport?: {revenue?: ShiftRevenueCell; salesReturn?: ShiftRevenueCell};
+  };
 };
 
 /** Order types booked as a walk-in/counter sale — the "PSB" revenue bucket. */
@@ -1420,6 +1424,7 @@ export class ReportsService {
             amount: true,
             transactionType: true,
             paymentDate: true,
+            transactionReference: true,
           } as object,
         })
       : [];
@@ -1473,7 +1478,7 @@ export class ReportsService {
             storeId: {inq: storeIds},
             status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
           } as object,
-          fields: {id: true, storeId: true, orderType: true} as object,
+          fields: {id: true, storeId: true, orderType: true, status: true} as object,
         })
       : [];
     const revenueOrderById = new Map(revenueOrders.map(o => [o.id, o]));
@@ -1499,7 +1504,11 @@ export class ReportsService {
       const windowStart = shift.openedAt.getTime();
       const windowEnd = shift.closedAt.getTime();
 
-      let psbRevenue = 0;
+      const isMigratedItpvShift = closing.itpv?.zReport != null;
+      let psbRevenue = isMigratedItpvShift
+        ? Number(closing.itpv?.zReport?.revenue?.revenue) || 0
+        : 0;
+      let pmuRevenue = 0;
       let p2dRevenue = 0;
       for (const link of invoiceOrders) {
         const order = revenueOrderById.get(link.orderId);
@@ -1517,19 +1526,35 @@ export class ReportsService {
         const value = invoice.isConsolidated
           ? orderTotal
           : Number(invoice.subtotal) || 0;
-        if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
-        else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
+        if (isMigratedItpvShift) {
+          if ((Number(returnCell.revenue) || 0) > 0 && order.status === OrderStatus.RETURNED) {
+            continue;
+          }
+          if (order.orderType === OrderType.HOME_PICKUP) pmuRevenue += value;
+          else if (order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY) p2dRevenue += value;
+        } else {
+          if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
+          else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
+        }
       }
 
       let otherPaymentMode = 0;
+      let cardOthersAmount = 0;
       for (const payment of payments) {
         if (payment.transactionType === 'refund') continue;
         const order = orderById.get(payment.orderId);
         if (!order || order.storeId !== shift.storeId) continue;
         const paidAt = payment.paymentDate ? new Date(payment.paymentDate).getTime() : null;
         if (paidAt == null || paidAt < windowStart || paidAt > windowEnd) continue;
+        const amount = Number(payment.amount) || 0;
         if (OTHER_PAYMENT_MODES.has(String(payment.paymentMode))) {
-          otherPaymentMode += Number(payment.amount) || 0;
+          otherPaymentMode += amount;
+        } else if (
+          String(payment.paymentMode) === PaymentMode.CARD &&
+          /\bcard\s+others\b/i.test(String(payment.transactionReference ?? ''))
+        ) {
+          otherPaymentMode += amount;
+          cardOthersAmount += amount;
         }
       }
 
@@ -1577,6 +1602,7 @@ export class ReportsService {
         };
 
       row.psbRevenue += psbRevenue;
+      row.pmuRevenue += pmuRevenue;
       row.p2dRevenue += p2dRevenue;
       row.revenue += Number(revenueCell.revenue) || 0;
       row.discount += Number(revenueCell.discount) || 0;
@@ -1588,7 +1614,8 @@ export class ReportsService {
       row.otherPaymentMode += otherPaymentMode;
       row.ppVouchers += Number(collections.ppVoucher) || 0;
       row.cash += Number(collections.cash) || 0;
-      row.cardsUpi += (Number(collections.card) || 0) + (Number(collections.upi) || 0);
+      row.cardsUpi +=
+        (Number(collections.card) || 0) + (Number(collections.upi) || 0) - cardOthersAmount;
       row.chequesReceived += Number(collections.cheque) || 0;
       row.reimbursed += Number(closing.register?.reimbursement) || 0;
       row.pgLink += Number(collections.pgLink) || 0;
@@ -1606,11 +1633,14 @@ export class ReportsService {
         row.chequesReceived +
         row.pgLink +
         row.wallet;
-      row.supposedBankDeposit += Number(closing.banking?.supposed) || 0;
+      row.supposedBankDeposit = Number(closing.banking?.supposed) || 0;
       row.actualBankDeposit += Number(closing.banking?.deposited) || 0;
-      row.diffInDeposit = row.supposedBankDeposit - row.actualBankDeposit;
+      row.diffInDeposit =
+        closing.banking?.inSafe != null
+          ? Number(closing.banking.inSafe) || 0
+          : row.supposedBankDeposit - row.actualBankDeposit;
       row.noOfSalesReturnServices += Number(returnCell.services) || 0;
-      row.salesReturnSaleAmount += Number(returnCell.totalSales) || 0;
+      row.salesReturnSaleAmount += Number(returnCell.revenue ?? returnCell.totalSales) || 0;
 
       const ct = closing.actualCashInTill?.cumulativeDiff ?? 0;
       const pc = closing.pettyCash?.cumulativeDiff ?? 0;

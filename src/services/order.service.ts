@@ -1399,7 +1399,7 @@ export class OrderService {
     const nextSequence = Math.max(Number(store.orderNumberSequence) || 0, Number(rows[0].seq) || 0) + 1;
     await this.storeRepo.updateById(storeId, {orderNumberSequence: nextSequence}, {transaction: tx});
     const seq = String(nextSequence).padStart(4, '0');
-    return `${store.storePrefix}-${mmyy}N-${seq}`;
+    return `${store.storePrefix}-${mmyy}-${seq}`;
   }
 
   private async lockStorePrefix(
