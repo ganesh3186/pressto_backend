@@ -39,7 +39,7 @@ export class Store extends Entity {
 
   // Client-chosen, distinct from `code` above (which is server-generated,
   // internal, and never surfaced in the Store Master UI). This is what
-  // gets embedded in new order numbers (`{storePrefix}-{MMYY}N-{seq}`) —
+  // gets embedded in new order numbers (`{storePrefix}-{MMYY}-{seq}`) —
   // nullable because existing stores start without one; order creation is
   // blocked at that store until an admin sets it.
   @property({type: 'string'})

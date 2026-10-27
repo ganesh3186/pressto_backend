@@ -167,6 +167,14 @@ export class GarmentActionsController {
       }
     }
 
+    const order = await this.orderRepo.findOne({where: {id: orderItem.orderId}});
+    if (!order) throw new HttpErrors.UnprocessableEntity('Order not found for garment.');
+    if (toService) {
+      await this.orderService.resolvePricing(
+        order.storeId, toService.id, orderItem.itemId, order.customerId,
+      );
+    }
+
     // Additive-only: drop any requested add-on already attached to this
     // garment rather than erroring, so re-submitting an existing selection
     // doesn't block a legitimate new one alongside it.
@@ -188,9 +196,6 @@ export class GarmentActionsController {
 
     const addlServiceNames = new Map<string, string>();
     if (newAddlIds.length > 0) {
-      const order = await this.orderRepo.findOne({where: {id: orderItem.orderId}});
-      if (!order) throw new HttpErrors.UnprocessableEntity('Order not found for garment.');
-
       for (const addlId of newAddlIds) {
         const addlService = await this.serviceRepo.findOne({
           where: {id: addlId, isDeleted: false, isActive: true},

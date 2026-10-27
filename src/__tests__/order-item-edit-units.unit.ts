@@ -121,6 +121,89 @@ describe('editing order items per unit (PUT /orders/{id}/items)', () => {
     });
   });
 
+  it('rolls back an order edit when garment creation fails', async () => {
+    const steps: string[] = [];
+    const tx = {
+      commit: async () => { steps.push('commit'); },
+      rollback: async () => { steps.push('rollback'); },
+    };
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      orderRepo: {findOne: async () => ({
+        id: 'order-1', storeId: 'store-1', customerId: 'customer-1',
+        status: OrderStatus.RECEIVED_AT_STORE, deliveryTypePercentage: 0,
+      })},
+      orderItemRepo: {
+        find: async () => [{
+          id: 'returned-1', serviceId: 'clean', itemId: 'kids',
+          quantity: 1, rejectedAtIntake: true,
+        }],
+        updateById: async () => {},
+      },
+      orderItemChargeRepo: {deleteAll: async () => {}},
+      garmentRepo: {find: async () => []},
+      dataSource: {beginTransaction: async () => tx},
+      statusHistoryRepo: {create: async () => { steps.push('history'); }},
+      assertItemsHaveRequiredAdditionalServices: async () => {},
+      getReprocessOriginalLines: async () => new Map(),
+      collectRemovableGarments: async () => [],
+      resolveAdditionalChargePercentage: async () => 0,
+      resolvePricing: async () => ({basePrice: 135, resolvedPrice: 135, priceSource: 'catalog'}),
+      normalizeAdditionalCharges: () => [],
+      autoCreateGarments: async (_id: string, _by: string, _v4: () => string, transaction: unknown) => {
+        expect(transaction).to.equal(tx);
+        steps.push('garments');
+        throw new Error('garment creation failed');
+      },
+      recalculateOrderTotals: async () => ({totalAmount: 0}),
+    }) as OrderService;
+
+    await expect(service.updateOrderItems('order-1', [{
+      serviceId: 'clean', itemId: 'kids', quantity: 1,
+      units: [{rejectedAtIntake: true, rejectionReason: 'customer_declined'}],
+    }], 'staff-1')).to.be.rejectedWith(/garment creation failed/);
+    expect(steps).to.eql(['garments', 'rollback']);
+  });
+
+  it('removes an add-on and records its approval in the same transaction', async () => {
+    const steps: string[] = [];
+    const tx = {commit: async () => {steps.push('commit');}, rollback: async () => {steps.push('rollback');}};
+    const garment = {id: 'garment-1', orderItemId: 'line-1', status: 'received', garmentTagNumber: 'GT1'};
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      orderRepo: {findOne: async () => ({id: 'order-1', storeId: 'store-1', customerId: 'customer-1',
+        status: OrderStatus.RECEIVED_AT_STORE, deliveryTypePercentage: 0})},
+      orderItemRepo: {find: async () => [{id: 'line-1', serviceId: 'clean', itemId: 'shirt', quantity: 1}],
+        updateById: async () => {steps.push('edit');}},
+      orderItemChargeRepo: {deleteAll: async () => {}},
+      garmentRepo: {find: async () => [garment]},
+      garmentAdditionalServiceRepo: {find: async () => [{serviceId: 'alter'}],
+        deleteAll: async () => {steps.push('remove add-on');}},
+      garmentAdditionalChargeRepo: {deleteAll: async () => {}},
+      serviceRepo: {find: async () => [{id: 'alter', name: 'Alter'}]},
+      itemRepo: {findById: async () => ({isMeasurement: false})},
+      dataSource: {beginTransaction: async () => tx},
+      statusHistoryRepo: {create: async () => {}},
+      assertItemsHaveRequiredAdditionalServices: async () => {},
+      getReprocessOriginalLines: async () => new Map(),
+      collectRemovableGarments: async () => [],
+      resolveAdditionalChargePercentage: async () => 0,
+      resolvePricing: async () => ({basePrice: 100, resolvedPrice: 100, priceSource: 'catalog'}),
+      normalizeAdditionalCharges: () => [],
+      autoCreateGarments: async () => [],
+      recalculateOrderTotals: async () => ({totalAmount: 100}),
+    }) as OrderService;
+
+    const result = await service.updateOrderItems('order-1', [{
+      serviceId: 'clean', itemId: 'shirt', quantity: 1, additionalServiceIds: [],
+    }], 'staff-1', {beforeCommit: async (downgrade, transaction) => {
+      expect(transaction).to.equal(tx);
+      expect(downgrade?.removedAddons).to.have.length(1);
+      steps.push('approval');
+      return {id: 'approval-1'};
+    }});
+    expect(result).to.containEql({message: 'Order items updated.', approvalRequest: {id: 'approval-1'}});
+    expect(steps).to.eql(['edit', 'remove add-on', 'approval', 'commit']);
+  });
+
   it('saves the return photo when a new declined item is added in an edit', async () => {
     let savedReturn: Record<string, unknown> = {};
     const service = Object.assign(Object.create(OrderService.prototype), {

@@ -540,34 +540,24 @@ describe('draft ticket details', () => {
     expect(steps).to.deepEqual(['lock', 'customer lock', 'metadata', 'labels', 'items', 'details', 'history', 'commit']);
   });
 
-  it('moves a draft to the selected store before repricing its items', async () => {
+  it('keeps a draft at its original store and rolls back a store change', async () => {
     const steps: string[] = [];
-    let metadata: Record<string, unknown> = {};
+    let rolledBack = false;
     const service = Object.assign(Object.create(OrderService.prototype), {
       dataSource: {execute: async () => {}, beginTransaction: async () => ({
-        commit: async () => {}, rollback: async () => {},
+        commit: async () => {}, rollback: async () => {rolledBack = true;},
       })},
       orderRepo: {findOne: async () => ({status: OrderStatus.DRAFT, customerId: 'customer-1', storeId: 'old-store'}),
-        updateById: async (_id: string, fields: Record<string, unknown>) => {metadata = fields; steps.push('metadata');}},
+        updateById: async () => {steps.push('metadata');}},
       customerRepo: {findOne: async () => ({id: 'customer-1'})},
-      resolveNextOrderNumber: async () => 'NEW-1026-0001',
-      lockStorePrefix: async (storeId: string) => {expect(storeId).to.equal('new-store'); steps.push('store lock');},
-      orderLabelAssignmentRepo: {deleteAll: async () => {}},
-      updateOrderItems: async () => {steps.push('items');},
-      updateDraftDetails: async (_id: string, input: {autoApplyForChangedCustomer?: boolean}) => {
-        expect(input.autoApplyForChangedCustomer).to.equal(true);
-        steps.push('details');
-        return {};
-      },
-      statusHistoryRepo: {create: async () => {}},
     }) as OrderService;
 
-    await service.saveDraftOrder('draft-1', {
+    await expect(service.saveDraftOrder('draft-1', {
       customerId: 'customer-1', storeId: 'new-store', orderType: OrderType.STORE_DROPOFF,
       orderLabelIds: [], items: [], additionalChargeIds: [], couponCodes: [], paymentIsOnAccount: false,
-    }, 'staff-1');
-    expect(metadata).to.containEql({storeId: 'new-store', orderNumber: 'NEW-1026-0001'});
-    expect(steps).to.deepEqual(['store lock', 'metadata', 'items', 'details']);
+    }, 'staff-1')).to.be.rejectedWith(/store cannot be changed/);
+    expect(rolledBack).to.equal(true);
+    expect(steps).to.deepEqual([]);
   });
 
   it('rejects On Account when a draft changes to an ineligible customer', async () => {

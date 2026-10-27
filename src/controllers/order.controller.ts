@@ -1494,6 +1494,12 @@ export class OrderController {
     },
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(id, currentUser);
+    const pendingDowngrades = await this.approvalRequestRepo.find({where: {
+      entityType: 'order', entityId: id,
+      type: ApprovalRequestType.ORDER_ITEMS_DOWNGRADE,
+      status: ApprovalRequestStatus.PENDING,
+    } as object});
+    const hasLegacyPending = pendingDowngrades.some(request => !request.metadata?._appliedAtRequest);
     const result = (await this.orderService.updateOrderItems(
       id,
       body.items,
@@ -1503,48 +1509,45 @@ export class OrderController {
         deliveryTypePercentage: body.deliveryTypePercentage,
         expressMultiplier: body.expressMultiplier,
         deliveryDate: body.deliveryDate,
+        trackItemChanges: hasLegacyPending,
+        beforeCommit: async (downgrade, transaction, itemsChanged) => {
+          const pending = await this.approvalRequestRepo.find({where: {
+            entityType: 'order', entityId: id,
+            type: ApprovalRequestType.ORDER_ITEMS_DOWNGRADE,
+            status: ApprovalRequestStatus.PENDING,
+          } as object}, {transaction});
+          for (const request of pending.filter(row => !row.metadata?._appliedAtRequest)) {
+            if (itemsChanged) {
+              await this.approvalService.supersedeLegacyDowngrade(
+                request, currentUser[securityId], transaction,
+              );
+            }
+          }
+          if (!downgrade) return undefined;
+          return this.approvalService.createRequest({
+            type: ApprovalRequestType.ORDER_ITEMS_DOWNGRADE,
+            entityType: 'order', entityId: id,
+            requestedBy: currentUser[securityId],
+            requestReason: downgrade.requestReason,
+            metadata: {
+              removedLines: downgrade.removedLines,
+              removedAddons: downgrade.removedAddons,
+              _appliedAtRequest: true,
+            },
+          }, transaction);
+        },
       },
     )) as {
-      status?: string;
-      message?: string;
-      requestReason?: string;
-      downgrade?: {
-        desiredItems: unknown;
-        removedLines: unknown[];
-        removedAddons: unknown[];
-      };
+      approvalRequest?: Awaited<ReturnType<ApprovalService['createRequest']>>;
+      [key: string]: unknown;
     };
 
-    if (result.status !== 'pending_approval') return result;
-
-    // Removing a whole service line or an attached add-on never applies on
-    // its own — it needs an internal (not customer) approval first. Nothing
-    // was written to the order by the call above; this just raises the
-    // request for a store exec to review.
-    const existing = await this.approvalRequestRepo.findOne({
-      where: {
-        entityType: 'order',
-        entityId: id,
-        type: ApprovalRequestType.ORDER_ITEMS_DOWNGRADE,
-        status: ApprovalRequestStatus.PENDING,
-      } as any,
-    });
-    if (existing) {
-      throw new HttpErrors.Conflict(
-        'A downgrade for this order is already pending internal approval.',
+    if (result.approvalRequest) {
+      this.approvalService.notifyApprovalRequired(
+        result.approvalRequest, result.approvalRequest.requestReason,
       );
     }
-
-    const request = await this.approvalService.createRequest({
-      type: ApprovalRequestType.ORDER_ITEMS_DOWNGRADE,
-      entityType: 'order',
-      entityId: id,
-      requestedBy: currentUser[securityId],
-      requestReason: result.requestReason,
-      metadata: result.downgrade as unknown as Record<string, unknown>,
-    });
-
-    return {status: 'pending_approval', message: result.message, request};
+    return result;
   }
 
   // ─── Reprocess after delivery ─────────────────────────────────────────────

@@ -1372,8 +1372,6 @@ export class OrderService {
   }
 
   // ─── Order numbering ────────────────────────────────────────────────────────
-  // N separates new numbers from older issued numbers lost when drafts moved stores.
-
   private async resolveNextOrderNumber(
     storeId: string,
     tx: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
@@ -1393,13 +1391,15 @@ export class OrderService {
     const mmyy = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getFullYear()).slice(-2)}`;
     const rows = await this.dataSource.execute(
       `SELECT COALESCE(MAX(substring(ordernumber from '-([0-9]+)$')::bigint), 0) AS seq
-       FROM public.orders WHERE storeid = $1 AND ordernumber ~ '-[0-9]+$'`,
-      [storeId], {transaction: tx},
+       FROM public.orders
+       WHERE left(ordernumber, length($1) + 1) = $1 || '-'
+         AND ordernumber ~ '-[0-9]+$'`,
+      [store.storePrefix], {transaction: tx},
     );
     const nextSequence = Math.max(Number(store.orderNumberSequence) || 0, Number(rows[0].seq) || 0) + 1;
     await this.storeRepo.updateById(storeId, {orderNumberSequence: nextSequence}, {transaction: tx});
     const seq = String(nextSequence).padStart(4, '0');
-    return `${store.storePrefix}-${mmyy}N-${seq}`;
+    return `${store.storePrefix}-${mmyy}-${seq}`;
   }
 
   private async lockStorePrefix(
@@ -3072,13 +3072,12 @@ export class OrderService {
         throw new HttpErrors.BadRequest('This customer is not eligible for On Account billing.');
       }
       const storeId = input.storeId || order.storeId;
-      const changingStore = order.storeId !== storeId;
-      const orderNumber = changingStore ? await this.resolveNextOrderNumber(storeId, tx) : undefined;
-      if (orderNumber) await this.lockStorePrefix(storeId, orderNumber, tx);
+      if (order.storeId !== storeId) {
+        throw new HttpErrors.Conflict('The store cannot be changed after a ticket is created.');
+      }
       await this.orderRepo.updateById(orderId, {
         customerId: input.customerId,
         storeId,
-        ...(orderNumber ? {orderNumber} : {}),
         orderType: input.orderType,
         ...(input.specialInstructions !== undefined ? {specialInstructions: input.specialInstructions} : {}),
         remarks: input.remarks ?? '',
@@ -3100,7 +3099,7 @@ export class OrderService {
         transaction: tx,
       });
       const totals = await this.updateDraftDetails(orderId, {
-        ...input, autoApplyForChangedCustomer: order.customerId !== input.customerId || changingStore,
+        ...input, autoApplyForChangedCustomer: order.customerId !== input.customerId,
       }, tx);
       await this.statusHistoryRepo.create({
         id: v4(), orderId, status: OrderStatus.DRAFT, changedAt: new Date(), changedBy,
@@ -3152,6 +3151,35 @@ export class OrderService {
     return lines;
   }
 
+  private async orderItemEditSignature(
+    orderId: string,
+    tx: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<string> {
+    const options = {transaction: tx};
+    const items = await this.orderItemRepo.find({where: {orderId}}, options);
+    const itemIds = items.map(item => item.id);
+    const [lineCharges, garments] = await Promise.all([
+      itemIds.length ? this.orderItemChargeRepo.find({where: {orderItemId: {inq: itemIds}}}, options) : [],
+      itemIds.length ? this.garmentRepo.find({where: {orderItemId: {inq: itemIds}, isDeleted: false}}, options) : [],
+    ]);
+    const garmentIds = garments.map(garment => garment.id);
+    const [services, charges] = await Promise.all([
+      garmentIds.length ? this.garmentAdditionalServiceRepo.find({where: {garmentId: {inq: garmentIds}, isDeleted: false}}, options) : [],
+      garmentIds.length ? this.garmentAdditionalChargeRepo.find({where: {garmentId: {inq: garmentIds}, isDeleted: false}}, options) : [],
+    ]);
+    const sorted = (rows: object[], omitId = false) => rows.map(row => {
+      const data = {...(row as {toJSON(): object}).toJSON()} as Record<string, unknown>;
+      delete data.createdAt;
+      delete data.updatedAt;
+      if (omitId) delete data.id;
+      return JSON.stringify(data);
+    }).sort();
+    return JSON.stringify([
+      sorted(items), sorted(lineCharges, true), sorted(garments),
+      sorted(services, true), sorted(charges, true),
+    ]);
+  }
+
   async updateOrderItems(
     orderId: string,
     desiredItems: {
@@ -3182,6 +3210,12 @@ export class OrderService {
       expressMultiplier?: number;
       deliveryDate?: string;
       transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>;
+      beforeCommit?: (
+        downgrade: {requestReason: string; removedLines: object[]; removedAddons: object[]} | undefined,
+        transaction: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+        itemsChanged: boolean,
+      ) => Promise<unknown>;
+      trackItemChanges?: boolean;
     } = {},
   ): Promise<object> {
     const {v4} = await import('uuid');
@@ -3265,12 +3299,10 @@ export class OrderService {
     // Once an order has actually been placed (past the staff's own cart —
     // draft/confirmed are still just composing it), a staff member dropping
     // a whole service line or an attached add-on quietly shrinks the bill
-    // with no one else looking. Gate that specific pattern behind internal
-    // approval; it never applies automatically. A quantity reduction or a
-    // switch to a cheaper service still applies immediately, same as always
-    // — those aren't what this gate is for. Skipped entirely when this call
-    // IS the approved application itself (see
-    // ApprovalService._applyOrderItemsDowngrade).
+    // with no one else looking. Record internal approval for that edit while
+    // applying it immediately. A quantity reduction or cheaper service switch
+    // already applies immediately. Legacy deferred approvals skip this check.
+    let downgrade: {requestReason: string; removedLines: object[]; removedAddons: object[]} | undefined;
     const isPlacedOrder =
       order.status !== OrderStatus.DRAFT &&
       order.status !== OrderStatus.CONFIRMED;
@@ -3387,13 +3419,7 @@ export class OrderService {
           ),
         ];
 
-        return {
-          status: 'pending_approval',
-          message:
-            'This edit removes a service or add-on, so it needs internal approval before it applies. Nothing has changed yet.',
-          requestReason: summaryParts.join('; '),
-          downgrade: {desiredItems, removedLines, removedAddons},
-        };
+        downgrade = {requestReason: summaryParts.join('; '), removedLines, removedAddons};
       }
     }
 
@@ -3428,6 +3454,9 @@ export class OrderService {
     if (promisedDeliveryDate && isNaN(promisedDeliveryDate.getTime())) {
       throw new HttpErrors.BadRequest('deliveryDate is not a valid date.');
     }
+    if (downgrade && !options.beforeCommit) {
+      throw new HttpErrors.BadRequest('Downgrade approval cannot be recorded for this order edit.');
+    }
     const deliveryMultiplier = 1 + deliveryTypePercentage / 100;
     // Resolved once for the whole edit — depends only on storeId, reused for
     // every item-level additional charge below.
@@ -3443,8 +3472,13 @@ export class OrderService {
       isolationLevel: 'READ COMMITTED' as any,
     });
     let totals: Awaited<ReturnType<OrderService['recalculateOrderTotals']>> | undefined;
+    let garmentsCreated = 0;
+    let approvalRequest: unknown;
 
     try {
+      const originalItems = options.trackItemChanges
+        ? await this.orderItemEditSignature(orderId, tx)
+        : undefined;
       if (options.deliveryType || options.deliveryTypePercentage !== undefined ||
         options.expressMultiplier !== undefined || promisedDeliveryDate) {
         await this.orderRepo.updateById(orderId, {
@@ -3810,6 +3844,38 @@ export class OrderService {
 
       if (!options.transaction) {
         totals = await this.recalculateOrderTotals(orderId, tx);
+        if (order.status !== OrderStatus.DRAFT && order.status !== OrderStatus.CONFIRMED) {
+          const createdGarments = (await this.autoCreateGarments(
+            orderId, changedBy, v4, tx,
+          )) as Array<{id: string; orderItemId: string}>;
+          garmentsCreated = createdGarments.length;
+          const createdIndexByLine = new Map<string, number>();
+          for (const garment of createdGarments) {
+            const lineId = String(garment.orderItemId);
+            const index = createdIndexByLine.get(lineId) ?? 0;
+            createdIndexByLine.set(lineId, index + 1);
+            const dims = newGarmentDimensions.get(lineId)?.[index];
+            const instructions = newGarmentInstructions.get(lineId)?.[index];
+            if (dims || instructions !== undefined) {
+              await this.garmentRepo.updateById(
+                garment.id,
+                editedGarmentFields({}, instructions, dims),
+                {transaction: tx},
+              );
+            }
+          }
+        }
+        await this.statusHistoryRepo.create({
+          id: v4(),
+          orderId,
+          status: order.status!,
+          changedAt: new Date(),
+          changedBy,
+          remarks: `Items edited at counter — total now ₹${totals.totalAmount}`,
+        }, {transaction: tx});
+        const itemsChanged = originalItems !== undefined &&
+          originalItems !== await this.orderItemEditSignature(orderId, tx);
+        approvalRequest = await options.beforeCommit?.(downgrade, tx, itemsChanged);
         await tx.commit();
       }
     } catch (err) {
@@ -3819,52 +3885,12 @@ export class OrderService {
 
     if (options.transaction) return {message: 'Draft items updated.'};
 
-    // Garments for added items and increased quantities. Runs outside the
-    // transaction because autoCreateGarments manages its own sequence, and it
-    // only applies once the order has physically arrived.
-    let garmentsCreated = 0;
-    if (
-      order.status !== OrderStatus.DRAFT &&
-      order.status !== OrderStatus.CONFIRMED
-    ) {
-      const createdGarments = (await this.autoCreateGarments(
-        orderId,
-        changedBy,
-        v4,
-      )) as Array<{id: string; orderItemId: string}>;
-      garmentsCreated = createdGarments.length;
-      // autoCreateGarments creates a line's new pieces in slot order, so the
-      // i-th new garment of a line is its i-th new measured unit.
-      const createdIndexByLine = new Map<string, number>();
-      for (const garment of createdGarments) {
-        const lineId = String(garment.orderItemId);
-        const index = createdIndexByLine.get(lineId) ?? 0;
-        createdIndexByLine.set(lineId, index + 1);
-        const dims = newGarmentDimensions.get(lineId)?.[index];
-        const instructions = newGarmentInstructions.get(lineId)?.[index];
-        if (dims || instructions !== undefined) {
-          await this.garmentRepo.updateById(
-            garment.id,
-            editedGarmentFields({}, instructions, dims),
-          );
-        }
-      }
-    }
-
-    await this.statusHistoryRepo.create({
-      id: v4(),
-      orderId,
-      status: order.status!,
-      changedAt: new Date(),
-      changedBy,
-      remarks: `Items edited at counter — total now ₹${totals!.totalAmount}`,
-    });
-
     return {
       message: 'Order items updated.',
       ...totals,
       garmentsCreated,
       garmentsRemoved: removableGarments.length,
+      ...(approvalRequest ? {approvalRequest} : {}),
     };
   }
 
