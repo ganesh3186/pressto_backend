@@ -7,6 +7,7 @@ import {
   collectOrderExportRows,
   OrderExportFilters,
 } from '../utils/order-export';
+import {resolveOrderPaymentStatus} from '../utils/payment-status';
 import {
   EditOrderUnitInput,
   editedGarmentFields,
@@ -5324,12 +5325,11 @@ export class OrderService {
       const totalAmount = Number(order.totalAmount ?? 0);
       const balanceDue = rupeeBalance(totalAmount, totalCollected);
 
-      let paymentStatus: string;
-      // A ₹0 order owes nothing — a free rework, or one fully covered by wallet
-      // or advance. Reporting it as pending puts it in collections chasing zero.
-      if (balanceDue === 0) paymentStatus = 'paid';
-      else if (totalCollected > 0) paymentStatus = 'partial';
-      else paymentStatus = 'pending';
+      const paymentStatus = resolveOrderPaymentStatus(
+        totalAmount,
+        totalCollected,
+        order.status,
+      );
 
       return {
         id: order.id,
@@ -6014,9 +6014,7 @@ export class OrderService {
       paymentTransactions,
       totalCollected,
       balanceDue,
-      // Nothing outstanding = paid, including a ₹0 free rework order.
-      paymentStatus:
-        balanceDue === 0 ? 'paid' : totalCollected > 0 ? 'partial' : 'pending',
+      paymentStatus: resolveOrderPaymentStatus(totalAmount, totalCollected, order.status),
     };
   }
 

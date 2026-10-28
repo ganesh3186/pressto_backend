@@ -189,7 +189,7 @@ export class InvoiceController {
     const orderIds = [...new Set(invoices.map(inv => inv.orderId).filter(Boolean))];
     const orders = await this.orderRepo.find({
       where: {id: {inq: orderIds}},
-      fields: {id: true, orderNumber: true, customerId: true},
+      fields: {id: true, orderNumber: true, customerId: true, status: true},
     });
     const orderById = new Map(orders.map(o => [o.id, o]));
 
@@ -237,6 +237,7 @@ export class InvoiceController {
       return {
         ...inv,
         orderNumber: order?.orderNumber ?? null,
+        orderStatus: order?.status ?? null,
         customer: {
           id: customer?.id ?? null,
           name: customer ? `${customer.firstName} ${customer.lastName}`.trim() : null,

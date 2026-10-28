@@ -1,4 +1,5 @@
 import {OrderExportFilters} from '../utils/order-export';
+import {resolveOrderPaymentStatus} from '../utils/payment-status';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
@@ -648,12 +649,11 @@ export class OrderController {
       paymentMode:
         payments.find(payment => payment.transactionType !== 'refund')
           ?.paymentMode ?? null,
-      paymentStatus:
-        balance.due === 0
-          ? 'paid'
-          : balance.alreadyPaid > 0
-            ? 'partial'
-            : 'pending',
+      paymentStatus: resolveOrderPaymentStatus(
+        Number(order.totalAmount ?? 0),
+        balance.alreadyPaid,
+        order.status,
+      ),
       deliveryRemarks: delivered?.remarks ?? null,
       deliveryReturnRemarks: legacyReason ?? stops[0]?.failureRemarks ?? null,
       remarkImages: (order.specialInstructionMediaIds ?? [])
