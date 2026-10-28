@@ -98,7 +98,7 @@ describe('store prefix lock', () => {
     await expect(resolve.resolveNextOrderNumber('store-1', tx)).to.be.rejectedWith(/no order number prefix/);
   });
 
-  it('does not reuse an issued sequence after a draft moves away', async () => {
+  it('uses the next issued sequence without adding N to the number', async () => {
     const tx = {};
     const steps: string[] = [];
     const service = Object.assign(Object.create(OrderService.prototype), {
@@ -117,19 +117,41 @@ describe('store prefix lock', () => {
       },
       dataSource: {execute: async (sql: string, params: string[], options: object) => {
         expect(options).to.eql({transaction: tx});
-        expect(params).to.deepEqual(['store-1']);
         if (sql.includes('FOR UPDATE')) {
+          expect(params).to.deepEqual(['store-1']);
           steps.push('lock');
           return [{id: 'store-1'}];
         }
+        expect(params).to.deepEqual(['ABC']);
         expect(sql).to.containEql('MAX(substring(ordernumber');
+        expect(sql).to.containEql("left(ordernumber, length($1) + 1) = $1 || '-'");
         steps.push('sequence');
         return [{seq: '3'}];
       }},
     }) as OrderService;
     const resolve = service as unknown as {resolveNextOrderNumber: (storeId: string, tx: object) => Promise<string>};
-    expect(await resolve.resolveNextOrderNumber('store-1', tx)).to.match(/ABC-\d{4}N-0006/);
+    expect(await resolve.resolveNextOrderNumber('store-1', tx)).to.match(/ABC-\d{4}-0006/);
     expect(steps).to.deepEqual(['lock', 'store', 'sequence', 'save']);
+  });
+
+  it('advances past numbers issued for this prefix even after their orders moved stores', async () => {
+    const tx = {};
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      storeRepo: {
+        findOne: async () => ({storePrefix: 'ABC', orderNumberSequence: 5}),
+        updateById: async (_id: string, data: {orderNumberSequence: number}) => {
+          expect(data.orderNumberSequence).to.equal(9);
+        },
+      },
+      dataSource: {execute: async (sql: string, params: string[]) => {
+        if (sql.includes('FOR UPDATE')) return [{id: 'store-1'}];
+        expect(params).to.deepEqual(['ABC']);
+        expect(sql).not.to.containEql('storeid = $1');
+        return [{seq: '8'}];
+      }},
+    }) as OrderService;
+    const resolve = service as unknown as {resolveNextOrderNumber: (storeId: string, tx: object) => Promise<string>};
+    expect(await resolve.resolveNextOrderNumber('store-1', tx)).to.match(/ABC-\d{4}-0009/);
   });
 
   it('locks the prefix in the order transaction and detects a concurrent edit', async () => {

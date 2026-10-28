@@ -509,18 +509,9 @@ export class ApprovalService {
       }, options);
     }
 
-    if (this.systemNotificationService && params.type !== ApprovalRequestType.REPROCESS) {
-      this._resolveApprovalNotificationContext(request)
-        .then(context =>
-          this.systemNotificationService!.notifyApprovalRequired(
-            request,
-            params.requestReason,
-            context,
-          ),
-        )
-        .catch(err => {
-          console.error('Failed to notify for approval request:', err);
-        });
+    if (params.type !== ApprovalRequestType.REPROCESS &&
+      !(transaction && params.type === ApprovalRequestType.ORDER_ITEMS_DOWNGRADE)) {
+      this.notifyApprovalRequired(request, params.requestReason);
     }
 
     // Apply immediate status change when needed (e.g. upgrade puts garment on_hold right away)
@@ -548,6 +539,34 @@ export class ApprovalService {
     }
 
     return request;
+  }
+
+  notifyApprovalRequired(request: ApprovalRequest, reason?: string): void {
+    if (!this.systemNotificationService) return;
+    this._resolveApprovalNotificationContext(request)
+      .then(context => this.systemNotificationService!.notifyApprovalRequired(request, reason, context))
+      .catch(err => console.error('Failed to notify for approval request:', err));
+  }
+
+  async supersedeLegacyDowngrade(
+    request: ApprovalRequest,
+    performedBy: string,
+    transaction: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<void> {
+    const {v4} = await import('uuid');
+    const updated = await this.approvalRequestRepo.updateAll({
+      status: ApprovalRequestStatus.REJECTED,
+      resolvedAt: new Date(),
+      metadata: {...request.metadata, _supersededByOrderEdit: true},
+    }, {id: request.id, status: ApprovalRequestStatus.PENDING}, {transaction});
+    if (!updated.count) return;
+    await this.approvalAuditLogRepo.create({
+      id: v4(),
+      approvalRequestId: request.id,
+      eventType: 'superseded',
+      remarks: 'A later ticket edit replaced this pending downgrade.',
+      performedBy,
+    }, {transaction});
   }
 
   private async _ensureReturnBillingApplied(
@@ -751,24 +770,33 @@ export class ApprovalService {
         : ApprovalRequestStatus.REJECTED;
 
     const approvedAdditionalServicePrices = new Map<string, number>();
+    let approvedPrimaryPrice: {basePrice: number; resolvedPrice: number} | undefined;
     if (newStatus === ApprovalRequestStatus.APPROVED && request.type === ApprovalRequestType.UPGRADE_SERVICE) {
       const requestedIds = (request.metadata?.additionalServiceIds as string[] | undefined) ?? [];
-      if (requestedIds.length) {
+      const toServiceId = request.metadata?.toServiceId as string | undefined;
+      if (Boolean(toServiceId) || requestedIds.length > 0) {
         const garment = await this.garmentRepo.findOne({where: {id: request.entityId, isDeleted: false}});
         const orderItem = garment && await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
         const order = orderItem && await this.orderRepo.findOne({where: {id: orderItem.orderId}});
         if (!garment || !orderItem || !order) {
           throw new HttpErrors.NotFound('Order or garment for this upgrade was not found.');
         }
-        const attached = new Set((await this.garmentAdditionalServiceRepo.find({
-          where: {garmentId: garment.id, isDeleted: false} as any,
-        })).map(row => row.serviceId));
-        for (const id of new Set(requestedIds)) {
-          if (attached.has(id)) continue;
-          const price = await this.orderService.resolvePricing(
-            order.storeId!, id, orderItem.itemId, order.customerId, {additional: true},
+        if (toServiceId) {
+          approvedPrimaryPrice = await this.orderService.resolvePricing(
+            order.storeId!, toServiceId, orderItem.itemId, order.customerId,
           );
-          approvedAdditionalServicePrices.set(id, price.resolvedPrice);
+        }
+        if (requestedIds.length) {
+          const attached = new Set((await this.garmentAdditionalServiceRepo.find({
+            where: {garmentId: garment.id, isDeleted: false} as any,
+          })).map(row => row.serviceId));
+          for (const id of new Set(requestedIds)) {
+            if (attached.has(id)) continue;
+            const price = await this.orderService.resolvePricing(
+              order.storeId!, id, orderItem.itemId, order.customerId, {additional: true},
+            );
+            approvedAdditionalServicePrices.set(id, price.resolvedPrice);
+          }
         }
       }
     }
@@ -830,7 +858,9 @@ export class ApprovalService {
     // Store and in-pipeline reprocessing already started when requested; their decision records history only.
     if (request.type !== ApprovalRequestType.REPROCESS) {
       if (params.action === ApprovalActionType.APPROVED) {
-        await this._applyApproveEffect(request, params.performedBy, approvedAdditionalServicePrices);
+        await this._applyApproveEffect(
+          request, params.performedBy, approvedAdditionalServicePrices, approvedPrimaryPrice,
+        );
       } else {
         await this._applyRejectEffect(request, params.performedBy, params.action);
       }
@@ -920,6 +950,7 @@ export class ApprovalService {
     request: ApprovalRequest,
     performedBy: string,
     approvedAdditionalServicePrices: Map<string, number>,
+    approvedPrimaryPrice?: {basePrice: number; resolvedPrice: number},
   ): Promise<void> {
     // Cheque/PDC payments are raised against the ORDER (no garment involved,
     // and no PaymentTransaction exists yet — see order.service.ts's
@@ -943,14 +974,15 @@ export class ApprovalService {
       return;
     }
 
-    // Order downgrade approved: this is the moment the removal actually
-    // applies — nothing was written when the request was raised (see
-    // OrderService.updateOrderItems's downgrade gate).
+    // Current downgrades were applied when requested. Legacy deferred requests
+    // still apply on approval if no later edit superseded them.
     if (
       request.entityType === 'order' &&
       request.type === ApprovalRequestType.ORDER_ITEMS_DOWNGRADE
     ) {
-      await this._applyOrderItemsDowngrade(request, performedBy);
+      if (!request.metadata?._appliedAtRequest) {
+        await this._applyOrderItemsDowngrade(request, performedBy);
+      }
       return;
     }
 
@@ -979,6 +1011,7 @@ export class ApprovalService {
         performedBy,
         garment.id,
         approvedAdditionalServicePrices,
+        approvedPrimaryPrice,
       );
     }
 
@@ -1849,6 +1882,7 @@ export class ApprovalService {
     performedBy: string,
     garmentId: string,
     approvedAdditionalServicePrices: Map<string, number>,
+    approvedPrimaryPrice?: {basePrice: number; resolvedPrice: number},
   ): Promise<void> {
     const toServiceId = request.metadata?.toServiceId as string | undefined;
     const requestedAddlIds =
@@ -1877,20 +1911,14 @@ export class ApprovalService {
     // pricing since both need toServiceId's row, but never blocks the upgrade.
     let newServiceName: string | undefined;
     if (toServiceId) {
-      try {
-        const pricing = await this.orderService.resolvePricing(
-          order.storeId!,
-          toServiceId,
-          orderItem.itemId,
-          order.customerId,
-        );
-        newBasePrice = pricing.basePrice;
-        newResolvedPrice = pricing.resolvedPrice;
-      } catch {
-        // No price configured for the new service+item — fall back to existing base.
-        newBasePrice = Number(orderItem.basePrice) || 0;
-        newResolvedPrice = newBasePrice;
-      }
+      const pricing = approvedPrimaryPrice ?? await this.orderService.resolvePricing(
+        order.storeId!,
+        toServiceId,
+        orderItem.itemId,
+        order.customerId,
+      );
+      newBasePrice = pricing.basePrice;
+      newResolvedPrice = pricing.resolvedPrice;
       newServiceName = (await this.serviceRepo.findOne({where: {id: toServiceId}}))?.name;
     }
     // Base-only per-unit reference (no add-ons folded in) — same meaning as
@@ -2236,6 +2264,9 @@ export class ApprovalService {
     reason?: string;
   }): Promise<{request: ApprovalRequest; notes: string[]}> {
     const request = await this.approvalRequestRepo.findById(params.requestId);
+    if (request.type === ApprovalRequestType.ORDER_ITEMS_DOWNGRADE && request.metadata?._appliedAtRequest) {
+      throw new HttpErrors.BadRequest('This downgrade was applied when requested; its decision cannot undo the order edit. Edit the ticket to restore the service.');
+    }
     if (request.type === ApprovalRequestType.REPROCESS) {
       throw new HttpErrors.BadRequest('Reprocess decisions are audit records and cannot be reverted.');
     }

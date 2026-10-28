@@ -751,7 +751,7 @@ export class OrderSummaryPdfService {
           const packing = /^packaging(?=$|\s*[-\u2014])/i.test(
             instructions.trim(),
           )
-            ? 'Packaging'
+            ? 'Folded'
             : 'Hanger';
           const remarks = instructions
             .replace(
