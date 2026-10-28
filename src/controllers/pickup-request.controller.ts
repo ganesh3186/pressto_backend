@@ -26,6 +26,7 @@ import {
   MediaRepository,
   OrderRepository,
   PickupDeliverySlotRepository,
+  PickupEscalationRepository,
   PickupRequestRepository,
   RiderPincodeMappingRepository,
   RiderRepository,
@@ -89,6 +90,8 @@ export class PickupRequestController {
     private storeRepository: StoreRepository,
     @repository(PickupDeliverySlotRepository)
     private pickupSlotRepository: PickupDeliverySlotRepository,
+    @repository(PickupEscalationRepository)
+    private pickupEscalationRepository: PickupEscalationRepository,
     @repository(RiderPincodeMappingRepository)
     private riderPincodeMappingRepository: RiderPincodeMappingRepository,
     @repository(OrderRepository)
@@ -435,8 +438,11 @@ export class PickupRequestController {
           suggestedRiderName: {type: 'string', nullable: true},
           reworkOfOrderNumber: {type: 'string', nullable: true},
           convertedOrderNumber: {type: 'string', nullable: true},
+          convertedOrderNumbers: {type: 'array', items: {type: 'string'}},
           bagNumber: {type: 'number', nullable: true},
+          bagNumbers: {type: 'array', items: {type: 'number'}},
           mediaUrls: {type: 'array', items: {type: 'string'}},
+          riderMediaUrls: {type: 'array', items: {type: 'string'}},
           itemCategoryEstimate: {type: 'array', items: {type: 'object', properties: {
             itemCategoryName: {type: 'string', nullable: true},
             serviceName: {type: 'string', nullable: true},
@@ -472,10 +478,22 @@ export class PickupRequestController {
     const bagIds = [...new Set([
       pickupRequest.bagId,
       ...(pickupRequest.actualItemsByService ?? []).map(line => line.bagId),
-    ].filter((id): id is string => Boolean(id)))];
+    ].filter((bagId): bagId is string => Boolean(bagId)))];
+    const convertedOrderIds = [...new Set([
+      pickupRequest.convertedOrderId,
+      ...Object.values(pickupRequest.convertedOrders ?? {}),
+    ].filter((orderId): orderId is string => Boolean(orderId)))];
+    const escalations = await this.pickupEscalationRepository.find({
+      where: {pickupRequestId: id, isDeleted: false} as object,
+      fields: {mediaIds: true} as object,
+    });
+    const riderMediaIds = [...new Set([
+      ...(pickupRequest.actualItemsByService ?? []).flatMap(line => line.mediaIds ?? []),
+      ...escalations.flatMap(escalation => escalation.mediaIds ?? []),
+    ])];
     const mediaIds = [...new Set([
       ...(pickupRequest.mediaIds ?? []),
-      ...(pickupRequest.actualItemsByService ?? []).flatMap(line => line.mediaIds ?? []),
+      ...riderMediaIds,
     ])];
     const itemCategoryIds = [...new Set((pickupRequest.itemCategoryEstimate ?? []).map(line => line.itemCategoryId))];
     const serviceIds = [...new Set([
@@ -483,17 +501,18 @@ export class PickupRequestController {
       ...(pickupRequest.actualItemsByService ?? []).map(line => line.serviceId),
     ].filter((id): id is string => Boolean(id)))];
 
-    const [bags, media, itemCategories, services, convertedOrder, enriched] = await Promise.all([
+    const [bags, media, itemCategories, services, convertedOrders, enriched] = await Promise.all([
       bagIds.length ? this.bagRepository.find({where: {id: {inq: bagIds}} as object}) : [],
       mediaIds.length ? this.mediaRepository.find({where: {id: {inq: mediaIds}} as object}) : [],
       itemCategoryIds.length ? this.itemCategoryRepository.find({where: {id: {inq: itemCategoryIds}} as object}) : [],
       serviceIds.length ? this.serviceRepository.find({where: {id: {inq: serviceIds}} as object}) : [],
-      pickupRequest.convertedOrderId
-        ? this.orderRepository.findOne({where: {id: pickupRequest.convertedOrderId}, fields: {id: true, orderNumber: true} as object})
-        : null,
+      convertedOrderIds.length
+        ? this.orderRepository.find({where: {id: {inq: convertedOrderIds}} as object, fields: {id: true, orderNumber: true} as object})
+        : [],
       this.enrichWithSuggestedRider([pickupRequest]).then(requests => this.enrichWithReworkOrderNumber(requests)),
     ]);
     const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
+    const convertedOrderNumberById = new Map(convertedOrders.map(order => [order.id, order.orderNumber]));
     const mediaUrlById = new Map(media.map(file => [file.id, file.fileUrl]));
     const itemCategoryNameById = new Map(itemCategories.map(category => [category.id, category.name]));
     const serviceNameById = new Map(services.map(service => [service.id, service.name]));
@@ -507,9 +526,17 @@ export class PickupRequestController {
 
     return {
       ...enriched[0],
-      convertedOrderNumber: convertedOrder?.orderNumber ?? null,
+      convertedOrderNumber: pickupRequest.convertedOrderId
+        ? convertedOrderNumberById.get(pickupRequest.convertedOrderId) ?? null : null,
+      convertedOrderNumbers: convertedOrderIds
+        .map(orderId => convertedOrderNumberById.get(orderId))
+        .filter((number): number is string => number !== undefined),
       bagNumber: pickupRequest.bagId ? bagNumberById.get(pickupRequest.bagId) ?? null : null,
+      bagNumbers: bagIds
+        .map(bagId => bagNumberById.get(bagId))
+        .filter((number): number is number => number !== undefined),
       mediaUrls: toUrls(pickupRequest.mediaIds),
+      riderMediaUrls: toUrls(riderMediaIds),
       itemCategoryEstimate: (pickupRequest.itemCategoryEstimate ?? []).map(line => ({
         ...line,
         itemCategoryName: itemCategoryNameById.get(line.itemCategoryId) ?? null,

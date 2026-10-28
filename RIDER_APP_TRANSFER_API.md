@@ -65,7 +65,7 @@ one):
       "status": "rider_assigned",
       "fromStoreId": "uuid",
       "toStoreId": "uuid",
-      "bagId": "uuid",
+      "bagNumbers": [1042, 1043],
       "riderId": "uuid",
       "riderName": "Rohan Sharma",
       "riderAssignedAt": "2026-08-22T09:00:00.000Z",
@@ -76,8 +76,10 @@ one):
   ]
 }
 ```
+`bagNumbers` contains every bag in the transfer, including the primary bag.
 `itemCount` is the manifest size — use it for a badge/count without a
-separate call. Ordered `riderAssignedAt DESC`.
+separate call. Ordered `riderAssignedAt DESC`, limited to the newest 100
+transfers.
 
 ---
 
@@ -94,7 +96,7 @@ resolve one to the other client-side. `404` if not found, `403`
 **Response `200`**
 ```json
 {
-  "transfer": { "...same shape as §2's list entries..." },
+  "transfer": { "...transfer record, including its primary bagId..." },
   "items": [
     {
       "id": "uuid",

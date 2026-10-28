@@ -15,6 +15,7 @@ const INDEXES = [
   ['paymentTransactionOrderId', 'payment_transaction', 'orderid'],
   ['paymentTransactionPaymentDate', 'payment_transaction', 'paymentdate'],
   ['transferToStoreId', 'transfer', 'tostoreid'],
+  ['transferManifestLookup', 'transfer_item', 'transferid'],
   ['deliveryStoreStartedAt', 'delivery', 'storeid, startedat'],
   ['deliveryOrderDeliveryId', 'delivery_order', 'deliveryid'],
   ['pickupRequestStoreStatusDate', 'pickup_request', 'storeid, status, requesteddate'],
