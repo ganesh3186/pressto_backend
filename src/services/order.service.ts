@@ -2559,7 +2559,7 @@ export class OrderService {
       );
     }
 
-    const deliveryStop = newStatus === OrderStatus.DELIVERED || newStatus === OrderStatus.OUT_FOR_DELIVERY
+    let deliveryStop = newStatus === OrderStatus.OUT_FOR_DELIVERY
       ? (await this.deliveryOrderRepo.find({
           where: {orderId} as object,
           order: ['createdAt DESC'],
@@ -2652,22 +2652,50 @@ export class OrderService {
       }
       return newStatus === OrderStatus.RECEIVED_AT_STORE ? {garments} : {};
     }
-    await this.orderRepo.updateById(orderId, {
-      status: newStatus,
-      ...(order.status === OrderStatus.DRAFT ? {draftEditorState: null} : {}),
-      ...(order.status === OrderStatus.DRAFT && newStatus === OrderStatus.CONFIRMED
-        ? {createdAt: confirmedAt} : {}),
-    });
-    await this.statusHistoryRepo.create({
-      id: v4(),
-      orderId,
-      status: newStatus,
-      changedAt: confirmedAt,
-      changedBy,
-      remarks,
-    });
-    if (deliveryStop && newStatus === OrderStatus.DELIVERED) {
-      await this.deliveryOrderRepo.updateById(deliveryStop.id, {status: DeliveryOrderStatus.DELIVERED});
+    const tx = newStatus === OrderStatus.DELIVERED
+      ? await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED})
+      : undefined;
+    try {
+      if (tx) {
+        await this.dataSource.execute('SELECT id FROM public.orders WHERE id = $1 FOR UPDATE', [orderId], {transaction: tx});
+        const current = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}}, {transaction: tx});
+        if (!current || !ORDER_STATUS_TRANSITIONS[current.status!].includes(newStatus)) {
+          throw new HttpErrors.Conflict('Order status changed. Refresh and retry.');
+        }
+        deliveryStop = (await this.deliveryOrderRepo.find({
+          where: {orderId} as object,
+          order: ['createdAt DESC'],
+          limit: 1,
+        }, {transaction: tx}))[0];
+        if (deliveryStop?.status === DeliveryOrderStatus.RETURN_TO_STORE) {
+          throw new HttpErrors.BadRequest('A failed delivery stop needs a new delivery run before dispatch or completion.');
+        }
+      }
+      const options = tx ? {transaction: tx} : undefined;
+      await this.orderRepo.updateById(orderId, {
+        status: newStatus,
+        ...(order.status === OrderStatus.DRAFT ? {draftEditorState: null} : {}),
+        ...(order.status === OrderStatus.DRAFT && newStatus === OrderStatus.CONFIRMED
+          ? {createdAt: confirmedAt} : {}),
+      }, options);
+      await this.statusHistoryRepo.create({
+        id: v4(),
+        orderId,
+        status: newStatus,
+        changedAt: confirmedAt,
+        changedBy,
+        remarks,
+      }, options);
+      if (deliveryStop && tx) {
+        await this.deliveryOrderRepo.updateById(deliveryStop.id, {status: DeliveryOrderStatus.DELIVERED}, options);
+      }
+      if (tx) {
+        await this._cascadeGarmentsToDelivered(orderId, changedBy, v4, tx);
+        await tx.commit();
+      }
+    } catch (error) {
+      if (tx) await tx.rollback();
+      throw error;
     }
 
     this.notifyStatusChange(orderId, newStatus, order.status);
@@ -4824,14 +4852,16 @@ export class OrderService {
     orderId: string,
     changedBy: string,
     v4: () => string,
+    tx?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
   ): Promise<number> {
-    const orderItems = await this.orderItemRepo.find({where: {orderId}});
+    const options = tx ? {transaction: tx} : undefined;
+    const orderItems = await this.orderItemRepo.find({where: {orderId}}, options);
     const orderItemIds = orderItems.map(i => i.id);
     if (!orderItemIds.length) return 0;
 
     const garments = await this.garmentRepo.find({
       where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any,
-    });
+    }, options);
 
     // Only garments still in the workflow can be handed over. A damaged or
     // held garment must keep its status, just like a returned one.
@@ -4845,15 +4875,15 @@ export class OrderService {
     for (const g of toDeliver) {
       await this.garmentRepo.updateById(g.id, {
         status: GarmentStatus.DELIVERED,
-      });
+      }, options);
       await this.garmentStatusHistoryRepo.create({
         id: v4(),
         garmentId: g.id,
         status: GarmentStatus.DELIVERED,
         changedAt: now,
         changedBy,
-        remarks: 'Delivered via in-store handover',
-      });
+        remarks: 'Delivered with order',
+      }, options);
     }
     return toDeliver.length;
   }

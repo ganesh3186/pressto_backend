@@ -249,6 +249,7 @@ describe('Failed delivery stop', () => {
   it('blocks delivery completion on a failed stop', async () => {
     const orderWrites: object[] = [];
     const service = Object.assign(Object.create(OrderService.prototype), {
+      dataSource: {beginTransaction: async () => ({rollback: async () => undefined}), execute: async () => undefined},
       orderRepo: {
         findOne: async () => ({id: 'order-1', status: OrderStatus.READY}),
         updateById: async (_id: string, value: object) => orderWrites.push(value),
