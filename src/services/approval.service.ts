@@ -2837,10 +2837,6 @@ export class ApprovalService {
       (sum, s) => sum + Number(s.amount),
       0,
     );
-    const alreadyAttachedIds = new Set(existingAddlServices.map(s => s.serviceId));
-    // Only the NET-NEW add-ons (same additive-only rule the apply path
-    // follows) actually change the quote.
-    const newAddlIds = requestedAddlIds.filter(sid => !alreadyAttachedIds.has(sid));
 
     const currentResolvedPrice =
       Number(
@@ -2878,9 +2874,19 @@ export class ApprovalService {
 
     let newAddlAmountSum = existingAddlAmountSum;
     const requestedAdditionalServices: Array<{id: string; name: string; amount: number}> = [];
-    if (order && orderItem && newAddlIds.length) {
-      for (const addlId of newAddlIds) {
-        const service = requestedAddlServiceRows.find(s => s.id === addlId);
+    for (const [index, addlId] of requestedAddlIds.entries()) {
+      const service = requestedAddlServiceRows.find(s => s.id === addlId);
+      const name =
+        (request.metadata?.additionalServiceNames as string[] | undefined)?.[index] ??
+        service?.name ?? addlId;
+      const attached = existingAddlServices.find(s => s.serviceId === addlId);
+      if (attached) {
+        requestedAdditionalServices.push({
+          id: addlId,
+          name,
+          amount: Number(attached.amount),
+        });
+      } else if (order && orderItem) {
         try {
           const addlPricing = await this.orderService.resolvePricing(
             order.storeId!,
@@ -2892,7 +2898,7 @@ export class ApprovalService {
           newAddlAmountSum += addlPricing.resolvedPrice;
           requestedAdditionalServices.push({
             id: addlId,
-            name: (service as any)?.name ?? addlId,
+            name,
             amount: addlPricing.resolvedPrice,
           });
         } catch {
@@ -2957,7 +2963,10 @@ export class ApprovalService {
       })),
       // Add-ons being REQUESTED now — additive only, attached alongside
       // whichever primary service ends up in effect, never overriding it.
-      requestedAdditionalServices,
+      requestedAdditionalServices: requestedAdditionalServices.map(service => ({
+        ...service,
+        unitPrice: parseFloat((service.amount * deliveryMultiplier).toFixed(2)),
+      })),
 
       pricing: {
         quantity,
