@@ -56,6 +56,7 @@ import {
 import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
 import {PresstoDataSource} from '../datasources/pressto.datasource';
+import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
 
 // What status to set on the garment immediately when a request is CREATED.
 // Requests that need a decision park the garment on ON_HOLD, so work does not
@@ -280,6 +281,8 @@ export class ApprovalService {
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
     @inject('services.system-notification', {optional: true})
     private systemNotificationService?: SystemNotificationService,
+    @inject('services.whatsapp', {optional: true})
+    private whatsAppService?: WhatsAppService,
   ) {}
 
   async calculateGarmentReturnAmount(garmentId: string): Promise<{
@@ -538,6 +541,15 @@ export class ApprovalService {
       return this.approvalRequestRepo.findById(request.id, undefined, options);
     }
 
+    if (
+      this.whatsAppService &&
+      params.entityType === 'garment' &&
+      CUSTOMER_ACTIONS_BY_TYPE[params.type]?.length
+    ) {
+      dispatchWhatsApp(() =>
+        this.whatsAppService!.notifyCustomerApproval(request.id),
+      );
+    }
     return request;
   }
 

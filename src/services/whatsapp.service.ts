@@ -10,6 +10,15 @@ import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {GatewayPaymentLink} from '../models/gateway-payment-link.model';
 import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-type.enum';
 import {GatewayPaymentLinkStatus} from '../models/gateway-payment-link-status.enum';
+import {DeliveryStatus} from '../models/delivery-status.enum';
+import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
+import {CUSTOMER_ACTIONS_BY_TYPE} from '../models/approval-request.model';
+import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {GarmentStatus} from '../models/garment-status.enum';
+import type {OrderService} from './order.service';
+import type {RazorpayService} from './razorpay.service';
+import type {ApprovalService} from './approval.service';
 import type {
   CustomerRepository,
   CustomerPhoneRepository,
@@ -24,6 +33,11 @@ import type {
   OrderHandoverRepository,
   RiderRepository,
   UsersRepository,
+  DeliveryRepository,
+  DeliveryOrderRepository,
+  ApprovalRequestRepository,
+  GarmentRepository,
+  ItemRepository,
 } from '../repositories';
 
 // Provider-approved names must remain byte-for-byte unchanged.
@@ -41,6 +55,16 @@ const TEMPLATES = {
   pulse_wallet_redeem_221026: {parameters: 4, document: false},
   pulse_paymentlink_221026: {parameters: 5, document: false},
   pulse_login_otp_221026: {parameters: 1, document: false},
+  pulse_rider_pickup_done_221026: {parameters: 4, document: false},
+  pulse_ready_to_deliver_with_rider_details_221026: {
+    parameters: 4,
+    document: true,
+  },
+  pulse_ready_to_deliver_with_rider_details_with_paymentlink_221026: {
+    parameters: 6,
+    document: true,
+  },
+  pulse_cust_approval_221026: {parameters: 5, document: false},
 } as const;
 /* eslint-enable @typescript-eslint/naming-convention */
 export type CustomerWhatsAppTemplate = keyof typeof TEMPLATES;
@@ -111,6 +135,22 @@ export class WhatsAppService {
     private getRiders: Getter<RiderRepository>,
     @repository.getter('UsersRepository')
     private getUsers: Getter<UsersRepository>,
+    @repository.getter('DeliveryRepository')
+    private getDeliveries: Getter<DeliveryRepository>,
+    @repository.getter('DeliveryOrderRepository')
+    private getDeliveryOrders: Getter<DeliveryOrderRepository>,
+    @repository.getter('ApprovalRequestRepository')
+    private getApprovals: Getter<ApprovalRequestRepository>,
+    @repository.getter('GarmentRepository')
+    private getGarments: Getter<GarmentRepository>,
+    @repository.getter('ItemRepository')
+    private getItems: Getter<ItemRepository>,
+    @inject.getter('services.order')
+    private getOrderService: Getter<OrderService>,
+    @inject.getter('services.razorpay')
+    private getRazorpayService: Getter<RazorpayService>,
+    @inject.getter('services.approval')
+    private getApprovalService: Getter<ApprovalService>,
   ) {}
 
   private warnOnce(key: string, message: string) {
@@ -393,10 +433,35 @@ export class WhatsAppService {
             response.status +
             '.',
         );
+      else {
+        const messageId = (response.data as {id: string}).id.trim();
+        const safeId = /^[A-Za-z0-9._:-]{1,200}$/.test(messageId)
+          ? messageId
+          : '[unavailable]';
+        console.info(
+          '[WhatsAppService] Template ' +
+            input.templateId +
+            ' accepted; provider message ID ' +
+            safeId +
+            '. Delivery is not yet confirmed.',
+        );
+      }
       return accepted;
-    } catch {
+    } catch (error) {
+      const code =
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        typeof error.code === 'string'
+          ? error.code
+          : undefined;
+      const safeCode = code && /^[A-Z_]{1,40}$/.test(code) ? code : 'UNKNOWN';
       console.error(
-        '[WhatsAppService] Template ' + input.templateId + ' transport failed.',
+        '[WhatsAppService] Template ' +
+          input.templateId +
+          ' transport failed; code ' +
+          safeCode +
+          '.',
       );
       return false;
     }
@@ -676,9 +741,213 @@ export class WhatsAppService {
     });
   }
 
+  async notifyDeliveryAssigned(deliveryId: string): Promise<void> {
+    if (!this.configured() || !this.attachmentsEnabled()) return;
+    const delivery = await (
+      await this.getDeliveries()
+    ).findOne({
+      where: {id: deliveryId, isDeleted: false},
+    });
+    if (!delivery || delivery.status !== DeliveryStatus.ASSIGNED) return;
+    const stops = await (
+      await this.getDeliveryOrders()
+    ).find({
+      where: {deliveryId},
+    });
+    for (const stop of stops) {
+      if (stop.status && stop.status !== DeliveryOrderStatus.PENDING) continue;
+      await this.once(
+        'delivery-assigned:' + deliveryId + ':' + stop.orderId,
+        async () => {
+          const order = await (
+            await this.getOrders()
+          ).findOne({
+            where: {id: stop.orderId, isDeleted: false},
+          });
+          // Ignore stale runs superseded by a different rider/schedule.
+          if (
+            !order ||
+            !order.status ||
+            order.assignedRiderId !== delivery.riderId ||
+            order.deliveryMethod !== OrderDeliveryMethod.HOME_DELIVERY ||
+            ![OrderStatus.READY, OrderStatus.PARTIALLY_DISPATCHED].includes(
+              order.status,
+            ) ||
+            !order.deliveryDate ||
+            !delivery.deliveryDate ||
+            new Date(order.deliveryDate).getTime() !==
+              new Date(delivery.deliveryDate).getTime() ||
+            order.deliverySlot !== delivery.deliverySlot
+          )
+            return undefined;
+          const recipient = await this.customer(order.customerId);
+          if (!recipient) return undefined;
+          let timeSlot = delivery.deliverySlot?.trim();
+          if (delivery.deliverySlotId) {
+            const slot = await (
+              await this.getPickupSlots()
+            ).findOne({
+              where: {id: delivery.deliverySlotId, isDeleted: false},
+            });
+            timeSlot =
+              slot?.startTime?.trim() && slot?.endTime?.trim()
+                ? `${slot.startTime.trim()} - ${slot.endTime.trim()}`
+                : undefined;
+          }
+          if (!timeSlot || !delivery.riderName?.trim()) return undefined;
+          const params = [
+            recipient.name,
+            order.orderNumber,
+            delivery.riderName,
+            this.date(delivery.deliveryDate) + ', ' + timeSlot,
+          ];
+          const orderService = await this.getOrderService();
+          const {due} = await orderService.computeBalanceDue(order);
+          if (due <= 0) {
+            if (!this.attachmentsEnabled()) return undefined;
+            const invoice = await this.invoice(order.id);
+            if (!invoice?.invoiceNumber?.trim()) {
+              this.warnOnce(
+                'delivery-invoice',
+                '[WhatsAppService] Paid delivery assignment notification requires a generated invoice.',
+              );
+              return undefined;
+            }
+            const media = await this.invoiceDocument(order, invoice.id);
+            return {
+              to: recipient.to,
+              templateId: 'pulse_ready_to_deliver_with_rider_details_221026',
+              bodyParams: params,
+              media,
+            };
+          }
+          // Reuse the existing gateway operation, without also sending its
+          // separate payment-link template. Never invent a payment URL.
+          const invoice = await this.invoice(order.id);
+          const media: WhatsAppTemplateMedia = invoice?.invoiceNumber?.trim()
+            ? await this.invoiceDocument(order, invoice.id)
+            : {
+                type: 'document',
+                url: await this.orderSummaries.createForChallan(order.id),
+                fileName: 'challan-' + order.orderNumber + '.pdf',
+              };
+          const gateway = await this.getRazorpayService();
+          const link = await gateway.createPaymentLink({
+            referenceType: GatewayPaymentReferenceType.ORDER_PAYMENT,
+            referenceId: order.id,
+            amount: due,
+            description: 'Payment for ticket ' + order.orderNumber,
+            customer: {name: recipient.name, contact: recipient.to},
+            createdBy: delivery.assignedBy,
+          });
+          if (
+            !link.shortUrl ||
+            !link.expiresAt ||
+            new Date(link.expiresAt).getTime() <= Date.now() ||
+            link.status !== GatewayPaymentLinkStatus.CREATED ||
+            link.referenceId !== order.id ||
+            link.referenceType !== GatewayPaymentReferenceType.ORDER_PAYMENT ||
+            Number(link.amount) !== due ||
+            !this.documentUrl(link.shortUrl) ||
+            new URL(link.shortUrl).protocol !== 'https:'
+          )
+            return undefined;
+          return {
+            to: recipient.to,
+            templateId:
+              'pulse_ready_to_deliver_with_rider_details_with_paymentlink_221026',
+            bodyParams: [...params, this.currency(due), link.shortUrl],
+            media,
+          };
+        },
+      );
+    }
+  }
+
+  async notifyCustomerApproval(requestId: string): Promise<boolean> {
+    return this.once('customer-approval:' + requestId, async () => {
+      const request = await (
+        await this.getApprovals()
+      ).findOne({where: {id: requestId}});
+      if (
+        !request ||
+        request.status !== ApprovalRequestStatus.PENDING ||
+        request.entityType !== 'garment' ||
+        !CUSTOMER_ACTIONS_BY_TYPE[request.type]?.length
+      )
+        return undefined;
+      const garment = await (
+        await this.getGarments()
+      ).findOne({
+        where: {id: request.entityId, isDeleted: false},
+      });
+      if (!garment || garment.status !== GarmentStatus.ON_HOLD)
+        return undefined;
+      const item = await (
+        await this.getOrderItems()
+      ).findOne({where: {id: garment.orderItemId}});
+      const order =
+        item &&
+        (await (
+          await this.getOrders()
+        ).findOne({
+          where: {id: item.orderId, isDeleted: false},
+        }));
+      if (
+        !item ||
+        !order ||
+        !order.status ||
+        [
+          OrderStatus.CANCELLED,
+          OrderStatus.RETURNED,
+          OrderStatus.DRAFT,
+        ].includes(order.status)
+      )
+        return undefined;
+      const recipient = await this.customer(order.customerId);
+      if (!recipient) return undefined;
+      const catalogItem = item.itemName?.trim()
+        ? null
+        : await (
+            await this.getItems()
+          ).findOne({
+            where: {id: item.itemId},
+          });
+      const itemName = item.itemName?.trim()
+        ? item.itemName.trim()
+        : catalogItem?.name?.trim();
+      if (!itemName || !request.requestReason?.trim()) return undefined;
+      let additionalCharge = 'None';
+      if (request.type === ApprovalRequestType.UPGRADE_SERVICE) {
+        const service = await this.getApprovalService();
+        // Same quote shown by the existing customer approval screen.
+        const view = await service.getUpgradeView(request);
+        const pricing = view.pricing as {difference?: unknown} | undefined;
+        if (
+          pricing?.difference == null ||
+          !Number.isFinite(Number(pricing.difference))
+        )
+          return undefined;
+        const difference = Number(pricing.difference);
+        if (difference > 0) additionalCharge = this.currency(difference);
+      }
+      return {
+        to: recipient.to,
+        templateId: 'pulse_cust_approval_221026',
+        bodyParams: [
+          recipient.name,
+          order.orderNumber,
+          itemName,
+          request.requestReason.trim(),
+          additionalCharge,
+        ],
+      };
+    });
+  }
+
   async notifyPickup(
     pickupId: string,
-    event: 'created' | 'scheduled',
+    event: 'created' | 'scheduled' | 'completed',
     assignmentKey = '',
   ) {
     await this.once(
@@ -697,6 +966,37 @@ export class WhatsAppService {
         if (!pickup.customerId) return undefined;
         const recipient = await this.customer(pickup.customerId);
         if (!recipient) return undefined;
+        if (event === 'completed') {
+          if (
+            pickup.status !== PickupRequestStatus.PICKED_UP ||
+            !pickup.assignedRiderName?.trim() ||
+            !pickup.actualItemsByService?.length
+          )
+            return undefined;
+          const quantities = pickup.actualItemsByService.map(row =>
+            Number(row.quantity),
+          );
+          if (
+            quantities.some(
+              quantity => !Number.isFinite(quantity) || quantity <= 0,
+            )
+          )
+            return undefined;
+          const count = quantities.reduce(
+            (total, quantity) => total + quantity,
+            0,
+          );
+          return {
+            to: recipient.to,
+            templateId: 'pulse_rider_pickup_done_221026',
+            bodyParams: [
+              recipient.name,
+              pickup.assignedRiderName,
+              pickup.pickupNumber ?? pickup.id,
+              `${count} item${count === 1 ? '' : 's'}`,
+            ],
+          };
+        }
         if (event === 'scheduled') {
           if (!pickup.assignedRiderId || !pickup.assignedRiderName)
             return undefined;

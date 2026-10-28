@@ -1082,6 +1082,7 @@ export class RiderPickupController {
         await tx.rollback();
         throw error;
       }
+      this.pickupRequestService.notifyPickedUp(id);
       return {message: 'Pickup confirmed.'};
     }
 

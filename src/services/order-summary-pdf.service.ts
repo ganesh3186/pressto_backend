@@ -8,6 +8,7 @@ import PDFDocument from 'pdfkit';
 import {STORAGE_DIRECTORY} from '../keys';
 import {Customer, CustomerAddress, Order, Store} from '../models';
 import {Invoice} from '../models/invoice.model';
+import {Challan, ChallanStatus} from '../models/challan.model';
 import type {
   BrandRepository,
   ColorRepository,
@@ -20,6 +21,7 @@ import type {
   InvoiceOrderLinkRepository,
   RefundDueRepository,
   UsersRepository,
+  ChallanRepository,
 } from '../repositories';
 import type {OrderService} from './order.service';
 
@@ -71,7 +73,7 @@ interface SummaryDetails {
   balanceDue: number;
 }
 
-/** Shared 80 mm ticket/invoice PDFs; no Media or order relation writes. */
+/** Shared 80 mm ticket/challan/invoice PDFs; no Media or order relation writes. */
 export class OrderSummaryPdfService {
   constructor(
     @inject(STORAGE_DIRECTORY) private storageDirectory: string,
@@ -99,6 +101,8 @@ export class OrderSummaryPdfService {
     private getRefunds: Getter<RefundDueRepository>,
     @repository.getter('UsersRepository')
     private getUsers: Getter<UsersRepository>,
+    @repository.getter('ChallanRepository')
+    private getChallans: Getter<ChallanRepository>,
   ) {}
 
   private secret(): string {
@@ -146,6 +150,21 @@ export class OrderSummaryPdfService {
     return this.createDocument(orderId);
   }
 
+  async createForChallan(orderId: string): Promise<string> {
+    const challan = await (
+      await this.getChallans()
+    ).findOne({
+      where: {orderId, status: {nin: [ChallanStatus.CONVERTED_TO_INVOICE]}},
+      order: ['createdAt DESC'],
+    });
+    if (!challan?.challanNumber?.trim()) {
+      throw new HttpErrors.NotFound(
+        'No active numbered challan found for this ticket.',
+      );
+    }
+    return this.createDocument(orderId, undefined, [orderId], challan);
+  }
+
   async createForInvoice(orderId: string, invoiceId: string): Promise<string> {
     const invoice = await (await this.getInvoices()).findById(invoiceId);
     const links = invoice.isConsolidated
@@ -166,6 +185,7 @@ export class OrderSummaryPdfService {
     orderId: string,
     invoice?: Invoice,
     orderIds = [orderId],
+    challan?: Challan,
   ): Promise<string> {
     // Validate configuration before creating files or querying receipt data.
     const base = this.baseUrl();
@@ -268,9 +288,9 @@ export class OrderSummaryPdfService {
         invoice
           ? (await this.getRefunds()).find({where: {orderId: {inq: orderIds}}})
           : [],
-        invoice?.generatedBy
+        (invoice?.generatedBy ?? challan?.generatedBy)
           ? (await this.getUsers()).findOne({
-              where: {id: invoice.generatedBy},
+              where: {id: invoice?.generatedBy ?? challan?.generatedBy},
               fields: {fullName: true},
             })
           : null,
@@ -298,6 +318,7 @@ export class OrderSummaryPdfService {
           delivered: entries.every(entry => entry.order.status === 'delivered'),
         },
         invoice,
+        challan,
       ),
       {
         flag: 'wx',
@@ -384,6 +405,7 @@ export class OrderSummaryPdfService {
       delivered?: boolean;
     },
     invoice?: Invoice,
+    challan?: Challan,
   ): Promise<Buffer> {
     // Match thermal-receipt.js: 80 mm paper, 6 mm side insets, same field order.
     const width = (80 * 72) / 25.4;
@@ -418,7 +440,9 @@ export class OrderSummaryPdfService {
       );
       doc.info.Title = invoice
         ? `Invoice ${invoice.invoiceNumber}`
-        : `Ticket ${details.order.orderNumber}`;
+        : challan
+          ? `Challan ${challan.challanNumber}`
+          : `Ticket ${details.order.orderNumber}`;
       doc.info.Author = 'Pressto';
       const text = (value: unknown): string =>
         value === undefined || value === null || value === ''
@@ -615,7 +639,9 @@ export class OrderSummaryPdfService {
           ? invoice.isConsolidated
             ? 'COMBINED TAX INVOICE'
             : 'TAX INVOICE'
-          : 'TICKET',
+          : challan
+            ? 'CHALLAN'
+            : 'TICKET',
         true,
         9,
       );
@@ -625,6 +651,10 @@ export class OrderSummaryPdfService {
         field('Inv Date:', date(invoice.createdAt));
         field('Ticket No.:', order.orderNumber);
         field('Delivery Status:', context.delivered ? 'Delivered' : 'Pending');
+      } else if (challan) {
+        field('Challan No.:', challan.challanNumber);
+        field('Challan Date:', date(challan.createdAt));
+        field('Ticket No.:', order.orderNumber);
       } else {
         field('Ticket #:', order.orderNumber);
         field('Date:', date(order.createdAt));

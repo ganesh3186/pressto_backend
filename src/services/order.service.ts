@@ -7020,6 +7020,12 @@ export class OrderService {
 
   // ─── Add Payment to Existing Order ───────────────────────────────────────
 
+  notifyDeliveryAssigned(deliveryId: string): void {
+    dispatchWhatsApp(() =>
+      this.whatsAppService.notifyDeliveryAssigned(deliveryId),
+    );
+  }
+
   // Split-aware balance-due calc, matching getOrderDetails()'s exact posture
   // (§ Payment summary): a split PARENT's original PaymentTransaction rows
   // were redistributed at split time, so only its allocatedPayment share
