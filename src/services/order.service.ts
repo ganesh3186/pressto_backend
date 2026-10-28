@@ -5219,7 +5219,7 @@ export class OrderService {
         : Promise.resolve([]),
       this.orderItemRepo.find({
         where: {orderId: {inq: orderIds}} as any,
-        fields: {orderId: true, quantity: true, rejectedAtIntake: true} as any,
+        fields: {id: true, orderId: true, quantity: true, rejectedAtIntake: true} as any,
       }),
       this.orderLabelAssignmentRepo.find({
         where: {orderId: {inq: orderIds}, isDeleted: false} as any,
@@ -5263,6 +5263,53 @@ export class OrderService {
     const parentOrderMap = new Map(
       parentOrders.map(o => [o.id, (o as any).orderNumber]),
     );
+
+    const [garments, invoices] = await Promise.all([
+      orderItems.length
+        ? this.garmentRepo.find({
+            where: {orderItemId: {inq: orderItems.map(item => item.id)}, isDeleted: false},
+            fields: {id: true, orderItemId: true},
+          })
+        : Promise.resolve([]),
+      this.invoiceRepo.find({
+        where: {orderId: {inq: orderIds}},
+        fields: {orderId: true},
+      }),
+    ]);
+    const orderIdByItem = new Map(orderItems.map(item => [item.id, item.orderId]));
+    const orderIdByGarment = new Map(
+      garments.map(garment => [garment.id, orderIdByItem.get(garment.orderItemId)]),
+    );
+    const pendingApprovals = await this.approvalRequestRepo.find({
+      where: {
+        status: ApprovalRequestStatus.PENDING,
+        or: [
+          {entityType: 'order', entityId: {inq: orderIds}},
+          {entityType: 'garment', entityId: {inq: garments.map(garment => garment.id)}},
+        ],
+      },
+      fields: {type: true, entityType: true, entityId: true},
+    });
+    const customerApprovalOrders = new Set<string>();
+    const chequeApprovalOrders = new Set<string>();
+    for (const approval of pendingApprovals) {
+      const orderId =
+        approval.entityType === 'order'
+          ? approval.entityId
+          : orderIdByGarment.get(approval.entityId);
+      if (!orderId) continue;
+      if (
+        [ApprovalRequestType.UPGRADE_SERVICE, ApprovalRequestType.PROCESS_AT_RISK].includes(approval.type)
+      ) {
+        customerApprovalOrders.add(orderId);
+      }
+      if (
+        [ApprovalRequestType.CHEQUE_PAYMENT, ApprovalRequestType.PDC_PAYMENT].includes(approval.type)
+      ) {
+        chequeApprovalOrders.add(orderId);
+      }
+    }
+    const invoicedOrders = new Set(invoices.map(invoice => invoice.orderId));
 
     // Pieces in the order (3 shirts + 1 trouser = 4), not the number of item rows.
     const itemsCountByOrder = new Map<string, number>();
@@ -5336,6 +5383,13 @@ export class OrderService {
         orderNumber: order.orderNumber,
         orderType: order.orderType,
         status: order.status,
+        isOnAccount: order.isOnAccount ?? false,
+        hasPendingCustomerApproval: customerApprovalOrders.has(order.id),
+        canGenerateInvoice:
+          !order.isOnAccount &&
+          ['ready', 'partially_dispatched', 'out_for_delivery', 'delivered'].includes(order.status ?? '') &&
+          !invoicedOrders.has(order.id) &&
+          !chequeApprovalOrders.has(order.id),
         deliveryType: order.deliveryType,
         pickupRequestId: order.pickupRequestId ?? null,
         createdAt: order.createdAt,
