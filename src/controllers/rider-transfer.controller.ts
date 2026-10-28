@@ -87,7 +87,18 @@ export class RiderTransferController {
       } as object,
       order: ['riderAssignedAt DESC'],
     });
-    return {transfers};
+    const bagIds = [...new Set(transfers.map(transfer => transfer.bagId).filter(Boolean))];
+    const bags = bagIds.length
+      ? await this.bagRepository.find({where: {id: {inq: bagIds}} as object})
+      : [];
+    const bagNumbers = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
+
+    return {
+      transfers: transfers.map(transfer => ({
+        ...transfer,
+        bagNumber: transfer.bagId ? bagNumbers.get(transfer.bagId) ?? null : null,
+      })),
+    };
   }
 
   // ─── Transfer detail ──────────────────────────────────────────────────────
