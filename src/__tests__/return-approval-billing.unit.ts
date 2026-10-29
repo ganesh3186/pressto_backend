@@ -55,7 +55,9 @@ describe('return approval billing', () => {
           (!where.orderItemId || (typeof where.orderItemId === 'string'
             ? g.orderItemId === where.orderItemId
             : where.orderItemId.inq.includes(g.orderItemId))) &&
-          (!where.status || g.status !== where.status.neq)),
+          (!where.status || (where.status.nin
+            ? !where.status.nin.includes(g.status)
+            : g.status !== where.status.neq))),
         count: async ({orderItemId, status}: any) => ({
           count: garments.filter(g => g.orderItemId === orderItemId && g.status !== status.neq).length,
         }),

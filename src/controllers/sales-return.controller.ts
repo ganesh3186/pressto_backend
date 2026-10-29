@@ -286,20 +286,8 @@ export class SalesReturnController {
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
-    // Quantity-aware, not item-aware: an order item can carry more than one
-    // garment (e.g. "Shirt x2"), and each garment is independently returned
-    // — either credited here (a prior sales-return line against this order
-    // item) or physically returned to the customer via the separate
-    // return-item/approval flow (GarmentStatus.RETURNED_TO_CUSTOMER — see
-    // ApprovalService._applyReturnEffect, which already refunded/adjusted
-    // that garment's own share). Blocking the WHOLE order item the moment
-    // ANY one garment was handled either way used to make the other,
-    // untouched garment(s) permanently un-returnable — reject only when
-    // THIS request's quantity would exceed what's actually still available
-    // (total − already credited − already returned to customer), not
-    // merely because the order item has been touched before. A rejected
-    // return never actually credited anything, so it's excluded from
-    // "already credited".
+    // A returned or damaged garment was already removed from ticket billing;
+    // only still-billable pieces may enter a sales return.
     const requestedQtyByOrderItemId = new Map<string, number>();
     for (const line of body.returnedItems ?? []) {
       if (!line.orderItemId) continue;
@@ -336,27 +324,29 @@ export class SalesReturnController {
         }
       }
 
-      const returnedGarments = await this.garmentRepo.find({
+      const garments = await this.garmentRepo.find({
         where: {
           orderItemId: {inq: requestedOrderItemIds},
-          status: GarmentStatus.RETURNED_TO_CUSTOMER,
           isDeleted: false,
         } as object,
       });
-      const returnedToCustomerQtyByItemId = new Map<string, number>();
-      for (const garment of returnedGarments) {
-        returnedToCustomerQtyByItemId.set(
+      const billableQtyByItemId = new Map<string, number>();
+      const garmentQtyByItemId = new Map<string, number>();
+      for (const garment of garments) {
+        garmentQtyByItemId.set(garment.orderItemId,
+          (garmentQtyByItemId.get(garment.orderItemId) ?? 0) + 1);
+        if (garment.status === GarmentStatus.RETURNED_TO_CUSTOMER || garment.status === GarmentStatus.DAMAGED) continue;
+        billableQtyByItemId.set(
           garment.orderItemId,
-          (returnedToCustomerQtyByItemId.get(garment.orderItemId) ?? 0) + 1,
+          (billableQtyByItemId.get(garment.orderItemId) ?? 0) + 1,
         );
       }
 
       const overRequestedIds = requestedOrderItemIds.filter(id => {
         const totalQty = totalQtyByItemId.get(id) ?? 0;
         const remaining =
-          totalQty -
-          (alreadyCreditedQtyByItemId.get(id) ?? 0) -
-          (returnedToCustomerQtyByItemId.get(id) ?? 0);
+          Math.min(totalQty, garmentQtyByItemId.has(id) ? billableQtyByItemId.get(id) ?? 0 : totalQty) -
+          (alreadyCreditedQtyByItemId.get(id) ?? 0);
         return (requestedQtyByOrderItemId.get(id) ?? 0) > remaining;
       });
       if (overRequestedIds.length) {

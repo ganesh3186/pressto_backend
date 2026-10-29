@@ -14,7 +14,7 @@ import {authorize} from '../authorization';
 import {RefundBankDetails} from '../models/refund-due.model';
 import {RefundMethod} from '../models/refund-method.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
-import {RefundDueRepository, ShiftRepository} from '../repositories';
+import {GarmentRepository, OrderItemRepository, RefundDueRepository, ShiftRepository} from '../repositories';
 import {ApprovalService} from '../services/approval.service';
 import {StoreScopeService} from '../services/store-scope.service';
 
@@ -27,11 +27,33 @@ import {StoreScopeService} from '../services/store-scope.service';
 export class RefundController {
   constructor(
     @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
+    @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @inject('services.store-scope')
     private storeScopeService: StoreScopeService,
     @inject('services.approval') private approvalService: ApprovalService,
     @repository(ShiftRepository) private shiftRepo: ShiftRepository,
   ) {}
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['order:update']})
+  @post('/orders/{orderId}/damaged-items/{garmentId}/refund-due')
+  @response(200, {description: 'Prepare an approved damaged item for refund payout'})
+  async prepareDamagedRefund(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('orderId') orderId: string,
+    @param.path.string('garmentId') garmentId: string,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser);
+    const garment = await this.garmentRepo.findOne({where: {id: garmentId, isDeleted: false}});
+    if (!garment) throw new HttpErrors.NotFound('Garment not found.');
+    const orderItem = await this.orderItemRepo.findById(garment.orderItemId);
+    if (orderItem.orderId !== orderId) throw new HttpErrors.BadRequest('Garment does not belong to this ticket.');
+    const refundDue = await this.approvalService.prepareDamagedRefund(
+      orderId, garmentId, currentUser[securityId],
+    );
+    return {refundDue};
+  }
 
   // ─── List refunds due for an order ────────────────────────────────────────
   // Every status, not just pending — the invoice dialogue needs to show

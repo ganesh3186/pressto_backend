@@ -941,6 +941,7 @@ export class OrderController {
         `Order(s) with status ${notDeliverable.map(o => o.status).join(', ')} are not ready for delivery assignment.`,
       );
     }
+    await this.orderService.assertGarmentsReadyForDelivery(body.orderIds);
     // Prevents accidentally batching cross-store orders into one rider run —
     // Rider has no storeId relation today, so this is the closest available check.
     const storeIds = new Set(orders.map(o => o.storeId));

@@ -26,13 +26,16 @@ function money(value: unknown): number {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
 }
 
+const PROCESSING_COMPLETE_STATUSES = [
+  OrderStatus.READY,
+  OrderStatus.PARTIALLY_DISPATCHED,
+  OrderStatus.OUT_FOR_DELIVERY,
+  OrderStatus.DELIVERED,
+];
+
 function isBillableOnAccountOrder(order: Order): boolean {
-  // Keep delivered legacy orders billable. A ticket still in progress must
-  // explicitly use On Account billing; drafts and terminal failures never do.
-  return order.status === OrderStatus.DELIVERED || (
-    order.isOnAccount === true &&
-    ![OrderStatus.DRAFT, OrderStatus.CANCELLED, OrderStatus.RETURNED].includes(order.status!)
-  );
+  return PROCESSING_COMPLETE_STATUSES.includes(order.status!) &&
+    (order.isOnAccount === true || order.status === OrderStatus.DELIVERED);
 }
 
 export class CustomerBillingController {
@@ -328,7 +331,7 @@ export class CustomerBillingController {
   }
 
   // ─── On Account: Billable Orders ──────────────────────────────────────────
-  // Active On Account orders and delivered legacy orders that haven't been
+  // Processing-complete On Account orders and delivered legacy orders that haven't been
   // invoiced yet — individually, or as part of an earlier consolidated batch.
   // These customers skip the usual "must be paid before handover" rule
   // (see OrderService.handoverInStore), so this is how the debt actually
@@ -359,13 +362,8 @@ export class CustomerBillingController {
       where: {
         customerId,
         isDeleted: false,
-        or: [
-          {status: OrderStatus.DELIVERED},
-          {
-            isOnAccount: true,
-            status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED, OrderStatus.RETURNED]},
-          },
-        ],
+        status: {inq: PROCESSING_COMPLETE_STATUSES},
+        or: [{isOnAccount: true}, {status: OrderStatus.DELIVERED}],
       } as any,
       order: ['createdAt ASC'],
     });
@@ -380,7 +378,7 @@ export class CustomerBillingController {
       ...individualInvoices.map(i => i.orderId),
       ...links.map(l => l.orderId),
     ]);
-    // Creation date applies to both in-progress and delivered tickets.
+    // Creation date applies to both ready and delivered tickets.
     const inRange = (o: Order) => {
       const when = new Date(o.createdAt as Date).getTime();
       return when >= fromTime && when <= toTime;
@@ -468,7 +466,7 @@ export class CustomerBillingController {
     const notBillable = orders.filter(o => !isBillableOnAccountOrder(o));
     if (notBillable.length) {
       throw new HttpErrors.BadRequest(
-        `Only delivered or active On Account orders can be billed. Not eligible: ${notBillable.map(o => (o as any).orderNumber).join(', ')}`,
+        `Only processing-complete On Account orders can be billed. Not eligible: ${notBillable.map(o => (o as any).orderNumber).join(', ')}`,
       );
     }
 

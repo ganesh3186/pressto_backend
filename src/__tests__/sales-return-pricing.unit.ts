@@ -14,6 +14,25 @@ import {
 } from '../services/approval.service';
 
 describe('sales return pricing', () => {
+  it('rejects a second sales return for an approved damaged garment', async () => {
+    const controller = Object.assign(Object.create(SalesReturnController.prototype), {
+      orderRepo: {findOne: async () => ({id: 'order-1'})},
+      orderItemRepo: {find: async () => [{id: 'item-1', itemId: 'catalog-1', quantity: 1}]},
+      salesReturnRepo: {find: async () => []},
+      garmentRepo: {find: async () => [{orderItemId: 'item-1', status: 'damaged'}]},
+      itemRepo: {find: async () => [{id: 'catalog-1', name: 'Shirt'}]},
+    }) as SalesReturnController;
+
+    try {
+      await controller.create({} as UserProfile, 'order-1', {
+        returnedItems: [{orderItemId: 'item-1', quantity: 1, amount: 252}],
+      });
+      throw new Error('Expected a conflicting sales return');
+    } catch (error) {
+      expect((error as {statusCode?: number}).statusCode).to.equal(409);
+    }
+  });
+
   it('updates only the returned order share of a consolidated on-account invoice', async () => {
     let invoiceUpdate: Record<string, unknown> | undefined;
     let linkUpdate: Record<string, unknown> | undefined;

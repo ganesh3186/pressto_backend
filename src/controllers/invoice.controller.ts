@@ -318,9 +318,10 @@ export class InvoiceController {
     // Final total is a whole rupee (≥ .5 rounds up); components keep decimals.
     const totalAmount = Math.round(subtotal - discount + cgst + sgst);
 
-    // Sum all payment transactions for this order
+    // Refund transactions are outgoing money, not amount received.
     const payments = await this.paymentRepo.find({where: {orderId}} as any);
-    const amountReceived = payments.reduce((s: number, p: any) => s + (Number(p.amount) || 0), 0);
+    const amountReceived = payments.reduce((s: number, p: any) =>
+      s + (p.transactionType === 'refund' ? 0 : Number(p.amount) || 0), 0);
     const balanceDue = parseFloat(Math.max(0, totalAmount - amountReceived).toFixed(2));
 
     // Generate invoice number: INV-YYYYMM-00001

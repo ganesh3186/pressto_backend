@@ -223,7 +223,6 @@ export class OrderSummaryPdfService {
           items: entries.flatMap(entry =>
             entry.items.map(item => ({
               ...item,
-              itemName: `[${entry.order.orderNumber}] ${item.itemName ?? ''}`,
               deliveryMultiplier:
                 1 + Number(entry.order.deliveryTypePercentage ?? 0) / 100,
             })),
@@ -623,11 +622,7 @@ export class OrderSummaryPdfService {
       center('GSTN: 27AAECP3228Q2ZX', false, 7.5);
       rule();
       center(
-        invoice
-          ? invoice.isConsolidated
-            ? 'COMBINED TAX INVOICE'
-            : 'TAX INVOICE'
-          : 'TICKET',
+        invoice ? 'TAX INVOICE' : 'TICKET',
         true,
         9,
       );
@@ -711,7 +706,7 @@ export class OrderSummaryPdfService {
           {length: pieceCount},
           (_, i) =>
             !item.rejectedAtIntake &&
-            garments[i]?.status !== 'returned_to_customer',
+            !['returned_to_customer', 'damaged'].includes(garments[i]?.status ?? ''),
         );
         const billableCount = billable.filter(Boolean).length;
         const pieceServices = Array.from(
@@ -787,10 +782,10 @@ export class OrderSummaryPdfService {
             .join('\n');
           const rejected = Boolean(item.rejectedAtIntake);
           const returned =
-            rejected || garment?.status === 'returned_to_customer';
+            rejected || ['returned_to_customer', 'damaged'].includes(garment?.status ?? '');
           const pending =
             rejected ||
-            ['delivered', 'returned_to_customer'].includes(
+            ['delivered', 'returned_to_customer', 'damaged'].includes(
               garment?.status ?? '',
             )
               ? 0
@@ -882,7 +877,7 @@ export class OrderSummaryPdfService {
         tableRow(['-', '', '', '', '', '']);
       if (lines.some(line => line.returned && !line.returnedAtIntake)) {
         rule();
-        center('RETURNED ITEMS', true);
+        center('RETURNED / DAMAGED ITEMS', true);
         tableRow(headings, true);
         renderLines(
           lines.filter(line => line.returned && !line.returnedAtIntake),

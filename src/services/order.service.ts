@@ -1009,13 +1009,13 @@ export class OrderService {
       garmentsByItem.set(garment.orderItemId, list);
     }
     const hasReturnedGarments = orderGarments.some(
-      garment => garment.status === GarmentStatus.RETURNED_TO_CUSTOMER,
+      garment => [GarmentStatus.RETURNED_TO_CUSTOMER, GarmentStatus.DAMAGED].includes(garment.status as GarmentStatus),
     );
     const items = orderItems
       .map(oi => {
         const garments = garmentsByItem.get(oi.id) ?? [];
         const activeGarments = garments.filter(
-          garment => garment.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+          garment => ![GarmentStatus.RETURNED_TO_CUSTOMER, GarmentStatus.DAMAGED].includes(garment.status as GarmentStatus),
         );
         const activeQuantity = garments.length
           ? activeGarments.length
@@ -1083,7 +1083,7 @@ export class OrderService {
             lineGarments
               .filter(
                 garment =>
-                  garment.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+                  ![GarmentStatus.RETURNED_TO_CUSTOMER, GarmentStatus.DAMAGED].includes(garment.status as GarmentStatus),
               )
               .map(garment => garment.id),
           );
@@ -4441,6 +4441,7 @@ export class OrderService {
         `Order in '${order.status}' cannot be handed over. It must be ready or out for delivery.`,
       );
     }
+    await this.assertGarmentsReadyForDelivery([params.orderId]);
 
     const handoverCustomer = await this.customerRepo.findOne({
       where: {id: order.customerId, isDeleted: false},
@@ -4844,6 +4845,45 @@ export class OrderService {
           .map(g => g.garmentTagNumber)
           .join(', ')}.`,
       );
+    }
+  }
+
+  async assertGarmentsReadyForDelivery(orderIds: string[]): Promise<void> {
+    const orderItems = await this.orderItemRepo.find({
+      where: {orderId: {inq: orderIds}} as object,
+      fields: {id: true, orderId: true} as object,
+    });
+    if (!orderItems.length) return;
+    const garments = await this.garmentRepo.find({
+      where: {orderItemId: {inq: orderItems.map(item => item.id)}, isDeleted: false} as object,
+      fields: {id: true, orderItemId: true, status: true} as object,
+    });
+    if (!garments.length) return;
+    const pending = await this.approvalRequestRepo.findOne({
+      where: {
+        type: ApprovalRequestType.ITEM_DAMAGED,
+        status: ApprovalRequestStatus.PENDING,
+        entityType: 'garment',
+        entityId: {inq: garments.map(garment => garment.id)},
+      } as object,
+    });
+    if (pending) {
+      throw new HttpErrors.BadRequest('Resolve the pending damage approval before delivery or handover.');
+    }
+    const orderIdByItem = new Map(orderItems.map(item => [item.id, item.orderId]));
+    for (const orderId of orderIds) {
+      const orderGarments = garments.filter(garment => orderIdByItem.get(garment.orderItemId) === orderId);
+      if (!orderGarments.length) continue;
+      const deliverable = orderGarments.filter(garment =>
+        garment.status !== GarmentStatus.DAMAGED &&
+        garment.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+      );
+      if (!deliverable.length || deliverable.some(garment =>
+        ![GarmentStatus.READY, GarmentStatus.OUT_FOR_DELIVERY, GarmentStatus.DELIVERED]
+          .includes(garment.status ?? GarmentStatus.RECEIVED),
+      )) {
+        throw new HttpErrors.BadRequest('All non-returned items must be ready before delivery or handover.');
+      }
     }
   }
 

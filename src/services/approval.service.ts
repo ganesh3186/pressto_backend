@@ -1212,6 +1212,10 @@ export class ApprovalService {
       await this._ensureReturnBillingApplied(request, performedBy);
     }
 
+    if (request.type === ApprovalRequestType.ITEM_DAMAGED) {
+      await this._applyReturnEffect(request, performedBy);
+    }
+
     // Risk approved: customer accepted the risk — no service/price change,
     // just resume processing from wherever it paused.
     if (request.type === ApprovalRequestType.PROCESS_AT_RISK) {
@@ -1365,7 +1369,7 @@ export class ApprovalService {
       ? await this.garmentRepo.find({
           where: {
             orderItemId: {inq: orderItemIds},
-            status: {neq: GarmentStatus.RETURNED_TO_CUSTOMER},
+            status: {nin: [GarmentStatus.RETURNED_TO_CUSTOMER, GarmentStatus.DAMAGED]},
             isDeleted: false,
           } as object,
         })
@@ -1483,7 +1487,7 @@ export class ApprovalService {
         reason: RefundReason.RETURN_ITEM,
         sourceType: 'garment',
         sourceId: garment.id,
-        sourceLabel: `Garment ${garment.garmentTagNumber} returned`,
+        sourceLabel: `Garment ${garment.garmentTagNumber} ${request.type === ApprovalRequestType.ITEM_DAMAGED ? 'damaged' : 'returned'}`,
       });
 
       await this._mergeIntoSnapshot(request.id, {refundDueId: refundDue.id});
@@ -1498,22 +1502,70 @@ export class ApprovalService {
     await this.auditService.log({
       entityType: 'order_item',
       entityId: orderItem.id,
-      actionType: 'item_returned',
+      actionType: request.type === ApprovalRequestType.ITEM_DAMAGED ? 'item_damaged' : 'item_returned',
       performedBy,
       before: {garmentStatus: 'active', orderTotal: money(order.totalAmount)},
       after: {
-        garmentStatus: 'returned_to_customer',
+        garmentStatus: garment.status,
         orderTotal: newOrderTotal,
         balanceDue: newBalanceDue,
         refundDue: refundAmount,
       },
       remarks:
-        `Garment ${garment.garmentTagNumber} returned via approval ${request.id} — ` +
+        `Garment ${garment.garmentTagNumber} ${request.type === ApprovalRequestType.ITEM_DAMAGED ? 'damaged' : 'returned'} via approval ${request.id} — ` +
         `order total reduced by ₹${pieceValue}` +
         (refundAmount > 0
           ? ` — ₹${refundAmount} owed back to customer, refund pending`
           : ''),
     });
+  }
+
+  async prepareDamagedRefund(orderId: string, garmentId: string, performedBy: string): Promise<RefundDue | null> {
+    const garment = await this.garmentRepo.findOne({where: {id: garmentId, status: GarmentStatus.DAMAGED, isDeleted: false}});
+    if (!garment) throw new HttpErrors.BadRequest('Only an approved damaged item can be refunded.');
+    const orderItem = await this.orderItemRepo.findById(garment.orderItemId);
+    if (orderItem.orderId !== orderId) throw new HttpErrors.BadRequest('Damaged item does not belong to this ticket.');
+    const approval = await this.approvalRequestRepo.findOne({
+      where: {type: ApprovalRequestType.ITEM_DAMAGED, entityType: 'garment', entityId: garmentId,
+        status: ApprovalRequestStatus.APPROVED},
+      order: ['createdAt DESC'],
+    });
+    if (!approval) throw new HttpErrors.BadRequest('Damage approval is required before a refund.');
+
+    const existing = await this.refundDueRepo.findOne({
+      where: {sourceType: 'garment', sourceId: garmentId,
+        status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED, RefundDueStatus.PAID]}},
+      order: ['createdAt DESC'],
+    });
+    if (existing) return existing;
+
+    const activeGarments = await this.garmentRepo.count({
+      orderItemId: orderItem.id,
+      status: {nin: [GarmentStatus.DAMAGED, GarmentStatus.RETURNED_TO_CUSTOMER]},
+      isDeleted: false,
+    });
+    if (Number(orderItem.quantity) > activeGarments.count) {
+      await this._applyReturnEffect(approval, performedBy);
+    } else if (Number(orderItem.quantity) < activeGarments.count) {
+      throw new HttpErrors.Conflict('Ticket quantities need review before a damage refund.');
+    }
+
+    const created = await this.refundDueRepo.findOne({
+      where: {sourceType: 'garment', sourceId: garmentId, status: RefundDueStatus.PENDING},
+      order: ['createdAt DESC'],
+    });
+    if (created) return created;
+
+    const order = await this.orderRepo.findById(orderId);
+    const {refundAmount} = await this._computeOverpaymentRefund(order, money(order.totalAmount));
+    if (refundAmount <= 0) return null;
+    const refundDue = await this.createRefundDue({
+      orderId, customerId: order.customerId!, amount: refundAmount,
+      reason: RefundReason.RETURN_ITEM, sourceType: 'garment', sourceId: garmentId,
+      sourceLabel: `Garment ${garment.garmentTagNumber} damaged`,
+    });
+    await this._mergeIntoSnapshot(approval.id, {refundDueId: refundDue.id});
+    return refundDue;
   }
 
   // Credit an amount to the customer's wallet + log a wallet transaction (credit note trail).
@@ -2029,9 +2081,9 @@ export class ApprovalService {
   /**
    * Move a garment off ON_HOLD back to wherever it was before. Walks
    * garment_status_history newest-first for the last real pipeline stage,
-   * skipping ON_HOLD and RETURNED_TO_CUSTOMER entries (either can be a
-   * leftover from the very request being rejected/reverted right now, so
-   * neither can legitimately be "the real prior stage"). Shared by the
+   * skipping ON_HOLD, RETURNED_TO_CUSTOMER and DAMAGED entries (these can be
+   * leftovers from the request being rejected or reverted, so none is the
+   * prior processing stage). Shared by the
    * generic reject path (nothing the request touched was ever applied, so
    * it just resumes) and process_at_risk's approve path (customer accepted
    * the risk, so processing just continues from where it paused — no
@@ -2060,7 +2112,8 @@ export class ApprovalService {
     const prevEntry = history.find(
       h =>
         h.status !== GarmentStatus.ON_HOLD &&
-        h.status !== GarmentStatus.RETURNED_TO_CUSTOMER,
+        h.status !== GarmentStatus.RETURNED_TO_CUSTOMER &&
+        h.status !== GarmentStatus.DAMAGED,
     );
     const restoreStatus =
       (prevEntry?.status as GarmentStatus) ?? GarmentStatus.IN_INSPECTION;
@@ -2506,6 +2559,17 @@ export class ApprovalService {
       }
       await this._ensureReturnBillingApplied(request, params.performedBy);
     } else if (snapshot) {
+      if (request.type === ApprovalRequestType.ITEM_DAMAGED && snapshot.refundDueId) {
+        const refundDue = await this.refundDueRepo.findById(snapshot.refundDueId);
+        if (refundDue.status === RefundDueStatus.PAID || refundDue.approvalRequestId) {
+          throw new HttpErrors.BadRequest('Cancel the damage refund payout before reverting this decision.');
+        }
+        await this.refundDueRepo.updateById(refundDue.id, {
+          status: RefundDueStatus.CANCELLED,
+          resolvedAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
       await this._restoreSnapshot(snapshot);
     } else {
       // Resolved before revert support existed, so nothing was photographed.
