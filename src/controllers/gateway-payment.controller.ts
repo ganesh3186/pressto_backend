@@ -3,7 +3,6 @@ import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {get, HttpErrors, param, post, Request, requestBody, response, RestBindings} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
-import {GatewayPaymentLink} from '../models/gateway-payment-link.model';
 import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-type.enum';
 import {GatewayPaymentLinkRepository} from '../repositories';
 import {RazorpayService} from '../services/razorpay.service';
@@ -173,18 +172,19 @@ export class GatewayPaymentController {
       },
     })
     body: {razorpayOrderId: string; razorpayPaymentId: string; razorpaySignature: string},
-  ): Promise<GatewayPaymentLink> {
-    return this.razorpayService.verifyAndApplyPayment({id, ...body});
+  ): Promise<object> {
+    const link = await this.razorpayService.verifyAndApplyPayment({id, ...body});
+    return this.razorpayService.paymentResult(link);
   }
 
   // ─── Status check ───────────────────────────────────────────────────────────
   @authenticate('jwt')
   @get('/payments/gateway-links/{id}')
   @response(200, {description: 'Gateway payment link status'})
-  async findById(@param.path.string('id') id: string): Promise<GatewayPaymentLink> {
+  async findById(@param.path.string('id') id: string): Promise<object> {
     const link = await this.gatewayPaymentLinkRepository.findById(id);
     if (!link) throw new HttpErrors.NotFound('Gateway payment link not found.');
-    return link;
+    return this.razorpayService.paymentResult(link);
   }
 
   // ─── Webhook (Razorpay → us) ────────────────────────────────────────────────

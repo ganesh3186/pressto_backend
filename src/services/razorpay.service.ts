@@ -17,6 +17,7 @@ import {OrderService} from './order.service';
 import {SecurityDepositService} from './security-deposit.service';
 import {WalletService} from './wallet.service';
 import {WhatsAppService} from './whatsapp.service';
+import {PresstoDataSource} from '../datasources/pressto.datasource';
 
 const PAYMENT_LINK_VALIDITY_MS = 24 * 60 * 60 * 1000;
 
@@ -68,15 +69,17 @@ export class RazorpayService {
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @inject('services.order') private orderService: OrderService,
     @inject('services.wallet') private walletService: WalletService,
-    @inject('services.security-deposit') private securityDepositService: SecurityDepositService,
+    @inject('services.security-deposit')
+    private securityDepositService: SecurityDepositService,
     @inject('services.whatsapp') private whatsAppService: WhatsAppService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
   private get client(): Razorpay {
     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
       throw new HttpErrors.ServiceUnavailable('Razorpay is not configured.');
     }
-    return this.razorpayClient ??= new Razorpay({
+    return (this.razorpayClient ??= new Razorpay({
       // Razorpay's own SDK field names — snake_case is their API's shape,
       // not this codebase's convention (mirrors the same suppress-comment
       // pattern already used in email.service.ts for a third-party shape).
@@ -84,14 +87,17 @@ export class RazorpayService {
       key_id: process.env.RAZORPAY_KEY_ID,
       key_secret: process.env.RAZORPAY_KEY_SECRET,
       /* eslint-enable @typescript-eslint/naming-convention */
-    });
+    }));
   }
 
-  async createOrder(input: CreateGatewayOrderInput): Promise<GatewayPaymentLink> {
+  async createOrder(
+    input: CreateGatewayOrderInput,
+  ): Promise<GatewayPaymentLink> {
     if (!(input.amount > 0)) {
       throw new HttpErrors.BadRequest('Amount must be greater than zero.');
     }
 
+    await this.assertNoUnappliedOrderPayment(input);
     const order = await this.client.orders.create({
       // Razorpay wants the smallest currency unit (paise), same convention
       // as every other amount this codebase already stores in rupees.
@@ -100,7 +106,10 @@ export class RazorpayService {
       // Our own traceability on Razorpay's side — mirrors what the create
       // request already carries, useful when looking a payment up from
       // the Razorpay dashboard during support/reconciliation.
-      notes: {referenceType: input.referenceType, referenceId: input.referenceId},
+      notes: {
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+      },
     });
 
     const {v4} = await import('uuid');
@@ -131,17 +140,22 @@ export class RazorpayService {
    * live links for one balance (a second payment against it would fail to
    * apply and need manual reconciliation).
    */
-  async createAndSendPaymentLink(input: CreateGatewayOrderInput): Promise<{link: GatewayPaymentLink; whatsappAccepted: boolean}> {
+  async createAndSendPaymentLink(
+    input: CreateGatewayOrderInput,
+  ): Promise<{link: GatewayPaymentLink; whatsappAccepted: boolean}> {
     const link = await this.createPaymentLink(input);
     const whatsappAccepted = await this.whatsAppService.notifyPaymentLink(link);
     return {link, whatsappAccepted};
   }
 
-  async createPaymentLink(input: CreateGatewayOrderInput): Promise<GatewayPaymentLink> {
+  async createPaymentLink(
+    input: CreateGatewayOrderInput,
+  ): Promise<GatewayPaymentLink> {
     if (!(input.amount > 0)) {
       throw new HttpErrors.BadRequest('Amount must be greater than zero.');
     }
 
+    await this.assertNoUnappliedOrderPayment(input);
     // Checked before reusing any open link: a ticket paid in cash since the
     // last link was issued must not get a link for money it no longer owes.
     if (input.referenceType === GatewayPaymentReferenceType.ORDER_PAYMENT) {
@@ -178,7 +192,9 @@ export class RazorpayService {
 
     for (const stale of openLinks) {
       try {
-        await this.client.paymentLink.cancel(stale.razorpayPaymentLinkId as string);
+        await this.client.paymentLink.cancel(
+          stale.razorpayPaymentLinkId as string,
+        );
       } catch (err) {
         // Razorpay refuses to cancel a link that has already been paid —
         // stop here rather than issuing a second link for the same balance.
@@ -213,7 +229,10 @@ export class RazorpayService {
       notify: {sms: false, email: false},
       reference_id: id,
       expire_by: Math.floor(expiresAt.getTime() / 1000),
-      notes: {referenceType: input.referenceType, referenceId: input.referenceId},
+      notes: {
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+      },
     });
     /* eslint-enable @typescript-eslint/naming-convention */
 
@@ -230,12 +249,34 @@ export class RazorpayService {
     });
   }
 
+  private async assertNoUnappliedOrderPayment(
+    input: CreateGatewayOrderInput,
+  ): Promise<void> {
+    if (input.referenceType !== GatewayPaymentReferenceType.ORDER_PAYMENT)
+      return;
+    const unresolved = await this.gatewayPaymentLinkRepo.findOne({
+      where: {
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        status: GatewayPaymentLinkStatus.PAID,
+        applicationError: {neq: ''},
+      },
+    });
+    if (unresolved)
+      throw new HttpErrors.Conflict(
+        'A gateway payment was received but could not be applied to this ticket. Reconcile it before creating another payment link.',
+      );
+  }
+
   /**
    * Raw HMAC-SHA256 check over the UNPARSED request body — Razorpay's own
    * SDK helper, not reimplemented here. Must be called with the literal
    * raw bytes/string the request arrived with, before any JSON.parse.
    */
-  verifyWebhookSignature(rawBody: string, signature: string | undefined): boolean {
+  verifyWebhookSignature(
+    rawBody: string,
+    signature: string | undefined,
+  ): boolean {
     const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
     if (!secret || !signature) return false;
     return Razorpay.validateWebhookSignature(rawBody, signature, secret);
@@ -251,23 +292,42 @@ export class RazorpayService {
    * the same order (e.g. the browser closed before this ran) — whichever
    * gets there first applies the payment, the other is a no-op.
    */
-  async verifyAndApplyPayment(input: VerifyGatewayPaymentInput): Promise<GatewayPaymentLink> {
+  async verifyAndApplyPayment(
+    input: VerifyGatewayPaymentInput,
+  ): Promise<GatewayPaymentLink> {
     const link = await this.gatewayPaymentLinkRepo.findById(input.id);
     if (link.razorpayOrderId !== input.razorpayOrderId) {
-      throw new HttpErrors.BadRequest('Order id does not match this payment link.');
+      throw new HttpErrors.BadRequest(
+        'Order id does not match this payment link.',
+      );
     }
-    if (link.status === GatewayPaymentLinkStatus.PAID) return link;
-
     const secret = process.env.RAZORPAY_KEY_SECRET ?? '';
+    if (!secret)
+      throw new HttpErrors.ServiceUnavailable('Razorpay is not configured.');
     const expectedSignature = crypto
       .createHmac('sha256', secret)
       .update(`${input.razorpayOrderId}|${input.razorpayPaymentId}`)
       .digest('hex');
-    if (expectedSignature !== input.razorpaySignature) {
+    if (
+      !/^[a-f0-9]{64}$/i.test(input.razorpaySignature) ||
+      !crypto.timingSafeEqual(
+        Buffer.from(expectedSignature, 'hex'),
+        Buffer.from(input.razorpaySignature, 'hex'),
+      )
+    ) {
       throw new HttpErrors.BadRequest('Invalid payment signature.');
     }
 
-    return this.markPaidAndApply(link, input.razorpayPaymentId, {source: 'checkout-handler', ...input});
+    const payment = await this.client.payments.fetch(input.razorpayPaymentId);
+    this.assertCapturedPayment(
+      link,
+      payment as unknown as Record<string, unknown>,
+      input.razorpayPaymentId,
+    );
+    return this.markPaidAndApply(link, input.razorpayPaymentId, {
+      source: 'checkout-handler',
+      payment,
+    });
   }
 
   /**
@@ -292,9 +352,16 @@ export class RazorpayService {
       // account, including ones this service didn't create.
       return;
     }
-    if (link.status === GatewayPaymentLinkStatus.PAID) return;
-
-    await this.markPaidAndApply(link, payload.razorpayPaymentId, payload.rawPayload);
+    this.assertCapturedPayment(
+      link,
+      this.webhookEntity(payload.rawPayload, 'payment'),
+      payload.razorpayPaymentId,
+    );
+    await this.markPaidAndApply(
+      link,
+      payload.razorpayPaymentId,
+      payload.rawPayload,
+    );
   }
 
   /**
@@ -319,9 +386,72 @@ export class RazorpayService {
       // this webhook for every payment link on the account.
       return;
     }
-    if (link.status === GatewayPaymentLinkStatus.PAID) return;
+    const entity = this.webhookEntity(payload.rawPayload, 'payment_link');
+    const expected = Math.round(Number(link.amount) * 100);
+    if (
+      entity.id !== link.razorpayPaymentLinkId ||
+      entity.status !== 'paid' ||
+      entity.currency !== 'INR' ||
+      Number(entity.amount) !== expected ||
+      Number(entity.amount_paid) !== expected
+    ) {
+      throw new HttpErrors.BadRequest(
+        'Payment link status, amount or currency does not match.',
+      );
+    }
+    this.assertCapturedPayment(
+      link,
+      this.webhookEntity(payload.rawPayload, 'payment'),
+      payload.razorpayPaymentId,
+    );
+    await this.markPaidAndApply(
+      link,
+      payload.razorpayPaymentId,
+      payload.rawPayload,
+    );
+  }
 
-    await this.markPaidAndApply(link, payload.razorpayPaymentId, payload.rawPayload);
+  private webhookEntity(payload: object, key: string): Record<string, unknown> {
+    const event = payload as {
+      payload?: Record<string, {entity?: Record<string, unknown>}>;
+    };
+    const entity = event.payload?.[key]?.entity;
+    if (!entity)
+      throw new HttpErrors.BadRequest('Missing payment callback details.');
+    return entity;
+  }
+
+  private assertCapturedPayment(
+    link: GatewayPaymentLink,
+    payment: Record<string, unknown>,
+    paymentId: string,
+  ) {
+    if (
+      payment.id !== paymentId ||
+      payment.status !== 'captured' ||
+      payment.currency !== 'INR' ||
+      !Number.isSafeInteger(Number(payment.amount)) ||
+      Number(payment.amount) !== Math.round(Number(link.amount) * 100) ||
+      (link.razorpayOrderId && payment.order_id !== link.razorpayOrderId)
+    ) {
+      throw new HttpErrors.BadRequest(
+        'Captured payment status, amount, currency or reference does not match.',
+      );
+    }
+  }
+
+  async paymentResult(link: GatewayPaymentLink) {
+    const paid = link.status === GatewayPaymentLinkStatus.PAID;
+    const summary =
+      link.referenceType === GatewayPaymentReferenceType.ORDER_PAYMENT
+        ? await this.orderService.getPaymentResult(link.referenceId)
+        : {};
+    return {
+      ...link.toJSON(),
+      ...summary,
+      amountPaid: paid ? Number(link.amount) : 0,
+      paymentApplied: paid && !link.applicationError,
+    };
   }
 
   private async markPaidAndApply(
@@ -329,45 +459,99 @@ export class RazorpayService {
     razorpayPaymentId: string,
     rawPayload: object,
   ): Promise<GatewayPaymentLink> {
-    let applicationError: string | undefined;
-    try {
-      await this.applyPayment(link, razorpayPaymentId);
-    } catch (err) {
-      // The money genuinely arrived at Razorpay even if applying it here
-      // failed (e.g. the order's balance changed in between) — never lose
-      // that fact. Still marked `paid` below; the error is recorded for
-      // manual reconciliation instead of silently disappearing.
-      applicationError = err instanceof Error ? err.message : String(err);
-    }
-
-    await this.gatewayPaymentLinkRepo.updateById(link.id, {
-      status: GatewayPaymentLinkStatus.PAID,
-      paidAt: new Date(),
-      rawWebhookPayload: rawPayload,
-      applicationError,
+    const tx = await this.dataSource.beginTransaction({
+      isolationLevel: 'READ COMMITTED',
     });
-    return this.gatewayPaymentLinkRepo.findById(link.id);
+    try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.gateway_payment_link WHERE id = $1 FOR UPDATE',
+        [link.id],
+        {transaction: tx},
+      );
+      const current = await this.gatewayPaymentLinkRepo.findById(
+        link.id,
+        undefined,
+        {transaction: tx},
+      );
+      if (
+        current.status === GatewayPaymentLinkStatus.PAID &&
+        !current.applicationError
+      ) {
+        await tx.commit();
+        return current;
+      }
+      let applicationError: string | undefined;
+      try {
+        await this.applyPayment(current, razorpayPaymentId);
+      } catch (err) {
+        // The money genuinely arrived at Razorpay even if applying it here
+        // failed (e.g. the order's balance changed in between) — never lose
+        // that fact. Still marked `paid` below; the error is recorded for
+        // manual reconciliation instead of silently disappearing.
+        applicationError = err instanceof Error ? err.message : String(err);
+      }
+
+      await this.gatewayPaymentLinkRepo.updateById(
+        link.id,
+        {
+          status: GatewayPaymentLinkStatus.PAID,
+          paidAt: new Date(),
+          rawWebhookPayload: rawPayload,
+          applicationError: applicationError ?? (null as unknown as string),
+        },
+        {transaction: tx},
+      );
+      const result = await this.gatewayPaymentLinkRepo.findById(
+        link.id,
+        undefined,
+        {transaction: tx},
+      );
+      await tx.commit();
+      return result;
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
   }
 
-  private async applyPayment(link: GatewayPaymentLink, razorpayPaymentId: string): Promise<void> {
+  private async applyPayment(
+    link: GatewayPaymentLink,
+    razorpayPaymentId: string,
+  ): Promise<void> {
     switch (link.referenceType) {
       case GatewayPaymentReferenceType.ORDER_PAYMENT: {
         await this.orderService.addPayment(
           link.referenceId,
-          {paymentMode: PaymentMode.GATEWAY, amount: link.amount, transactionReference: razorpayPaymentId},
+          {
+            paymentMode: PaymentMode.GATEWAY,
+            amount: link.amount,
+            transactionReference: razorpayPaymentId,
+          },
           0,
-          'system',
+          link.createdBy ?? 'system',
         );
         return;
       }
       case GatewayPaymentReferenceType.WALLET_TOPUP: {
-        const request = await this.walletRechargeRequestRepo.findById(link.referenceId);
-        await this.walletService.confirmRecharge(link.referenceId, request.customerId, razorpayPaymentId);
+        const request = await this.walletRechargeRequestRepo.findById(
+          link.referenceId,
+        );
+        await this.walletService.confirmRecharge(
+          link.referenceId,
+          request.customerId,
+          razorpayPaymentId,
+        );
         return;
       }
       case GatewayPaymentReferenceType.SECURITY_DEPOSIT_TOPUP: {
-        const request = await this.securityDepositTopupRequestRepo.findById(link.referenceId);
-        await this.securityDepositService.confirmTopup(link.referenceId, request.customerId, razorpayPaymentId);
+        const request = await this.securityDepositTopupRequestRepo.findById(
+          link.referenceId,
+        );
+        await this.securityDepositService.confirmTopup(
+          link.referenceId,
+          request.customerId,
+          razorpayPaymentId,
+        );
         return;
       }
       case GatewayPaymentReferenceType.NEW_ORDER_PAYMENT: {
@@ -379,7 +563,9 @@ export class RazorpayService {
         return;
       }
       default:
-        throw new Error(`Unknown gateway payment reference type: ${link.referenceType}`);
+        throw new Error(
+          `Unknown gateway payment reference type: ${link.referenceType}`,
+        );
     }
   }
 }
