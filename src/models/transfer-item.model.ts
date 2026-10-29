@@ -21,6 +21,7 @@ import {TransferItemScanStatus} from './transfer-item-status.enum';
     indexes: {
       // Item Tracking's core query: "which transfer, if any, is this tag in".
       garmentTagLookup: {keys: ['garmentTagNumber']},
+      transferManifestLookup: {keys: ['transferId']},
     },
   },
 })

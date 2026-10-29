@@ -140,7 +140,7 @@ describe('Delivery Management detail', () => {
 });
 
 describe('Delivery Management list', () => {
-  it('includes the latest delivery stop status and failure reason', async () => {
+  it('includes delivery status and ticket notification flags', async () => {
     const orders = [
       {
         id: 'returned',
@@ -150,6 +150,17 @@ describe('Delivery Management list', () => {
       {
         id: 'ordinary',
         status: 'ready',
+        totalAmount: 0,
+      },
+      {
+        id: 'cheque',
+        status: 'ready',
+        totalAmount: 0,
+      },
+      {
+        id: 'on-account',
+        status: 'ready',
+        isOnAccount: true,
         totalAmount: 0,
       },
     ];
@@ -166,7 +177,15 @@ describe('Delivery Management list', () => {
       },
       customerRepo: {find: async () => []},
       paymentTransactionRepo: {find: async () => []},
-      orderItemRepo: {find: async () => []},
+      orderItemRepo: {find: async () => [{id: 'item-1', orderId: 'returned', quantity: 1}]},
+      garmentRepo: {find: async () => [{id: 'garment-1', orderItemId: 'item-1'}]},
+      invoiceRepo: {find: async () => [{orderId: 'ordinary'}]},
+      approvalRequestRepo: {
+        find: async () => [
+          {type: 'upgrade_service', entityType: 'garment', entityId: 'garment-1'},
+          {type: 'cheque_payment', entityType: 'order', entityId: 'cheque'},
+        ],
+      },
       orderLabelAssignmentRepo: {find: async () => []},
     }) as OrderService;
 
@@ -177,8 +196,13 @@ describe('Delivery Management list', () => {
         status: 'ready',
         deliveryStatus: 'return_to_store',
         deliveryReturnRemarks: 'Customer unavailable',
+        paymentStatus: 'paid',
+        hasPendingCustomerApproval: true,
+        canGenerateInvoice: true,
       },
-      {id: 'ordinary', deliveryStatus: null, deliveryReturnRemarks: null},
+      {id: 'ordinary', deliveryStatus: null, deliveryReturnRemarks: null, canGenerateInvoice: false},
+      {id: 'cheque', canGenerateInvoice: false},
+      {id: 'on-account', canGenerateInvoice: false},
     ]);
   });
 });
@@ -225,6 +249,7 @@ describe('Failed delivery stop', () => {
   it('blocks delivery completion on a failed stop', async () => {
     const orderWrites: object[] = [];
     const service = Object.assign(Object.create(OrderService.prototype), {
+      dataSource: {beginTransaction: async () => ({rollback: async () => undefined}), execute: async () => undefined},
       orderRepo: {
         findOne: async () => ({id: 'order-1', status: OrderStatus.READY}),
         updateById: async (_id: string, value: object) => orderWrites.push(value),

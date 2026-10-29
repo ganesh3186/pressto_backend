@@ -7,4 +7,6 @@ export enum RefundDueStatus {
   REQUESTED = 'requested',
   // The approval was granted and the payout actually executed.
   PAID = 'paid',
+  // The return was rejected or undone before payout.
+  CANCELLED = 'cancelled',
 }

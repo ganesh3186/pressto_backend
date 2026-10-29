@@ -30,9 +30,9 @@ export const REPROCESS_REASON_LABELS: Record<ReprocessReason, string> = {
 
 /**
  * How long after delivery a reprocess may still be claimed. Env-driven so the
- * business can tighten or relax it without a deploy; 7 days is the default.
+ * business can tighten or relax it without a deploy; 60 days is the default.
  */
 export function reprocessWindowDays(): number {
   const raw = Number(process.env.REPROCESS_WINDOW_DAYS);
-  return Number.isFinite(raw) && raw > 0 ? raw : 7;
+  return Number.isFinite(raw) && raw > 0 ? raw : 60;
 }

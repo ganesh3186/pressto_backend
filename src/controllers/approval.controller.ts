@@ -11,6 +11,7 @@ import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {ApprovalRequest} from '../models/approval-request.model';
 import {ReprocessReason, REPROCESS_REASON_LABELS} from '../models/reprocess-reason.enum';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
+import {ApprovalActionRepository} from '../repositories/approval-action.repository';
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
 import {
   CustomerRepository,
@@ -32,6 +33,7 @@ export class ApprovalController {
   constructor(
     @inject('services.approval') private approvalService: ApprovalService,
     @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
+    @repository(ApprovalActionRepository) private approvalActionRepo: ApprovalActionRepository,
     @repository(ApprovalAuditLogRepository) private approvalAuditLogRepo: ApprovalAuditLogRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
     @repository(GarmentStatusHistoryRepository)
@@ -365,9 +367,21 @@ export class ApprovalController {
         if (!isEntityNotFoundError(err)) throw err;
       }
     }
+    const decision = (
+      (req.type === ApprovalRequestType.UPGRADE_SERVICE || req.type === ApprovalRequestType.PROCESS_AT_RISK) &&
+      (req.status === ApprovalRequestStatus.APPROVED || req.status === ApprovalRequestStatus.REJECTED)
+    )
+      ? await this.approvalActionRepo.findOne({
+        where: {approvalRequestId: req.id},
+        order: ['actionDate DESC'],
+      })
+      : null;
+    const decisionNote = decision?.comments?.trim();
 
     return {
       ...req,
+      displayReason: [req.requestReason?.trim(), decisionNote && `Decision: ${decisionNote}`]
+        .filter(Boolean).join(' — ') || null,
       garmentTag: garment.garmentTagNumber,
       garmentStatus: garment.status,
       reprocessApplied: Boolean(reprocessHistory),

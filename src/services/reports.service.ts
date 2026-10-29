@@ -32,6 +32,7 @@ import {
   UsersRepository,
   WalletRechargeRequestRepository,
 } from '../repositories';
+import {resolveOrderPaymentStatus} from '../utils/payment-status';
 
 /** Fixed business-unit label; the schema carries no BU dimension yet. */
 const BUSINESS_UNIT = 'Pressto';
@@ -862,7 +863,7 @@ export class ReportsService {
         // Round to paise before comparing; float residue would otherwise
         // leave fully-settled orders showing a fractional balance.
         const balanceDue = Math.round((total - paid) * 100) / 100;
-        const status = balanceDue <= 0 ? 'paid' : paid > 0 ? 'partial' : 'pending';
+        const status = resolveOrderPaymentStatus(total, paid, order.status);
         return {order, balanceDue, status, delivery: deliveryStatuses.get(String(order.id)) ?? ''};
       })
       .filter(({status, delivery}) => {
@@ -1048,12 +1049,16 @@ export class ReportsService {
           total,
           paid,
           balanceDue,
-          status: balanceDue <= 0 ? 'paid' : paid > 0 ? 'partial' : 'pending',
+          status: resolveOrderPaymentStatus(total, paid, order.status),
           delivery: deliveryStatuses.get(String(order.id)) ?? '',
         };
       })
       .filter(({status, delivery, order}) => {
-        if (params.paymentStatus !== 'all' && status !== params.paymentStatus) return false;
+        if (
+          params.paymentStatus !== 'all' &&
+          !(params.paymentStatus === 'pending' && status === 'unpaid') &&
+          status !== params.paymentStatus
+        ) return false;
         if (params.deliveryStatus !== 'all' && delivery.toLowerCase() !== params.deliveryStatus) {
           return false;
         }

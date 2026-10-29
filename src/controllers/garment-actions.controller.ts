@@ -40,8 +40,8 @@ export class GarmentActionsController {
   // ─── Return Item ──────────────────────────────────────────────────────────
   // Garment goes straight to returned_to_customer at REQUEST time (see
   // ApprovalService's GARMENT_STATUS_ON_CREATE) — approval is a side
-  // process from here on. Billing is reduced at request time too; approval
-  // cannot put the returned garment or its price back on the invoice.
+  // process from here on. Billing is reduced at request time too; rejecting
+  // or undoing an unpaid return restores its prior stage and billing.
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['approval:create']})

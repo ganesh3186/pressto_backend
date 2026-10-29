@@ -24,6 +24,7 @@ import type {
   ChallanRepository,
 } from '../repositories';
 import type {OrderService} from './order.service';
+import {resolveOrderPaymentStatus} from '../utils/payment-status';
 
 interface ReceiptExtra {
   name?: string | null;
@@ -71,6 +72,17 @@ interface SummaryDetails {
   statusHistory?: {status?: string; changedAt?: Date; createdAt?: Date}[];
   totalCollected: number;
   balanceDue: number;
+}
+
+export function orderSummaryPaymentStatus(
+  total: number,
+  paid: number,
+  orderStatus?: string,
+): string {
+  const status = resolveOrderPaymentStatus(total, paid, orderStatus);
+  if (status === 'paid') return 'Paid';
+  if (status === 'partial') return 'Partial Paid';
+  return 'Unpaid';
 }
 
 /** Shared 80 mm ticket/challan/invoice PDFs; no Media or order relation writes. */
@@ -1035,11 +1047,7 @@ export class OrderSummaryPdfService {
           : Math.max(0, num(details.balanceDue));
       pair(
         'Payment Status:',
-        paid <= 0
-          ? 'Unpaid'
-          : Math.round(paid) >= Math.round(total)
-            ? 'Paid'
-            : 'Partial Paid',
+        orderSummaryPaymentStatus(total, paid, order.status),
       );
       const paymentLabels: Record<string, string> = {
         cash: 'Cash',

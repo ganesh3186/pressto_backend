@@ -86,18 +86,38 @@ export class RiderTransferController {
         ...statusWhere,
       } as object,
       order: ['riderAssignedAt DESC'],
+      limit: 100,
     });
-    const bagIds = [...new Set(transfers.map(transfer => transfer.bagId).filter(Boolean))];
+    const bagIdsByTransfer = new Map(transfers.map(transfer => [transfer.id, new Set<string>()]));
+    const items = transfers.length
+      ? await this.transferItemRepository.find({
+          where: {transferId: {inq: transfers.map(transfer => transfer.id)}} as object,
+          fields: {transferId: true, bagId: true} as object,
+        })
+      : [];
+    for (const item of items) {
+      const bagIds = bagIdsByTransfer.get(item.transferId);
+      if (item.bagId) bagIds?.add(item.bagId);
+    }
+    const bagIds = [...new Set([
+      ...transfers.map(transfer => transfer.bagId),
+      ...[...bagIdsByTransfer.values()].flatMap(ids => [...ids]),
+    ])];
     const bags = bagIds.length
       ? await this.bagRepository.find({where: {id: {inq: bagIds}} as object})
       : [];
     const bagNumbers = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
 
     return {
-      transfers: transfers.map(transfer => ({
-        ...transfer,
-        bagNumber: transfer.bagId ? bagNumbers.get(transfer.bagId) ?? null : null,
-      })),
+      transfers: transfers.map(transfer => {
+        const {bagId, ...publicTransfer} = transfer;
+        return {
+          ...publicTransfer,
+          bagNumbers: [...new Set([bagId, ...(bagIdsByTransfer.get(transfer.id) ?? [])])]
+            .map(id => bagNumbers.get(id))
+            .filter((number): number is number => number !== undefined),
+        };
+      }),
     };
   }
 

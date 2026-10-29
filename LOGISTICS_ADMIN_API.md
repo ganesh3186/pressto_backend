@@ -6,16 +6,16 @@ already existed and what this pass added — plus the new Slot master CRUD.
 
 All routes require `Authorization: Bearer <jwt>`.
 
-| Permission | Who has it | Gates |
-|---|---|---|
-| `pickup_request:create` | `manager`, `store_exec` | Create a pickup request |
-| `pickup_request:read` | `manager`, `store_exec` | List/view pickup requests |
-| `pickup_request:update` | `manager`, `store_exec` | Update, status transitions, `assign` |
-| `pickup_request:delete` | `manager` only | Soft-delete a pickup request |
-| `pickup_delivery_slot:create` | `manager` only | Create a slot |
-| `pickup_delivery_slot:read` | `manager`, `store_exec` | View slots |
-| `pickup_delivery_slot:update` | `manager` only | Edit a slot |
-| `pickup_delivery_slot:delete` | `manager` only | Delete a slot |
+| Permission                    | Who has it              | Gates                                |
+| ----------------------------- | ----------------------- | ------------------------------------ |
+| `pickup_request:create`       | `manager`, `store_exec` | Create a pickup request              |
+| `pickup_request:read`         | `manager`, `store_exec` | List/view pickup requests            |
+| `pickup_request:update`       | `manager`, `store_exec` | Update, status transitions, `assign` |
+| `pickup_request:delete`       | `manager` only          | Soft-delete a pickup request         |
+| `pickup_delivery_slot:create` | `manager` only          | Create a slot                        |
+| `pickup_delivery_slot:read`   | `manager`, `store_exec` | View slots                           |
+| `pickup_delivery_slot:update` | `manager` only          | Edit a slot                          |
+| `pickup_delivery_slot:delete` | `manager` only          | Delete a slot                        |
 
 ---
 
@@ -39,6 +39,7 @@ DELETE /pickup-delivery-slots/{id}           // soft delete
 sortOrder (default 0, for dropdown ordering), isActive (default true)`.
 
 **Create body**
+
 ```json
 {
   "label": "9:00 AM - 12:00 PM",
@@ -58,12 +59,15 @@ startTime ASC` by default.
 ## 2. Pickup Requests
 
 **Enums**
+
 ```
 PickupRequestSource: web | call | whatsapp
 PickupRequestStatus: requested | scheduled | rider_assigned | out_for_pickup | picked_up | received_at_store | cancelled
 PickupHandoverBy:    self | family_member | household_help   (customer-app-originated requests only)
 ```
+
 Transitions:
+
 ```
 requested       → scheduled | cancelled
 scheduled       → rider_assigned | cancelled
@@ -78,6 +82,7 @@ received_at_store, cancelled → (terminal)
 ```
 POST /pickup-requests
 ```
+
 ```json
 {
   "customerId": "uuid (optional — omit if no CRM match)",
@@ -95,6 +100,7 @@ POST /pickup-requests
   "remarks": "optional"
 }
 ```
+
 This is the endpoint behind Pickup Management's "generate request" action
 for phone/WhatsApp intake — no separate endpoint exists for that, it's the
 same `create()` with `source: call` or `source: whatsapp`. Prefer sending
@@ -108,8 +114,10 @@ same `create()` with `source: call` or `source: whatsapp`. Prefer sending
 ```
 GET /pickup-requests?filter={...}
 ```
+
 Standard LoopBack `Filter` — e.g. group same-pincode requests before
 assigning:
+
 ```
 GET /pickup-requests?filter[where][pincode]=400001
 ```
@@ -144,11 +152,14 @@ The detail response contains the `PickupRequest` fields and its
 `assignedRider`, `customer`, `store`, and `pickupSlot` relations. It also adds:
 
 - `suggestedRiderId`, `suggestedRiderName`, `reworkOfOrderNumber`, and
-  `convertedOrderNumber` for display (when applicable).
+  `convertedOrderNumber` for display (when applicable). `convertedOrderNumbers`
+  lists every ticket created from the pickup.
 - `bagNumber` for the legacy top-level `bagId`. A confirmed pickup can have
-  several bags; use each `actualItemsByService[].bagNumber` as the authoritative
-  number for that service line.
+  several bags; `bagNumbers` lists all of them, and
+  `actualItemsByService[].bagNumber` identifies the bag for each service line.
 - `mediaUrls` alongside the top-level `mediaIds` for general pickup attachments.
+- `riderMediaUrls` containing all rider-added photos from confirmed service
+  lines and pickup escalations.
 - `itemCategoryEstimate[].itemCategoryName` and `serviceName` for the booking
   estimate.
 - `actualItemsByService[].serviceName`, `serviceCategoryId`,
@@ -169,8 +180,11 @@ line that the rider confirmed:
   "pickupNumber": "PU000464",
   "bagId": "bag-uuid-1",
   "bagNumber": 1042,
+  "bagNumbers": [1042],
+  "convertedOrderNumbers": ["ST012-1026-0001", "ST012-1026-0002"],
   "mediaIds": ["general-media-uuid"],
   "mediaUrls": ["https://api.example.com/files/file/general.jpg"],
+  "riderMediaUrls": ["https://api.example.com/files/file/stain.jpg"],
   "actualItemsByService": [
     {
       "serviceId": "service-uuid",
@@ -191,6 +205,7 @@ line that the rider confirmed:
 ```
 PATCH /pickup-requests/{id}
 ```
+
 Send only the fields changing; include `status` to transition it (`400`
 naming the current/target status if the transition isn't in the table
 above). Any other field (`address`, `slot`, `remarks`, etc.) can be patched
@@ -202,6 +217,7 @@ resolved label directly in `slot` if changing it here.
 ```
 DELETE /pickup-requests/{id}
 ```
+
 Soft-delete only. Blocked (`400`) once the request is past `scheduled` —
 delete a mistaken `requested`/`scheduled`/`cancelled` entry, cancel
 anything further along via a status `PATCH` instead.
@@ -211,6 +227,7 @@ anything further along via a status `PATCH` instead.
 ```
 POST /pickup-requests/assign
 ```
+
 ```json
 {
   "pickupRequestIds": ["uuid", "..."],
@@ -222,6 +239,7 @@ POST /pickup-requests/assign
   "remarks": "optional"
 }
 ```
+
 This is where the pincode-grouping workflow lands: select several
 same-pincode requests from the enriched list (§2.2), pass their ids here
 along with the rider (defaulting the picker to `suggestedRiderId` when
@@ -246,6 +264,7 @@ later joins onto.
 ## 3. Dispatch / Delivery Management
 
 ### 3.1 `PATCH /orders/{id}`'s delivery fields already persist — the
+
 localStorage fallback can be removed
 
 Confirmed directly against production data: `deliveryMethod`,
@@ -275,17 +294,21 @@ rider brought it back to the store" would silently and irreversibly
 dead-end an otherwise-fine order.
 
 Use this instead:
+
 ```
 POST /orders/{id}/delivery-return
 ```
+
 ```json
-{ "remarks": "Customer not available at address" }
+{"remarks": "Customer not available at address"}
 ```
+
 Requires the order to currently be `out_for_delivery` (`400` naming the
 actual status otherwise — e.g. calling it twice in a row on the same order
 fails the second time). `remarks` is required and stored on the delivery stop.
 
 **What it does:**
+
 - Sets the latest `DeliveryOrder.status` to `return_to_store` and saves the reason.
 - Writes an `order_delivery_failed` custody event.
 - Sets `Order.status` to `ready`, clears the old rider and slot assignment,

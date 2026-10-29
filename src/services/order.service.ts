@@ -7,6 +7,7 @@ import {
   collectOrderExportRows,
   OrderExportFilters,
 } from '../utils/order-export';
+import {resolveOrderPaymentStatus} from '../utils/payment-status';
 import {
   EditOrderUnitInput,
   editedGarmentFields,
@@ -2558,7 +2559,7 @@ export class OrderService {
       );
     }
 
-    const deliveryStop = newStatus === OrderStatus.DELIVERED || newStatus === OrderStatus.OUT_FOR_DELIVERY
+    let deliveryStop = newStatus === OrderStatus.OUT_FOR_DELIVERY
       ? (await this.deliveryOrderRepo.find({
           where: {orderId} as object,
           order: ['createdAt DESC'],
@@ -2651,22 +2652,50 @@ export class OrderService {
       }
       return newStatus === OrderStatus.RECEIVED_AT_STORE ? {garments} : {};
     }
-    await this.orderRepo.updateById(orderId, {
-      status: newStatus,
-      ...(order.status === OrderStatus.DRAFT ? {draftEditorState: null} : {}),
-      ...(order.status === OrderStatus.DRAFT && newStatus === OrderStatus.CONFIRMED
-        ? {createdAt: confirmedAt} : {}),
-    });
-    await this.statusHistoryRepo.create({
-      id: v4(),
-      orderId,
-      status: newStatus,
-      changedAt: confirmedAt,
-      changedBy,
-      remarks,
-    });
-    if (deliveryStop && newStatus === OrderStatus.DELIVERED) {
-      await this.deliveryOrderRepo.updateById(deliveryStop.id, {status: DeliveryOrderStatus.DELIVERED});
+    const tx = newStatus === OrderStatus.DELIVERED
+      ? await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED})
+      : undefined;
+    try {
+      if (tx) {
+        await this.dataSource.execute('SELECT id FROM public.orders WHERE id = $1 FOR UPDATE', [orderId], {transaction: tx});
+        const current = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}}, {transaction: tx});
+        if (!current || !ORDER_STATUS_TRANSITIONS[current.status!].includes(newStatus)) {
+          throw new HttpErrors.Conflict('Order status changed. Refresh and retry.');
+        }
+        deliveryStop = (await this.deliveryOrderRepo.find({
+          where: {orderId} as object,
+          order: ['createdAt DESC'],
+          limit: 1,
+        }, {transaction: tx}))[0];
+        if (deliveryStop?.status === DeliveryOrderStatus.RETURN_TO_STORE) {
+          throw new HttpErrors.BadRequest('A failed delivery stop needs a new delivery run before dispatch or completion.');
+        }
+      }
+      const options = tx ? {transaction: tx} : undefined;
+      await this.orderRepo.updateById(orderId, {
+        status: newStatus,
+        ...(order.status === OrderStatus.DRAFT ? {draftEditorState: null} : {}),
+        ...(order.status === OrderStatus.DRAFT && newStatus === OrderStatus.CONFIRMED
+          ? {createdAt: confirmedAt} : {}),
+      }, options);
+      await this.statusHistoryRepo.create({
+        id: v4(),
+        orderId,
+        status: newStatus,
+        changedAt: confirmedAt,
+        changedBy,
+        remarks,
+      }, options);
+      if (deliveryStop && tx) {
+        await this.deliveryOrderRepo.updateById(deliveryStop.id, {status: DeliveryOrderStatus.DELIVERED}, options);
+      }
+      if (tx) {
+        await this._cascadeGarmentsToDelivered(orderId, changedBy, v4, tx);
+        await tx.commit();
+      }
+    } catch (error) {
+      if (tx) await tx.rollback();
+      throw error;
     }
 
     this.notifyStatusChange(orderId, newStatus, order.status);
@@ -4823,14 +4852,16 @@ export class OrderService {
     orderId: string,
     changedBy: string,
     v4: () => string,
+    tx?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
   ): Promise<number> {
-    const orderItems = await this.orderItemRepo.find({where: {orderId}});
+    const options = tx ? {transaction: tx} : undefined;
+    const orderItems = await this.orderItemRepo.find({where: {orderId}}, options);
     const orderItemIds = orderItems.map(i => i.id);
     if (!orderItemIds.length) return 0;
 
     const garments = await this.garmentRepo.find({
       where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any,
-    });
+    }, options);
 
     // Only garments still in the workflow can be handed over. A damaged or
     // held garment must keep its status, just like a returned one.
@@ -4844,15 +4875,15 @@ export class OrderService {
     for (const g of toDeliver) {
       await this.garmentRepo.updateById(g.id, {
         status: GarmentStatus.DELIVERED,
-      });
+      }, options);
       await this.garmentStatusHistoryRepo.create({
         id: v4(),
         garmentId: g.id,
         status: GarmentStatus.DELIVERED,
         changedAt: now,
         changedBy,
-        remarks: 'Delivered via in-store handover',
-      });
+        remarks: 'Delivered with order',
+      }, options);
     }
     return toDeliver.length;
   }
@@ -5218,7 +5249,7 @@ export class OrderService {
         : Promise.resolve([]),
       this.orderItemRepo.find({
         where: {orderId: {inq: orderIds}} as any,
-        fields: {orderId: true, quantity: true, rejectedAtIntake: true} as any,
+        fields: {id: true, orderId: true, quantity: true, rejectedAtIntake: true} as any,
       }),
       this.orderLabelAssignmentRepo.find({
         where: {orderId: {inq: orderIds}, isDeleted: false} as any,
@@ -5262,6 +5293,53 @@ export class OrderService {
     const parentOrderMap = new Map(
       parentOrders.map(o => [o.id, (o as any).orderNumber]),
     );
+
+    const [garments, invoices] = await Promise.all([
+      orderItems.length
+        ? this.garmentRepo.find({
+            where: {orderItemId: {inq: orderItems.map(item => item.id)}, isDeleted: false},
+            fields: {id: true, orderItemId: true},
+          })
+        : Promise.resolve([]),
+      this.invoiceRepo.find({
+        where: {orderId: {inq: orderIds}},
+        fields: {orderId: true},
+      }),
+    ]);
+    const orderIdByItem = new Map(orderItems.map(item => [item.id, item.orderId]));
+    const orderIdByGarment = new Map(
+      garments.map(garment => [garment.id, orderIdByItem.get(garment.orderItemId)]),
+    );
+    const pendingApprovals = await this.approvalRequestRepo.find({
+      where: {
+        status: ApprovalRequestStatus.PENDING,
+        or: [
+          {entityType: 'order', entityId: {inq: orderIds}},
+          {entityType: 'garment', entityId: {inq: garments.map(garment => garment.id)}},
+        ],
+      },
+      fields: {type: true, entityType: true, entityId: true},
+    });
+    const customerApprovalOrders = new Set<string>();
+    const chequeApprovalOrders = new Set<string>();
+    for (const approval of pendingApprovals) {
+      const orderId =
+        approval.entityType === 'order'
+          ? approval.entityId
+          : orderIdByGarment.get(approval.entityId);
+      if (!orderId) continue;
+      if (
+        [ApprovalRequestType.UPGRADE_SERVICE, ApprovalRequestType.PROCESS_AT_RISK].includes(approval.type)
+      ) {
+        customerApprovalOrders.add(orderId);
+      }
+      if (
+        [ApprovalRequestType.CHEQUE_PAYMENT, ApprovalRequestType.PDC_PAYMENT].includes(approval.type)
+      ) {
+        chequeApprovalOrders.add(orderId);
+      }
+    }
+    const invoicedOrders = new Set(invoices.map(invoice => invoice.orderId));
 
     // Pieces in the order (3 shirts + 1 trouser = 4), not the number of item rows.
     const itemsCountByOrder = new Map<string, number>();
@@ -5324,18 +5402,24 @@ export class OrderService {
       const totalAmount = Number(order.totalAmount ?? 0);
       const balanceDue = rupeeBalance(totalAmount, totalCollected);
 
-      let paymentStatus: string;
-      // A ₹0 order owes nothing — a free rework, or one fully covered by wallet
-      // or advance. Reporting it as pending puts it in collections chasing zero.
-      if (balanceDue === 0) paymentStatus = 'paid';
-      else if (totalCollected > 0) paymentStatus = 'partial';
-      else paymentStatus = 'pending';
+      const paymentStatus = resolveOrderPaymentStatus(
+        totalAmount,
+        totalCollected,
+        order.status,
+      );
 
       return {
         id: order.id,
         orderNumber: order.orderNumber,
         orderType: order.orderType,
         status: order.status,
+        isOnAccount: order.isOnAccount ?? false,
+        hasPendingCustomerApproval: customerApprovalOrders.has(order.id),
+        canGenerateInvoice:
+          !order.isOnAccount &&
+          ['ready', 'partially_dispatched', 'out_for_delivery', 'delivered'].includes(order.status ?? '') &&
+          !invoicedOrders.has(order.id) &&
+          !chequeApprovalOrders.has(order.id),
         deliveryType: order.deliveryType,
         pickupRequestId: order.pickupRequestId ?? null,
         createdAt: order.createdAt,
@@ -6014,9 +6098,7 @@ export class OrderService {
       paymentTransactions,
       totalCollected,
       balanceDue,
-      // Nothing outstanding = paid, including a ₹0 free rework order.
-      paymentStatus:
-        balanceDue === 0 ? 'paid' : totalCollected > 0 ? 'partial' : 'pending',
+      paymentStatus: resolveOrderPaymentStatus(totalAmount, totalCollected, order.status),
     };
   }
 

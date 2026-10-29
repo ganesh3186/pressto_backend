@@ -1,6 +1,7 @@
 import {expect} from '@loopback/testlab';
 import {UserProfile} from '@loopback/security';
 import {ApprovalController} from '../controllers/approval.controller';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
 
 describe('approval request details', () => {
@@ -9,6 +10,7 @@ describe('approval request details', () => {
       {
         id: 'upgrade',
         type: ApprovalRequestType.UPGRADE_SERVICE,
+        status: ApprovalRequestStatus.REJECTED,
         entityType: 'garment',
         entityId: 'garment-1',
         metadata: {
@@ -32,6 +34,7 @@ describe('approval request details', () => {
           find: async () => requests,
         },
         approvalService: {resolveMedia: async () => []},
+        approvalActionRepo: {findOne: async () => ({comments: 'Customer declined the extra cost'})},
         garmentRepo: {
           findOne: async () => ({
             orderItemId: 'item-1',
@@ -69,6 +72,7 @@ describe('approval request details', () => {
         customerName: string;
         customerPhone: string;
         requestedService?: string;
+        displayReason?: string;
       }>;
     };
 
@@ -76,6 +80,7 @@ describe('approval request details', () => {
       customerName: 'Asha Patel',
       customerPhone: '+91 9876543210',
       requestedService: 'Dry Clean, Stain Removal',
+      displayReason: 'Decision: Customer declined the extra cost',
     });
     expect(result.requests[1]).to.containEql({
       customerName: 'Asha Patel',

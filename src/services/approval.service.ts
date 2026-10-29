@@ -61,7 +61,7 @@ import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
 // What status to set on the garment immediately when a request is CREATED.
 // Requests that need a decision park the garment on ON_HOLD, so work does not
 // appear to continue through the pipeline. RETURN_ITEM moves it to returned
-// immediately; the return stays final regardless of the approval decision.
+// immediately; an unpaid return can be restored if declined or undone.
 const GARMENT_STATUS_ON_CREATE: Partial<
   Record<ApprovalRequestType, GarmentStatus>
 > = {
@@ -202,13 +202,18 @@ interface RevertSnapshot {
   };
   order?: {
     id: string;
+    status?: OrderStatus;
     subtotal?: number;
+    discountAmount?: number;
     totalAmount?: number;
     taxAmount?: number;
   };
   invoice?: {
     id: string;
     subtotal?: number;
+    discount?: number;
+    cgst?: number;
+    sgst?: number;
     totalAmount?: number;
     balanceDue?: number;
     items?: unknown[];
@@ -216,6 +221,9 @@ interface RevertSnapshot {
   challan?: {
     id: string;
     subtotal?: number;
+    discount?: number;
+    cgst?: number;
+    sgst?: number;
     totalAmount?: number;
     items?: unknown[];
   };
@@ -517,6 +525,12 @@ export class ApprovalService {
       this.notifyApprovalRequired(request, params.requestReason);
     }
 
+    if (params.type === ApprovalRequestType.RETURN_ITEM && params.entityType === 'garment') {
+      await this.approvalRequestRepo.updateById(request.id, {
+        metadata: {...(request.metadata ?? {}), _returnOriginalSnapshot: await this._captureSnapshot(request)},
+      });
+    }
+
     // Apply immediate status change when needed (e.g. upgrade puts garment on_hold right away)
     const immediateStatus = GARMENT_STATUS_ON_CREATE[params.type];
     if (immediateStatus && params.entityType === 'garment') {
@@ -589,6 +603,13 @@ export class ApprovalService {
     if (current.metadata?._returnBillingApplied) return;
 
     const garment = await this.garmentRepo.findById(request.entityId);
+    if (garment.status !== GarmentStatus.RETURNED_TO_CUSTOMER) {
+      await this.approvalRequestRepo.updateById(request.id, {
+        metadata: {...(current.metadata ?? {}), _returnOriginalSnapshot: await this._captureSnapshot(request)},
+      });
+      await this._updateGarmentStatus(request.entityId, GarmentStatus.RETURNED_TO_CUSTOMER,
+        performedBy, 'Return item approved');
+    }
     const orderItem = await this.orderItemRepo.findById(garment.orderItemId);
     const activeGarments = await this.garmentRepo.count({
       orderItemId: orderItem.id,
@@ -602,9 +623,164 @@ export class ApprovalService {
     }
     const updated = await this.approvalRequestRepo.findById(request.id);
     await this.approvalRequestRepo.updateById(request.id, {
-      metadata: {...(updated.metadata ?? {}), _returnBillingApplied: true},
+      metadata: {
+        ...(updated.metadata ?? {}),
+        _returnBillingApplied: true,
+        _returnAppliedSnapshot: await this._captureSnapshot(request),
+      },
       updatedAt: new Date(),
     });
+  }
+
+  private async _restoreUnpaidReturn(request: ApprovalRequest, performedBy: string): Promise<boolean> {
+    const current = await this.approvalRequestRepo.findById(request.id);
+    if (current.metadata?._returnBillingApplied === false) return true;
+    const garment = await this.garmentRepo.findById(request.entityId);
+    if (garment.status === GarmentStatus.RETURNED_TO_CUSTOMER) {
+      const orderItem = await this.orderItemRepo.findById(garment.orderItemId);
+      const order = await this.orderRepo.findById(orderItem.orderId);
+      const {alreadyPaid, due} = await this.orderService.computeBalanceDue(order);
+      if (alreadyPaid > 0 && due <= 0) return false;
+    }
+    const savedOriginal = current.metadata?._returnOriginalSnapshot as RevertSnapshot | undefined;
+    const applied = (current.metadata?._returnAppliedSnapshot ?? current.metadata?._revertSnapshot) as RevertSnapshot | undefined;
+    if (!applied?.orderItem || !applied.order) {
+      throw new HttpErrors.BadRequest('This return has no original billing snapshot; restore it manually.');
+    }
+    const refundDueId = current.metadata?._returnRefundDueId as string | undefined;
+    const refundDue = refundDueId
+      ? await this.refundDueRepo.findOne({where: {id: refundDueId}})
+      : !savedOriginal && request.createdAt
+        ? await this.refundDueRepo.findOne({
+            where: {sourceType: 'garment', sourceId: request.entityId,
+              createdAt: {gte: request.createdAt}},
+            order: ['createdAt ASC'],
+          })
+        : null;
+    if (refundDue?.status === RefundDueStatus.PAID) return false;
+    const now = await this._captureSnapshot(request);
+    for (const key of ['orderItem', 'order', 'invoice', 'challan'] as const) {
+      if (Object.entries(applied[key] ?? {}).some(([field, value]) =>
+        !(key === 'order' && field === 'status') &&
+        !(key === 'invoice' && (field === 'balanceDue' || field === 'items')) &&
+        !(key === 'challan' && field === 'items') &&
+        JSON.stringify((now[key] as Record<string, unknown> | undefined)?.[field]) !== JSON.stringify(value))) {
+        throw new HttpErrors.BadRequest('The order changed after this return; review its billing before undoing it.');
+      }
+    }
+    const saved = savedOriginal ?? await this._reconstructLegacyReturn(request, now);
+    const original: RevertSnapshot = {
+      ...saved,
+      order: saved.order && {...saved.order},
+      invoice: saved.invoice && {...saved.invoice},
+      challan: saved.challan && {...saved.challan},
+    };
+    if (original.order && now.order?.status && now.order.status !== OrderStatus.RETURNED) {
+      original.order.status = now.order.status;
+    }
+    const itemId = original.orderItem?.id;
+    for (const key of ['invoice', 'challan'] as const) {
+      const savedItems = original[key]?.items;
+      const currentItems = now[key]?.items;
+      if (!itemId || !Array.isArray(savedItems) || !Array.isArray(currentItems)) continue;
+      const rowId = (row: unknown) => (row as {orderItemId?: string})?.orderItemId;
+      const restoredItem = savedItems.find(row => rowId(row) === itemId);
+      if (!restoredItem) {
+        original[key]!.items = currentItems;
+        continue;
+      }
+      const items = [...currentItems];
+      const existingIndex = items.findIndex(row => rowId(row) === itemId);
+      if (existingIndex >= 0) items[existingIndex] = restoredItem;
+      else {
+        const nextRow = savedItems.slice(savedItems.indexOf(restoredItem) + 1)
+          .find(row => rowId(row) && items.some(currentRow => rowId(currentRow) === rowId(row)));
+        const insertAt = nextRow ? items.findIndex(row => rowId(row) === rowId(nextRow)) : items.length;
+        items.splice(insertAt, 0, restoredItem);
+      }
+      original[key]!.items = items;
+    }
+    if (refundDue?.approvalRequestId) {
+      const payoutApproval = await this.approvalRequestRepo.findById(refundDue.approvalRequestId);
+      if (payoutApproval.status !== ApprovalRequestStatus.PENDING) {
+        throw new HttpErrors.BadRequest('This refund payout has already been decided.');
+      }
+      await this.approvalRequestRepo.updateById(payoutApproval.id, {
+        status: ApprovalRequestStatus.REJECTED,
+        resolvedAt: new Date(),
+        updatedAt: new Date(),
+      });
+      const {v4} = await import('uuid');
+      await this.approvalAuditLogRepo.create({
+        id: v4(), approvalRequestId: payoutApproval.id, eventType: 'cancelled',
+        remarks: 'Return item was rejected or undone before payout.', performedBy,
+      });
+    }
+    if (refundDue) {
+      await this.refundDueRepo.updateById(refundDue.id, {
+        status: RefundDueStatus.CANCELLED,
+        resolvedAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+    if (original.order && original.invoice) {
+      const order = await this.orderRepo.findById(original.order.id);
+      const {newBalanceDue} = await this._computeOverpaymentRefund(order, money(original.order.totalAmount));
+      original.invoice.balanceDue = newBalanceDue;
+    }
+    await this._restoreSnapshot(original);
+    await this._updateGarmentStatus(request.entityId, original.garmentStatus as GarmentStatus,
+      performedBy, 'Return item decision reversed');
+    await this.approvalRequestRepo.updateById(request.id, {
+      metadata: {...(current.metadata ?? {}), _returnBillingApplied: false, _returnRefundDueId: undefined},
+      updatedAt: new Date(),
+    });
+    return true;
+  }
+
+  private async _reconstructLegacyReturn(request: ApprovalRequest, applied: RevertSnapshot): Promise<RevertSnapshot> {
+    if (!request.createdAt || !applied.orderItem || !applied.order) {
+      throw new HttpErrors.BadRequest('This return has no original billing snapshot; restore it manually.');
+    }
+    const history = await this.garmentStatusHistoryRepo.find({
+      where: {garmentId: request.entityId, changedAt: {lt: request.createdAt}},
+      order: ['changedAt DESC'], limit: 1,
+    });
+    const previousStatus = history[0]?.status;
+    const subtotal = money(applied.order.subtotal);
+    const discount = money(applied.order.discountAmount);
+    const taxable = subtotal - discount;
+    if (!previousStatus || previousStatus === GarmentStatus.RETURNED_TO_CUSTOMER || subtotal <= 0 || taxable <= 0) {
+      throw new HttpErrors.BadRequest('The original stage or pricing is unavailable; restore this return manually.');
+    }
+    const value = await this.calculateGarmentReturnAmount(request.entityId);
+    const pieceSubtotal = money(value.itemPrice + value.additionalServiceCharge + value.addOnCharge);
+    const totals = calculateRemainingOrderTotals(
+      subtotal + pieceSubtotal, discount / subtotal, money(applied.order.taxAmount) / taxable,
+    );
+    let orderStatus = applied.order.status;
+    if (orderStatus === OrderStatus.RETURNED) {
+      const orderHistory = await this.orderStatusHistoryRepo.find({
+        where: {orderId: applied.order.id, changedAt: {lt: request.createdAt}},
+        order: ['changedAt DESC'], limit: 1,
+      });
+      orderStatus = orderHistory[0]?.status;
+      if (!orderStatus) throw new HttpErrors.BadRequest('The original ticket stage is unavailable; restore this return manually.');
+    }
+    return {
+      ...applied,
+      garmentStatus: previousStatus,
+      orderItem: {...applied.orderItem, quantity: Number(applied.orderItem.quantity) + 1,
+        totalPrice: money(applied.orderItem.totalPrice) + pieceSubtotal},
+      order: {...applied.order, status: orderStatus, subtotal: totals.subtotal,
+        discountAmount: totals.discount, taxAmount: totals.tax, totalAmount: totals.total},
+      invoice: applied.invoice && {...applied.invoice, subtotal: totals.subtotal,
+        discount: totals.discount, cgst: money(totals.tax / 2),
+        sgst: money(totals.tax - money(totals.tax / 2)), totalAmount: totals.total},
+      challan: applied.challan && {...applied.challan, subtotal: totals.subtotal,
+        discount: totals.discount, cgst: money(totals.tax / 2),
+        sgst: money(totals.tax - money(totals.tax / 2)), totalAmount: totals.total},
+    };
   }
 
   // ─── Deferred refund payouts ──────────────────────────────────────────────
@@ -766,7 +942,7 @@ export class ApprovalService {
     approvalSource?: string;
     onBehalfOfCustomerId?: string;
   }): Promise<ApprovalRequest> {
-    const request = await this.approvalRequestRepo.findById(params.requestId);
+    let request = await this.approvalRequestRepo.findById(params.requestId);
     if (request.type === ApprovalRequestType.REPROCESS && request.entityType === 'order' && request.metadata?.source === 'customer') {
       return this.resolveCustomerReprocess(params);
     }
@@ -774,6 +950,16 @@ export class ApprovalService {
       throw new HttpErrors.BadRequest(
         `Approval request is already ${request.status}.`,
       );
+    }
+    if (request.type === ApprovalRequestType.RETURN_ITEM && params.action !== ApprovalActionType.APPROVED) {
+      await this._restoreUnpaidReturn(request, params.performedBy);
+      request = await this.approvalRequestRepo.findById(params.requestId);
+    }
+    if (request.type === ApprovalRequestType.REFUND_PAYOUT && params.action === ApprovalActionType.APPROVED) {
+      const refundDue = await this.refundDueRepo.findOne({where: {id: request.entityId}});
+      if (refundDue?.status !== RefundDueStatus.REQUESTED && refundDue?.status !== RefundDueStatus.PAID) {
+        throw new HttpErrors.BadRequest('This refund is no longer awaiting payout approval.');
+      }
     }
 
     const newStatus =
@@ -1029,6 +1215,12 @@ export class ApprovalService {
 
     // Older pending requests may predate the immediate billing adjustment.
     if (request.type === ApprovalRequestType.RETURN_ITEM) {
+      if (garment.status === GarmentStatus.RETURNED_TO_CUSTOMER) {
+        const orderItem = await this.orderItemRepo.findById(garment.orderItemId);
+        const order = await this.orderRepo.findById(orderItem.orderId);
+        const {alreadyPaid, due} = await this.orderService.computeBalanceDue(order);
+        if (alreadyPaid > 0 && due <= 0) return;
+      }
       await this._ensureReturnBillingApplied(request, performedBy);
     }
 
@@ -1307,6 +1499,12 @@ export class ApprovalService {
       });
 
       await this._mergeIntoSnapshot(request.id, {refundDueId: refundDue.id});
+      if (request.type === ApprovalRequestType.RETURN_ITEM) {
+        const current = await this.approvalRequestRepo.findById(request.id);
+        await this.approvalRequestRepo.updateById(request.id, {
+          metadata: {...(current.metadata ?? {}), _returnRefundDueId: refundDue.id},
+        });
+      }
     }
 
     await this.auditService.log({
@@ -1587,7 +1785,10 @@ export class ApprovalService {
     const refundDue = await this.refundDueRepo.findOne({
       where: {id: request.entityId},
     });
-    if (!refundDue || refundDue.status === RefundDueStatus.PAID) return;
+    if (!refundDue || (refundDue.status !== RefundDueStatus.REQUESTED && refundDue.status !== RefundDueStatus.PAID)) {
+      throw new HttpErrors.BadRequest('This refund is no longer awaiting payout approval.');
+    }
+    if (refundDue.status === RefundDueStatus.PAID) return;
 
     await this.reconcileRefundDueAmount(refundDue.id);
     const reconciledRefundDue = await this.refundDueRepo.findById(refundDue.id);
@@ -1809,9 +2010,6 @@ export class ApprovalService {
     if (request.entityType !== 'garment') return;
 
     if (request.type === ApprovalRequestType.RETURN_ITEM) {
-      // Rejecting the approval does not undo a physical return or its credit.
-      // Apply the credit here for requests created before immediate adjustment.
-      await this._ensureReturnBillingApplied(request, performedBy);
       return;
     }
 
@@ -2287,6 +2485,15 @@ export class ApprovalService {
         'This request is still pending — there is nothing to revert.',
       );
     }
+    if (request.type === ApprovalRequestType.RETURN_ITEM) {
+      const latest = await this.approvalRequestRepo.findOne({
+        where: {type: request.type, entityType: request.entityType, entityId: request.entityId},
+        order: ['createdAt DESC'],
+      });
+      if (latest?.id !== request.id) {
+        throw new HttpErrors.BadRequest('Only the latest Return Item request can be undone.');
+      }
+    }
 
     const previousStatus = request.status;
     const snapshot = request.metadata?._revertSnapshot as
@@ -2294,9 +2501,25 @@ export class ApprovalService {
       | undefined;
     const notes: string[] = [];
 
-    if (snapshot && request.type !== ApprovalRequestType.RETURN_ITEM) {
+    if (request.type === ApprovalRequestType.RETURN_ITEM) {
+      const garment = await this.garmentRepo.findById(request.entityId);
+      const orderItem = await this.orderItemRepo.findById(garment.orderItemId);
+      const order = await this.orderRepo.findById(orderItem.orderId);
+      const {alreadyPaid, due} = await this.orderService.computeBalanceDue(order);
+      const refundDueId = request.metadata?._returnRefundDueId as string | undefined;
+      const refundDue = refundDueId
+        ? await this.refundDueRepo.findOne({where: {id: refundDueId}})
+        : request.createdAt
+          ? await this.refundDueRepo.findOne({where: {sourceType: 'garment', sourceId: request.entityId,
+              createdAt: {gte: request.createdAt}}, order: ['createdAt ASC']})
+          : null;
+      if ((alreadyPaid > 0 && due <= 0) || refundDue?.status === RefundDueStatus.PAID) {
+        throw new HttpErrors.BadRequest('This return cannot be undone after payment succeeded.');
+      }
+      await this._ensureReturnBillingApplied(request, params.performedBy);
+    } else if (snapshot) {
       await this._restoreSnapshot(snapshot);
-    } else if (!snapshot && request.type !== ApprovalRequestType.RETURN_ITEM) {
+    } else {
       // Resolved before revert support existed, so nothing was photographed.
       notes.push(
         'No pre-resolve snapshot was recorded for this request, so pricing and billing were left untouched. Check the order totals manually.',
@@ -2396,19 +2619,13 @@ export class ApprovalService {
       updatedAt: new Date(),
     });
 
-    // A return remains returned and unbilled even if its approval is reopened.
-    if (request.entityType === 'garment') {
+    if (request.entityType === 'garment' && request.type !== ApprovalRequestType.RETURN_ITEM) {
       await this._updateGarmentStatus(
         request.entityId,
-        request.type === ApprovalRequestType.RETURN_ITEM
-          ? GarmentStatus.RETURNED_TO_CUSTOMER
-          : GarmentStatus.ON_HOLD,
+        GarmentStatus.ON_HOLD,
         params.performedBy,
         `${previousStatus} decision reverted — awaiting a fresh decision`,
       );
-      if (request.type === ApprovalRequestType.RETURN_ITEM) {
-        await this._ensureReturnBillingApplied(request, params.performedBy);
-      }
     }
 
     await this.approvalAuditLogRepo.create({
@@ -2474,7 +2691,9 @@ export class ApprovalService {
     if (!order) return snapshot;
     snapshot.order = {
       id: order.id,
+      status: order.status,
       subtotal: order.subtotal,
+      discountAmount: order.discountAmount,
       totalAmount: order.totalAmount,
       taxAmount: order.taxAmount,
     };
@@ -2488,6 +2707,9 @@ export class ApprovalService {
       snapshot.invoice = {
         id: invoice.id,
         subtotal: invoice.subtotal,
+        discount: invoice.discount,
+        cgst: invoice.cgst,
+        sgst: invoice.sgst,
         totalAmount: invoice.totalAmount,
         balanceDue: invoice.balanceDue,
         items: invoice.items as unknown[],
@@ -2497,6 +2719,9 @@ export class ApprovalService {
       snapshot.challan = {
         id: challan.id,
         subtotal: challan.subtotal,
+        discount: challan.discount,
+        cgst: challan.cgst,
+        sgst: challan.sgst,
         totalAmount: challan.totalAmount,
         items: challan.items as unknown[],
       };
@@ -2624,10 +2849,6 @@ export class ApprovalService {
       (sum, s) => sum + Number(s.amount),
       0,
     );
-    const alreadyAttachedIds = new Set(existingAddlServices.map(s => s.serviceId));
-    // Only the NET-NEW add-ons (same additive-only rule the apply path
-    // follows) actually change the quote.
-    const newAddlIds = requestedAddlIds.filter(sid => !alreadyAttachedIds.has(sid));
 
     const currentResolvedPrice =
       Number(
@@ -2665,9 +2886,19 @@ export class ApprovalService {
 
     let newAddlAmountSum = existingAddlAmountSum;
     const requestedAdditionalServices: Array<{id: string; name: string; amount: number}> = [];
-    if (order && orderItem && newAddlIds.length) {
-      for (const addlId of newAddlIds) {
-        const service = requestedAddlServiceRows.find(s => s.id === addlId);
+    for (const [index, addlId] of requestedAddlIds.entries()) {
+      const service = requestedAddlServiceRows.find(s => s.id === addlId);
+      const name =
+        (request.metadata?.additionalServiceNames as string[] | undefined)?.[index] ??
+        service?.name ?? addlId;
+      const attached = existingAddlServices.find(s => s.serviceId === addlId);
+      if (attached) {
+        requestedAdditionalServices.push({
+          id: addlId,
+          name,
+          amount: Number(attached.amount),
+        });
+      } else if (order && orderItem) {
         try {
           const addlPricing = await this.orderService.resolvePricing(
             order.storeId!,
@@ -2679,7 +2910,7 @@ export class ApprovalService {
           newAddlAmountSum += addlPricing.resolvedPrice;
           requestedAdditionalServices.push({
             id: addlId,
-            name: (service as any)?.name ?? addlId,
+            name,
             amount: addlPricing.resolvedPrice,
           });
         } catch {
@@ -2744,7 +2975,10 @@ export class ApprovalService {
       })),
       // Add-ons being REQUESTED now — additive only, attached alongside
       // whichever primary service ends up in effect, never overriding it.
-      requestedAdditionalServices,
+      requestedAdditionalServices: requestedAdditionalServices.map(service => ({
+        ...service,
+        unitPrice: parseFloat((service.amount * deliveryMultiplier).toFixed(2)),
+      })),
 
       pricing: {
         quantity,
