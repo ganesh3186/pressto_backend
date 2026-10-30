@@ -198,9 +198,39 @@ export class WalletService {
       skip,
     });
 
+    const rechargeIds = transactions
+      .filter(transaction => transaction.referenceType === ReferenceType.MANUAL &&
+        transaction.transactionType === WalletTransactionType.CREDIT && transaction.referenceId)
+      .map(transaction => transaction.referenceId!);
+    const recharges = rechargeIds.length
+      ? await this.rechargeRequestRepository.find({
+          where: {id: {inq: rechargeIds}, customerId},
+          fields: {id: true, paymentMode: true, performedBy: true},
+        })
+      : [];
+    const performerIds = [...new Set(recharges.filter(recharge => recharge.performedBy)
+      .map(recharge => recharge.performedBy!))];
+    const performers = performerIds.length
+      ? await this.usersRepository.find({
+          where: {id: {inq: performerIds}},
+          fields: {id: true, fullName: true, username: true},
+        })
+      : [];
+    const rechargeById = new Map(recharges.map(recharge => [recharge.id, recharge]));
+    const performerNameById = new Map(performers.map(user => [
+      user.id, user.fullName?.trim() ? user.fullName : user.username,
+    ]));
+
     return {
       balance: Number(wallet.currentBalance ?? 0),
-      transactions,
+      transactions: transactions.map(transaction => {
+        const recharge = rechargeById.get(transaction.referenceId ?? '');
+        return {
+          ...transaction.toJSON(),
+          paymentMode: recharge?.paymentMode,
+          performedByName: performerNameById.get(recharge?.performedBy ?? ''),
+        };
+      }),
     };
   }
 
