@@ -74,6 +74,7 @@ import {
   DeliveryOrderRepository,
   DeliveryTypeConfigurationRepository,
   InvoiceRepository,
+  InvoiceOrderLinkRepository,
   IntakeRejectedItemRepository,
   ItemRepository,
   MediaRepository,
@@ -356,6 +357,8 @@ export class OrderService {
     @inject('services.notification')
     private notificationService: NotificationService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
+    @repository(InvoiceOrderLinkRepository)
+    private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
   ) {}
 
   // ─── Inspection ──────────────────────────────────────────────────────────
@@ -5341,17 +5344,14 @@ export class OrderService {
       parentOrders.map(o => [o.id, (o as any).orderNumber]),
     );
 
-    const [garments, invoices] = await Promise.all([
+    const [garments, invoicedOrders] = await Promise.all([
       orderItems.length
         ? this.garmentRepo.find({
             where: {orderItemId: {inq: orderItems.map(item => item.id)}, isDeleted: false},
             fields: {id: true, orderItemId: true},
           })
         : Promise.resolve([]),
-      this.invoiceRepo.find({
-        where: {orderId: {inq: orderIds}},
-        fields: {orderId: true},
-      }),
+      this.getInvoicedOrderIds(orderIds),
     ]);
     const orderIdByItem = new Map(orderItems.map(item => [item.id, item.orderId]));
     const orderIdByGarment = new Map(
@@ -5386,7 +5386,6 @@ export class OrderService {
         chequeApprovalOrders.add(orderId);
       }
     }
-    const invoicedOrders = new Set(invoices.map(invoice => invoice.orderId));
 
     // Pieces in the order (3 shirts + 1 trouser = 4), not the number of item rows.
     const itemsCountByOrder = new Map<string, number>();
@@ -5462,6 +5461,7 @@ export class OrderService {
         status: order.status,
         isOnAccount: order.isOnAccount ?? false,
         hasPendingCustomerApproval: customerApprovalOrders.has(order.id),
+        hasInvoice: invoicedOrders.has(order.id),
         canGenerateInvoice:
           !order.isOnAccount &&
           ['ready', 'partially_dispatched', 'out_for_delivery', 'delivered'].includes(order.status ?? '') &&
@@ -5590,6 +5590,7 @@ export class OrderService {
       splitChildren,
       orderLabelAssignments,
       couponRedemptions,
+      invoicedOrders,
     ] = await Promise.all([
       this.orderItemRepo.find({where: {orderId}}),
       this.orderChargeRepo.find({where: {orderId}}),
@@ -5609,6 +5610,7 @@ export class OrderService {
         where: {orderId, isDeleted: false} as any,
       }),
       this.couponRedemptionRepo.find({where: {orderId, isReversed: false} as object}),
+      this.getInvoicedOrderIds([orderId]),
     ]);
 
     const orderLabels = orderLabelAssignments.length
@@ -6085,6 +6087,7 @@ export class OrderService {
     return {
       order: {
         ...order,
+        hasInvoice: invoicedOrders.has(orderId),
         createdByName,
         receivedByName: createdByName,
         couponRedemptions: couponRedemptions.map(row => ({
@@ -6539,6 +6542,30 @@ export class OrderService {
 
   // ─── Split Order ─────────────────────────────────────────────────────────
 
+  private async getInvoicedOrderIds(
+    orderIds: string[],
+    options?: Options,
+  ): Promise<Set<string>> {
+    if (!orderIds.length) return new Set();
+    const filter = {
+      where: {orderId: {inq: orderIds}},
+      fields: {orderId: true},
+    };
+    const [invoices, links] = await Promise.all([
+      this.invoiceRepo.find(filter, options),
+      this.invoiceOrderLinkRepo.find(filter, options),
+    ]);
+    return new Set([...invoices, ...links].map(row => row.orderId));
+  }
+
+  private async assertOrderNotInvoiced(orderId: string, options?: Options) {
+    if ((await this.getInvoicedOrderIds([orderId], options)).has(orderId)) {
+      throw new HttpErrors.Conflict(
+        'This ticket cannot be split because an invoice has already been generated.',
+      );
+    }
+  }
+
   async splitOrder(
     orderId: string,
     garmentIds: string[],
@@ -6557,6 +6584,7 @@ export class OrderService {
       where: {id: orderId, isDeleted: false},
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
+    await this.assertOrderNotInvoiced(orderId);
     if (
       order.status === OrderStatus.CANCELLED ||
       order.status === OrderStatus.DELIVERED
@@ -6900,6 +6928,12 @@ export class OrderService {
       isolationLevel: 'READ COMMITTED' as any,
     });
     try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+        [orderId],
+        {transaction: tx},
+      );
+      await this.assertOrderNotInvoiced(orderId, {transaction: tx});
       const now = new Date();
       const subOrderNumber = await this.resolveNextOrderNumber(order.storeId, tx);
 
