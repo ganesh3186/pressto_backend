@@ -10,6 +10,8 @@ describe('On Account billable orders', () => {
     const orders = [
       {id: 'received', orderNumber: 'OA-0', status: OrderStatus.RECEIVED_AT_STORE, isOnAccount: true, totalAmount: 100, createdAt},
       {id: 'on-account', orderNumber: 'OA-1', status: OrderStatus.READY, isOnAccount: true, totalAmount: 100, createdAt, deliveryDate: new Date('2026-10-19T10:00:00Z')},
+      {id: 'pending-parent', orderNumber: 'OA-P', status: OrderStatus.READY, isOnAccount: true, totalAmount: 75, createdAt},
+      {id: 'split-child', orderNumber: 'OA-C', status: OrderStatus.READY, isOnAccount: true, totalAmount: 40, createdAt, parentOrderId: 'pending-parent'},
       {id: 'partial', orderNumber: 'OA-3', status: OrderStatus.PARTIALLY_DISPATCHED, isOnAccount: true, totalAmount: 25, createdAt},
       {id: 'out', orderNumber: 'OA-4', status: OrderStatus.OUT_FOR_DELIVERY, isOnAccount: true, totalAmount: 30, createdAt},
       {id: 'cash', orderNumber: 'C-1', status: OrderStatus.RECEIVED_AT_STORE, isOnAccount: false, totalAmount: 200, createdAt},
@@ -22,6 +24,7 @@ describe('On Account billable orders', () => {
       invoiceRepo: {find: async () => []},
       invoiceOrderLinkRepo: {find: async () => []},
       paymentRepo: {find: async () => []},
+      dataSource: {execute: async () => [{orderid: 'pending-parent'}]},
     }) as CustomerBillingController;
 
     const result = await controller.billableOrders(customerId, '2026-10-12', '2026-10-12') as {
@@ -29,9 +32,9 @@ describe('On Account billable orders', () => {
       totalDue: number;
     };
 
-    expect(result.billableOrders.map(order => order.orderId)).to.eql(['on-account', 'partial', 'out', 'legacy']);
+    expect(result.billableOrders.map(order => order.orderId)).to.eql(['on-account', 'split-child', 'partial', 'out', 'legacy']);
     expect(result.billableOrders[0].status).to.equal(OrderStatus.READY);
-    expect(result.totalDue).to.equal(205);
+    expect(result.totalDue).to.equal(245);
   });
 
   it('allows a processing-complete On Account ticket through invoice eligibility checks', async () => {
@@ -41,6 +44,7 @@ describe('On Account billable orders', () => {
       orderRepo: {find: async () => [{id: 'on-account', orderNumber: 'OA-1', status: OrderStatus.READY, isOnAccount: true}]},
       invoiceRepo: {find: async () => {throw reachedInvoiceLookup;}},
       invoiceOrderLinkRepo: {find: async () => []},
+      dataSource: {execute: async () => []},
     }) as CustomerBillingController;
 
     let error: unknown;
@@ -64,5 +68,20 @@ describe('On Account billable orders', () => {
     } catch (error) {
       expect((error as {statusCode?: number}).statusCode).to.equal(400);
     }
+  });
+
+  it('rejects invoice generation while a selected ticket has pending damage approval', async () => {
+    const controller = Object.assign(Object.create(CustomerBillingController.prototype), {
+      customerRepo: {findOne: async () => ({id: customerId, isOnAccountEligible: true})},
+      orderRepo: {find: async () => [{id: 'pending-parent', orderNumber: 'OA-P', status: OrderStatus.READY, isOnAccount: true}]},
+      dataSource: {execute: async () => [{orderid: 'pending-parent'}]},
+    }) as CustomerBillingController;
+
+    await expect(controller.generateOnAccountInvoice(
+      {} as Parameters<CustomerBillingController['generateOnAccountInvoice']>[0],
+      customerId,
+      {orderIds: ['pending-parent']},
+    ))
+      .to.be.rejectedWith(/Resolve pending damage approval before billing/);
   });
 });

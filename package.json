@@ -38,6 +38,7 @@
     "migrate:delivery-order-failure-remarks": "node scripts/add-delivery-order-failure-remarks.cjs",
     "migrate:store-targets": "node scripts/add-store-targets.cjs",
     "migrate:cash-payout-shifts": "node scripts/add-cash-payout-shift-columns.cjs",
+    "migrate:payment-collector": "node scripts/add-payment-collector-column.cjs",
     "migrate:store-prefix-lock": "node scripts/add-store-prefix-lock.cjs",
     "migrate:store-order-sequence": "node scripts/add-store-order-sequence.cjs",
     "migrate:dashboard-indexes": "node scripts/add-dashboard-indexes.cjs",
