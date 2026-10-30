@@ -12,3 +12,11 @@ export enum PaymentMode {
   WALLET = 'wallet',           // internal wallet deduction — always creates a PaymentTransaction
   PP_VOUCHER = 'pp_voucher',   // wallet top-up only — staff-confirmed directly, no gateway/approval
 }
+
+export const ADMIN_WALLET_RECHARGE_MODES: PaymentMode[] = [
+  PaymentMode.CASH,
+  PaymentMode.UPI,
+  PaymentMode.CARD,
+  PaymentMode.NET_BANKING,
+  PaymentMode.PP_VOUCHER,
+];

@@ -235,7 +235,7 @@ type ShiftClosingSnapshot = {
   // closing form by ShiftController.collected() and stored verbatim here
   // once the cashier submits. Distinct from collections.wallet above, which
   // is stored-wallet-balance REDEMPTION against a ticket (no fresh money).
-  walletCollections?: {cash?: number; card?: number; upi?: number; netBanking?: number};
+  walletCollections?: {cash?: number; card?: number; upi?: number; netBanking?: number; ppVoucher?: number};
   register?: {reimbursement?: number};
   banking?: {supposed?: number; deposited?: number; inSafe?: number; cumulativeDiff?: number};
   pettyCash?: {cumulativeDiff?: number};
@@ -1629,7 +1629,8 @@ export class ReportsService {
       row.walletRechargedOther +=
         (Number(walletCollections.card) || 0) +
         (Number(walletCollections.upi) || 0) +
-        (Number(walletCollections.netBanking) || 0);
+        (Number(walletCollections.netBanking) || 0) +
+        (Number(walletCollections.ppVoucher) || 0);
       row.totalReceipts =
         row.otherPaymentMode +
         row.ppVouchers +
@@ -1803,7 +1804,7 @@ export class ReportsService {
       Boolean(findShiftFor(entry.storeId, entry.createdAt)),
     );
     const inRange = (date: Date | undefined) =>
-      date && timeOf(date) >= from.getTime() && timeOf(date) <= to.getTime();
+      Boolean(date && timeOf(date) >= from.getTime() && timeOf(date) <= to.getTime());
 
     const shiftById = new Map<string, (typeof shifts)[number]>();
     shifts.forEach(shift => {

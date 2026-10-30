@@ -95,6 +95,7 @@ interface ClosingFormInput {
     card: number;
     upi: number;
     netBanking: number;
+    ppVoucher?: number;
   };
   banking: {supposed: number; deposited: number; inSafe: number};
   prepaidV: {supposed: number; sentToAc: number; inSafe: number};
@@ -106,7 +107,7 @@ interface ClosingFormInput {
     actualBalance: number;
     cumulativeDiff?: number;
   };
-  cardPgSettlement: {actualSettlement: number; difference?: number};
+  cardPgSettlement: {actualSettlement: number; expectedSettlement?: number; difference?: number};
   ppVoucher: {
     currSupVoucher: number;
     actualVoucher: number;
@@ -294,7 +295,21 @@ export class ShiftController {
       Number(input.walletCollections.cash || 0) +
       Number(input.walletCollections.card || 0) +
       Number(input.walletCollections.upi || 0) +
-      Number(input.walletCollections.netBanking || 0);
+      Number(input.walletCollections.netBanking || 0) +
+      Number(input.walletCollections.ppVoucher ?? 0);
+
+    const expectedCardUpiSettlement =
+      Math.round(
+        (Number(input.collections.card || 0) +
+          Number(input.collections.upi || 0) +
+          Number(input.walletCollections.card || 0) +
+          Number(input.walletCollections.upi || 0)) *
+          100,
+      ) / 100;
+    const cardUpiDifference =
+      Math.round(
+        (Number(input.cardPgSettlement.actualSettlement) - expectedCardUpiSettlement) * 100,
+      ) / 100;
 
     const bankingCumulativeDiff =
       Number(input.banking.deposited || 0) +
@@ -352,7 +367,11 @@ export class ShiftController {
         balance: pettyBalance,
         difference: pettyDifference,
       },
-      cardPgSettlement: input.cardPgSettlement,
+      cardPgSettlement: {
+        ...input.cardPgSettlement,
+        expectedSettlement: expectedCardUpiSettlement,
+        difference: cardUpiDifference,
+      },
       ppVoucher: {...input.ppVoucher, difference: ppVoucherDifference},
       register: {...input.register, currSupCashInTill},
       actualCashInTill: {
@@ -677,8 +696,8 @@ export class ShiftController {
   // performedBy + [openedAt, windowEnd] heuristic survives as a fallback
   // only for recharges from before this column existed (shiftId null).
   //
-  // ppVoucher and Wallet Collections' own upi/card have no further
-  // PaymentMode source beyond what's summed here and stay operator-typed.
+  // Order-payment PP vouchers have no source in this prefill; wallet
+  // recharge PP vouchers are tracked separately below.
   //
   // pettyCash is real too (see PettyCashService.computeWindowActivity) —
   // finance top-ups and resolved (approved/rejected) expenses within this
@@ -825,15 +844,16 @@ export class ShiftController {
         ],
       } as object,
     });
-    const walletCollections = {cash: 0, card: 0, upi: 0, netBanking: 0};
+    const walletCollections = {cash: 0, card: 0, upi: 0, netBanking: 0, ppVoucher: 0};
     const rechargeBucketOf: Record<
       string,
-      'cash' | 'card' | 'upi' | 'netBanking' | null
+      'cash' | 'card' | 'upi' | 'netBanking' | 'ppVoucher' | null
     > = {
       [PaymentMode.CASH]: 'cash',
       [PaymentMode.CARD]: 'card',
       [PaymentMode.UPI]: 'upi',
       [PaymentMode.NET_BANKING]: 'netBanking',
+      [PaymentMode.PP_VOUCHER]: 'ppVoucher',
     };
     for (const r of recharges) {
       const bucket = rechargeBucketOf[r.paymentMode];
@@ -1358,6 +1378,13 @@ export class ShiftController {
     if (!normalizedRemarks) {
       throw new HttpErrors.BadRequest('Remarks are required to close a shift.');
     }
+    if (
+      typeof body.cardPgSettlement?.actualSettlement !== 'number' ||
+      !Number.isFinite(body.cardPgSettlement.actualSettlement) ||
+      body.cardPgSettlement.actualSettlement < 0
+    ) {
+      throw new HttpErrors.BadRequest('Actual Card & UPI Settlement must be a non-negative amount.');
+    }
 
     const closingUserName = caller.userName || shift.userName;
 
@@ -1370,11 +1397,13 @@ export class ShiftController {
       pettyCash?: {difference?: number};
       actualCashInTill?: {difference?: number};
       ppVoucher?: {difference?: number};
+      cardPgSettlement?: {difference?: number};
     };
     const reconciliationDifferences = [
       ['Petty Cash', closingRecord.pettyCash?.difference],
       ['Actual Cash in Till', closingRecord.actualCashInTill?.difference],
       ['Prepaid Vouchers', closingRecord.ppVoucher?.difference],
+      ['Card & UPI Settlement', closingRecord.cardPgSettlement?.difference],
     ].filter(([, difference]) => Math.abs(Number(difference) || 0) > 0.005);
     if (reconciliationDifferences.length) {
       throw new HttpErrors.BadRequest(

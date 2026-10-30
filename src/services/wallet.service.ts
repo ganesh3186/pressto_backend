@@ -2,6 +2,7 @@ import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {PaymentMode, PaymentRequestStatus, ReferenceType, WalletTransactionType} from '../models';
+import {ADMIN_WALLET_RECHARGE_MODES} from '../models/payment-mode.enum';
 import {WalletRechargeRequest} from '../models/wallet-recharge-request.model';
 import {
   CustomerPhoneRepository,
@@ -28,6 +29,18 @@ export type WalletTransactionRow = {
   remarks: string;
   performedBy: string | null;
 };
+
+export function roundWalletRechargeAmount(amount: number): number {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new HttpErrors.BadRequest('Recharge amount must be greater than zero.');
+  }
+  const wholeRupees = Math.floor(amount);
+  const roundedAmount = wholeRupees + (amount > wholeRupees + 0.55 ? 1 : 0);
+  if (roundedAmount === 0) {
+    throw new HttpErrors.BadRequest('Recharge amount must round to at least one rupee.');
+  }
+  return roundedAmount;
+}
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class WalletService {
@@ -244,8 +257,9 @@ export class WalletService {
     storeId?: string,
     shiftId?: string,
   ): Promise<{rechargeRequest: WalletRechargeRequest; walletBalance: number}> {
-    if (amount <= 0) {
-      throw new HttpErrors.BadRequest('Recharge amount must be greater than zero.');
+    const roundedAmount = roundWalletRechargeAmount(amount);
+    if (!ADMIN_WALLET_RECHARGE_MODES.includes(paymentMode)) {
+      throw new HttpErrors.BadRequest('Unsupported wallet recharge payment mode.');
     }
 
     const wallet = await this.walletRepository.findOne({where: {customerId}});
@@ -262,7 +276,7 @@ export class WalletService {
       customerId,
       walletId: wallet.id,
       requestNumber,
-      amount,
+      amount: roundedAmount,
       paymentMode,
       status: PaymentRequestStatus.SUCCESS,
       performedBy,
@@ -273,7 +287,7 @@ export class WalletService {
 
     const transaction = await this.credit(
       wallet.id,
-      amount,
+      roundedAmount,
       ReferenceType.MANUAL,
       rechargeRequest.id,
       `Admin wallet recharge - ${requestNumber}`,
@@ -283,7 +297,7 @@ export class WalletService {
     dispatchWhatsApp(() => this.whatsAppService.notifyWalletRecharge({
       transactionId: transaction.id,
       customerId,
-      amount: Number(amount),
+      amount: roundedAmount,
       balance: Number(updatedWallet.currentBalance),
       date: transaction.transactionDate,
     }));

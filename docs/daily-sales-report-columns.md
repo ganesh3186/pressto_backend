@@ -99,7 +99,7 @@ Mode**, flagged below).
 | **PG Link** | Net Banking + Bank Transfer + Razorpay Gateway collected this shift | `closing.collections.pgLink` (all three modes are folded into one bucket at closing-prefill time) |
 | **Wallet Redemption** | Stored wallet BALANCE used against a ticket (no fresh money in) | `closing.collections.wallet` |
 | **Wallet Recharged Cash** | Cash taken in specifically to top up a customer's wallet | `closing.walletCollections.cash` — a separate money-in event from a ticket payment |
-| **Wallet Recharge Card/UPI/Other** | Card/UPI/Net-Banking taken in for wallet top-ups | `closing.walletCollections.card + .upi + .netBanking` |
+| **Wallet Recharge Card/UPI/Other** | Card/UPI/Net-Banking/PP Voucher wallet top-ups | `closing.walletCollections.card + .upi + .netBanking + .ppVoucher` |
 | **PP Vouchers** | Prepaid voucher redemptions | `closing.collections.ppVoucher` |
 | **Reimbursed** | Cash refunded back to customers (sales returns paid out in cash) | `closing.register.reimbursement` |
 | **Other Payment Mode** | Net Banking / Bank Transfer / PDC / Pay Later payments | **Recomputed live** — summed directly from real `PaymentTransaction` rows (by `paymentMode`, within the shift's window), not read off the snapshot |
