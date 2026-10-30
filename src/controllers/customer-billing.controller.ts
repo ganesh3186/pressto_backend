@@ -6,6 +6,7 @@ import {securityId, UserProfile} from '@loopback/security';
 import {PresstoDataSource} from '../datasources';
 import {authorize} from '../authorization';
 import {PaymentService} from '../services/payment.service';
+import {OrderService} from '../services/order.service';
 import {PaymentTransaction} from '../models/payment-transaction.model';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
 import {Order} from '../models/order.model';
@@ -49,6 +50,7 @@ export class CustomerBillingController {
     @repository(OnAccountConfigurationRepository) private onAccountConfigRepo: OnAccountConfigurationRepository,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
     @inject('services.payment') private paymentService: PaymentService,
+    @inject('services.order') private orderService: OrderService,
   ) {}
 
   /**
@@ -515,15 +517,13 @@ export class CustomerBillingController {
     }
 
     const now = new Date();
-    const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const count = await this.invoiceRepo.count();
-    const invoiceNumber = `INV-${ym}-${String(count.count + 1).padStart(5, '0')}`;
     const invoiceSpanDays = await this.resolveInvoiceSpanDays(customer.invoiceSpanDays);
     const dueDate = new Date(now.getTime() + invoiceSpanDays * 24 * 60 * 60 * 1000);
 
     const {v4} = await import('uuid');
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED'} as any);
     try {
+      const invoiceNumber = await this.orderService.allocateInvoiceNumber(tx);
       const invoice = await this.invoiceRepo.create(
         {
           id: v4(),

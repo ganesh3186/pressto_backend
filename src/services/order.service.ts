@@ -1,7 +1,7 @@
 import {dispatchWhatsApp, WalletWhatsAppNotification, WhatsAppService} from './whatsapp.service';
 import {PaymentService} from './payment.service';
 import {BindingScope, inject, injectable} from '@loopback/core';
-import {IsolationLevel, repository} from '@loopback/repository';
+import {IsolationLevel, Options, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {
   collectOrderExportRows,
@@ -26,6 +26,7 @@ import {Order} from '../models/order.model';
 import {OrderItem} from '../models/order-item.model';
 import {Customer} from '../models/customer.model';
 import {Challan, ChallanStatus} from '../models/challan.model';
+import {Invoice, InvoiceStatus} from '../models/invoice.model';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {
@@ -2440,6 +2441,11 @@ export class OrderService {
         tx,
       );
 
+      const invoice =
+        totalCollected > 0 && rupeeBalance(totalAmount, totalCollected) === 0
+          ? await this.generateInvoiceForOrder(order.id, createdBy, true, tx)
+          : null;
+
       await tx.commit();
       if (walletNotification) {
         const notification = walletNotification;
@@ -2458,6 +2464,7 @@ export class OrderService {
         garments: createdGarments,
         payments: createdPayments,
         challan,
+        invoice,
         walletAmountDeducted: walletAmount,
         totalCollected,
         balanceDue: rupeeBalance(totalAmount, totalCollected),
@@ -7142,6 +7149,179 @@ export class OrderService {
 
   // ─── Add Payment to Existing Order ───────────────────────────────────────
 
+  notifyDeliveryAssigned(deliveryId: string): void {
+    dispatchWhatsApp(() =>
+      this.whatsAppService.notifyDeliveryAssigned(deliveryId),
+    );
+  }
+
+  /** Shared manual/automatic billing; callers pass the current payment transaction. */
+  async generateInvoiceForOrder(
+    orderId: string,
+    performedBy: string,
+    automatic = false,
+    transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<Invoice | null> {
+    const tx =
+      transaction ??
+      (await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED));
+    const options = {transaction: tx};
+    try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+        [orderId],
+        options,
+      );
+      const order = await this.orderRepo.findOne(
+        {where: {id: orderId, isDeleted: false}},
+        options,
+      );
+      if (!order) throw new HttpErrors.NotFound('Order not found.');
+      let invoice: Invoice | null = null;
+      const excluded =
+        Boolean(order.isOnAccount) ||
+        [
+          OrderStatus.DRAFT,
+          OrderStatus.CANCELLED,
+          OrderStatus.RETURNED,
+        ].includes(order.status!);
+      if (excluded) {
+        if (!automatic)
+          throw new HttpErrors.BadRequest(
+            'This ticket is not eligible for an individual invoice.',
+          );
+      } else {
+        const {due, alreadyPaid} = await this.computeBalanceDue(order, options);
+        invoice = await this.invoiceRepo.findOne({where: {orderId}}, options);
+        if (invoice) {
+          if (!invoice.isConsolidated) {
+            await this.invoiceRepo.updateById(
+              invoice.id,
+              {amountReceived: alreadyPaid, balanceDue: due},
+              options,
+            );
+            invoice = await this.invoiceRepo.findById(
+              invoice.id,
+              undefined,
+              options,
+            );
+          }
+        } else if (!automatic || (alreadyPaid > 0 && due === 0)) {
+          if (
+            !automatic &&
+            ![
+              OrderStatus.READY,
+              OrderStatus.PARTIALLY_DISPATCHED,
+              OrderStatus.OUT_FOR_DELIVERY,
+              OrderStatus.DELIVERED,
+            ].includes(order.status!)
+          ) {
+            throw new HttpErrors.BadRequest(
+              'Invoice can only be generated manually when the ticket is ready or beyond.',
+            );
+          }
+          const challan = await this.challanRepo.findOne(
+            {where: {orderId}, order: ['createdAt DESC']},
+            options,
+          );
+          // Gateway callbacks have no logged-in operator; retain the real
+          // operator who generated this ticket's challan, never a fake UUID.
+          const generatedBy =
+            /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(performedBy)
+              ? performedBy
+              : challan?.generatedBy;
+          if (!generatedBy)
+            throw new HttpErrors.UnprocessableEntity(
+              'Invoice operator could not be resolved.',
+            );
+          const rows = await this.orderItemRepo.find(
+            {where: {orderId}},
+            options,
+          );
+          const items = rows.map(row => ({
+            orderItemId: row.id,
+            serviceId: row.serviceId,
+            itemId: row.itemId,
+            quantity: Number(row.quantity) || 0,
+            unitPrice: Number(row.unitPrice) || 0,
+            totalPrice: Number(row.totalPrice) || 0,
+            additionalServiceIds: row.additionalServiceIds ?? [],
+            rejectedAtIntake: row.rejectedAtIntake ?? false,
+            rejectionReason: row.rejectionReason ?? null,
+          }));
+          // Serialize our invoice allocation across orders, not just repeated
+          // payments for the same order. Existing invoice numbers are retained.
+          const invoiceNumber = await this.allocateInvoiceNumber(tx);
+          const {v4} = await import('uuid');
+          const tax = Number(order.taxAmount) || 0;
+          const cgst = Math.round(tax * 50) / 100;
+          invoice = await this.invoiceRepo.create(
+            {
+              id: v4(),
+              orderId,
+              challanId: challan?.id,
+              invoiceNumber,
+              generatedBy,
+              items,
+              subtotal: Number(order.subtotal) || 0,
+              discount: Number(order.discountAmount) || 0,
+              deliveryCharge: 0,
+              cgst,
+              sgst: Number((tax - cgst).toFixed(2)),
+              totalAmount: Number(order.totalAmount) || 0,
+              amountReceived: alreadyPaid,
+              balanceDue: due,
+              status: InvoiceStatus.ISSUED,
+            },
+            options,
+          );
+          if (challan)
+            await this.challanRepo.updateById(
+              challan.id,
+              {status: ChallanStatus.CONVERTED_TO_INVOICE},
+              options,
+            );
+        }
+      }
+      if (!transaction) await tx.commit();
+      return invoice;
+    } catch (error) {
+      if (!transaction) await tx.rollback();
+      throw error;
+    }
+  }
+
+  async allocateInvoiceNumber(
+    transaction: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  ): Promise<string> {
+    const options = {transaction};
+    await this.dataSource.execute(
+      "SELECT pg_advisory_xact_lock(hashtext('pressto.invoice-number'))",
+      [],
+      options,
+    );
+    const rows = await this.dataSource.execute(
+      "SELECT COALESCE(MAX(substring(invoicenumber from '([0-9]+)$')::bigint), 0) + 1 AS next_number FROM public.invoice WHERE invoicenumber ~ '^INV-[0-9]{6}-[0-9]+$'",
+      [],
+      options,
+    );
+    const now = new Date();
+    const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+    return `INV-${ym}-${String(rows[0].next_number).padStart(5, '0')}`;
+  }
+
+  async getPaymentResult(orderId: string) {
+    const order = await this.orderRepo.findById(orderId);
+    const balance = await this.computeBalanceDue(order);
+    const invoice = await this.invoiceRepo.findOne({where: {orderId}});
+    return {
+      totalCollected: balance.alreadyPaid,
+      balanceDue: balance.due,
+      invoiceId: invoice?.id ?? null,
+      invoiceNumber: invoice?.invoiceNumber ?? null,
+    };
+  }
+
   // Split-aware balance-due calc, matching getOrderDetails()'s exact posture
   // (§ Payment summary): a split PARENT's original PaymentTransaction rows
   // were redistributed at split time, so only its allocatedPayment share
@@ -7154,7 +7334,7 @@ export class OrderService {
   // full-payment-required check use exactly one definition of "how much is
   // still due" — this exact formula was the source of a real bug once
   // already (see the split/express-uplift fix on this method).
-  async computeBalanceDue(order: Order): Promise<{
+  async computeBalanceDue(order: Order, options?: Options): Promise<{
     due: number;
     alreadyPaid: number;
     isChildOrder: boolean;
@@ -7162,7 +7342,7 @@ export class OrderService {
   }> {
     const existing = await this.paymentTransactionRepo.find({
       where: {orderId: order.id},
-    });
+    }, options);
     const txnCollected = existing.reduce(
       (s, p) =>
         s + ((p as any).transactionType === 'refund' ? 0 : Number(p.amount)),
@@ -7365,6 +7545,37 @@ export class OrderService {
       );
     }
 
+    if (
+      payment?.paymentMode === PaymentMode.GATEWAY &&
+      payment.transactionReference
+    ) {
+      const previous = await this.paymentTransactionRepo.findOne({
+        where: {
+          orderId,
+          paymentMode: PaymentMode.GATEWAY,
+          transactionReference: payment.transactionReference,
+        },
+      });
+      if (previous) {
+        if (Number(previous.amount) !== Number(payment.amount))
+          throw new HttpErrors.Conflict(
+            'Gateway payment amount does not match the recorded payment.',
+          );
+        const invoice = await this.generateInvoiceForOrder(
+          orderId,
+          _performedBy,
+          true,
+        );
+        const balance = await this.computeBalanceDue(order);
+        return {
+          message: 'Payment already recorded.',
+          payment: previous,
+          totalCollected: balance.alreadyPaid,
+          balanceDue: balance.due,
+          invoice,
+        };
+      }
+    }
     const balanceDueResult = await this.computeBalanceDue(order);
     const {alreadyPaid, isChildOrder, allocPay} = balanceDueResult;
     let due = balanceDueResult.due;
@@ -7442,6 +7653,60 @@ export class OrderService {
       isolationLevel: 'READ COMMITTED' as any,
     });
     try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+        [orderId],
+        {transaction: tx},
+      );
+      const currentOrder = await this.orderRepo.findById(orderId, undefined, {
+        transaction: tx,
+      });
+      const currentBalance = await this.computeBalanceDue(currentOrder, {
+        transaction: tx,
+      });
+      if (
+        payment?.paymentMode === PaymentMode.GATEWAY &&
+        payment.transactionReference
+      ) {
+        const previous = await this.paymentTransactionRepo.findOne(
+          {
+            where: {
+              orderId,
+              paymentMode: PaymentMode.GATEWAY,
+              transactionReference: payment.transactionReference,
+            },
+          },
+          {transaction: tx},
+        );
+        if (previous) {
+          if (Number(previous.amount) !== thisPayment)
+            throw new HttpErrors.Conflict(
+              'Gateway payment amount does not match the recorded payment.',
+            );
+          const invoice = await this.generateInvoiceForOrder(
+            orderId,
+            _performedBy,
+            true,
+            tx,
+          );
+          await tx.commit();
+          return {
+            message: 'Payment already recorded.',
+            payment: previous,
+            totalCollected: currentBalance.alreadyPaid,
+            balanceDue: currentBalance.due,
+            invoice,
+          };
+        }
+      }
+      if (
+        currentBalance.due !== balanceDueResult.due ||
+        currentBalance.alreadyPaid !== alreadyPaid
+      ) {
+        throw new HttpErrors.Conflict(
+          'Ticket balance changed. Please refresh before collecting payment.',
+        );
+      }
       if (walletDiscount) {
         await this.orderRepo.updateById(
           orderId,
@@ -7540,17 +7805,26 @@ export class OrderService {
         );
       }
 
+      const invoice =
+        collectedTotal > 0
+          ? await this.generateInvoiceForOrder(orderId, _performedBy, true, tx)
+          : null;
       await tx.commit();
       if (walletNotification) {
         const notification = walletNotification;
-        dispatchWhatsApp(() => this.whatsAppService.notifyWalletRedeemed(notification));
+        dispatchWhatsApp(() =>
+          this.whatsAppService.notifyWalletRedeemed(notification),
+        );
       }
-      if (createdPayment) this.paymentService.notifyPaymentReceived(createdPayment);
-      if (walletPayment) this.paymentService.notifyPaymentReceived(walletPayment);
+      if (createdPayment)
+        this.paymentService.notifyPaymentReceived(createdPayment);
+      if (walletPayment)
+        this.paymentService.notifyPaymentReceived(walletPayment);
 
       const newPaid = alreadyPaid + collectedTotal;
       return {
         message: 'Payment recorded.',
+        invoice,
         payment: createdPayment,
         walletPayment,
         walletAmountDeducted: thisWallet,

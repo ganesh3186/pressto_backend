@@ -46,6 +46,12 @@ export class PickupRequestService {
       this.notifyRiderAssigned(request, assignment);
   }
 
+  notifyPickedUp(pickupId: string): void {
+    dispatchWhatsApp(() =>
+      this.whatsAppService.notifyPickup(pickupId, 'completed'),
+    );
+  }
+
   private notifyRiderAssigned(
     previous: PickupRequest,
     assignment: DataObject<PickupRequest>,

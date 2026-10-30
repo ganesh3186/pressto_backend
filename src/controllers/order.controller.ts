@@ -1125,6 +1125,7 @@ export class OrderController {
 
       // Not awaited — a slow/unreachable FCM call must never delay this
       // response. NotificationService already swallows its own errors.
+      this.orderService.notifyDeliveryAssigned(delivery.id);
       const previousRiderIds = new Set(
         orders
           .map(o => o.assignedRiderId)

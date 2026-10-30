@@ -658,6 +658,9 @@ export class PickupRequestController {
         .catch(() => {});
     }
 
+    if (status === PickupRequestStatus.PICKED_UP && existing.status !== status) {
+      this.pickupRequestService.notifyPickedUp(id);
+    }
     return {message: 'Pickup request updated.'};
   }
 
