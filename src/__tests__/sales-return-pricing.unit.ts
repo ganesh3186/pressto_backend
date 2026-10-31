@@ -15,13 +15,28 @@ import {
 
 describe('sales return pricing', () => {
   it('rejects a second sales return for an approved damaged garment', async () => {
-    const controller = Object.assign(Object.create(SalesReturnController.prototype), {
-      orderRepo: {findOne: async () => ({id: 'order-1'})},
-      orderItemRepo: {find: async () => [{id: 'item-1', itemId: 'catalog-1', quantity: 1}]},
-      salesReturnRepo: {find: async () => []},
-      garmentRepo: {find: async () => [{orderItemId: 'item-1', status: 'damaged'}]},
-      itemRepo: {find: async () => [{id: 'catalog-1', name: 'Shirt'}]},
-    }) as SalesReturnController;
+    const controller = Object.assign(
+      Object.create(SalesReturnController.prototype),
+      {
+        storeScopeService: {assertOrderVisible: async () => {}},
+        dataSource: {
+          execute: async () => [],
+          beginTransaction: async () => ({
+            commit: async () => {},
+            rollback: async () => {},
+          }),
+        },
+        orderRepo: {findOne: async () => ({id: 'order-1'})},
+        orderItemRepo: {
+          find: async () => [{id: 'item-1', itemId: 'catalog-1', quantity: 1}],
+        },
+        salesReturnRepo: {find: async () => []},
+        garmentRepo: {
+          find: async () => [{orderItemId: 'item-1', status: 'damaged'}],
+        },
+        itemRepo: {find: async () => [{id: 'catalog-1', name: 'Shirt'}]},
+      },
+    ) as SalesReturnController;
 
     try {
       await controller.create({} as UserProfile, 'order-1', {
@@ -94,7 +109,9 @@ describe('sales return pricing', () => {
             linkUpdate = value;
           },
         },
+        storeScopeService: {assertOrderVisible: async () => {}},
         dataSource: {
+          execute: async () => [],
           beginTransaction: async () => ({
             commit: async () => {},
             rollback: async () => {},

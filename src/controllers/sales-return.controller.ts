@@ -1,6 +1,6 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {Options, repository} from '@loopback/repository';
 import {
   get,
   HttpErrors,
@@ -110,7 +110,7 @@ export function previewCreditNoteRefund(
   const isChild = !!(order as Order & {parentOrderId?: string}).parentOrderId;
   const collected = isChild
     ? money(allocated + txnCollected)
-    : allocated > 0
+    : order.hasBeenSplit
       ? allocated
       : txnCollected;
   const netPaid = money(collected - money(paidRefunds + unpaidRefundTotal));
@@ -148,11 +148,16 @@ export class SalesReturnController {
     @repository(ShiftRepository) private shiftRepo: ShiftRepository,
   ) {}
 
-  private async findInvoiceForOrder(orderId: string) {
-    const direct = await this.invoiceRepo.findOne({where: {orderId}});
+  private async findInvoiceForOrder(orderId: string, options?: Options) {
+    const direct = await this.invoiceRepo.findOne({where: {orderId}}, options);
     if (direct) return direct;
-    const link = await this.invoiceOrderLinkRepo.findOne({where: {orderId}});
-    return link ? this.invoiceRepo.findById(link.invoiceId) : null;
+    const link = await this.invoiceOrderLinkRepo.findOne(
+      {where: {orderId}},
+      options,
+    );
+    return link
+      ? this.invoiceRepo.findById(link.invoiceId, undefined, options)
+      : null;
   }
 
   /**
@@ -162,19 +167,28 @@ export class SalesReturnController {
    * Upgrade that changes the subtotal without recomputing tax), which would
    * silently carry that drift into every credit note's GST gross-up.
    */
-  private async _resolveGstRate(): Promise<number> {
-    const gstConfig = await this.gstConfigRepo.findOne({
-      where: {isActive: true, isDeleted: false} as object,
-    });
+  private async _resolveGstRate(options?: Options): Promise<number> {
+    const gstConfig = await this.gstConfigRepo.findOne(
+      {
+        where: {isActive: true, isDeleted: false} as object,
+      },
+      options,
+    );
     return gstConfig
       ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
       : 0;
   }
 
-  private async _isOrderPaid(order: Order): Promise<boolean> {
-    const payments = await this.paymentRepo.find({
-      where: {orderId: order.id},
-    });
+  private async _isOrderPaid(
+    order: Order,
+    options?: Options,
+  ): Promise<boolean> {
+    const payments = await this.paymentRepo.find(
+      {
+        where: {orderId: order.id},
+      },
+      options,
+    );
     const transactionCollected = payments.reduce(
       (sum: number, payment) =>
         sum +
@@ -188,7 +202,7 @@ export class SalesReturnController {
     const allocatedPayment = money(paymentOrder.allocatedPayment);
     const collected = paymentOrder.parentOrderId
       ? money(allocatedPayment + transactionCollected)
-      : allocatedPayment > 0
+      : order.hasBeenSplit
         ? allocatedPayment
         : transactionCollected;
 
@@ -204,20 +218,27 @@ export class SalesReturnController {
   private async _previewCreditNote(
     record: SalesReturn,
     order: Order,
+    options?: Options,
   ): Promise<{
     newOrderTotal: number;
     refundAmount: number;
     newBalanceDue: number;
   }> {
-    const payments = await this.paymentRepo.find({
-      where: {orderId: record.orderId},
-    } as any);
-    const unpaidRefundDues = await this.refundDueRepo.find({
-      where: {
-        orderId: record.orderId,
-        status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED]},
+    const payments = await this.paymentRepo.find(
+      {
+        where: {orderId: record.orderId},
+      } as any,
+      options,
+    );
+    const unpaidRefundDues = await this.refundDueRepo.find(
+      {
+        where: {
+          orderId: record.orderId,
+          status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED]},
+        },
       },
-    });
+      options,
+    );
     return previewCreditNoteRefund(record, order, payments, unpaidRefundDues);
   }
 
@@ -281,203 +302,314 @@ export class SalesReturnController {
       bankDetails?: RefundBankDetails;
     },
   ): Promise<object> {
-    const order = await this.orderRepo.findOne({
-      where: {id: orderId, isDeleted: false},
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser);
+    const tx = await this.dataSource.beginTransaction({
+      isolationLevel: 'READ COMMITTED',
     });
-    if (!order) throw new HttpErrors.NotFound('Order not found.');
-
-    // A returned or damaged garment was already removed from ticket billing;
-    // only still-billable pieces may enter a sales return.
-    const requestedQtyByOrderItemId = new Map<string, number>();
-    for (const line of body.returnedItems ?? []) {
-      if (!line.orderItemId) continue;
-      requestedQtyByOrderItemId.set(
-        line.orderItemId,
-        (requestedQtyByOrderItemId.get(line.orderItemId) ?? 0) +
-          (Number(line.quantity) || 0),
+    const options = {transaction: tx};
+    try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+        [orderId],
+        options,
       );
-    }
-    const requestedOrderItemIds = [...requestedQtyByOrderItemId.keys()];
-    if (requestedOrderItemIds.length) {
-      const requestedOrderItems = await this.orderItemRepo.find({
-        where: {id: {inq: requestedOrderItemIds}},
-      });
-      const totalQtyByItemId = new Map(
-        requestedOrderItems.map(oi => [oi.id, Number(oi.quantity) || 0]),
+      const order = await this.orderRepo.findOne(
+        {
+          where: {id: orderId, isDeleted: false},
+        },
+        options,
       );
+      if (!order) throw new HttpErrors.NotFound('Order not found.');
 
-      const existingReturns = await this.salesReturnRepo.find({
-        where: {orderId, status: {neq: SalesReturnStatus.REJECTED}},
-      });
-      const alreadyCreditedQtyByItemId = new Map<string, number>();
-      for (const existing of existingReturns) {
-        for (const line of (existing.returnedItems ?? []) as Array<{
-          orderItemId?: string;
-          quantity?: number;
-        }>) {
-          if (!line.orderItemId) continue;
-          alreadyCreditedQtyByItemId.set(
-            line.orderItemId,
-            (alreadyCreditedQtyByItemId.get(line.orderItemId) ?? 0) +
-              (Number(line.quantity) || 0),
+      if (
+        !body.returnedItems?.length ||
+        body.returnedItems.some(
+          line =>
+            !Number.isSafeInteger(line.quantity) ||
+            line.quantity < 1 ||
+            !Number.isFinite(Number(line.amount)) ||
+            Number(line.amount) < 0,
+        )
+      ) {
+        throw new HttpErrors.BadRequest(
+          'Select items with a positive whole-number quantity and valid amount.',
+        );
+      }
+      // A returned or damaged garment was already removed from ticket billing;
+      // only still-billable pieces may enter a sales return.
+      const requestedQtyByOrderItemId = new Map<string, number>();
+      for (const line of body.returnedItems ?? []) {
+        if (!line.orderItemId) continue;
+        requestedQtyByOrderItemId.set(
+          line.orderItemId,
+          (requestedQtyByOrderItemId.get(line.orderItemId) ?? 0) +
+            (Number(line.quantity) || 0),
+        );
+      }
+      const requestedOrderItemIds = [...requestedQtyByOrderItemId.keys()];
+      if (requestedOrderItemIds.length) {
+        const requestedOrderItems = await this.orderItemRepo.find(
+          {
+            where: {id: {inq: requestedOrderItemIds}, orderId},
+          },
+          options,
+        );
+        const totalQtyByItemId = new Map(
+          requestedOrderItems.map(oi => [oi.id, Number(oi.quantity) || 0]),
+        );
+
+        const existingReturns = await this.salesReturnRepo.find(
+          {
+            where: {orderId, status: {neq: SalesReturnStatus.REJECTED}},
+          },
+          options,
+        );
+        const alreadyCreditedQtyByItemId = new Map<string, number>();
+        for (const existing of existingReturns) {
+          for (const line of (existing.returnedItems ?? []) as Array<{
+            orderItemId?: string;
+            quantity?: number;
+          }>) {
+            if (!line.orderItemId) continue;
+            alreadyCreditedQtyByItemId.set(
+              line.orderItemId,
+              (alreadyCreditedQtyByItemId.get(line.orderItemId) ?? 0) +
+                (Number(line.quantity) || 0),
+            );
+          }
+        }
+
+        const garments = await this.garmentRepo.find(
+          {
+            where: {
+              orderItemId: {inq: requestedOrderItemIds},
+              isDeleted: false,
+            } as object,
+          },
+          options,
+        );
+        const billableQtyByItemId = new Map<string, number>();
+        const garmentQtyByItemId = new Map<string, number>();
+        for (const garment of garments) {
+          garmentQtyByItemId.set(
+            garment.orderItemId,
+            (garmentQtyByItemId.get(garment.orderItemId) ?? 0) + 1,
+          );
+          if (
+            garment.status === GarmentStatus.RETURNED_TO_CUSTOMER ||
+            garment.status === GarmentStatus.DAMAGED
+          )
+            continue;
+          billableQtyByItemId.set(
+            garment.orderItemId,
+            (billableQtyByItemId.get(garment.orderItemId) ?? 0) + 1,
+          );
+        }
+
+        const overRequestedIds = requestedOrderItemIds.filter(id => {
+          const totalQty = totalQtyByItemId.get(id) ?? 0;
+          const remaining = Math.min(
+            totalQty - (alreadyCreditedQtyByItemId.get(id) ?? 0),
+            garmentQtyByItemId.has(id)
+              ? (billableQtyByItemId.get(id) ?? 0) -
+                  existingReturns
+                    .filter(
+                      record => record.status === SalesReturnStatus.PENDING,
+                    )
+                    .flatMap(record => record.returnedItems ?? [])
+                    .reduce((sum, raw) => {
+                      const line = raw as {
+                        orderItemId?: string;
+                        quantity?: number;
+                      };
+                      return (
+                        sum +
+                        (line.orderItemId === id
+                          ? Number(line.quantity) || 0
+                          : 0)
+                      );
+                    }, 0)
+              : totalQty,
+          );
+          return (requestedQtyByOrderItemId.get(id) ?? 0) > remaining;
+        });
+        if (overRequestedIds.length) {
+          const conflictingOrderItems = await this.orderItemRepo.find(
+            {
+              where: {id: {inq: overRequestedIds}},
+            },
+            options,
+          );
+          const itemIds = [
+            ...new Set(conflictingOrderItems.map(oi => oi.itemId)),
+          ];
+          const items = itemIds.length
+            ? await this.itemRepo.find({where: {id: {inq: itemIds}}}, options)
+            : [];
+          const itemNameById = new Map(items.map(it => [it.id, it.name]));
+          const names = conflictingOrderItems.map(
+            oi => itemNameById.get(oi.itemId) ?? 'this item',
+          );
+          throw new HttpErrors.Conflict(
+            `${[...new Set(names)].join(', ')}: requested return quantity exceeds what's still available (already credited or returned to the customer).`,
           );
         }
       }
 
-      const garments = await this.garmentRepo.find({
-        where: {
-          orderItemId: {inq: requestedOrderItemIds},
-          isDeleted: false,
-        } as object,
-      });
-      const billableQtyByItemId = new Map<string, number>();
-      const garmentQtyByItemId = new Map<string, number>();
-      for (const garment of garments) {
-        garmentQtyByItemId.set(garment.orderItemId,
-          (garmentQtyByItemId.get(garment.orderItemId) ?? 0) + 1);
-        if (garment.status === GarmentStatus.RETURNED_TO_CUSTOMER || garment.status === GarmentStatus.DAMAGED) continue;
-        billableQtyByItemId.set(
-          garment.orderItemId,
-          (billableQtyByItemId.get(garment.orderItemId) ?? 0) + 1,
-        );
-      }
+      const invoice = await this.findInvoiceForOrder(orderId, options);
 
-      const overRequestedIds = requestedOrderItemIds.filter(id => {
-        const totalQty = totalQtyByItemId.get(id) ?? 0;
-        const remaining =
-          Math.min(totalQty, garmentQtyByItemId.has(id) ? billableQtyByItemId.get(id) ?? 0 : totalQty) -
-          (alreadyCreditedQtyByItemId.get(id) ?? 0);
-        return (requestedQtyByOrderItemId.get(id) ?? 0) > remaining;
-      });
-      if (overRequestedIds.length) {
-        const conflictingOrderItems = await this.orderItemRepo.find({
-          where: {id: {inq: overRequestedIds}},
-        });
-        const itemIds = [
-          ...new Set(conflictingOrderItems.map(oi => oi.itemId)),
-        ];
-        const items = itemIds.length
-          ? await this.itemRepo.find({where: {id: {inq: itemIds}}})
-          : [];
-        const itemNameById = new Map(items.map(it => [it.id, it.name]));
-        const names = conflictingOrderItems.map(
-          oi => itemNameById.get(oi.itemId) ?? 'this item',
-        );
-        throw new HttpErrors.Conflict(
-          `${[...new Set(names)].join(', ')}: requested return quantity exceeds what's still available (already credited or returned to the customer).`,
-        );
-      }
-    }
-
-    const invoice = await this.findInvoiceForOrder(orderId);
-
-    // GST is applied once, at the order level (see order.service.ts's
-    // createOrder), never per line item — OrderItem.totalPrice, and so the
-    // per-item `amount` the frontend sends here, is pre-tax. Gross the
-    // aggregate up by the CURRENT real GST rate before storing it as
-    // creditAmount, so the credit note (and the wallet refund it drives in
-    // approve()) matches what the customer actually paid, GST included —
-    // not just the item's pre-tax price.
-    //
-    // Deliberately not derived from the order's own taxAmount/subtotal
-    // ratio (an "effective tax rate") — that pair can go stale relative to
-    // each other (e.g. after an Upgrade that changes the subtotal), and an
-    // effective-rate derivation would silently inherit that drift into
-    // every credit note's own GST gross-up, over- or under-crediting the
-    // customer. OrderService.splitOrder() still does this the old,
-    // stale-prone way — flagging for a follow-up, not fixed here.
-    const returnedItems = (body.returnedItems ?? []).map(item => {
-      const originalAmount = money(item.amount);
-      return {
-        ...item,
-        originalAmount,
-        amount: calculateDiscountedSalesReturnAmount(
+      // GST is applied once, at the order level (see order.service.ts's
+      // createOrder), never per line item — OrderItem.totalPrice, and so the
+      // per-item `amount` the frontend sends here, is pre-tax. Gross the
+      // aggregate up by the CURRENT real GST rate before storing it as
+      // creditAmount, so the credit note (and the wallet refund it drives in
+      // approve()) matches what the customer actually paid, GST included —
+      // not just the item's pre-tax price.
+      //
+      // Deliberately not derived from the order's own taxAmount/subtotal
+      // ratio (an "effective tax rate") — that pair can go stale relative to
+      // each other (e.g. after an Upgrade that changes the subtotal), and an
+      // effective-rate derivation would silently inherit that drift into
+      // every credit note's own GST gross-up, over- or under-crediting the
+      // customer. OrderService.splitOrder() still does this the old,
+      // stale-prone way — flagging for a follow-up, not fixed here.
+      const returnedItems = (body.returnedItems ?? []).map(item => {
+        const originalAmount = money(item.amount);
+        return {
+          ...item,
           originalAmount,
-          order.subtotal,
-          order.discountAmount,
-        ),
-      };
-    });
-    const preTaxCreditAmount = returnedItems.reduce(
-      (sum, item) => sum + (Number(item.amount) || 0),
-      0,
-    );
-    const gstRate = await this._resolveGstRate();
-    const orderPaid = await this._isOrderPaid(order);
-    const creditAmount = calculateSalesReturnCreditAmount(
-      preTaxCreditAmount,
-      gstRate,
-      orderPaid,
-    );
-
-    // Refund method is picked here, up front, rather than at approval time
-    // or later on the invoice screen — approve() pays out immediately with
-    // whatever's captured here if the math ends up owing the customer
-    // money. Defaults to wallet so an older/other caller that omits this
-    // entirely still gets a sane, harmless choice.
-    const refundMethod = body.refundMethod ?? RefundMethod.WALLET;
-    if (refundMethod === RefundMethod.CASH) {
-      if (body.cashShiftId) {
-        const cashShift = await this.shiftRepo.findById(body.cashShiftId);
-        const scope = await this.storeScopeService.resolve(currentUser);
-        if (cashShift.status !== ShiftStatus.OPEN ||
-          !this.storeScopeService.allows(scope, cashShift.storeId)) {
-          throw new HttpErrors.Forbidden('Cash payout shift is not open or accessible.');
-        }
-      }
-      const {refundAmount} = await this._previewCreditNote(
-        {orderId, creditAmount} as SalesReturn,
-        order,
+          amount: calculateDiscountedSalesReturnAmount(
+            originalAmount,
+            order.subtotal,
+            order.discountAmount,
+          ),
+        };
+      });
+      const preTaxCreditAmount = returnedItems.reduce(
+        (sum, item) => sum + (Number(item.amount) || 0),
+        0,
       );
-      const available = await this.approvalService.availableCashForOrder(orderId, body.cashShiftId);
-      if (refundAmount > 0 && (available == null || refundAmount > available)) {
-        throw new HttpErrors.BadRequest('Cash refund exceeds available cash in the store.');
-      }
-    }
-    if (refundMethod === RefundMethod.BANK_ACCOUNT) {
-      const b = body.bankDetails;
+      const gstRate = await this._resolveGstRate(options);
+      const orderPaid = await this._isOrderPaid(order, options);
+      const creditAmount = calculateSalesReturnCreditAmount(
+        preTaxCreditAmount,
+        gstRate,
+        orderPaid,
+      );
       if (
-        !b?.accountHolderName ||
-        !b?.bankName ||
-        !b?.accountNumber ||
-        !b?.ifscCode
+        creditAmount <= 0 ||
+        roundRupee(creditAmount) > roundRupee(order.totalAmount)
       ) {
         throw new HttpErrors.BadRequest(
-          'Bank account refunds need accountHolderName, bankName, accountNumber, and ifscCode.',
+          'Credit must be positive and cannot exceed the remaining ticket value.',
         );
       }
+
+      // Refund method is picked here, up front, rather than at approval time
+      // or later on the invoice screen — approve() pays out immediately with
+      // whatever's captured here if the math ends up owing the customer
+      // money. Defaults to wallet so an older/other caller that omits this
+      // entirely still gets a sane, harmless choice.
+      const refundMethod = body.refundMethod ?? RefundMethod.WALLET;
+      if (refundMethod === RefundMethod.CASH) {
+        if (body.cashShiftId) {
+          const cashShift = await this.shiftRepo.findById(
+            body.cashShiftId,
+            undefined,
+            options,
+          );
+          const scope = await this.storeScopeService.resolve(currentUser);
+          if (
+            cashShift.status !== ShiftStatus.OPEN ||
+            !this.storeScopeService.allows(scope, cashShift.storeId)
+          ) {
+            throw new HttpErrors.Forbidden(
+              'Cash payout shift is not open or accessible.',
+            );
+          }
+        }
+        const {refundAmount} = await this._previewCreditNote(
+          {orderId, creditAmount} as SalesReturn,
+          order,
+          options,
+        );
+        const available = await this.approvalService.availableCashForOrder(
+          orderId,
+          body.cashShiftId,
+        );
+        if (
+          refundAmount > 0 &&
+          (available == null || refundAmount > available)
+        ) {
+          throw new HttpErrors.BadRequest(
+            'Cash refund exceeds available cash in the store.',
+          );
+        }
+      }
+      if (refundMethod === RefundMethod.BANK_ACCOUNT) {
+        const b = body.bankDetails;
+        if (
+          !b?.accountHolderName ||
+          !b?.bankName ||
+          !b?.accountNumber ||
+          !b?.ifscCode
+        ) {
+          throw new HttpErrors.BadRequest(
+            'Bank account refunds need accountHolderName, bankName, accountNumber, and ifscCode.',
+          );
+        }
+      }
+
+      const now = new Date();
+      const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+      await this.dataSource.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('pressto.credit-note-number'))",
+        [],
+        options,
+      );
+      const count = await this.salesReturnRepo.count(undefined, options);
+      const creditNoteNumber = `CN-${ym}-${String(count.count + 1).padStart(5, '0')}`;
+
+      const {v4} = await import('uuid');
+      const salesReturn = await this.salesReturnRepo.create(
+        {
+          id: v4(),
+          orderId,
+          invoiceId: invoice?.id,
+          customerId: order.customerId,
+          creditNoteNumber,
+          reason: body.reason,
+          remarks: body.remarks,
+          returnedItems,
+          creditAmount: parseFloat(creditAmount.toFixed(2)),
+          status: SalesReturnStatus.PENDING,
+          requestedBy: currentUser[securityId],
+          refundMethod,
+          cashShiftId:
+            refundMethod === RefundMethod.CASH ? body.cashShiftId : undefined,
+          bankDetails:
+            refundMethod === RefundMethod.BANK_ACCOUNT
+              ? body.bankDetails
+              : undefined,
+        } as Partial<SalesReturn>,
+        options,
+      );
+
+      await this.applyCreditNote(salesReturn, currentUser, options);
+      const applied = await this.salesReturnRepo.findById(
+        salesReturn.id,
+        undefined,
+        options,
+      );
+      await tx.commit();
+      return {
+        message: 'Sales return applied. Recorded in Finance history.',
+        salesReturn: applied,
+      };
+    } catch (error) {
+      await tx.rollback();
+      throw error;
     }
-
-    const now = new Date();
-    const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const count = await this.salesReturnRepo.count();
-    const creditNoteNumber = `CN-${ym}-${String(count.count + 1).padStart(5, '0')}`;
-
-    const {v4} = await import('uuid');
-    const salesReturn = await this.salesReturnRepo.create({
-      id: v4(),
-      orderId,
-      invoiceId: invoice?.id,
-      customerId: order.customerId,
-      creditNoteNumber,
-      reason: body.reason,
-      remarks: body.remarks,
-      returnedItems,
-      creditAmount: parseFloat(creditAmount.toFixed(2)),
-      status: SalesReturnStatus.PENDING,
-      requestedBy: currentUser[securityId],
-      refundMethod,
-      cashShiftId: refundMethod === RefundMethod.CASH ? body.cashShiftId : undefined,
-      bankDetails:
-        refundMethod === RefundMethod.BANK_ACCOUNT
-          ? body.bankDetails
-          : undefined,
-    } as Partial<SalesReturn>);
-
-    return {
-      message: 'Sales return created. Credit note pending approval.',
-      salesReturn,
-    };
   }
 
   // ─── Get Credit Note ──────────────────────────────────────────────────────
@@ -627,7 +759,13 @@ export class SalesReturnController {
       ? await this.customerRepo.find({where: {id: {inq: customerIds}}})
       : [];
     const customerById = new Map(customers.map(c => [c.id, c]));
-    const cashShiftIds = [...new Set(paged.map(sr => sr.cashShiftId).filter((id): id is string => Boolean(id)))];
+    const cashShiftIds = [
+      ...new Set(
+        paged
+          .map(sr => sr.cashShiftId)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
     const cashShifts = cashShiftIds.length
       ? await this.shiftRepo.find({where: {id: {inq: cashShiftIds}}})
       : [];
@@ -666,8 +804,12 @@ export class SalesReturnController {
           newBalanceDue: preview.newBalanceDue,
           refundMethod: sr.refundMethod,
           cashStoreLabel: sr.cashShiftId
-            ? [cashShiftById.get(sr.cashShiftId)?.storeCode,
-              cashShiftById.get(sr.cashShiftId)?.storeName].filter(Boolean).join(' — ')
+            ? [
+                cashShiftById.get(sr.cashShiftId)?.storeCode,
+                cashShiftById.get(sr.cashShiftId)?.storeName,
+              ]
+                .filter(Boolean)
+                .join(' — ')
             : null,
           creditAppliedAs: sr.creditAppliedAs,
           bankDetails: sr.bankDetails,
@@ -698,41 +840,95 @@ export class SalesReturnController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
-    const record = await this.salesReturnRepo.findById(id);
-    if (!record) throw new HttpErrors.NotFound('Sales return not found.');
-    if (record.status !== SalesReturnStatus.PENDING) {
+    const initial = await this.salesReturnRepo.findById(id);
+    await this.storeScopeService.assertOrderVisible(
+      initial.orderId,
+      currentUser,
+    );
+    const tx = await this.dataSource.beginTransaction({
+      isolationLevel: 'READ COMMITTED',
+    });
+    const options = {transaction: tx};
+    try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+        [initial.orderId],
+        options,
+      );
+      const record = await this.salesReturnRepo.findById(
+        id,
+        undefined,
+        options,
+      );
+      const result = await this.applyCreditNote(record, currentUser, options);
+      await tx.commit();
+      return result;
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
+  private async applyCreditNote(
+    record: SalesReturn,
+    currentUser: UserProfile,
+    options: Options,
+  ): Promise<object> {
+    if (record.status !== SalesReturnStatus.PENDING)
       throw new HttpErrors.BadRequest(
         `Sales return is already ${record.status}.`,
       );
-    }
-
-    const order = await this.orderRepo.findOne({
-      where: {id: record.orderId, isDeleted: false},
-    });
+    const id = record.id;
+    const tx = options.transaction;
+    const order = await this.orderRepo.findOne(
+      {
+        where: {id: record.orderId, isDeleted: false},
+      },
+      options,
+    );
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
+    if (
+      money(record.creditAmount) <= 0 ||
+      roundRupee(record.creditAmount) > roundRupee(order.totalAmount)
+    ) {
+      throw new HttpErrors.Conflict(
+        'Credit exceeds the remaining ticket value. Review the sales return.',
+      );
+    }
     const {v4} = await import('uuid');
-    // The refund method was already chosen when this credit note was
-    // created (see create() above) — approving it is the moment the refund,
-    // if the math below says one is due, actually pays out. No separate
-    // payout approval for Sales Return, unlike Return Item/Upgrade's
-    // deferred RefundDue pipeline — the credit-note approval itself IS the
-    // human sign-off here.
+    // Settlement and payout run together on submission, or for a legacy pending approval.
     const {newOrderTotal, refundAmount, newBalanceDue} =
-      await this._previewCreditNote(record, order);
+      await this._previewCreditNote(record, order, options);
     if (refundAmount > 0 && record.refundMethod === RefundMethod.CASH) {
-      const available = await this.approvalService.availableCashForOrder(record.orderId, record.cashShiftId);
+      const available = await this.approvalService.availableCashForOrder(
+        record.orderId,
+        record.cashShiftId,
+      );
       if (available == null || refundAmount > available) {
-        throw new HttpErrors.BadRequest('Cash refund exceeds available cash in the store.');
+        throw new HttpErrors.BadRequest(
+          'Cash refund exceeds available cash in the store.',
+        );
       }
     }
-    const invoice = record.invoiceId
-      ? await this.invoiceRepo.findById(record.invoiceId)
-      : await this.findInvoiceForOrder(record.orderId);
+    let invoice = record.invoiceId
+      ? await this.invoiceRepo.findById(record.invoiceId, undefined, options)
+      : await this.findInvoiceForOrder(record.orderId, options);
+    if (invoice) {
+      await this.dataSource.execute(
+        'SELECT id FROM public.invoice WHERE id = $1 FOR UPDATE',
+        [invoice.id],
+        options,
+      );
+      invoice = await this.invoiceRepo.findById(invoice.id, undefined, options);
+    }
     const invoiceLink = invoice?.isConsolidated
-      ? await this.invoiceOrderLinkRepo.findOne({
-          where: {invoiceId: invoice.id, orderId: record.orderId},
-        })
+      ? await this.invoiceOrderLinkRepo.findOne(
+          {
+            where: {invoiceId: invoice.id, orderId: record.orderId},
+          },
+          options,
+        )
       : null;
     if (invoice?.isConsolidated && !invoiceLink) {
       throw new HttpErrors.Conflict(
@@ -744,7 +940,7 @@ export class SalesReturnController {
     // GST-inclusive creditAmount, while an unpaid order stores only its
     // discounted item/services/add-on value. Use the returned lines instead
     // of reverse-grossing creditAmount so both cases update subtotal correctly.
-    const gstRate = await this._resolveGstRate();
+    const gstRate = await this._resolveGstRate(options);
     const preTaxCreditAmount = money(
       (record.returnedItems ?? []).reduce(
         (sum, item) => sum + (Number((item as {amount?: unknown}).amount) || 0),
@@ -777,13 +973,17 @@ export class SalesReturnController {
     const newTaxAmount =
       gstRate > 0 ? money((newTaxableAmount * gstRate) / 100) : 0;
 
-    await this.orderRepo.updateById(record.orderId, {
-      subtotal: newSubtotal,
-      discountAmount: newDiscount,
-      taxAmount: newTaxAmount,
-      totalAmount: newOrderTotal,
-      updatedAt: new Date(),
-    } as any);
+    await this.orderRepo.updateById(
+      record.orderId,
+      {
+        subtotal: newSubtotal,
+        discountAmount: newDiscount,
+        taxAmount: newTaxAmount,
+        totalAmount: newOrderTotal,
+        updatedAt: new Date(),
+      } as any,
+      options,
+    );
 
     // Make the returned lines visible to every invoice/challan renderer. The
     // documents identify returned pieces from garment status, so adjusting
@@ -793,19 +993,28 @@ export class SalesReturnController {
       quantity?: number;
     }>) {
       if (!line.orderItemId) continue;
-      const garments = await this.garmentRepo.find({
-        where: {
-          orderItemId: line.orderItemId,
-          status: {neq: GarmentStatus.RETURNED_TO_CUSTOMER},
-          isDeleted: false,
-        } as object,
-        order: ['createdAt ASC'],
-      });
+      const garments = await this.garmentRepo.find(
+        {
+          where: {
+            orderItemId: line.orderItemId,
+            status: {
+              nin: [GarmentStatus.RETURNED_TO_CUSTOMER, GarmentStatus.DAMAGED],
+            },
+            isDeleted: false,
+          } as object,
+          order: ['createdAt ASC'],
+        },
+        options,
+      );
       const quantity = Math.max(0, Number(line.quantity) || 0);
       for (const garment of garments.slice(0, quantity)) {
-        await this.garmentRepo.updateById(garment.id, {
-          status: GarmentStatus.RETURNED_TO_CUSTOMER,
-        });
+        await this.garmentRepo.updateById(
+          garment.id,
+          {
+            status: GarmentStatus.RETURNED_TO_CUSTOMER,
+          },
+          options,
+        );
       }
     }
 
@@ -815,102 +1024,120 @@ export class SalesReturnController {
           money(invoiceLink.orderTotal),
           money(record.creditAmount),
         );
-        const tx = await this.dataSource.beginTransaction();
-        try {
-          await this.invoiceRepo.updateById(
-            invoice.id,
-            {
-              subtotal: money(Math.max(0, money(invoice.subtotal) - credit)),
-              totalAmount: roundRupee(
-                Math.max(0, money(invoice.totalAmount) - credit),
-              ),
-              balanceDue: roundRupee(
-                Math.max(0, money(invoice.balanceDue) - credit),
-              ),
-              updatedAt: new Date(),
-            },
-            {transaction: tx},
-          );
-          await this.invoiceOrderLinkRepo.updateById(
-            invoiceLink.id,
-            {
-              orderTotal: money(
-                Math.max(0, money(invoiceLink.orderTotal) - credit),
-              ),
-            },
-            {transaction: tx},
-          );
-          await tx.commit();
-        } catch (error) {
-          await tx.rollback();
-          throw error;
-        }
+
+        await this.invoiceRepo.updateById(
+          invoice.id,
+          {
+            subtotal: money(Math.max(0, money(invoice.subtotal) - credit)),
+            totalAmount: roundRupee(
+              Math.max(0, money(invoice.totalAmount) - credit),
+            ),
+            balanceDue: roundRupee(
+              Math.max(0, money(invoice.balanceDue) - credit),
+            ),
+            updatedAt: new Date(),
+          },
+          {transaction: tx},
+        );
+        await this.invoiceOrderLinkRepo.updateById(
+          invoiceLink.id,
+          {
+            orderTotal: money(
+              Math.max(0, money(invoiceLink.orderTotal) - credit),
+            ),
+          },
+          {transaction: tx},
+        );
       } else {
-        await this.invoiceRepo.updateById(invoice.id, {
-          subtotal: newSubtotal,
-          discount: newDiscount,
-          cgst: money(newTaxAmount / 2),
-          sgst: money(newTaxAmount - money(newTaxAmount / 2)),
-          totalAmount: newOrderTotal,
-          balanceDue: newBalanceDue,
-          updatedAt: new Date(),
-        } as any);
+        await this.invoiceRepo.updateById(
+          invoice.id,
+          {
+            subtotal: newSubtotal,
+            discount: newDiscount,
+            cgst: money(newTaxAmount / 2),
+            sgst: money(newTaxAmount - money(newTaxAmount / 2)),
+            totalAmount: newOrderTotal,
+            balanceDue: newBalanceDue,
+            updatedAt: new Date(),
+          } as any,
+          options,
+        );
       }
     }
 
     // Always reflect the reduced order value on the challan if it exists
-    const challan = await this.challanRepo.findOne({
-      where: {orderId: record.orderId},
-    } as any);
+    const challan = await this.challanRepo.findOne(
+      {
+        where: {orderId: record.orderId},
+      } as any,
+      options,
+    );
     if (challan) {
-      await this.challanRepo.updateById(challan.id, {
-        totalAmount: newOrderTotal,
-        subtotal: newSubtotal,
-        discount: newDiscount,
-        cgst: money(newTaxAmount / 2),
-        sgst: money(newTaxAmount - money(newTaxAmount / 2)),
-        updatedAt: new Date(),
-      } as any);
+      await this.challanRepo.updateById(
+        challan.id,
+        {
+          totalAmount: newOrderTotal,
+          subtotal: newSubtotal,
+          discount: newDiscount,
+          cgst: money(newTaxAmount / 2),
+          sgst: money(newTaxAmount - money(newTaxAmount / 2)),
+          updatedAt: new Date(),
+        } as any,
+        options,
+      );
     }
 
     if (refundAmount > 0) {
-      await this.approvalService.executeRefundPayout({
-        customerId: record.customerId,
-        orderId: record.orderId,
-        amount: refundAmount,
-        method: record.refundMethod ?? RefundMethod.WALLET,
-        cashShiftId: record.cashShiftId,
-        bankDetails: record.bankDetails as RefundBankDetails | undefined,
-        remarks: `Sales Return Credit Note: ${record.creditNoteNumber}`,
-      });
+      await this.approvalService.executeRefundPayout(
+        {
+          customerId: record.customerId,
+          orderId: record.orderId,
+          amount: refundAmount,
+          method: record.refundMethod ?? RefundMethod.WALLET,
+          cashShiftId: record.cashShiftId,
+          bankDetails: record.bankDetails as RefundBankDetails | undefined,
+          remarks: `Sales Return Credit Note: ${record.creditNoteNumber}`,
+        },
+        options,
+      );
     }
 
-    await this.salesReturnRepo.updateById(id, {
-      status: SalesReturnStatus.APPROVED,
-      ...(invoice && !record.invoiceId ? {invoiceId: invoice.id} : {}),
-      resolvedBy: currentUser[securityId],
-      resolvedAt: new Date(),
-      refundAmount,
-      creditAppliedAs:
-        refundAmount > 0
-          ? (record.refundMethod ?? RefundMethod.WALLET)
-          : undefined,
-    } as Partial<SalesReturn>);
+    await this.salesReturnRepo.updateById(
+      id,
+      {
+        status: SalesReturnStatus.APPROVED,
+        ...(invoice && !record.invoiceId ? {invoiceId: invoice.id} : {}),
+        resolvedBy: currentUser[securityId],
+        resolvedAt: new Date(),
+        refundAmount,
+        creditAppliedAs:
+          refundAmount > 0
+            ? (record.refundMethod ?? RefundMethod.WALLET)
+            : 'adjustment',
+      } as Partial<SalesReturn>,
+      options,
+    );
 
     // If every item on the order now has an approved return covering its full
     // quantity, the order itself is done — nothing is left to deliver/track.
     // ORDER_STATUS_TRANSITIONS only allows this jump from a post-fulfillment
     // state, so an order returned before it ever reached that stage is left
     // as-is rather than forced into an invalid transition.
-    const orderItems = await this.orderItemRepo.find({
-      where: {orderId: record.orderId} as any,
-    });
-    const approvedReturns = await this.salesReturnRepo.find({
-      where: {
-        orderId: record.orderId,
-        status: SalesReturnStatus.APPROVED,
-      } as any,
-    });
+    const orderItems = await this.orderItemRepo.find(
+      {
+        where: {orderId: record.orderId} as any,
+      },
+      options,
+    );
+    const approvedReturns = await this.salesReturnRepo.find(
+      {
+        where: {
+          orderId: record.orderId,
+          status: SalesReturnStatus.APPROVED,
+        } as any,
+      },
+      options,
+    );
     const returnedQtyByItem = new Map<string, number>();
     for (const ret of approvedReturns) {
       for (const line of (ret.returnedItems ?? []) as Array<{
@@ -935,17 +1162,24 @@ export class SalesReturnController {
       fullyReturned &&
       ORDER_STATUS_TRANSITIONS[order.status!]?.includes(OrderStatus.RETURNED)
     ) {
-      await this.orderRepo.updateById(record.orderId, {
-        status: OrderStatus.RETURNED,
-      });
-      await this.statusHistoryRepo.create({
-        id: v4(),
-        orderId: record.orderId,
-        status: OrderStatus.RETURNED,
-        changedAt: new Date(),
-        changedBy: currentUser[securityId],
-        remarks: `Auto-set: all items returned via credit note ${record.creditNoteNumber}`,
-      });
+      await this.orderRepo.updateById(
+        record.orderId,
+        {
+          status: OrderStatus.RETURNED,
+        },
+        options,
+      );
+      await this.statusHistoryRepo.create(
+        {
+          id: v4(),
+          orderId: record.orderId,
+          status: OrderStatus.RETURNED,
+          changedAt: new Date(),
+          changedBy: currentUser[securityId],
+          remarks: `Auto-set: all items returned via credit note ${record.creditNoteNumber}`,
+        },
+        options,
+      );
     }
 
     return {
@@ -980,24 +1214,52 @@ export class SalesReturnController {
     })
     body?: {remarks?: string},
   ): Promise<object> {
-    const record = await this.salesReturnRepo.findById(id);
-    if (!record) throw new HttpErrors.NotFound('Sales return not found.');
-    if (record.status !== SalesReturnStatus.PENDING) {
-      throw new HttpErrors.BadRequest(
-        `Sales return is already ${record.status}.`,
+    const initial = await this.salesReturnRepo.findById(id);
+    await this.storeScopeService.assertOrderVisible(
+      initial.orderId,
+      currentUser,
+    );
+    const tx = await this.dataSource.beginTransaction({
+      isolationLevel: 'READ COMMITTED',
+    });
+    const options = {transaction: tx};
+    try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+        [initial.orderId],
+        options,
       );
+      const record = await this.salesReturnRepo.findById(
+        id,
+        undefined,
+        options,
+      );
+      if (!record) throw new HttpErrors.NotFound('Sales return not found.');
+      if (record.status !== SalesReturnStatus.PENDING) {
+        throw new HttpErrors.BadRequest(
+          `Sales return is already ${record.status}.`,
+        );
+      }
+
+      await this.salesReturnRepo.updateById(
+        id,
+        {
+          status: SalesReturnStatus.REJECTED,
+          resolvedBy: currentUser[securityId],
+          resolvedAt: new Date(),
+          remarks: body?.remarks ?? record.remarks,
+        } as Partial<SalesReturn>,
+        options,
+      );
+
+      await tx.commit();
+      return {
+        message: 'Sales return rejected.',
+        creditNoteNumber: record.creditNoteNumber,
+      };
+    } catch (error) {
+      await tx.rollback();
+      throw error;
     }
-
-    await this.salesReturnRepo.updateById(id, {
-      status: SalesReturnStatus.REJECTED,
-      resolvedBy: currentUser[securityId],
-      resolvedAt: new Date(),
-      remarks: body?.remarks ?? record.remarks,
-    } as Partial<SalesReturn>);
-
-    return {
-      message: 'Sales return rejected.',
-      creditNoteNumber: record.creditNoteNumber,
-    };
   }
 }
