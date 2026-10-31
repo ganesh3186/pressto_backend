@@ -344,9 +344,10 @@ export class SalesReturnController {
 
       const overRequestedIds = requestedOrderItemIds.filter(id => {
         const totalQty = totalQtyByItemId.get(id) ?? 0;
-        const remaining =
-          Math.min(totalQty, garmentQtyByItemId.has(id) ? billableQtyByItemId.get(id) ?? 0 : totalQty) -
-          (alreadyCreditedQtyByItemId.get(id) ?? 0);
+        const remaining = Math.max(0, Math.min(
+          totalQty - (alreadyCreditedQtyByItemId.get(id) ?? 0),
+          garmentQtyByItemId.has(id) ? billableQtyByItemId.get(id) ?? 0 : totalQty,
+        ));
         return (requestedQtyByOrderItemId.get(id) ?? 0) > remaining;
       });
       if (overRequestedIds.length) {
@@ -506,7 +507,13 @@ export class SalesReturnController {
       throw new HttpErrors.NotFound(
         'No sales return / credit note found for this order.',
       );
-    return {creditNote: salesReturn};
+    const preview = salesReturn.status === SalesReturnStatus.PENDING
+      ? await this._previewCreditNote(salesReturn, order)
+      : null;
+    return {creditNote: {
+      ...salesReturn,
+      ...(preview ? {refundAmount: preview.refundAmount, newBalanceDue: preview.newBalanceDue} : {}),
+    }};
   }
 
   // ─── List Sales Returns ───────────────────────────────────────────────────
