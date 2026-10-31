@@ -13,7 +13,17 @@ import {PettyCashStatus} from './petty-cash-status.enum';
  * entry has already moved money and deleting it would silently orphan
  * that balance effect.
  */
-@model({settings: {postgresql: {table: 'petty_cash_register_entry', schema: 'public'}}})
+@model({
+  settings: {
+    postgresql: {table: 'petty_cash_register_entry', schema: 'public'},
+    indexes: {
+      // Store register list/report: filter by store(s) + date range, sorted
+      // by expenseDate. Previously no secondary index at all — a seq scan
+      // over the full table on every listing and every report call.
+      pettyCashRegisterEntryStoreExpenseDate: {keys: ['storeId', 'expenseDate']},
+    },
+  },
+})
 export class PettyCashRegisterEntry extends Entity {
   @property({type: 'string', id: true, generated: false, postgresql: {dataType: 'uuid'}})
   id: string;
