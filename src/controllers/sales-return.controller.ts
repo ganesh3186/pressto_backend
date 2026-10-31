@@ -42,6 +42,7 @@ import {
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
+import {OrderService} from '../services/order.service';
 
 /** Coerce a Postgres numeric (returned as a string) to a usable 2dp number. */
 function money(value: unknown): number {
@@ -63,6 +64,14 @@ interface CreditBasis {
 }
 interface CreditLine {
   orderItemId: string;
+  garmentId?: string;
+  itemName?: string;
+  serviceName?: string;
+  unitPrice?: number;
+  isMeasurement?: boolean;
+  garmentSnapshot?: object;
+  cgstRate?: number;
+  sgstRate?: number;
   quantity: number;
   originalAmount: number;
   amount: number;
@@ -182,6 +191,7 @@ export class SalesReturnController {
     private storeScopeService: StoreScopeService,
     @inject('services.approval') private approvalService: ApprovalService,
     @repository(ShiftRepository) private shiftRepo: ShiftRepository,
+    @inject('services.order') private orderService: OrderService,
   ) {}
 
   private async findInvoiceForOrder(orderId: string, options?: Options) {
@@ -268,6 +278,7 @@ export class SalesReturnController {
                   type: 'object',
                   properties: {
                     orderItemId: {type: 'string'},
+                    garmentId: {type: 'string', format: 'uuid'},
                     quantity: {type: 'number'},
                     amount: {type: 'number'},
                   },
@@ -297,6 +308,7 @@ export class SalesReturnController {
       remarks?: string;
       returnedItems?: Array<{
         orderItemId: string;
+        garmentId?: string;
         quantity: number;
         amount: number;
       }>;
@@ -349,18 +361,24 @@ export class SalesReturnController {
         );
       }
       if (
-        new Set(body.returnedItems.map(line => line.orderItemId)).size !==
+        new Set(body.returnedItems.map(line => `${line.orderItemId}:${line.garmentId ?? 'quantity'}`)).size !==
           body.returnedItems.length ||
         body.returnedItems.some(
           line =>
             !line.orderItemId ||
             !Number.isSafeInteger(line.quantity) ||
-            line.quantity < 1,
+            line.quantity < 1 ||
+            (line.garmentId && line.quantity !== 1),
         )
       ) {
         throw new HttpErrors.BadRequest(
           'Return each item once with a positive whole-number quantity.',
         );
+      }
+
+      if (body.returnedItems.some(line => !line.garmentId &&
+        body.returnedItems!.some(other => other.orderItemId === line.orderItemId && other.garmentId))) {
+        throw new HttpErrors.BadRequest('Select individual garments or an item quantity, not both for the same item.');
       }
 
       // A returned or damaged garment was already removed from ticket billing;
@@ -531,8 +549,17 @@ export class SalesReturnController {
         options,
       );
       const reservedIds = new Set(
-        previousLines.flatMap(line => line.garmentIds ?? []),
+        previousLines.flatMap(line => line.garmentIds?.length ? line.garmentIds : line.garmentId ? [line.garmentId] : []),
       );
+      const selectedIds = new Set<string>();
+      const details = await this.orderService.getOrderDetails(orderId) as {
+        items?: Array<{id: string; itemName?: string; serviceName?: string;
+          unitPrice?: number; isMeasurement?: boolean; garments?: Array<{id: string}>}>;
+      };
+      const detailItems = new Map((details.items ?? []).map(item => [item.id, item]));
+      const taxableBasis = Math.max(0, basis.subtotal - basis.discount);
+      const cgstRate = taxableBasis > 0 ? money(Number(invoice.cgst ?? 0) * 100 / taxableBasis) : 0;
+      const sgstRate = taxableBasis > 0 ? money(Number(invoice.sgst ?? 0) * 100 / taxableBasis) : 0;
       const returnedItems: CreditLine[] = [];
       for (const requested of body.returnedItems ?? []) {
         const item = orderItems.find(row => row.id === requested.orderItemId);
@@ -552,7 +579,7 @@ export class SalesReturnController {
               GarmentStatus.RETURNED_TO_CUSTOMER,
               GarmentStatus.DAMAGED,
             ].includes(garment.status!) &&
-            !reservedIds.has(garment.id),
+            !reservedIds.has(garment.id) && !selectedIds.has(garment.id),
         );
         const legacyReserved = previousReturns
           .filter(record => record.status === SalesReturnStatus.PENDING)
@@ -561,53 +588,46 @@ export class SalesReturnController {
             const line = raw as CreditLine;
             return (
               sum +
-              (line.orderItemId === item.id && !line.garmentIds?.length
+              (line.orderItemId === item.id && !line.garmentIds?.length && !line.garmentId
                 ? Number(line.quantity) || 0
                 : 0)
             );
           }, 0);
-        const selected = eligible.slice(
+        const selected = requested.garmentId
+          ? eligible.filter(garment => garment.id === requested.garmentId)
+          : eligible.slice(
           legacyReserved,
           legacyReserved + requested.quantity,
         );
         if (
-          allGarments.some(garment => garment.orderItemId === item.id) &&
+          (requested.garmentId || allGarments.some(garment => garment.orderItemId === item.id)) &&
           selected.length !== requested.quantity
         )
           throw new HttpErrors.Conflict(
             'Selected garments are already credited or reserved by another credit note.',
           );
+        for (const garment of selected) selectedIds.add(garment.id);
         let originalAmount = 0;
+        const siblings = allGarments.filter(row => row.orderItemId === item.id);
+        const prices = new Map(await Promise.all(siblings.map(async garment => [
+          garment.id, await this.approvalService.calculateGarmentReturnAmount(garment.id),
+        ] as const)));
+        const weight = (id: string) => {
+          const price = prices.get(id)!;
+          return Math.max(0, price.itemPrice + price.additionalServiceCharge);
+        };
+        const totalWeight = siblings.reduce((sum, garment) => sum + weight(garment.id), 0);
+        const invoiceIncludesExtras = invoice.isConsolidated === true ||
+          basis.subtotal > snapshotItems.reduce((sum, row) => sum + money(row.totalPrice), 0) + 0.01;
         for (const garment of selected) {
-          const price = await this.approvalService.calculateGarmentReturnAmount(
-            garment.id,
-          );
-          const siblings = allGarments.filter(
-            row => row.orderItemId === item.id,
-          );
-          const area = (row: typeof garment) =>
-            Math.max(0, Number(row.length) * Number(row.width)) || 0;
-          const totalArea = siblings.reduce((sum, row) => sum + area(row), 0);
-          const share =
-            area(garment) > 0 && totalArea > 0
-              ? area(garment) / totalArea
-              : 1 / Math.max(1, Number(snapshot?.quantity));
-          const primary = snapshot
-            ? money(snapshot.totalPrice) * share
-            : price.itemPrice;
-          const invoiceIncludesExtras =
-            invoice.isConsolidated === true ||
-            basis.subtotal >
-              snapshotItems.reduce(
-                (sum, row) => sum + money(row.totalPrice),
-                0,
-              ) +
-                0.01;
-          originalAmount +=
-            primary +
-            (invoiceIncludesExtras
-              ? price.additionalServiceCharge + price.addOnCharge
-              : 0);
+          const price = prices.get(garment.id)!;
+          const share = totalWeight > 0 ? weight(garment.id) / totalWeight :
+            1 / Math.max(1, Number(snapshot?.quantity ?? item.quantity));
+          // Issued line prices include services; allocate them by the selected
+          // piece's service/measurement value. Fixed add-ons are separate.
+          originalAmount += snapshot
+            ? money(snapshot.totalPrice) * share + (invoiceIncludesExtras ? price.addOnCharge : 0)
+            : price.itemPrice + price.additionalServiceCharge + price.addOnCharge;
         }
         if (!selected.length)
           originalAmount =
@@ -617,6 +637,16 @@ export class SalesReturnController {
         const amounts = invoiceCreditValue(originalAmount, basis);
         returnedItems.push({
           orderItemId: item.id,
+          garmentId: requested.garmentId,
+          itemName: detailItems.get(item.id)?.itemName,
+          serviceName: detailItems.get(item.id)?.serviceName,
+          unitPrice: detailItems.get(item.id)?.unitPrice,
+          isMeasurement: detailItems.get(item.id)?.isMeasurement,
+          garmentSnapshot: requested.garmentId
+            ? detailItems.get(item.id)?.garments?.find(garment => garment.id === requested.garmentId)
+            : undefined,
+          cgstRate,
+          sgstRate,
           quantity: requested.quantity,
           originalAmount: money(originalAmount),
           ...amounts,
@@ -820,7 +850,13 @@ export class SalesReturnController {
       throw new HttpErrors.NotFound(
         'No sales return / credit note found for this order.',
       );
-    return {creditNote: salesReturn};
+    const preview = salesReturn.status === SalesReturnStatus.PENDING
+      ? await this._previewCreditNote(salesReturn, order)
+      : null;
+    return {creditNote: {
+      ...salesReturn,
+      ...(preview ? {refundAmount: preview.refundAmount, newBalanceDue: preview.newBalanceDue} : {}),
+    }};
   }
 
   // ─── List Sales Returns ───────────────────────────────────────────────────
@@ -842,8 +878,18 @@ export class SalesReturnController {
       where: {orderId},
       order: ['createdAt DESC'],
     });
-
-    return {salesReturns};
+    if (!salesReturns.some(note => note.status === SalesReturnStatus.PENDING)) {
+      return {salesReturns};
+    }
+    const order = await this.orderRepo.findById(orderId);
+    const [payments, unpaidRefundDues] = await Promise.all([
+      this.paymentRepo.find({where: {orderId}}),
+      this.refundDueRepo.find({where: {orderId,
+        status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED]}}}),
+    ]);
+    return {salesReturns: salesReturns.map(note => note.status === SalesReturnStatus.PENDING
+      ? {...note, ...previewCreditNoteRefund(note, order, payments, unpaidRefundDues)}
+      : note)};
   }
 
   // ─── List Credit Notes (global) ────────────────────────────────────────────
@@ -1142,6 +1188,18 @@ export class SalesReturnController {
         'Order is missing from its on-account invoice.',
       );
     }
+    for (const line of (record.returnedItems ?? []) as Array<{
+      orderItemId?: string; garmentId?: string;
+    }>) {
+      if (!line.garmentId) continue;
+      const garment = await this.garmentRepo.findOne({where: {
+        id: line.garmentId, orderItemId: line.orderItemId, isDeleted: false,
+      } as object}, options);
+      if (!garment || garment.status === GarmentStatus.RETURNED_TO_CUSTOMER ||
+        garment.status === GarmentStatus.DAMAGED) {
+        throw new HttpErrors.Conflict('Selected garment is no longer available for return.');
+      }
+    }
 
     // New notes retain the issued invoice discount and GST; older notes keep
     // their existing pricing behavior. Payment state only affects the refund.
@@ -1210,6 +1268,7 @@ export class SalesReturnController {
     // only the money would leave those items looking active on printouts.
     for (const line of (record.returnedItems ?? []) as Array<{
       orderItemId?: string;
+      garmentId?: string;
       quantity?: number;
     }>) {
       if (!line.orderItemId) continue;
@@ -1219,7 +1278,7 @@ export class SalesReturnController {
             orderItemId: line.orderItemId,
             ...((line as CreditLine).garmentIds?.length
               ? {id: {inq: (line as CreditLine).garmentIds}}
-              : {}),
+              : line.garmentId ? {id: line.garmentId} : {}),
             status: {
               nin: [GarmentStatus.RETURNED_TO_CUSTOMER, GarmentStatus.DAMAGED],
             },
@@ -1231,8 +1290,8 @@ export class SalesReturnController {
       );
       const quantity = Math.max(0, Number(line.quantity) || 0);
       if (
-        (line as CreditLine).garmentIds?.length &&
-        garments.length !== quantity
+        ((line as CreditLine).garmentIds?.length || line.garmentId) &&
+        (garments.length !== quantity || (line.garmentId && quantity !== 1))
       )
         throw new HttpErrors.Conflict(
           'Selected garments changed after this credit note was requested. Reject and recreate it.',

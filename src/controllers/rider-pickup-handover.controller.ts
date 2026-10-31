@@ -218,10 +218,10 @@ export class RiderPickupHandoverController {
         bagNumber: p.bagId ? (bagNumberById.get(p.bagId) ?? null) : null,
         itemCategoryEstimate: (p.itemCategoryEstimate ?? []).map(line => ({
           ...line,
-          itemCategoryName: categoryNameById.get(line.itemCategoryId) ?? null,
-          serviceName: line.serviceId
+          itemCategoryName: line.itemCategoryName ?? categoryNameById.get(line.itemCategoryId) ?? null,
+          serviceName: line.serviceName ?? (line.serviceId
             ? (serviceNameById.get(line.serviceId) ?? null)
-            : null,
+            : null),
         })),
         actualItemsByService: (p.actualItemsByService ?? []).map(line => {
           const serviceCategoryId = line.serviceId

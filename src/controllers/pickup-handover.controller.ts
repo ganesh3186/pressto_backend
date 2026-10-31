@@ -15,6 +15,7 @@ import {
   ApprovalRequestRepository,
   BagRepository,
   GarmentRepository,
+  ItemCategoryRepository,
   ItemRepository,
   MediaRepository,
   OrderItemRepository,
@@ -51,6 +52,7 @@ export class PickupHandoverController {
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(ServiceCategoryRepository) private serviceCategoryRepo: ServiceCategoryRepository,
+    @repository(ItemCategoryRepository) private itemCategoryRepo: ItemCategoryRepository,
     @inject('services.order') private orderService: OrderService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
@@ -184,7 +186,14 @@ export class PickupHandoverController {
     const services = serviceIds.length
       ? await this.serviceRepo.find({where: {id: {inq: serviceIds}} as object})
       : [];
+    const serviceNameById = new Map(services.map(s => [s.id, s.name]));
     const serviceCategoryIdByServiceId = new Map(services.map(s => [s.id, s.serviceCategoryId]));
+    const itemCategoryIds = [...new Set(pickups.flatMap(p =>
+      (p.itemCategoryEstimate ?? []).map(line => line.itemCategoryId)).filter(Boolean))];
+    const itemCategories = itemCategoryIds.length
+      ? await this.itemCategoryRepo.find({where: {id: {inq: itemCategoryIds}} as object})
+      : [];
+    const itemCategoryNameById = new Map(itemCategories.map(c => [c.id, c.name]));
     const categoryIds = [...new Set([
       ...services.map(s => s.serviceCategoryId),
       ...pickups.flatMap(p => (p.itemCategoryEstimate ?? []).map(line => line.itemCategoryId)),
@@ -209,6 +218,8 @@ export class PickupHandoverController {
           const serviceCategoryId = line.serviceId ? serviceCategoryIdByServiceId.get(line.serviceId) : undefined;
           return {
             ...line,
+            itemCategoryName: line.itemCategoryName ?? itemCategoryNameById.get(line.itemCategoryId) ?? categoryNameById.get(line.itemCategoryId) ?? null,
+            serviceName: line.serviceName ?? (line.serviceId ? serviceNameById.get(line.serviceId) ?? null : null),
             serviceCategoryName: categoryNameById.get(serviceCategoryId ?? line.itemCategoryId) ?? null,
           };
         }) ?? null,
@@ -216,6 +227,7 @@ export class PickupHandoverController {
           const serviceCategoryId = line.serviceId ? serviceCategoryIdByServiceId.get(line.serviceId) : undefined;
           return {
             ...line,
+            serviceName: line.serviceName ?? serviceNameById.get(line.serviceId) ?? null,
             mediaUrls: toUrls(line.mediaIds),
             bagNumber: line.bagId ? bagNumberById.get(line.bagId) ?? null : null,
             serviceCategoryId: serviceCategoryId ?? null,

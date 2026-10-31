@@ -169,14 +169,14 @@ list. All four return only active, non-deleted rows.
 | `addressId` | `GET /rider/customers/{customerId}/addresses` (above) |
 | `customerId` | `GET /rider/customers?search=` (above) |
 
-**`itemCategoryId` can resolve against two different tables** — a quirk of
-the admin panel's own "item category" picker actually selecting a
-*service* category, not a real item category. When rendering an existing
+**Older `itemCategoryId` values can resolve against two different tables** —
+the admin panel previously saved a *service* category under its "item category"
+picker. New pickups use real item-category IDs. When rendering an existing
 pickup's `itemCategoryEstimate`, try `GET /rider/item-categories` first;
 if the id isn't in that list, fall back to `GET /rider/service-categories`.
 Rider-created pickups (via `POST /rider/pickup-requests` below) should
 keep sending real item-category ids from the first list — this fallback
-exists to correctly *display* pickups created elsewhere, not to change
+exists to correctly *display* older pickups, not to change
 what riders themselves send.
 
 ### `GET /rider/item-categories`

@@ -5979,6 +5979,7 @@ export class OrderService {
       serviceName: oi.serviceName ?? serviceMap.get(oi.serviceId)?.name ?? null,
       itemId: oi.itemId,
       itemName: oi.itemName ?? itemMap.get(oi.itemId)?.name ?? null,
+      itemCategoryId: itemMap.get(oi.itemId)?.itemCategoryId ?? null,
       // Drives the inspection popup's length/width fields (curtains etc,
       // billed by area) — the frontend reads this straight off each item.
       isMeasurement: itemMap.get(oi.itemId)?.isMeasurement ?? false,

@@ -121,6 +121,9 @@ function setup(paid = 750) {
       challanRepo: repo('challans'),
       statusHistoryRepo: repo('history'),
       itemRepo: {find: async () => []},
+      orderService: {getOrderDetails: async () => ({items: state.items.map((item: any) => ({
+        ...item, garments: state.garments.filter((garment: any) => garment.orderItemId === item.id),
+      }))})},
       gstConfigRepo: {
         findOne: async () => ({cgstPercentage: 20, sgstPercentage: 20}),
       },
@@ -220,6 +223,38 @@ function setup(paid = 750) {
 }
 
 describe('invoiced credit-note settlement', () => {
+  it('credits two explicitly selected garments from one line without changing the issued invoice', async () => {
+    const test = setup(1000);
+    const state = test.state();
+    state.items = state.items.filter((item: any) => item.id !== 'item-0');
+    Object.assign(state.items.find((item: any) => item.id === 'item-2'), {quantity: 2, totalPrice: 550});
+    state.garments[0].orderItemId = 'item-2';
+    state.invoices[0].items = state.invoices[0].items.filter((item: any) => item.orderItemId !== 'item-0');
+    Object.assign(state.invoices[0].items.find((item: any) => item.orderItemId === 'item-2'), {quantity: 2, totalPrice: 550});
+    const result = await test.controller.create(user, 'order', {
+      reason: 'Return selected pieces', returnedItems: [
+        {orderItemId: 'item-2', garmentId: 'garment-0', quantity: 1, amount: 999999},
+        {orderItemId: 'item-2', garmentId: 'garment-2', quantity: 1, amount: 999999},
+      ],
+    }) as any;
+    expect(result.salesReturn.creditAmount).to.equal(550);
+    expect(state.notes[0].returnedItems.map((line: any) => [line.garmentId, line.originalAmount])).to.eql([
+      ['garment-0', 300], ['garment-2', 250],
+    ]);
+    expect(state.invoices[0].totalAmount).to.equal(1000);
+    expect(state.orders[0].totalAmount).to.equal(450);
+    expect(state.garments[1].status).to.equal('ready');
+  });
+
+  it('rejects a duplicate garment selection before creating a credit note', async () => {
+    const test = setup(1000);
+    await expect(test.controller.create(user, 'order', {reason: 'Duplicate', returnedItems: [
+      {orderItemId: 'item-2', garmentId: 'garment-2', quantity: 1, amount: 250},
+      {orderItemId: 'item-2', garmentId: 'garment-2', quantity: 1, amount: 250},
+    ]})).to.be.rejectedWith(/once/);
+    expect(test.state().notes).to.have.length(0);
+  });
+
   it('previews liability reduction without creating a credit or moving money', async () => {
     const test = setup();
     const result = await test.request(2, true);

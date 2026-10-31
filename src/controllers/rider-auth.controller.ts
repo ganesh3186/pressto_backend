@@ -38,7 +38,7 @@ export class RiderAuthController {
   /**
    * The user + their rider profile for this phone, or a clear error. Blocks a
    * user who is not a rider, whose rider record is deleted, or whose account is
-   * inactive (deactivating/deleting a rider flips Users.isActive).
+   * inactive.
    */
   private async resolveActiveRider(phone: string, countryCode: string) {
     const user = await this.usersRepository.findOne({
@@ -54,6 +54,9 @@ export class RiderAuthController {
     });
     if (!rider) {
       throw new HttpErrors.Forbidden('This number is not registered as a rider.');
+    }
+    if (!user.roles?.some(role => role.value === 'rider' && !role.isDeleted && role.isActive !== false)) {
+      throw new HttpErrors.Forbidden('This account has no active rider role.');
     }
 
     if (user.isActive === false || rider.isActive === false) {
@@ -156,7 +159,8 @@ export class RiderAuthController {
       id: user.id!,
       email: user.email,
       phone: user.phone,
-      roles,
+      // A shared login must not get its staff permissions from rider OTP.
+      roles: ['rider'],
     };
     const token = await this.jwtService.generateToken(userProfile as never);
 
