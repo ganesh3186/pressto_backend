@@ -14,6 +14,55 @@ import {
 } from '../services/approval.service';
 
 describe('sales return pricing', () => {
+  it('saves the selected garment and tax rates on a new credit note', async () => {
+    let saved: Record<string, unknown> | undefined;
+    const controller = Object.assign(Object.create(SalesReturnController.prototype), {
+      orderRepo: {findOne: async () => ({id: 'order-1', customerId: 'customer-1',
+        subtotal: 393, discountAmount: 0, totalAmount: 432})},
+      orderItemRepo: {find: async () => [{id: 'shirts', quantity: 2}]},
+      salesReturnRepo: {find: async () => [], count: async () => ({count: 0}),
+        create: async (value: Record<string, unknown>) => { saved = value; return value; }},
+      garmentRepo: {find: async () => [
+        {id: 'garment-1', orderItemId: 'shirts', status: 'delivered'},
+        {id: 'garment-2', orderItemId: 'shirts', status: 'delivered'},
+      ]},
+      orderService: {getOrderDetails: async () => ({items: [{id: 'shirts',
+        itemName: 'Shirt', serviceName: 'Clean', unitPrice: 192,
+        garments: [{id: 'garment-1', additionalServices: [{amount: 402}]},
+          {id: 'garment-2', additionalServices: [{amount: 201}]}]}]})},
+      gstConfigRepo: {findOne: async () => ({cgstPercentage: 5, sgstPercentage: 5})},
+      invoiceRepo: {findOne: async () => null},
+      invoiceOrderLinkRepo: {findOne: async () => null},
+      _isOrderPaid: async () => true,
+    }) as SalesReturnController;
+    await controller.create({} as UserProfile, 'order-1', {returnedItems: [
+      {orderItemId: 'shirts', garmentId: 'garment-2', quantity: 1, amount: 393},
+    ]});
+    const line = (saved?.returnedItems as Array<Record<string, unknown>>)[0];
+    expect(line.garmentId).to.equal('garment-2');
+    expect(line.garmentSnapshot).to.containEql({id: 'garment-2'});
+    expect(line).to.containEql({cgstRate: 5, sgstRate: 5});
+    expect(saved?.creditAmount).to.equal(432.3);
+  });
+
+  it('shows a refund preview for every pending note on a ticket', async () => {
+    const controller = Object.assign(Object.create(SalesReturnController.prototype), {
+      storeScopeService: {assertOrderVisible: async () => {}},
+      salesReturnRepo: {find: async () => [
+        {id: 'newer', orderId: 'order-1', status: SalesReturnStatus.PENDING, creditAmount: 20},
+        {id: 'older', orderId: 'order-1', status: SalesReturnStatus.PENDING, creditAmount: 10},
+      ]},
+      orderRepo: {findById: async () => ({id: 'order-1', totalAmount: 100})},
+      paymentRepo: {find: async () => [{transactionType: 'payment', amount: 100}]},
+      refundDueRepo: {find: async () => []},
+    }) as SalesReturnController;
+    const result = await controller.listSalesReturns('order-1', {} as UserProfile) as {
+      salesReturns: Array<{id: string; refundAmount: number}>;
+    };
+    expect(result.salesReturns.map(note => [note.id, note.refundAmount]))
+      .to.deepEqual([['newer', 20], ['older', 10]]);
+  });
+
   it('rejects a second sales return for an approved damaged garment', async () => {
     const controller = Object.assign(Object.create(SalesReturnController.prototype), {
       orderRepo: {findOne: async () => ({id: 'order-1'})},
@@ -37,6 +86,7 @@ describe('sales return pricing', () => {
     let invoiceUpdate: Record<string, unknown> | undefined;
     let linkUpdate: Record<string, unknown> | undefined;
     let returnUpdate: Record<string, unknown> | undefined;
+    let returnedGarmentId: string | undefined;
     const invoice = {
       id: 'invoice-a',
       isConsolidated: true,
@@ -56,6 +106,7 @@ describe('sales return pricing', () => {
             returnedItems: [
               {
                 orderItemId: 'item-b',
+                garmentId: 'garment-b',
                 quantity: 1,
                 amount: 30,
                 originalAmount: 30,
@@ -100,7 +151,12 @@ describe('sales return pricing', () => {
             rollback: async () => {},
           }),
         },
-        garmentRepo: {find: async () => []},
+        garmentRepo: {
+          findOne: async () => ({id: 'garment-b', status: 'delivered'}),
+          find: async (filter: {where: {id?: string}}) =>
+            filter.where.id === 'garment-b' ? [{id: 'garment-b', status: 'delivered'}] : [],
+          updateById: async (id: string) => { returnedGarmentId = id; },
+        },
         challanRepo: {findOne: async () => null},
         orderItemRepo: {find: async () => []},
         _previewCreditNote: async () => ({
@@ -120,6 +176,7 @@ describe('sales return pricing', () => {
     });
     expect(linkUpdate).to.containEql({orderTotal: 70});
     expect(returnUpdate).to.containEql({invoiceId: invoice.id});
+    expect(returnedGarmentId).to.equal('garment-b');
   });
 
   it('includes GST when the order is fully paid', () => {
