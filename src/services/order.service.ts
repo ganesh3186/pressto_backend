@@ -248,6 +248,20 @@ function rupeeBalance(totalAmount: unknown, collected: unknown): number {
   return Math.max(0, roundRupee(totalAmount) - roundRupee(collected));
 }
 
+function orderInvoiceTotals(order: Order, invoice: Invoice): Pick<Invoice, 'subtotal' | 'discount' | 'cgst' | 'sgst' | 'totalAmount'> | null {
+  const values = [order.subtotal, order.discountAmount, order.taxAmount, order.totalAmount];
+  if (values.some(value => value == null || String(value).trim() === '' || !Number.isFinite(Number(value)))) {
+    return null;
+  }
+  const [subtotal, discount, tax, totalAmount] = values.map(Number);
+  // A missing legacy order total must not zero out a priced invoice on a read.
+  if (subtotal === 0 && (Number(invoice.subtotal) > 0 || Number(invoice.totalAmount) > 0)) return null;
+  if (subtotal < 0 || discount < 0 || discount > subtotal || tax < 0 ||
+      Math.round(subtotal - discount + tax) !== totalAmount) return null;
+  const cgst = parseFloat((tax / 2).toFixed(2));
+  return {subtotal, discount, cgst, sgst: parseFloat((tax - cgst).toFixed(2)), totalAmount};
+}
+
 @injectable({scope: BindingScope.TRANSIENT})
 export class OrderService {
   constructor(
@@ -932,6 +946,24 @@ export class OrderService {
     existingChallan?: Challan,
     tx?: unknown,
   ): Promise<Challan> {
+    if (!tx) {
+      const transaction = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+      try {
+        await this.dataSource.execute(
+          'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+          [orderId], {transaction},
+        );
+        const challan = existingChallan
+          ? await this.challanRepo.findById(existingChallan.id, undefined, {transaction})
+          : undefined;
+        const synced = await this.syncChallanTotalsForOrder(orderId, challan, transaction);
+        await transaction.commit();
+        return synced;
+      } catch (error) {
+        await transaction.rollback();
+        throw error;
+      }
+    }
     const txOpt = tx ? {transaction: tx} : undefined;
     const [order, challan] = await Promise.all([
       this.orderRepo.findOne({where: {id: orderId, isDeleted: false}}, txOpt),
@@ -1182,18 +1214,28 @@ export class OrderService {
         Number(order.taxAmount ?? 0) !== taxAmount ||
         Number(order.totalAmount ?? 0) !== totalAmount;
       if (orderTotalsChanged) {
-        await this.orderRepo.updateById(
-          order.id,
-          {
-            subtotal,
-            discountAmount: discount,
-            discountType: recalculated.discountType,
-            taxAmount,
-            totalAmount,
-            updatedAt: new Date(),
-          },
-          txOpt,
-        );
+        const {alreadyPaid} = await this.computeBalanceDue(order, txOpt);
+        if ((alreadyPaid > 0 && alreadyPaid >= Number(order.totalAmount)) ||
+            alreadyPaid > totalAmount) {
+          // A receipt read cannot reprice collected money without a refund or new payment.
+          subtotal = Number(order.subtotal ?? 0);
+          discount = Number(order.discountAmount ?? 0);
+          taxAmount = Number(order.taxAmount ?? 0);
+          totalAmount = roundRupee(order.totalAmount);
+        } else {
+          await this.orderRepo.updateById(
+            order.id,
+            {
+              subtotal,
+              discountAmount: discount,
+              discountType: recalculated.discountType,
+              taxAmount,
+              totalAmount,
+              updatedAt: new Date(),
+            },
+            txOpt,
+          );
+        }
       }
     }
 
@@ -1244,7 +1286,48 @@ export class OrderService {
       await this.challanRepo.updateById(challan.id, patch, txOpt);
       Object.assign(challan, patch);
     }
+    await this.syncInvoiceTotalsForOrder({
+      ...order, subtotal, discountAmount: discount, taxAmount, totalAmount,
+    } as Order, tx);
     return challan;
+  }
+
+  async syncInvoiceTotalsForOrder(order: Order, tx?: unknown): Promise<Invoice | null> {
+    const txOpt = tx ? {transaction: tx} : undefined;
+    const invoice = await this.invoiceRepo.findOne({where: {orderId: order.id}}, txOpt);
+    if (!invoice || invoice.isConsolidated) return invoice;
+    const totals = orderInvoiceTotals(order, invoice);
+    if (!totals) return invoice;
+    if (Object.entries(totals).some(
+      ([key, value]) => Number(invoice[key as keyof Invoice]) !== value,
+    )) {
+      if (!tx) {
+        const transaction = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+        try {
+          await this.dataSource.execute(
+            'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+            [order.id], {transaction},
+          );
+          const currentOrder = await this.orderRepo.findById(order.id, undefined, {transaction});
+          const synced = await this.syncInvoiceTotalsForOrder(currentOrder, transaction);
+          await transaction.commit();
+          return synced;
+        } catch (error) {
+          await transaction.rollback();
+          throw error;
+        }
+      }
+      const balance = await this.computeBalanceDue(order, txOpt);
+      const patch = {
+        ...totals,
+        amountReceived: balance.alreadyPaid,
+        balanceDue: balance.due,
+        updatedAt: new Date(),
+      };
+      await this.invoiceRepo.updateById(invoice.id, patch, txOpt);
+      Object.assign(invoice, patch);
+    }
+    return invoice;
   }
 
   private applyCustomerDiscount(
@@ -7249,9 +7332,13 @@ export class OrderService {
         invoice = await this.invoiceRepo.findOne({where: {orderId}}, options);
         if (invoice) {
           if (!invoice.isConsolidated) {
+            const totals = orderInvoiceTotals(order, invoice);
             await this.invoiceRepo.updateById(
               invoice.id,
-              {amountReceived: alreadyPaid, balanceDue: due},
+              totals
+                ? {...totals, amountReceived: alreadyPaid, balanceDue: due}
+                : {amountReceived: alreadyPaid,
+                  balanceDue: rupeeBalance(invoice.totalAmount, alreadyPaid)},
               options,
             );
             invoice = await this.invoiceRepo.findById(

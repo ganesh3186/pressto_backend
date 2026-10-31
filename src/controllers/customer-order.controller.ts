@@ -408,11 +408,16 @@ export class CustomerOrderController {
     @param.path.string('orderId') orderId: string,
   ): Promise<object> {
     const customer = await this.resolveCustomer(currentUser);
-    await this.resolveOwnedOrder(orderId, customer.id);
+    const order = await this.resolveOwnedOrder(orderId, customer.id);
 
     const invoice = await this.invoiceRepo.findOne({where: {orderId} as any});
     if (!invoice) throw new HttpErrors.NotFound('No invoice generated for this order yet.');
-    return {invoice};
+    const challan = await this.challanRepo.findOne({where: {orderId}});
+    if (challan) {
+      await this.orderService.syncChallanTotalsForOrder(orderId, challan);
+      return {invoice: await this.invoiceRepo.findById(invoice.id)};
+    }
+    return {invoice: await this.orderService.syncInvoiceTotalsForOrder(order)};
   }
 
   @authenticate('jwt')

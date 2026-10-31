@@ -180,6 +180,15 @@ describe('return approval billing', () => {
     });
     await expect(service.revert({requestId: 'older-return', performedBy: 'user-2'}))
       .to.be.rejectedWith(/Only the latest request of this type/);
+
+    await service.createRequest({
+      type: ApprovalRequestType.RETURN_ITEM,
+      entityType: 'garment', entityId: 'garment-2', requestedBy: 'user-1',
+    });
+    expect(order.totalAmount).to.equal(0);
+    expect(invoice.totalAmount).to.equal(0);
+    expect(refundDues).to.have.length(1);
+    expect(refundDues[0].amount).to.equal(118);
   });
 
   it('keeps the returned item and its charge removed after ticket payment succeeds', async () => {

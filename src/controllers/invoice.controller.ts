@@ -20,6 +20,7 @@ import {
   UsersRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
+import {OrderService} from '../services/order.service';
 
 export class InvoiceController {
   constructor(
@@ -37,6 +38,7 @@ export class InvoiceController {
     private storeScopeService: StoreScopeService,
     @repository(SalesReturnRepository)
     private salesReturnRepo: SalesReturnRepository,
+    @inject('services.order') private orderService: OrderService,
   ) {}
 
   private async creditTotals(invoiceIds: string[]) {
@@ -469,9 +471,8 @@ export class InvoiceController {
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
-    const invoice = await this.invoiceRepo.findOne({where: {orderId}} as any);
-    if (!invoice)
-      throw new HttpErrors.NotFound('No invoice found for this order.');
+    const invoice = await this.orderService.syncInvoiceTotalsForOrder(order);
+    if (!invoice) throw new HttpErrors.NotFound('No invoice found for this order.');
 
     const credits =
       (await this.creditTotals([invoice.id])).get(invoice.id) ?? 0;

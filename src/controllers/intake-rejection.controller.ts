@@ -1,9 +1,10 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
+import {PresstoDataSource} from '../datasources';
 import {
   IntakeRejectedItem,
   IntakeRejectionOutcome,
@@ -11,14 +12,18 @@ import {
   IntakeRejectionStatus,
 } from '../models/intake-rejected-item.model';
 import {GarmentStatus} from '../models/garment-status.enum';
+import {ApprovalActionType} from '../models/approval-action-type.enum';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
+import {ApprovalRequestType} from '../models/approval-request-type.enum';
 import {
+  ApprovalRequestRepository,
   ChallanRepository,
   GarmentRepository,
-  GarmentStatusHistoryRepository,
   IntakeRejectedItemRepository,
   OrderItemRepository,
   OrderRepository,
 } from '../repositories';
+import {ApprovalService} from '../services/approval.service';
 import {OrderService} from '../services/order.service';
 import {StoreScopeService} from '../services/store-scope.service';
 
@@ -28,8 +33,10 @@ export class IntakeRejectionController {
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
-    @repository(GarmentStatusHistoryRepository) private garmentStatusHistoryRepo: GarmentStatusHistoryRepository,
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
+    @repository(ApprovalRequestRepository) private approvalRequestRepo: ApprovalRequestRepository,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
+    @inject('services.approval') private approvalService: ApprovalService,
     @inject('services.order') private orderService: OrderService,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
@@ -82,31 +89,21 @@ export class IntakeRejectionController {
     const orderItem = await this.orderItemRepo.findOne({where: {id: orderItemId, orderId}});
     if (!orderItem) throw new HttpErrors.NotFound('Order item not found.');
 
-    if (body.garmentId) {
-      const garment = await this.garmentRepo.findOne({where: {id: body.garmentId, orderItemId, isDeleted: false}});
-      if (!garment) throw new HttpErrors.NotFound('Garment not found on this order item.');
-    }
+    const garment = body.garmentId
+      ? await this.garmentRepo.findOne({where: {id: body.garmentId, orderItemId, isDeleted: false}})
+      : null;
+    if (body.garmentId && !garment) throw new HttpErrors.NotFound('Garment not found on this order item.');
 
     const {v4} = await import('uuid');
 
-    // ── Direct return (intake popup): no approval, no pending state ──────────
-    // Mark the garment returned to the customer immediately and store the
-    // rejection as already-resolved for the audit trail.
+    // Direct intake return: billing is immediate and no approval remains pending.
+    // Shared return billing creates any refund due before this record is resolved.
     if (body.directReturn) {
       if (!body.garmentId) {
         throw new HttpErrors.BadRequest('A garment is required to reject and return at intake.');
       }
-      await this.garmentRepo.updateById(body.garmentId, {status: GarmentStatus.RETURNED_TO_CUSTOMER});
-      await this.garmentStatusHistoryRepo.create({
-        id: v4(),
-        garmentId: body.garmentId,
-        status: GarmentStatus.RETURNED_TO_CUSTOMER,
-        changedAt: new Date(),
-        changedBy: currentUser[securityId],
-        remarks: `Rejected at intake (${body.reason})${body.remarks ? ` — ${body.remarks}` : ''}`,
-      });
-
-      const record = await this.intakeRejectedRepo.create({
+      const performedBy = currentUser[securityId];
+      const createResolvedRecord = () => this.intakeRejectedRepo.create({
         id: v4(),
         orderId,
         orderItemId,
@@ -114,17 +111,88 @@ export class IntakeRejectionController {
         reason: body.reason,
         remarks: body.remarks,
         mediaIds: body.mediaIds,
-        handledBy: currentUser[securityId],
+        handledBy: performedBy,
         status: IntakeRejectionStatus.RESOLVED,
         outcome: IntakeRejectionOutcome.RETURN_TO_CUSTOMER,
-        resolvedBy: currentUser[securityId],
+        resolvedBy: performedBy,
         resolvedAt: new Date(),
       } as Partial<IntakeRejectedItem>);
+      const syncChallan = async () => {
+        const challan = await this.challanRepo.findOne({where: {orderId}});
+        if (challan) await this.orderService.syncChallanTotalsForOrder(orderId, challan);
+      };
+      const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+      try {
+        await this.dataSource.execute(
+          'SELECT pg_advisory_xact_lock(hashtext($1))',
+          [`direct-intake-return:${body.garmentId}`],
+          {transaction: tx},
+        );
+        const currentGarment = await this.garmentRepo.findOne({
+          where: {id: body.garmentId, orderItemId, isDeleted: false},
+        });
+        if (currentGarment?.status === GarmentStatus.RETURNED_TO_CUSTOMER) {
+          let record = await this.intakeRejectedRepo.findOne({where: {
+            orderId,
+            orderItemId,
+            garmentId: body.garmentId,
+            status: IntakeRejectionStatus.RESOLVED,
+            outcome: IntakeRejectionOutcome.RETURN_TO_CUSTOMER,
+          }});
+          if (!record) {
+            const approvals = await this.approvalRequestRepo.find({
+              where: {
+                type: ApprovalRequestType.RETURN_ITEM,
+                entityType: 'garment',
+                entityId: body.garmentId,
+              },
+              order: ['createdAt DESC'],
+            });
+            const request = approvals.find(
+              approval => approval.metadata?.source === 'direct_intake_return',
+            );
+            if (!request) throw new HttpErrors.Conflict('Garment has already been returned.');
+            if (request.status === ApprovalRequestStatus.PENDING) {
+              await this.approvalService.resolve({
+                requestId: request.id,
+                action: ApprovalActionType.APPROVED,
+                performedBy,
+                comments: 'Direct return at intake',
+                approvalSource: 'direct',
+              });
+            }
+            record = await createResolvedRecord();
+          }
+          await syncChallan();
+          await tx.commit();
+          return {message: 'Garment rejected at intake and returned to customer.', record};
+        }
 
-      const challan = await this.challanRepo.findOne({where: {orderId}});
-      if (challan) await this.orderService.syncChallanTotalsForOrder(orderId, challan);
+        const request = await this.approvalService.createRequest({
+          type: ApprovalRequestType.RETURN_ITEM,
+          entityType: 'garment',
+          entityId: body.garmentId,
+          requestedBy: performedBy,
+          requestReason: `Rejected at intake (${body.reason})${body.remarks ? ` — ${body.remarks}` : ''}`,
+          mediaIds: body.mediaIds,
+          metadata: {source: 'direct_intake_return'},
+        });
+        await this.approvalService.resolve({
+          requestId: request.id,
+          action: ApprovalActionType.APPROVED,
+          performedBy,
+          comments: 'Direct return at intake',
+          approvalSource: 'direct',
+        });
 
-      return {message: 'Garment rejected at intake and returned to customer.', record};
+        const record = await createResolvedRecord();
+        await syncChallan();
+        await tx.commit();
+        return {message: 'Garment rejected at intake and returned to customer.', record};
+      } catch (error) {
+        await tx.rollback();
+        throw error;
+      }
     }
 
     // ── Standard flow: create a pending rejection for manager resolution ─────
