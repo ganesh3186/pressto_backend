@@ -6,8 +6,12 @@ import { authorize } from '../authorization';
 import { PresstoDataSource } from '../datasources';
 import { Rider, RiderWithRelations } from '../models';
 import { RiderType } from '../models/rider-type.enum';
+import {PROTECTED_ROLES} from '../utils/role-guard';
 import {
+  CustomerRepository,
+  EmployeeRepository,
   RiderRepository,
+  RiderPincodeMappingRepository,
   RolesRepository,
   UserRolesRepository,
   UsersRepository,
@@ -23,6 +27,12 @@ export class RiderController {
   constructor(
     @repository(RiderRepository)
     private riderRepository: RiderRepository,
+    @repository(RiderPincodeMappingRepository)
+    private riderPincodeMappingRepository: RiderPincodeMappingRepository,
+    @repository(CustomerRepository)
+    private customerRepository: CustomerRepository,
+    @repository(EmployeeRepository)
+    private employeeRepository: EmployeeRepository,
     @repository(UsersRepository)
     private usersRepository: UsersRepository,
     @repository(RolesRepository)
@@ -107,18 +117,23 @@ export class RiderController {
   }
 
   /** The user, if any, that already owns this phone/email. */
-  private async findUserByContact(phone: string, email: string | undefined) {
-    const orConditions: object[] = [{ phone }];
-    if (email) orConditions.push({ email });
-    return this.usersRepository.findOne({ where: { or: orConditions } });
+  private async findUserByContact(phone: string, email: string | undefined, countryCode = '+91') {
+    const phoneUser = await this.usersRepository.findOne({where: {phone, countryCode}});
+    const emailUser = email
+      ? await this.usersRepository.findOne({where: {email}})
+      : null;
+    if (phoneUser && emailUser && phoneUser.id !== emailUser.id) {
+      throw new HttpErrors.Conflict('That phone and email belong to different accounts.');
+    }
+    return phoneUser ?? emailUser;
   }
 
   /**
    * On EDIT: a phone/email must not collide with a *different* user. Editing a
    * rider's own account is fine, so ignore their own userId.
    */
-  private async assertContactFree(phone: string, email: string | undefined, ignoreUserId: string) {
-    const existing = await this.findUserByContact(phone, email);
+  private async assertContactFree(phone: string, email: string | undefined, ignoreUserId: string, countryCode = '+91') {
+    const existing = await this.findUserByContact(phone, email, countryCode);
     if (existing && existing.id !== ignoreUserId) {
       throw new HttpErrors.Conflict('That phone number or email is already in use.');
     }
@@ -176,20 +191,52 @@ export class RiderController {
     // someone — a customer who is now also a rider — reuse that account and add
     // the rider role on top, rather than refusing the number. Only a genuine
     // second rider profile on the same person is rejected.
-    const existingUser = await this.findUserByContact(body.phone, body.emailId);
-    if (existingUser) {
-      const alreadyRider = await this.riderRepository.findOne({
-        where: { userId: existingUser.id, isDeleted: false },
-      });
-      if (alreadyRider) {
-        throw new HttpErrors.Conflict(
-          `That phone or email already belongs to rider ${alreadyRider.riderCode}.`,
-        );
+    const countryCode = body.countryCode?.trim() || '+91';
+    const existingUser = await this.findUserByContact(body.phone, body.emailId, countryCode);
+    if (existingUser && (existingUser.phone !== body.phone || existingUser.countryCode !== countryCode)) {
+      throw new HttpErrors.Conflict('That email belongs to an account with a different phone number.');
+    }
+    const existingRider = existingUser
+      ? await this.riderRepository.findOne({where: {userId: existingUser.id}})
+      : null;
+    if (existingRider && !existingRider.isDeleted) {
+      throw new HttpErrors.Conflict(
+        `That phone or email already belongs to rider ${existingRider.riderCode}.`,
+      );
+    }
+
+    const emailId = body.emailId?.trim() || undefined;
+    const account = existingUser
+      ? await this.usersRepository.findById(existingUser.id, {include: [{relation: 'roles'}]})
+      : null;
+    if (account?.roles?.some(assignedRole => PROTECTED_ROLES.includes(assignedRole.value) && !assignedRole.isDeleted)) {
+      throw new HttpErrors.Conflict('A protected system account cannot be linked to a rider.');
+    }
+    const otherRoles = (account?.roles ?? []).filter(
+      assignedRole => assignedRole.value !== RIDER_ROLE_VALUE && !assignedRole.isDeleted,
+    );
+    const sharedAccount = otherRoles.length > 0;
+    if (sharedAccount && emailId && emailId.toLowerCase() !== existingUser?.email?.toLowerCase()) {
+      throw new HttpErrors.Conflict('This login is shared with another role. Update its email from that account first.');
+    }
+    const reactivateAccount = existingUser?.isActive === false;
+    if (reactivateAccount && sharedAccount) {
+      const hasCustomerRole = otherRoles.some(assignedRole => ['customer', 'client'].includes(assignedRole.value));
+      const hasStaffRole = otherRoles.some(assignedRole => !['customer', 'client'].includes(assignedRole.value));
+      const customer = hasCustomerRole
+        ? await this.customerRepository.findOne({where: {userId: existingUser.id, isDeleted: false}})
+        : null;
+      const employee = hasStaffRole
+        ? await this.employeeRepository.findOne({where: {userId: existingUser.id, isDeleted: false}})
+        : null;
+      if ((hasCustomerRole && customer?.isActive !== true) ||
+        (hasStaffRole && (otherRoles.some(assignedRole => assignedRole.value === 'super_admin') || employee?.isActive !== true))) {
+        throw new HttpErrors.Conflict('This shared account is inactive. Activate its customer or employee profile first.');
       }
     }
 
     const fullName = `${body.firstName} ${body.lastName}`.trim();
-    const riderCode = await this.generateRiderCode();
+    const riderCode = existingRider?.riderCode ?? await this.generateRiderCode();
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
@@ -202,7 +249,7 @@ export class RiderController {
             fullName,
             username: await this.generateUniqueUsername(body.emailId, fullName),
             ...(body.emailId && { email: body.emailId }),
-            countryCode: body.countryCode?.trim() ? body.countryCode.trim() : '+91',
+            countryCode,
             phone: body.phone,
             // Signs in by OTP, never by password — so this is a throwaway.
             password: await this.hasher.hashPassword(
@@ -232,27 +279,51 @@ export class RiderController {
         );
       }
 
-      const rider = await this.riderRepository.create(
-        {
-          userId: user.id,
-          riderCode,
-          riderType: body.riderType,
-          firstName: body.firstName,
-          lastName: body.lastName,
-          alternateNumber: body.alternateNumber,
-          address: body.address,
-          doorFloorFlat: body.doorFloorFlat,
-          landmark: body.landmark,
-          isActive: true,
-        },
-        { transaction: tx },
-      );
+      const userUpdates = {
+        ...(!sharedAccount && existingUser ? {fullName, email: emailId ?? (null as unknown as string)} : {}),
+        ...(reactivateAccount ? {isActive: true} : {}),
+      };
+      if (existingUser && Object.keys(userUpdates).length) {
+        await this.usersRepository.updateById(user.id, userUpdates, {transaction: tx});
+      }
+
+      const riderFields = {
+        userId: user.id,
+        riderType: body.riderType,
+        firstName: body.firstName,
+        lastName: body.lastName,
+        alternateNumber: body.alternateNumber,
+        address: body.address,
+        doorFloorFlat: body.doorFloorFlat,
+        landmark: body.landmark,
+        isActive: true,
+      };
+      let rider: Rider;
+      if (existingRider) {
+        // Preserve the rider ID referenced by past assignments when re-adding it.
+        await this.riderPincodeMappingRepository.updateAll(
+          {isActive: false, isDeleted: true, deletedAt: new Date()},
+          {riderId: existingRider.id, isDeleted: false},
+          {transaction: tx},
+        );
+        await this.riderRepository.updateById(existingRider.id, {
+          ...riderFields,
+          isDeleted: false,
+          deletedAt: null as unknown as Date,
+        }, {transaction: tx});
+        rider = Object.assign(existingRider, riderFields, {isDeleted: false, deletedAt: undefined});
+      } else {
+        rider = await this.riderRepository.create(
+          {riderCode, ...riderFields},
+          {transaction: tx},
+        );
+      }
 
       await tx.commit();
 
       return {
         message: 'Rider created successfully',
-        rider: { ...rider, user: { ...user, password: undefined } },
+        rider: { ...rider, user: { ...user, ...userUpdates, password: undefined } },
       };
     } catch (error) {
       await tx.rollback();
@@ -407,6 +478,7 @@ export class RiderController {
         body.phone ?? account.phone,
         body.emailId ?? account.email,
         rider.userId,
+        body.countryCode ?? account.countryCode,
       );
     }
 
@@ -469,6 +541,10 @@ export class RiderController {
   async deleteById(@param.path.string('id') id: string): Promise<object> {
     const rider = await this.riderRepository.findOne({ where: { id, isDeleted: false } });
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
+    const account = await this.usersRepository.findById(rider.userId, {include: [{relation: 'roles'}]});
+    const hasOtherRole = account.roles?.some(
+      assignedRole => assignedRole.value !== RIDER_ROLE_VALUE && !assignedRole.isDeleted,
+    );
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
@@ -477,8 +553,10 @@ export class RiderController {
         { isDeleted: true, isActive: false, deletedAt: new Date() as unknown as Date },
         { transaction: tx },
       );
-      // Block the login too — a deleted rider must not be able to sign in.
-      await this.usersRepository.updateById(rider.userId, { isActive: false }, { transaction: tx });
+      // Rider login checks the profile; shared accounts keep their other access.
+      if (!hasOtherRole) {
+        await this.usersRepository.updateById(rider.userId, {isActive: false}, {transaction: tx});
+      }
       await tx.commit();
       return { message: 'Rider deleted.' };
     } catch (error) {
