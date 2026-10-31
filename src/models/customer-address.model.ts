@@ -8,6 +8,9 @@ import {Customer} from './customer.model';
       table: 'customer_address',
       schema: 'public',
     },
+    indexes: {
+      customerAddressCustomerId: {keys: ['customerId']},
+    },
   },
 })
 export class CustomerAddress extends Entity {

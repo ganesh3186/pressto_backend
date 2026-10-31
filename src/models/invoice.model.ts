@@ -10,6 +10,7 @@ export enum InvoiceStatus {
     postgresql: {table: 'invoice', schema: 'public'},
     indexes: {
       uniqueInvoiceNumber: {keys: ['invoiceNumber'], options: {unique: true}},
+      invoiceOrderId: {keys: ['orderId']},
     },
   },
 })

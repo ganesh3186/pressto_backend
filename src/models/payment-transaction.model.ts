@@ -7,6 +7,7 @@ import {PaymentMode} from './payment-mode.enum';
     indexes: {
       paymentTransactionOrderId: {keys: ['orderId']},
       paymentTransactionPaymentDate: {keys: ['paymentDate']},
+      paymentTransactionCashShiftId: {keys: ['cashShiftId']},
     },
   },
 })

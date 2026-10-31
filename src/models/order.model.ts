@@ -17,6 +17,17 @@ import {PickupRequestSource} from './pickup-request-source.enum';
       orderStoreStatusDeliveryDate: {keys: ['storeId', 'status', 'deliveryDate']},
       // Store dashboard "tickets raised in window" count.
       orderStoreCreatedAt: {keys: ['storeId', 'createdAt']},
+      // Already in the DB; declared so `npm run migrate` doesn't drop it.
+      idx_orders_status: {keys: ['status']},
+      // Customer order history, newest first.
+      orderCustomerIdCreatedAt: {keys: ['customerId', 'createdAt']},
+      orderShiftId: {keys: ['shiftId']},
+      orderAssignedRiderId: {keys: ['assignedRiderId']},
+      orderPickupRequestId: {keys: ['pickupRequestId']},
+      orderParentOrderId: {keys: ['parentOrderId']},
+      orderReprocessOfOrderId: {keys: ['reprocessOfOrderId']},
+      // Order-number search uses ILIKE '%q%', which only a trigram index can serve.
+      orderOrderNumberTrgm: {keys: 'orderNumber gin_trgm_ops', type: 'gin'},
     },
   },
 })

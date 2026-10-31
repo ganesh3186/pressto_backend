@@ -9,6 +9,7 @@ import {UnprocessedHandlingMode} from './unprocessed-handling-mode.enum';
       uniqueGarmentTagNumber: {keys: ['garmentTagNumber'], options: {unique: true}},
       garmentActiveTransferId: {keys: ['activeTransferId']},
       garmentOrderItemId: {keys: ['orderItemId']},
+      garmentBagId: {keys: ['bagId']},
     },
   },
 })
