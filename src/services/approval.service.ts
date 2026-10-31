@@ -1,5 +1,5 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
-import {IsolationLevel, Options, repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {ApprovalActionRepository} from '../repositories/approval-action.repository';
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
@@ -1586,20 +1586,15 @@ export class ApprovalService {
     amount: number,
     remarks: string,
     orderId?: string,
-    options?: Options,
   ): Promise<void> {
     const {v4} = await import('uuid');
-    if (options?.transaction) {
-      await this.dataSource.execute('SELECT id FROM public.customer WHERE id = $1 FOR UPDATE', [customerId], options);
-      await this.dataSource.execute('SELECT id FROM public.wallet WHERE customerid = $1 FOR UPDATE', [customerId], options);
-    }
-    let wallet = await this.walletRepo.findOne({where: {customerId}}, options);
+    let wallet = await this.walletRepo.findOne({where: {customerId}});
     if (!wallet) {
       wallet = await this.walletRepo.create({
         id: v4(),
         customerId,
         currentBalance: 0,
-      }, options);
+      });
     }
     const newBalance = parseFloat(
       ((Number(wallet.currentBalance) || 0) + amount).toFixed(2),
@@ -1607,7 +1602,7 @@ export class ApprovalService {
     await this.walletRepo.updateById(wallet.id, {
       currentBalance: newBalance,
       updatedAt: new Date(),
-    }, options);
+    });
 
     await this.walletTransactionRepo.create({
       id: v4(),
@@ -1618,7 +1613,7 @@ export class ApprovalService {
       referenceId: orderId,
       remarks,
       transactionDate: new Date(),
-    }, options);
+    });
   }
 
   /**
@@ -1697,7 +1692,7 @@ export class ApprovalService {
     cashShiftId?: string;
     bankDetails?: RefundBankDetails;
     remarks: string;
-  }, options?: Options): Promise<void> {
+  }): Promise<void> {
     const {v4} = await import('uuid');
     const amount = money(params.amount);
     let cashShiftId = params.cashShiftId;
@@ -1706,9 +1701,6 @@ export class ApprovalService {
       const cashShift = await this.cashPayoutShift(params.orderId, cashShiftId);
       cashShiftId = cashShift?.id;
       if (!cashShift) throw new HttpErrors.BadRequest('No open shift for the cash payout store.');
-      if (options?.transaction) {
-        await this.dataSource.execute('SELECT id FROM public.shift WHERE id = $1 FOR UPDATE', [cashShift.id], options);
-      }
       const available = await this.availableCashForOrder(params.orderId, cashShiftId);
       if (available == null || amount > available) {
         throw new HttpErrors.BadRequest('Cash refund exceeds available cash in the store.');
@@ -1721,7 +1713,6 @@ export class ApprovalService {
         amount,
         params.remarks,
         params.orderId,
-        options,
       );
       await this.paymentRepo.create({
         id: v4(),
@@ -1730,7 +1721,7 @@ export class ApprovalService {
         transactionType: 'refund',
         amount,
         paymentDate: new Date(),
-      }, options);
+      });
     } else if (params.method === RefundMethod.BANK_ACCOUNT) {
       await this.paymentRepo.create({
         id: v4(),
@@ -1745,7 +1736,7 @@ export class ApprovalService {
           ? JSON.stringify(params.bankDetails)
           : undefined,
         paymentDate: new Date(),
-      }, options);
+      });
     } else {
       // 'cash' (or a missing method, which should never happen —
       // both callers always set one before this can run).
@@ -1757,7 +1748,7 @@ export class ApprovalService {
         amount,
         cashShiftId,
         paymentDate: new Date(),
-      }, options);
+      });
     }
   }
 

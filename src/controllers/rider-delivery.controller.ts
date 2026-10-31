@@ -33,7 +33,7 @@ import {
   RiderRepository,
   StoreRepository,
 } from '../repositories';
-import {OrderService} from '../services/order.service';
+import {OrderService, roundRupee} from '../services/order.service';
 
 /**
  * Rider-facing delivery APIs — the counterpart to rider-pickup.controller.ts
@@ -322,8 +322,11 @@ export class RiderDeliveryController {
   }
 
   // ─── Deliver an order + collect payment ──────────────────────────────────
-  // Delivery may complete with no payment or a partial collection.
-  // Any supplied payment is validated and recorded before handover.
+  // The rider app's "Handover Cash" screen's actual write path. On-account
+  // orders skip payment entirely (deferred billing, matches createOrder()'s
+  // guard elsewhere). Everything else must arrive paid in full — no partial
+  // handover accepted at the door.
+
   @authenticate('jwt')
   @authorize({roles: ['rider']})
   @post('/rider/deliveries/{id}/orders/{orderId}/deliver')
@@ -403,7 +406,7 @@ export class RiderDeliveryController {
     // guards against being called twice by throwing 409 once a handover
     // row exists for this order, and nothing here rolls that row back on
     // a later failure. With payment validated first, a rejected amount
-    // (over the balance due, or whatever addPayment itself checks)
+    // (over/under the balance due, or whatever addPayment itself checks)
     // never leaves a handover record behind for a retry with the correct
     // amount to collide with — this used to run in the opposite order and
     // did exactly that: a rider who first sent too much got a clean 400,
@@ -411,7 +414,13 @@ export class RiderDeliveryController {
     // over", since the handover record from the failed first attempt was
     // already committed with nothing to undo it.
     if (!order.isOnAccount) {
+      const {due} = await this.orderService.computeBalanceDue(order);
       const thisTotal = Number(body.amount ?? 0) + Number(body.walletAmount ?? 0);
+      if (due > 0 && roundRupee(thisTotal) < due) {
+        throw new HttpErrors.BadRequest(
+          `Full payment of ₹${due} is required at delivery for this order.`,
+        );
+      }
       if (thisTotal > 0) {
         await this.orderService.addPayment(
           orderId,

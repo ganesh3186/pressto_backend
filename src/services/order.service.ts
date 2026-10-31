@@ -4421,9 +4421,10 @@ export class OrderService {
   // Records who collected the order at the counter and marks it delivered. This
   // is the no-rider dispatch path. Steps:
   //   1. order must be in a handover-eligible status
-  //   2. resolve the collector (self | saved contact | ad-hoc, optionally saved)
-  //   3. write the order_handover record
-  //   4. order → delivered, and cascade every active garment → delivered
+  //   2. hard block if any balance is still due
+  //   3. resolve the collector (self | saved contact | ad-hoc, optionally saved)
+  //   4. write the order_handover record
+  //   5. order → delivered, and cascade every active garment → delivered
 
   async handoverInStore(params: {
     orderId: string;
@@ -4456,7 +4457,49 @@ export class OrderService {
       where: {id: order.customerId, isDeleted: false},
     });
 
-    // Delivery and collection are independent: any unpaid balance remains due.
+    // 2. Hard block on outstanding balance. Refund entries are money out — not
+    // counted toward what the customer has paid. Waived only when THIS order
+    // was actually billed on account (order.isOnAccount) — they're billed
+    // later via one consolidated invoice covering several delivered orders,
+    // not per-order before handover. Deliberately NOT gated on the
+    // customer's general on-account eligibility: an eligible customer who
+    // chose Pay Later (or any other mode) for this specific order still
+    // owes it in full before it leaves the store, same as anyone else.
+    //
+    // Split-aware: a split order's payment lives in allocatedPayment, not a
+    // PaymentTransaction row of its own (see the same pattern at ~line 1636
+    // and the "Child orders carry no transaction records" comment further
+    // down this file) — falling back to the raw transaction sum here alone
+    // meant a fully-paid split fragment still read as owing its whole total.
+    const payments = await this.paymentTransactionRepo.find({
+      where: {orderId: params.orderId},
+    });
+    const paid = payments.reduce(
+      (s, p) =>
+        s +
+        ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)),
+      0,
+    );
+    // Same formula as computeBalanceDue() — a CHILD's collected amount is
+    // its allocatedPayment PLUS any direct payments of its own; a split
+    // PARENT's is allocatedPayment alone (keyed off hasBeenSplit, not
+    // allocatedPayment > 0 — a split that sent 100% of the pre-split
+    // payment to a child leaves the parent's allocatedPayment at exactly
+    // 0, and `> 0` reading that as "not split" fell back to the stale raw
+    // transaction sum, letting an unpaid split parent pass this gate).
+    const isChildOrder = !!order.parentOrderId;
+    const allocPay = Number(order.allocatedPayment ?? 0);
+    const collected = isChildOrder
+      ? allocPay + paid
+      : order.hasBeenSplit
+        ? allocPay
+        : paid;
+    const balanceDue = rupeeBalance(order.totalAmount, collected);
+    if (balanceDue > 0 && !order.isOnAccount) {
+      throw new HttpErrors.BadRequest(
+        `Cannot hand over: ₹${balanceDue} is still due. Collect the balance first.`,
+      );
+    }
 
     // Reject a second active handover on the same order.
     const existing = await this.orderHandoverRepo.findOne({
@@ -5548,7 +5591,6 @@ export class OrderService {
       orderLabelAssignments,
       couponRedemptions,
       invoicedOrders,
-      creditNotes,
     ] = await Promise.all([
       this.orderItemRepo.find({where: {orderId}}),
       this.orderChargeRepo.find({where: {orderId}}),
@@ -5569,7 +5611,6 @@ export class OrderService {
       }),
       this.couponRedemptionRepo.find({where: {orderId, isReversed: false} as object}),
       this.getInvoicedOrderIds([orderId]),
-      this.salesReturnRepo.find({where: {orderId, status: 'approved'} as object}),
     ]);
 
     const orderLabels = orderLabelAssignments.length
@@ -6047,9 +6088,6 @@ export class OrderService {
       order: {
         ...order,
         hasInvoice: invoicedOrders.has(orderId),
-        creditNotesTotal: creditNotes.filter(note => (note.returnedItems ?? []).some(line =>
-          Boolean((line as {invoiceBasis?: unknown}).invoiceBasis ?? (line as {preservesInvoice?: boolean}).preservesInvoice)))
-          .reduce((sum, note) => sum + Number(note.creditAmount ?? 0), 0),
         createdByName,
         receivedByName: createdByName,
         couponRedemptions: couponRedemptions.map(row => ({
