@@ -70,14 +70,16 @@ function rider() {
       deliveryRepository: {
         findOne: async () => ({id: 'delivery', riderId: 'rider'}),
         updateById: async () => undefined,
+        find: async () => [{id: 'delivery', riderId: 'rider', status: 'assigned', isDeleted: false, assignedAt: new Date()}],
       },
       deliveryOrderRepository: {
         findOne: async () => ({
           id: 'stop',
           orderId: 'order',
+          deliveryId: 'delivery',
           status: closed ? 'delivered' : 'arrived',
         }),
-        find: async () => [{orderId: 'order'}],
+        find: async () => [{id: 'stop', orderId: 'order', deliveryId: 'delivery'}],
       },
       orderRepository: {
         findOne: async () => ({
@@ -85,6 +87,7 @@ function rider() {
           status: OrderStatus.OUT_FOR_DELIVERY,
           totalAmount: 1000,
         }),
+        find: async () => [{id: 'order', assignedRiderId: 'rider', isDeleted: false, status: OrderStatus.OUT_FOR_DELIVERY}],
       },
       orderService: {
         // The fixture still owes 1000; zero or partial collection must not block delivery.
