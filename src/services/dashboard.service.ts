@@ -303,24 +303,33 @@ export class DashboardService {
     const collections = emptyCollections();
     if (!storeIds.length) return collections;
 
-    const orders = await this.orderRepo.find({
-      where: {storeId: {inq: storeIds}} as object,
-      fields: {id: true} as object,
-    });
-    const orderIds = orders.map(o => o.id);
-    if (!orderIds.length) return collections;
-
-    const transactions = await this.paymentTransactionRepo.find({
+    // Payments by date first (indexed, bounded by the window), then only
+    // the specific orders they reference — not every order the store(s)
+    // have ever raised, which scales with a store's whole history rather
+    // than this window. An order placed well before `from` can still be
+    // paid inside it, so the order side still can't be date-filtered
+    // directly; narrowing by the referenced-order set instead keeps the
+    // same result far more cheaply.
+    const candidateTransactions = await this.paymentTransactionRepo.find({
       where: {
-        orderId: {inq: orderIds},
         riderId: null,
         transactionType: {neq: 'refund'},
         paymentDate: {between: [from, to]},
       } as object,
-      fields: {paymentMode: true, amount: true} as object,
+      fields: {orderId: true, paymentMode: true, amount: true} as object,
     });
+    if (!candidateTransactions.length) return collections;
 
-    for (const t of transactions) {
+    const candidateOrderIds = [...new Set(candidateTransactions.map(t => t.orderId))];
+    const scopedOrders = await this.orderRepo.find({
+      where: {id: {inq: candidateOrderIds}, storeId: {inq: storeIds}} as object,
+      fields: {id: true} as object,
+    });
+    const scopedOrderIds = new Set(scopedOrders.map(o => o.id));
+    if (!scopedOrderIds.size) return collections;
+
+    for (const t of candidateTransactions) {
+      if (!scopedOrderIds.has(t.orderId)) continue;
       const bucket = BUCKET_OF[t.paymentMode];
       if (bucket) collections[bucket] += Number(t.amount) || 0;
     }

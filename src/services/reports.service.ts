@@ -393,19 +393,16 @@ export class ReportsService {
     if (!storeIds.length) return empty;
 
     // Payments reach a store through their order, except cash refunds with
-    // a payout shift. Old orders can still be paid in this window, so the
-    // order set is deliberately not date-filtered.
-    const [orders, cashShifts, walletRows, onAccountInvoiceRows] = await Promise.all([
-      this.orderRepo.find({
-        where: {storeId: {inq: storeIds}} as object,
-        fields: {
-          id: true,
-          orderNumber: true,
-          storeId: true,
-          shiftId: true,
-          placedByName: true,
-          customerId: true,
-        } as object,
+    // a payout shift, and an old order can still be paid in this window —
+    // so the order side can't be date-filtered directly. Rather than fetch
+    // every order the store(s) have ever raised (unbounded by date, and
+    // can approach the whole orders table across many/all stores), fetch
+    // candidate payments by date first — indexed, bounded by the window —
+    // then resolve only the specific orders they actually reference.
+    const [candidatePayments, cashShifts, walletRows, onAccountInvoiceRows] = await Promise.all([
+      this.paymentTransactionRepo.find({
+        where: {paymentDate: {between: [from, to]}} as object,
+        order: ['paymentDate DESC'],
       }),
       this.shiftRepo.find({
         where: {storeId: {inq: storeIds}} as object,
@@ -415,30 +412,32 @@ export class ReportsService {
       this.buildOnAccountInvoiceRows(storeIds, from, to),
     ]);
 
-    const orderById = new Map(orders.map(o => [o.id, o]));
     const cashShiftById = new Map(cashShifts.map(shift => [shift.id, shift]));
-    const [orderPayments, cashPayouts, onAccountInvoiceNumberByOrderId] = await Promise.all([
-      orders.length
-        ? this.paymentTransactionRepo.find({
-            where: {
-              orderId: {inq: orders.map(o => o.id)},
-              paymentDate: {between: [from, to]},
-            } as object,
-            order: ['paymentDate DESC'],
-          })
-        : [],
-      cashShifts.length
-        ? this.paymentTransactionRepo.find({
-            where: {
-              cashShiftId: {inq: cashShifts.map(shift => shift.id)},
-              transactionType: 'refund',
-              paymentMode: PaymentMode.CASH,
-              paymentDate: {between: [from, to]},
-            } as object,
-          })
-        : [],
-      this.mapOnAccountInvoiceNumbers(orders.map(o => o.id)),
-    ]);
+    const cashShiftIdSet = new Set(cashShifts.map(shift => shift.id));
+    const cashPayouts = candidatePayments.filter(payment =>
+      payment.transactionType === 'refund' && payment.paymentMode === PaymentMode.CASH &&
+      payment.cashShiftId && cashShiftIdSet.has(payment.cashShiftId));
+
+    const candidateOrderIds = [...new Set(candidatePayments.map(payment => payment.orderId))];
+    const orders = candidateOrderIds.length
+      ? await this.orderRepo.find({
+          where: {id: {inq: candidateOrderIds}, storeId: {inq: storeIds}} as object,
+          fields: {
+            id: true,
+            orderNumber: true,
+            storeId: true,
+            shiftId: true,
+            placedByName: true,
+            customerId: true,
+          } as object,
+        })
+      : [];
+    const orderById = new Map(orders.map(o => [o.id, o]));
+    const orderPayments = candidatePayments.filter(payment => orderById.has(payment.orderId));
+    const onAccountInvoiceNumberByOrderId = await this.mapOnAccountInvoiceNumbers(
+      orders.map(o => o.id),
+    );
+
     const payments = [...new Map([...orderPayments, ...cashPayouts]
       .filter(payment => payment.transactionType !== 'refund' ||
         payment.paymentMode !== PaymentMode.CASH || !payment.cashShiftId ||
@@ -595,24 +594,13 @@ export class ReportsService {
     from: Date,
     to: Date,
   ): Promise<ModeOfPaymentRow[]> {
-    const customers = await this.customerRepo.find({
-      where: {preferredStoreId: {inq: storeIds}} as object,
-      fields: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        customerCode: true,
-        preferredStoreId: true,
-      } as object,
-    });
-    if (!customers.length) return [];
-
-    const customerById = new Map(customers.map(c => [String(c.id), c]));
-
-    const [requests, stores] = await Promise.all([
+    // Requests by date first (bounded), then only the customers they
+    // actually reference — not every customer who prefers this store,
+    // which scales with the store's whole customer base rather than this
+    // window.
+    const [candidateRequests, stores] = await Promise.all([
       this.walletRechargeRequestRepo.find({
         where: {
-          customerId: {inq: [...customerById.keys()]},
           status: PaymentRequestStatus.SUCCESS,
           createdAt: {between: [from, to]},
         } as object,
@@ -623,6 +611,23 @@ export class ReportsService {
         fields: {id: true, name: true, code: true} as object,
       }),
     ]);
+    if (!candidateRequests.length) return [];
+
+    const candidateCustomerIds = [...new Set(candidateRequests.map(r => r.customerId))];
+    const customers = await this.customerRepo.find({
+      where: {id: {inq: candidateCustomerIds}, preferredStoreId: {inq: storeIds}} as object,
+      fields: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        customerCode: true,
+        preferredStoreId: true,
+      } as object,
+    });
+    if (!customers.length) return [];
+    const customerById = new Map(customers.map(c => [String(c.id), c]));
+
+    const requests = candidateRequests.filter(request => customerById.has(String(request.customerId)));
     if (!requests.length) return [];
 
     const storeNameById = new Map(
@@ -1143,8 +1148,23 @@ export class ReportsService {
       : storeIds;
     if (!selectedStoreIds.length) return emptyPaged();
 
+    // Invoices in the window first (bounded by date), then only the orders
+    // they actually reference — not every order the store(s) have ever
+    // raised, which scales with the store's whole history rather than this
+    // window and, selected across many/all stores, can approach the full
+    // orders table.
+    const candidateInvoices = await this.invoiceRepo.find({
+      where: {
+        status: InvoiceStatus.ISSUED,
+        isConsolidated: false,
+        createdAt: {between: [from, to]},
+      } as object,
+    });
+    if (!candidateInvoices.length) return emptyPaged();
+
+    const candidateOrderIds = [...new Set(candidateInvoices.map(inv => inv.orderId))];
     const orders = await this.orderRepo.find({
-      where: {storeId: {inq: selectedStoreIds}} as object,
+      where: {id: {inq: candidateOrderIds}, storeId: {inq: selectedStoreIds}} as object,
       fields: {
         id: true,
         storeId: true,
@@ -1156,14 +1176,7 @@ export class ReportsService {
     if (!orders.length) return emptyPaged();
     const orderById = new Map(orders.map(o => [String(o.id), o]));
 
-    const invoices = await this.invoiceRepo.find({
-      where: {
-        orderId: {inq: orders.map(o => o.id)},
-        status: InvoiceStatus.ISSUED,
-        isConsolidated: false,
-        createdAt: {between: [from, to]},
-      } as object,
-    });
+    const invoices = candidateInvoices.filter(invoice => orderById.has(String(invoice.orderId)));
     if (!invoices.length) return emptyPaged();
 
     const customerIds = [...new Set(orders.map(o => String(o.customerId)))];
