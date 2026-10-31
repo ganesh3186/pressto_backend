@@ -2,6 +2,7 @@ import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {UserProfile} from '@loopback/security';
 import {dashboardAccess} from '../utils/dashboard-access';
+import {findInBatches} from '../utils/batch-find';
 import {GarmentStatus} from '../models/garment-status.enum';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -321,10 +322,12 @@ export class DashboardService {
     if (!candidateTransactions.length) return collections;
 
     const candidateOrderIds = [...new Set(candidateTransactions.map(t => t.orderId))];
-    const scopedOrders = await this.orderRepo.find({
-      where: {id: {inq: candidateOrderIds}, storeId: {inq: storeIds}} as object,
-      fields: {id: true} as object,
-    });
+    const scopedOrders = await findInBatches(candidateOrderIds, batch =>
+      this.orderRepo.find({
+        where: {id: {inq: batch}, storeId: {inq: storeIds}} as object,
+        fields: {id: true} as object,
+      }),
+    );
     const scopedOrderIds = new Set(scopedOrders.map(o => o.id));
     if (!scopedOrderIds.size) return collections;
 

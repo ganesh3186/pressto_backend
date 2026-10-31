@@ -1,5 +1,6 @@
 import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
+import {findInBatches} from '../utils/batch-find';
 import {InvoiceStatus} from '../models/invoice.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
@@ -419,19 +420,19 @@ export class ReportsService {
       payment.cashShiftId && cashShiftIdSet.has(payment.cashShiftId));
 
     const candidateOrderIds = [...new Set(candidatePayments.map(payment => payment.orderId))];
-    const orders = candidateOrderIds.length
-      ? await this.orderRepo.find({
-          where: {id: {inq: candidateOrderIds}, storeId: {inq: storeIds}} as object,
-          fields: {
-            id: true,
-            orderNumber: true,
-            storeId: true,
-            shiftId: true,
-            placedByName: true,
-            customerId: true,
-          } as object,
-        })
-      : [];
+    const orders = await findInBatches(candidateOrderIds, batch =>
+      this.orderRepo.find({
+        where: {id: {inq: batch}, storeId: {inq: storeIds}} as object,
+        fields: {
+          id: true,
+          orderNumber: true,
+          storeId: true,
+          shiftId: true,
+          placedByName: true,
+          customerId: true,
+        } as object,
+      }),
+    );
     const orderById = new Map(orders.map(o => [o.id, o]));
     const orderPayments = candidatePayments.filter(payment => orderById.has(payment.orderId));
     const onAccountInvoiceNumberByOrderId = await this.mapOnAccountInvoiceNumbers(
@@ -614,16 +615,18 @@ export class ReportsService {
     if (!candidateRequests.length) return [];
 
     const candidateCustomerIds = [...new Set(candidateRequests.map(r => r.customerId))];
-    const customers = await this.customerRepo.find({
-      where: {id: {inq: candidateCustomerIds}, preferredStoreId: {inq: storeIds}} as object,
-      fields: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        customerCode: true,
-        preferredStoreId: true,
-      } as object,
-    });
+    const customers = await findInBatches(candidateCustomerIds, batch =>
+      this.customerRepo.find({
+        where: {id: {inq: batch}, preferredStoreId: {inq: storeIds}} as object,
+        fields: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          customerCode: true,
+          preferredStoreId: true,
+        } as object,
+      }),
+    );
     if (!customers.length) return [];
     const customerById = new Map(customers.map(c => [String(c.id), c]));
 
@@ -806,20 +809,24 @@ export class ReportsService {
     const result = new Map<string, string>();
     if (!orderIds.length) return result;
 
-    const links = await this.invoiceOrderLinkRepo.find({
-      where: {orderId: {inq: orderIds}} as object,
-      fields: {invoiceId: true, orderId: true} as object,
-    });
+    const links = await findInBatches(orderIds, batch =>
+      this.invoiceOrderLinkRepo.find({
+        where: {orderId: {inq: batch}} as object,
+        fields: {invoiceId: true, orderId: true} as object,
+      }),
+    );
     if (!links.length) return result;
 
-    const invoices = await this.invoiceRepo.find({
-      where: {
-        id: {inq: [...new Set(links.map(l => l.invoiceId))]},
-        isConsolidated: true,
-        status: InvoiceStatus.ISSUED,
-      } as object,
-      fields: {id: true, invoiceNumber: true} as object,
-    });
+    const invoices = await findInBatches([...new Set(links.map(l => l.invoiceId))], batch =>
+      this.invoiceRepo.find({
+        where: {
+          id: {inq: batch},
+          isConsolidated: true,
+          status: InvoiceStatus.ISSUED,
+        } as object,
+        fields: {id: true, invoiceNumber: true} as object,
+      }),
+    );
     if (!invoices.length) return result;
 
     const invoiceNumberById = new Map(invoices.map(i => [i.id, i.invoiceNumber]));
@@ -1163,16 +1170,18 @@ export class ReportsService {
     if (!candidateInvoices.length) return emptyPaged();
 
     const candidateOrderIds = [...new Set(candidateInvoices.map(inv => inv.orderId))];
-    const orders = await this.orderRepo.find({
-      where: {id: {inq: candidateOrderIds}, storeId: {inq: selectedStoreIds}} as object,
-      fields: {
-        id: true,
-        storeId: true,
-        customerId: true,
-        orderNumber: true,
-        deliveryAddressId: true,
-      } as object,
-    });
+    const orders = await findInBatches(candidateOrderIds, batch =>
+      this.orderRepo.find({
+        where: {id: {inq: batch}, storeId: {inq: selectedStoreIds}} as object,
+        fields: {
+          id: true,
+          storeId: true,
+          customerId: true,
+          orderNumber: true,
+          deliveryAddressId: true,
+        } as object,
+      }),
+    );
     if (!orders.length) return emptyPaged();
     const orderById = new Map(orders.map(o => [String(o.id), o]));
 
