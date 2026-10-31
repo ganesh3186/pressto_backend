@@ -483,6 +483,7 @@ export class OrderController {
       // customer's recent orders. Undeclared params are dropped by LoopBack, so
       // this must be an explicit param, not part of a `filter` object.
       customerId,
+      includePaymentCollector: true,
       limit,
       skip,
       storeIds,

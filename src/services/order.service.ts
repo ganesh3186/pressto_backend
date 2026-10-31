@@ -105,6 +105,7 @@ import {
   OrderStatusHistoryRepository,
   PaymentTransactionRepository,
   PriceListRepository,
+  RiderRepository,
   ServiceItemMappingRepository,
   ShiftRepository,
   StoreRepository,
@@ -260,6 +261,7 @@ export class OrderService {
     private statusHistoryRepo: OrderStatusHistoryRepository,
     @repository(PaymentTransactionRepository)
     private paymentTransactionRepo: PaymentTransactionRepository,
+    @repository(RiderRepository) private riderRepo: RiderRepository,
     @repository(WalletRepository) private walletRepo: WalletRepository,
     @repository(WalletTransactionRepository)
     private walletTransactionRepo: WalletTransactionRepository,
@@ -2369,6 +2371,7 @@ export class OrderService {
             transactionReference: payment.transactionReference,
             gatewayResponse: payment.gatewayResponse,
             paymentDate: new Date(),
+            collectedByUserId: createdBy,
           },
           {transaction: tx},
         );
@@ -5052,6 +5055,7 @@ export class OrderService {
     orderType?: string;
     status?: string;
     customerId?: string;
+    includePaymentCollector?: boolean;
     limit?: number;
     skip?: number;
     /**
@@ -5287,11 +5291,24 @@ export class OrderService {
       labelsByOrder.set(a.orderId, list);
     }
 
-    const userIds = [...new Set(customers.map(c => c.userId).filter(Boolean))];
+    const riderIds = params.includePaymentCollector
+      ? [...new Set(paymentTxns.map(pt => pt.riderId).filter(Boolean))] as string[]
+      : [];
+    const riders = riderIds.length
+      ? await this.riderRepo.find({
+          where: {id: {inq: riderIds}},
+          fields: {id: true, firstName: true, lastName: true},
+        })
+      : [];
+    const riderById = new Map(riders.map(rider => [rider.id, rider]));
+    const userIds = [...new Set([
+      ...customers.map(c => c.userId),
+      ...(params.includePaymentCollector ? paymentTxns.map(pt => pt.collectedByUserId) : []),
+    ].filter(Boolean))] as string[];
     const users = userIds.length
       ? await this.userRepo.find({
           where: {id: {inq: userIds}} as any,
-          fields: {id: true, phone: true, countryCode: true} as any,
+          fields: {id: true, phone: true, countryCode: true, fullName: true, username: true} as any,
         })
       : [];
 
@@ -5305,7 +5322,7 @@ export class OrderService {
       orderItems.length
         ? this.garmentRepo.find({
             where: {orderItemId: {inq: orderItems.map(item => item.id)}, isDeleted: false},
-            fields: {id: true, orderItemId: true},
+            fields: {id: true, orderItemId: true, status: true},
           })
         : Promise.resolve([]),
       this.getInvoicedOrderIds(orderIds),
@@ -5326,6 +5343,7 @@ export class OrderService {
     });
     const customerApprovalOrders = new Set<string>();
     const chequeApprovalOrders = new Set<string>();
+    const pendingDamageGarments = new Set<string>();
     for (const approval of pendingApprovals) {
       const orderId =
         approval.entityType === 'order'
@@ -5342,6 +5360,17 @@ export class OrderService {
       ) {
         chequeApprovalOrders.add(orderId);
       }
+      if (approval.type === ApprovalRequestType.ITEM_DAMAGED && approval.entityType === 'garment') {
+        pendingDamageGarments.add(approval.entityId);
+      }
+    }
+    const garmentsByOrder = new Map<string, typeof garments>();
+    for (const garment of garments) {
+      const orderId = orderIdByItem.get(garment.orderItemId);
+      if (!orderId) continue;
+      const list = garmentsByOrder.get(orderId) ?? [];
+      list.push(garment);
+      garmentsByOrder.set(orderId, list);
     }
 
     // Pieces in the order (3 shirts + 1 trouser = 4), not the number of item rows.
@@ -5363,7 +5392,7 @@ export class OrderService {
     const paymentsByOrder = new Map<string, number>();
     const lastPaymentByOrder = new Map<
       string,
-      {mode: string | null; paidAt: Date | null}
+      {mode: string | null; paidAt: Date | null; riderId?: string; collectedByUserId?: string}
     >();
     for (const pt of paymentTxns) {
       // Refund entries are money out — excluded from amount collected.
@@ -5382,6 +5411,8 @@ export class OrderService {
         lastPaymentByOrder.set(pt.orderId, {
           mode: (pt as any).paymentMode ?? null,
           paidAt,
+          riderId: pt.riderId,
+          collectedByUserId: pt.collectedByUserId,
         });
       }
     }
@@ -5389,6 +5420,11 @@ export class OrderService {
     const rows = orders.map(order => {
       const customer = customerMap.get(order.customerId);
       const user = customer ? userMap.get(customer.userId) : undefined;
+      const lastPayment = lastPaymentByOrder.get(order.id);
+      const rider = lastPayment?.riderId ? riderById.get(lastPayment.riderId) : null;
+      const collector = lastPayment?.collectedByUserId
+        ? userMap.get(lastPayment.collectedByUserId)
+        : null;
       const txnCollected = paymentsByOrder.get(order.id) ?? 0;
       const allocPay = Number(order.allocatedPayment ?? 0);
       const isChildOrder = !!(order as any).parentOrderId;
@@ -5404,6 +5440,18 @@ export class OrderService {
           : txnCollected;
       const totalAmount = Number(order.totalAmount ?? 0);
       const balanceDue = rupeeBalance(totalAmount, totalCollected);
+      const orderGarments = garmentsByOrder.get(order.id) ?? [];
+      const deliverableGarments = orderGarments.filter(garment =>
+        ![GarmentStatus.DAMAGED, GarmentStatus.RETURNED_TO_CUSTOMER].includes(garment.status!),
+      );
+      const canHandoverItems = !orderGarments.length || (
+        !orderGarments.some(garment => pendingDamageGarments.has(garment.id)) &&
+        deliverableGarments.length > 0 &&
+        deliverableGarments.every(garment =>
+          [GarmentStatus.READY, GarmentStatus.OUT_FOR_DELIVERY, GarmentStatus.DELIVERED]
+            .includes(garment.status ?? GarmentStatus.RECEIVED),
+        )
+      );
 
       const paymentStatus = resolveOrderPaymentStatus(
         totalAmount,
@@ -5444,6 +5492,7 @@ export class OrderService {
         storeCode: storeById.get((order as any).storeId)?.code ?? null,
         orderItemsCount: itemsCountByOrder.get(order.id) ?? 0,
         hasRejectedItems: hasRejectedItemsByOrder.has(order.id),
+        canHandoverItems,
         subtotal: order.subtotal,
         discountAmount: order.discountAmount,
         couponCode: order.couponCode ?? null,
@@ -5455,8 +5504,16 @@ export class OrderService {
         totalCollected,
         balanceDue,
         paymentStatus,
-        lastPaymentMode: lastPaymentByOrder.get(order.id)?.mode ?? null,
-        lastPaidAt: lastPaymentByOrder.get(order.id)?.paidAt ?? null,
+        lastPaymentMode: lastPayment?.mode ?? null,
+        lastPaidAt: lastPayment?.paidAt ?? null,
+        ...(params.includePaymentCollector ? {
+          lastPaymentCollectorType: lastPayment?.riderId
+            ? 'rider'
+            : lastPayment?.collectedByUserId ? 'counter' : null,
+          lastPaymentCollectorName: rider
+            ? [rider.firstName, rider.lastName].filter(Boolean).join(' ')
+            : collector?.fullName || collector?.username || null,
+        } : {}),
         parentOrderId: (order as any).parentOrderId ?? null,
         parentOrderNumber: (order as any).parentOrderId
           ? (parentOrderMap.get((order as any).parentOrderId) ?? null)
@@ -7726,8 +7783,11 @@ export class OrderService {
             transactionReference: payment.transactionReference,
             gatewayResponse: payment.gatewayResponse,
             paymentDate: new Date(),
+            ...(riderId
+              ? {riderId}
+              : {collectedByUserId: _performedBy === 'system' ? undefined : _performedBy}),
             ...(riderId && payment.paymentMode === PaymentMode.CASH
-              ? {riderId, riderHandoverStatus: 'with_rider'}
+              ? {riderHandoverStatus: 'with_rider'}
               : {}),
           },
           {transaction: tx},

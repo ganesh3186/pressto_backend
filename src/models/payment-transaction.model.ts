@@ -7,6 +7,7 @@ import {PaymentMode} from './payment-mode.enum';
     indexes: {
       paymentTransactionOrderId: {keys: ['orderId']},
       paymentTransactionPaymentDate: {keys: ['paymentDate']},
+      paymentTransactionCashShiftId: {keys: ['cashShiftId']},
     },
   },
 })
@@ -50,6 +51,10 @@ export class PaymentTransaction extends Entity {
   // payment in the system (POS counter, online, etc.).
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   riderId?: string;
+
+  // Staff account that recorded a counter payment; absent for older/online payments.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  collectedByUserId?: string;
 
   // 'with_rider' | 'submitted' | 'handed_over' — only meaningful when
   // riderId is set, and only for CASH (wallet/UPI/card settle instantly,

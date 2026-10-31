@@ -6,7 +6,12 @@ import {Entity, model, property} from '@loopback/repository';
 // OrderItemAdditionalCharge, so later catalog price changes don't drift
 // historical orders.
 @model({
-  settings: {postgresql: {table: 'garment_additional_service', schema: 'public'}},
+  settings: {
+    postgresql: {table: 'garment_additional_service', schema: 'public'},
+    indexes: {
+      garmentAdditionalServiceGarmentId: {keys: ['garmentId']},
+    },
+  },
 })
 export class GarmentAdditionalService extends Entity {
   @property({type: 'string', id: true, generated: false, postgresql: {dataType: 'uuid'}})

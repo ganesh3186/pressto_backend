@@ -1,6 +1,7 @@
 import {expect} from '@loopback/testlab';
 import {ApprovalRequest} from '../models/approval-request.model';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {
   GARMENT_STATUS_TRANSITIONS,
   GarmentStatus,
@@ -9,6 +10,22 @@ import {
 import {ApprovalService} from '../services/approval.service';
 
 describe('damage approval status', () => {
+  it('does not reopen an old decision after a newer damage request exists', async () => {
+    const service = Object.assign(Object.create(ApprovalService.prototype), {
+      approvalRequestRepo: {
+        findById: async () => ({
+          id: 'old', type: ApprovalRequestType.ITEM_DAMAGED,
+          entityType: 'garment', entityId: 'garment-1',
+          status: ApprovalRequestStatus.REJECTED,
+        }),
+        findOne: async () => ({id: 'new'}),
+      },
+    }) as ApprovalService;
+
+    await expect(service.revert({requestId: 'old', performedBy: 'staff-1'}))
+      .to.be.rejectedWith(/Only the latest request of this type/);
+  });
+
   it('resumes the stage before damage when an approval was reverted and rejected', async () => {
     let restored: GarmentStatus | undefined;
     const service = Object.assign(Object.create(ApprovalService.prototype), {

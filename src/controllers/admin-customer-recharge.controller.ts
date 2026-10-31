@@ -11,12 +11,12 @@ import {
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
-import {PaymentMode} from '../models/payment-mode.enum';
+import {ADMIN_WALLET_RECHARGE_MODES, PaymentMode} from '../models/payment-mode.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {ShiftRepository} from '../repositories';
 import {SecurityDepositService} from '../services/security-deposit.service';
 import {StoreScopeService} from '../services/store-scope.service';
-import {WalletService} from '../services/wallet.service';
+import {roundWalletRechargeAmount, WalletService} from '../services/wallet.service';
 
 export class AdminCustomerRechargeController {
   constructor(
@@ -76,8 +76,8 @@ export class AdminCustomerRechargeController {
             type: 'object',
             required: ['amount', 'paymentMode'],
             properties: {
-              amount: {type: 'number', minimum: 1},
-              paymentMode: {type: 'string', enum: Object.values(PaymentMode)},
+              amount: {type: 'number', minimum: 0},
+              paymentMode: {type: 'string', enum: ADMIN_WALLET_RECHARGE_MODES},
               remarks: {type: 'string'},
               storeId: {
                 type: 'string',
@@ -130,7 +130,7 @@ export class AdminCustomerRechargeController {
             type: 'object',
             required: ['amount'],
             properties: {
-              amount: {type: 'number', minimum: 1},
+              amount: {type: 'number', minimum: 0},
               remarks: {type: 'string'},
               storeId: {
                 type: 'string',
@@ -146,7 +146,7 @@ export class AdminCustomerRechargeController {
     const {storeId, shiftId} = await this.requireOpenShiftForRecharge(currentUser, body.storeId);
     const rechargeRequest = await this.walletService.initiateRecharge(
       customerId,
-      body.amount,
+      roundWalletRechargeAmount(body.amount),
       PaymentMode.GATEWAY,
       body.remarks,
       storeId,

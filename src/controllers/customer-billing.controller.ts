@@ -11,6 +11,8 @@ import {PaymentTransaction} from '../models/payment-transaction.model';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
 import {Order} from '../models/order.model';
 import {OrderStatus} from '../models/order-status.enum';
+import {ApprovalRequestType} from '../models/approval-request-type.enum';
+import {ApprovalRequestStatus} from '../models/approval-request-status.enum';
 import {
   CustomerRepository,
   InvoiceOrderLinkRepository,
@@ -52,6 +54,23 @@ export class CustomerBillingController {
     @inject('services.payment') private paymentService: PaymentService,
     @inject('services.order') private orderService: OrderService,
   ) {}
+
+  private async ordersWithPendingDamage(orderIds: string[]): Promise<Set<string>> {
+    if (!orderIds.length) return new Set();
+    const rows = await this.dataSource.execute(
+      `SELECT DISTINCT oi.orderid
+       FROM public.approval_request approval
+       JOIN public.garment garment ON garment.id = approval.entityid
+       JOIN public.order_item oi ON oi.id = garment.orderitemid
+       WHERE oi.orderid = ANY($1::uuid[])
+         AND approval.entitytype = 'garment'
+         AND approval.type = $2
+         AND approval.status = $3
+         AND garment.isdeleted = false`,
+      [orderIds, ApprovalRequestType.ITEM_DAMAGED, ApprovalRequestStatus.PENDING],
+    ) as Array<{orderid: string}>;
+    return new Set(rows.map(row => row.orderid));
+  }
 
   /**
    * A customer's own invoiceSpanDays wins when set; otherwise the global
@@ -302,6 +321,7 @@ export class CustomerBillingController {
               transactionReference: body.referenceNumber,
               gatewayResponse: paymentNote,
               paymentDate: new Date(),
+              collectedByUserId: currentUser[securityId],
             } as any,
             {transaction: tx}
           );
@@ -385,7 +405,9 @@ export class CustomerBillingController {
       const when = new Date(o.createdAt as Date).getTime();
       return when >= fromTime && when <= toTime;
     };
-    const billable = orders.filter(o => isBillableOnAccountOrder(o) && !invoicedOrderIds.has(o.id) && inRange(o));
+    const candidates = orders.filter(o => isBillableOnAccountOrder(o) && !invoicedOrderIds.has(o.id) && inRange(o));
+    const blocked = await this.ordersWithPendingDamage(candidates.map(o => o.id));
+    const billable = candidates.filter(o => !blocked.has(o.id));
     if (!billable.length) return {billableOrders: [], totalDue: 0};
 
     const payments = await this.paymentRepo.find({
@@ -469,6 +491,12 @@ export class CustomerBillingController {
     if (notBillable.length) {
       throw new HttpErrors.BadRequest(
         `Only processing-complete On Account orders can be billed. Not eligible: ${notBillable.map(o => (o as any).orderNumber).join(', ')}`,
+      );
+    }
+    const blocked = await this.ordersWithPendingDamage(orderIds);
+    if (blocked.size) {
+      throw new HttpErrors.BadRequest(
+        `Resolve pending damage approval before billing: ${orders.filter(o => blocked.has(o.id)).map(o => (o as any).orderNumber).join(', ')}`,
       );
     }
 

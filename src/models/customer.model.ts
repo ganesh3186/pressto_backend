@@ -27,6 +27,19 @@ import {CustomerPersona} from './customer-persona.enum';
         keys: ['userId'],
         options: {unique: true},
       },
+      // Name / code search uses ILIKE '%q%', which only a trigram index can serve.
+      customerFirstNameTrgm: {
+        keys: 'firstName gin_trgm_ops',
+        type: 'gin',
+      },
+      customerLastNameTrgm: {
+        keys: 'lastName gin_trgm_ops',
+        type: 'gin',
+      },
+      customerCustomerCodeTrgm: {
+        keys: 'customerCode gin_trgm_ops',
+        type: 'gin',
+      },
     },
   },
 })

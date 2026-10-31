@@ -11,7 +11,15 @@ const config = {
   user: process.env.PG_USER,
   password: process.env.PG_PASSWORD,
   database: process.env.PG_DATABASE,
-  debug: true
+  debug: true,
+  // Previously unset, so pg.Pool defaulted to max:10 and no connection
+  // timeout — once all 10 were busy (slow unindexed queries, wildcard
+  // searches), every other request queued forever with no error, looking
+  // like the whole app had hung. A bounded wait at least fails fast and
+  // surfaces in logs instead of hanging the UI indefinitely.
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 };
 
 

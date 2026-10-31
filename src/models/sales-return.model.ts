@@ -11,6 +11,10 @@ export enum SalesReturnStatus {
     postgresql: {table: 'sales_return', schema: 'public'},
     indexes: {
       uniqueCreditNoteNumber: {keys: ['creditNoteNumber'], options: {unique: true}},
+      // Already in the DB; declared so `npm run migrate` doesn't drop it.
+      idx_sales_return_orderid: {keys: ['orderId']},
+      salesReturnInvoiceId: {keys: ['invoiceId']},
+      salesReturnCustomerId: {keys: ['customerId']},
     },
   },
 })

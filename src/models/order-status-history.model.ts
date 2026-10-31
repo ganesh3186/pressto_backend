@@ -2,7 +2,13 @@ import {Entity, model, property} from '@loopback/repository';
 import {OrderStatus} from './order-status.enum';
 
 @model({
-  settings: {postgresql: {table: 'order_status_history', schema: 'public'}},
+  settings: {
+    postgresql: {table: 'order_status_history', schema: 'public'},
+    indexes: {
+      // Status-as-of lookups for a single order (reinstating a return, timelines).
+      orderStatusHistoryOrderIdChangedAt: {keys: ['orderId', 'changedAt']},
+    },
+  },
 })
 export class OrderStatusHistory extends Entity {
   @property({type: 'string', id: true, generated: false, postgresql: {dataType: 'uuid'}})

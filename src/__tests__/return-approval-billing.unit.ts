@@ -179,7 +179,7 @@ describe('return approval billing', () => {
       createdAt: new Date(request.createdAt!.getTime() - 1000),
     });
     await expect(service.revert({requestId: 'older-return', performedBy: 'user-2'}))
-      .to.be.rejectedWith(/Only the latest Return Item request/);
+      .to.be.rejectedWith(/Only the latest request of this type/);
   });
 
   it('keeps the returned item and its charge removed after ticket payment succeeds', async () => {

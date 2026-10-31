@@ -11,6 +11,9 @@ import {Entity, model, property} from '@loopback/repository';
         keys: {rolesId: 1, usersId: 1},
         options: {unique: true},
       },
+      // Login / whoAmI resolve a user's roles by usersId alone, which the
+      // (rolesId, usersId) unique index above can't serve.
+      userRolesUsersId: {keys: ['usersId']},
     },
   },
 })

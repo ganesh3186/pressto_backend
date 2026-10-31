@@ -7,6 +7,11 @@ import {Customer} from './customer.model';
       table: 'customer_phone',
       schema: 'public',
     },
+    indexes: {
+      // Exact-match login lookup (customer-auth.controller).
+      customerPhonePhoneCountryCode: {keys: ['phone', 'countryCode']},
+      customerPhoneCustomerId: {keys: ['customerId']},
+    },
   },
 })
 export class CustomerPhone extends Entity {

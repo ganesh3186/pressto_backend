@@ -62,7 +62,13 @@ describe('shift collections from riders', () => {
         },
       },
       walletRechargeRequestRepository: {
-        find: async () => [{paymentMode: 'cash', amount: 25}],
+        find: async () => [
+          {paymentMode: 'cash', amount: 25},
+          {paymentMode: 'card', amount: 30},
+          {paymentMode: 'upi', amount: 40},
+          {paymentMode: 'net_banking', amount: 50},
+          {paymentMode: 'pp_voucher', amount: 12},
+        ],
       },
       pettyCashService: {computeWindowActivity: async () => ({})},
       resolveRevenue: async () => ({
@@ -89,6 +95,7 @@ describe('shift collections from riders', () => {
       'shift-a',
     )) as {
       collections: {cash: number};
+      walletCollections: {cash: number; card: number; upi: number; netBanking: number; ppVoucher: number};
       cashReceived: number;
       reimbursement: number;
       orderSummary: {
@@ -112,6 +119,13 @@ describe('shift collections from riders', () => {
       paymentDate: {between: [openedAt, closedAt]},
     });
     expect(result.collections.cash).to.equal(170.5);
+    expect(result.walletCollections).to.deepEqual({
+      cash: 25,
+      card: 30,
+      upi: 40,
+      netBanking: 50,
+      ppVoucher: 12,
+    });
     expect(result.cashReceived).to.equal(195.5);
     expect(result.reimbursement).to.equal(50);
     expect(summaryFilter).to.deepEqual({
@@ -448,6 +462,7 @@ describe('shift revenue after sales returns', () => {
 
     await controller.close({} as UserProfile, 'shift-a', {
       remarks: 'done',
+      cardPgSettlement: {actualSettlement: 0},
       revenue: {pressto: {revenue: 0}},
       salesReturn: {pressto: {revenue: 0}},
     } as Parameters<ShiftController['close']>[2]);

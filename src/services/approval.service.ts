@@ -2547,14 +2547,12 @@ export class ApprovalService {
         'This request is still pending — there is nothing to revert.',
       );
     }
-    if (request.type === ApprovalRequestType.RETURN_ITEM) {
-      const latest = await this.approvalRequestRepo.findOne({
-        where: {type: request.type, entityType: request.entityType, entityId: request.entityId},
-        order: ['createdAt DESC'],
-      });
-      if (latest?.id !== request.id) {
-        throw new HttpErrors.BadRequest('Only the latest Return Item request can be undone.');
-      }
+    const latest = await this.approvalRequestRepo.findOne({
+      where: {type: request.type, entityType: request.entityType, entityId: request.entityId},
+      order: ['createdAt DESC'],
+    });
+    if (latest?.id !== request.id) {
+      throw new HttpErrors.BadRequest('Only the latest request of this type can be undone.');
     }
 
     const previousStatus = request.status;
