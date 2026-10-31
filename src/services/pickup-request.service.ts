@@ -3,7 +3,7 @@ import {DataObject, IsolationLevel, repository} from '@loopback/repository';
 import {PresstoDataSource} from '../datasources';
 import {PickupRequest} from '../models';
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
-import {PickupRequestRepository} from '../repositories';
+import {ItemCategoryRepository, PickupRequestRepository, ServiceCategoryRepository, ServiceRepository} from '../repositories';
 import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
 
 /** Shared customer/admin/rider pickup operations; repositories only persist data. */
@@ -12,11 +12,35 @@ export class PickupRequestService {
   constructor(
     @repository(PickupRequestRepository)
     private pickupRepository: PickupRequestRepository,
+    @repository(ItemCategoryRepository) private itemCategoryRepository: ItemCategoryRepository,
+    @repository(ServiceCategoryRepository) private serviceCategoryRepository: ServiceCategoryRepository,
+    @repository(ServiceRepository) private serviceRepository: ServiceRepository,
     @inject('services.whatsapp') private whatsAppService: WhatsAppService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
   async createRequest(data: DataObject<PickupRequest>): Promise<PickupRequest> {
+    if (data.itemCategoryEstimate?.length) {
+      const categoryIds = [...new Set(data.itemCategoryEstimate.map(line => line?.itemCategoryId)
+        .filter((id): id is string => Boolean(id)))];
+      const serviceIds = [...new Set(data.itemCategoryEstimate.map(line => line?.serviceId)
+        .filter((id): id is string => Boolean(id)))];
+      const [itemCategories, serviceCategories, services] = await Promise.all([
+        this.itemCategoryRepository.find({where: {id: {inq: categoryIds}} as object}),
+        this.serviceCategoryRepository.find({where: {id: {inq: categoryIds}} as object}),
+        serviceIds.length ? this.serviceRepository.find({where: {id: {inq: serviceIds}} as object}) : [],
+      ]);
+      const categoryNames = new Map([
+        ...serviceCategories.map(category => [category.id, category.name] as const),
+        ...itemCategories.map(category => [category.id, category.name] as const),
+      ]);
+      const serviceNames = new Map(services.map(service => [service.id, service.name]));
+      data.itemCategoryEstimate = data.itemCategoryEstimate.map(line => line ? ({
+        ...line,
+        itemCategoryName: line.itemCategoryId ? categoryNames.get(line.itemCategoryId) ?? null : null,
+        serviceName: line.serviceId ? serviceNames.get(line.serviceId) ?? null : null,
+      }) : line);
+    }
     const pickup = await this.pickupRepository.create(data);
     dispatchWhatsApp(() =>
       this.whatsAppService.notifyPickup(pickup.id, 'created'),

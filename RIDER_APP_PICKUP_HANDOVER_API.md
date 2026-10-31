@@ -162,7 +162,7 @@ number:
         { "serviceId": "uuid", "serviceName": "Clean", "quantity": 2, "deliverySpeed": "express" }
       ],
       "itemCategoryEstimate": [
-        { "itemCategoryId": "uuid", "quantity": 2, "serviceId": "uuid", "deliverySpeed": "standard" }
+        { "itemCategoryId": "uuid", "itemCategoryName": "Carpet", "quantity": 2, "serviceId": "uuid", "serviceName": "Carpet Clean", "deliverySpeed": "standard" }
       ],
       "remarks": "Leave with security if not home",
       "mediaIds": []
@@ -175,6 +175,8 @@ number:
   pre-arrival guess (collected at booking, can be stale) — only fall back
   to it if `actualItemsByService` is empty or a line's `deliverySpeed`
   wasn't sent.
+- New pickup requests preserve the selected `itemCategoryName` and `serviceName`
+  in each estimate line; older requests resolve names from the current masters.
 - `deliverySpeed` on `actualItemsByService` is optional — a rider app that
   hasn't been updated yet may omit it. Treat a missing speed as
   **unconfirmed, not `standard`** — don't silently assume; ask the
