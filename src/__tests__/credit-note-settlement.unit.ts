@@ -161,6 +161,7 @@ function setup(paid = 750) {
             orderId: params.orderId,
             amount: params.amount,
             transactionType: 'refund',
+            method: params.method,
           });
           if (params.method === 'wallet') state.wallet += params.amount;
           if (failPayout) throw new Error('payout failed');
@@ -169,21 +170,48 @@ function setup(paid = 750) {
       },
     },
   );
-  const request = async (item = 2, preview = false) =>
+  const request = async (
+    item = 2,
+    preview = false,
+    refundMethod: 'wallet' | 'cash' | 'bank_account' = 'wallet',
+  ) =>
     controller.create(
       user,
       'order',
       {
         reason: 'Service disputed',
+        refundMethod,
+        ...(refundMethod === 'bank_account'
+          ? {
+              bankDetails: {
+                accountHolderName: 'Test Customer',
+                bankName: 'Test Bank',
+                accountNumber: '00000000',
+                ifscCode: 'TEST0000000',
+              },
+            }
+          : {}),
         returnedItems: [
           {orderItemId: `item-${item}`, quantity: 1, amount: 999999},
         ],
       },
       preview,
     ) as Promise<any>;
+  // Emulate records created before immediate settlement was introduced.
+  const pendingRequest = async (item = 2) => {
+    const target = controller as any;
+    const apply = target.applyCreditNote;
+    target.applyCreditNote = async () => ({});
+    try {
+      return await request(item);
+    } finally {
+      target.applyCreditNote = apply;
+    }
+  };
   return {
     controller,
     request,
+    pendingRequest,
     state: () => state,
     failPayout: () => {
       failPayout = true;
@@ -207,8 +235,9 @@ describe('invoiced credit-note settlement', () => {
   it('settles 1000 with 750 received and 250 credit, preserving the invoice', async () => {
     const test = setup();
     const result = await test.request();
-    await test.controller.approve(user, result.salesReturn.id);
     const state = test.state();
+    expect(result.salesReturn.status).to.equal('approved');
+    expect(result.salesReturn.resolvedBy).to.equal('staff');
     expect(state.orders[0].totalAmount).to.equal(750);
     expect(state.invoices[0].totalAmount).to.equal(1000);
     expect(state.invoices[0].balanceDue).to.equal(0);
@@ -223,8 +252,7 @@ describe('invoiced credit-note settlement', () => {
 
   it('keeps the remaining 50 payable when only 700 was received', async () => {
     const test = setup(700);
-    const result = await test.request();
-    await test.controller.approve(user, result.salesReturn.id);
+    await test.request();
     expect(test.state().invoices[0].balanceDue).to.equal(50);
     expect(test.state().wallet).to.equal(0);
   });
@@ -232,8 +260,7 @@ describe('invoiced credit-note settlement', () => {
   it('refunds only the excess, including a partially paid ticket overpaid after credit', async () => {
     for (const paid of [900, 1000]) {
       const test = setup(paid);
-      const result = await test.request();
-      await test.controller.approve(user, result.salesReturn.id);
+      await test.request();
       expect(test.state().wallet).to.equal(paid - 750);
       expect(test.state().invoices[0].totalAmount).to.equal(1000);
       expect(test.state().invoices[0].balanceDue).to.equal(0);
@@ -242,7 +269,7 @@ describe('invoiced credit-note settlement', () => {
 
   it('rechecks payments received while approval was pending', async () => {
     const test = setup();
-    const result = await test.request();
+    const result = await test.pendingRequest();
     test.state().payments.push({
       orderId: 'order',
       amount: 250,
@@ -254,7 +281,7 @@ describe('invoiced credit-note settlement', () => {
 
   it('rejects repeat approvals and serializes concurrent approvals without duplicate refunds', async () => {
     const test = setup(1000);
-    const result = await test.request();
+    const result = await test.pendingRequest();
     const outcomes = await Promise.allSettled([
       test.controller.approve(user, result.salesReturn.id),
       test.controller.approve(user, result.salesReturn.id),
@@ -267,7 +294,7 @@ describe('invoiced credit-note settlement', () => {
 
   it('rolls all financial and garment changes back if payout fails', async () => {
     const test = setup(1000);
-    const result = await test.request();
+    const result = await test.pendingRequest();
     test.failPayout();
     await expect(
       test.controller.approve(user, result.salesReturn.id),
@@ -280,13 +307,11 @@ describe('invoiced credit-note settlement', () => {
 
   it('reserves pending quantities, releases rejected requests, and supports multiple credits', async () => {
     const test = setup(1000);
-    const first = await test.request();
+    const first = await test.pendingRequest();
     await expect(test.request()).to.be.rejected();
     await test.controller.reject(user, first.salesReturn.id);
-    const replacement = await test.request();
-    await test.controller.approve(user, replacement.salesReturn.id);
-    const second = await test.request(0);
-    await test.controller.approve(user, second.salesReturn.id);
+    await test.request();
+    await test.request(0);
     expect(test.state().orders[0].totalAmount).to.equal(450);
     expect(test.state().wallet).to.equal(550);
     expect(test.state().invoices[0].totalAmount).to.equal(1000);
@@ -304,8 +329,7 @@ describe('invoiced credit-note settlement', () => {
   it('fully credits an unpaid invoice without creating a refund', async () => {
     const test = setup(0);
     for (const item of [0, 1, 2]) {
-      const result = await test.request(item);
-      await test.controller.approve(user, result.salesReturn.id);
+      await test.request(item);
     }
     expect(test.state().orders[0].totalAmount).to.equal(0);
     expect(test.state().invoices[0].balanceDue).to.equal(0);
@@ -320,8 +344,7 @@ describe('invoiced credit-note settlement', () => {
     test.state().invoices[0].subtotal = 999.99;
     for (const item of test.state().invoices[0].items) item.totalPrice = 333.33;
     for (const item of [0, 1, 2]) {
-      const result = await test.request(item);
-      await test.controller.approve(user, result.salesReturn.id);
+      await test.request(item);
     }
     expect(
       test
@@ -335,13 +358,70 @@ describe('invoiced credit-note settlement', () => {
   it('exposes the credited balance to the delivery payment guard', async () => {
     for (const paid of [700, 750]) {
       const test = setup(paid);
-      const result = await test.request();
-      await test.controller.approve(user, result.salesReturn.id);
+      await test.request();
       const service = Object.assign(Object.create(OrderService.prototype), {
         paymentTransactionRepo: {find: async () => test.state().payments},
       }) as OrderService;
       const balance = await service.computeBalanceDue(test.state().orders[0]);
       expect(balance.due).to.equal(paid === 700 ? 50 : 0);
+    }
+  });
+
+  it('rolls back creation as well as money and garment updates if immediate payout fails', async () => {
+    const test = setup(1000);
+    test.failPayout();
+    await expect(test.request()).to.be.rejectedWith('payout failed');
+    expect(test.state().notes.length).to.equal(0);
+    expect(test.state().orders[0].totalAmount).to.equal(1000);
+    expect(test.state().invoices[0].balanceDue).to.equal(0);
+    expect(test.state().garments[2].status).to.equal('ready');
+    expect(test.state().wallet).to.equal(0);
+    expect(test.state().payments.length).to.equal(1);
+  });
+
+  it('serializes simultaneous submissions so a piece and refund are applied once', async () => {
+    const test = setup(1000);
+    const results = await Promise.allSettled([test.request(), test.request()]);
+    expect(
+      results.filter(result => result.status === 'fulfilled').length,
+    ).to.equal(1);
+    expect(test.state().notes.length).to.equal(1);
+    expect(test.state().wallet).to.equal(250);
+  });
+
+  it('keeps automatically applied credits as approved history with no approve or reject mutation', async () => {
+    const test = setup(1000);
+    const result = await test.request();
+    await expect(
+      test.controller.approve(user, result.salesReturn.id),
+    ).to.be.rejectedWith(/already approved/);
+    await expect(
+      test.controller.reject(user, result.salesReturn.id),
+    ).to.be.rejectedWith(/already approved/);
+    expect(test.state().notes[0].status).to.equal('approved');
+    expect(test.state().wallet).to.equal(250);
+    expect(test.state().orders[0].totalAmount).to.equal(750);
+  });
+
+  it('immediately records the selected cash or bank refund without a wallet credit', async () => {
+    for (const method of ['cash', 'bank_account'] as const) {
+      const test = setup(1000);
+      const result = await test.request(2, false, method);
+      expect(result.salesReturn).to.containEql({
+        status: 'approved',
+        refundAmount: 250,
+        creditAppliedAs: method,
+      });
+      expect(test.state().wallet).to.equal(0);
+      expect(
+        test
+          .state()
+          .payments.filter(
+            (payment: any) => payment.transactionType === 'refund',
+          ),
+      ).to.eql([
+        {orderId: 'order', amount: 250, transactionType: 'refund', method},
+      ]);
     }
   });
 
