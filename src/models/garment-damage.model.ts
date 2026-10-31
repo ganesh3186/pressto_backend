@@ -2,7 +2,12 @@ import {Entity, hasMany, model, property} from '@loopback/repository';
 import {GarmentDamageImage} from './garment-damage-image.model';
 
 @model({
-  settings: {postgresql: {table: 'garment_damage', schema: 'public'}},
+  settings: {
+    postgresql: {table: 'garment_damage', schema: 'public'},
+    indexes: {
+      garmentDamageGarmentId: {keys: ['garmentId']},
+    },
+  },
 })
 export class GarmentDamage extends Entity {
   @property({type: 'string', id: true, generated: false, postgresql: {dataType: 'uuid'}})

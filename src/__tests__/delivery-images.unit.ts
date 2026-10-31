@@ -180,6 +180,7 @@ describe('Delivery Management list', () => {
       orderItemRepo: {find: async () => [{id: 'item-1', orderId: 'returned', quantity: 1}]},
       garmentRepo: {find: async () => [{id: 'garment-1', orderItemId: 'item-1'}]},
       invoiceRepo: {find: async () => [{orderId: 'ordinary'}]},
+      invoiceOrderLinkRepo: {find: async () => [{orderId: 'on-account'}]},
       approvalRequestRepo: {
         find: async () => [
           {type: 'upgrade_service', entityType: 'garment', entityId: 'garment-1'},
@@ -199,10 +200,11 @@ describe('Delivery Management list', () => {
         paymentStatus: 'paid',
         hasPendingCustomerApproval: true,
         canGenerateInvoice: true,
+        hasInvoice: false,
       },
-      {id: 'ordinary', deliveryStatus: null, deliveryReturnRemarks: null, canGenerateInvoice: false},
+      {id: 'ordinary', deliveryStatus: null, deliveryReturnRemarks: null, canGenerateInvoice: false, hasInvoice: true},
       {id: 'cheque', canGenerateInvoice: false},
-      {id: 'on-account', canGenerateInvoice: false},
+      {id: 'on-account', canGenerateInvoice: false, hasInvoice: true},
     ]);
   });
 });

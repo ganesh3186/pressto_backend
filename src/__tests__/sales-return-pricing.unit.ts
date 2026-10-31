@@ -17,10 +17,15 @@ describe('sales return pricing', () => {
   it('saves the selected garment and tax rates on a new credit note', async () => {
     let saved: Record<string, unknown> | undefined;
     const controller = Object.assign(Object.create(SalesReturnController.prototype), {
+      storeScopeService: {assertOrderVisible: async () => {}},
+      dataSource: {execute: async () => [{nextNumber: '1'}], beginTransaction: async () => ({commit: async () => {}, rollback: async () => {}})},
+      _previewCreditNote: async () => ({refundAmount: 432, newOrderTotal: 654, newBalanceDue: 0}),
+      applyCreditNote: async () => {},
+      approvalService: {calculateGarmentReturnAmount: async (id: string) => ({itemPrice: 192, additionalServiceCharge: id === 'garment-2' ? 201 : 402, addOnCharge: 0})},
       orderRepo: {findOne: async () => ({id: 'order-1', customerId: 'customer-1',
-        subtotal: 393, discountAmount: 0, totalAmount: 432})},
+        status: 'ready', subtotal: 987, discountAmount: 0, taxAmount: 98.7, totalAmount: 1086})},
       orderItemRepo: {find: async () => [{id: 'shirts', quantity: 2}]},
-      salesReturnRepo: {find: async () => [], count: async () => ({count: 0}),
+      salesReturnRepo: {find: async () => [], count: async () => ({count: 0}), findById: async () => saved,
         create: async (value: Record<string, unknown>) => { saved = value; return value; }},
       garmentRepo: {find: async () => [
         {id: 'garment-1', orderItemId: 'shirts', status: 'delivered'},
@@ -31,18 +36,18 @@ describe('sales return pricing', () => {
         garments: [{id: 'garment-1', additionalServices: [{amount: 402}]},
           {id: 'garment-2', additionalServices: [{amount: 201}]}]}]})},
       gstConfigRepo: {findOne: async () => ({cgstPercentage: 5, sgstPercentage: 5})},
-      invoiceRepo: {findOne: async () => null},
+      invoiceRepo: {findOne: async () => ({id: 'invoice-1', status: 'issued', subtotal: 987, totalAmount: 1086, cgst: 49.35, sgst: 49.35, items: [{orderItemId: 'shirts', quantity: 2, totalPrice: 987}]})},
       invoiceOrderLinkRepo: {findOne: async () => null},
       _isOrderPaid: async () => true,
     }) as SalesReturnController;
-    await controller.create({} as UserProfile, 'order-1', {returnedItems: [
+    await controller.create({} as UserProfile, 'order-1', {reason: 'Return', returnedItems: [
       {orderItemId: 'shirts', garmentId: 'garment-2', quantity: 1, amount: 393},
     ]});
     const line = (saved?.returnedItems as Array<Record<string, unknown>>)[0];
     expect(line.garmentId).to.equal('garment-2');
     expect(line.garmentSnapshot).to.containEql({id: 'garment-2'});
     expect(line).to.containEql({cgstRate: 5, sgstRate: 5});
-    expect(saved?.creditAmount).to.equal(432.3);
+    expect(saved?.creditAmount).to.equal(432);
   });
 
   it('shows a refund preview for every pending note on a ticket', async () => {
@@ -64,16 +69,35 @@ describe('sales return pricing', () => {
   });
 
   it('rejects a second sales return for an approved damaged garment', async () => {
-    const controller = Object.assign(Object.create(SalesReturnController.prototype), {
-      orderRepo: {findOne: async () => ({id: 'order-1'})},
-      orderItemRepo: {find: async () => [{id: 'item-1', itemId: 'catalog-1', quantity: 1}]},
-      salesReturnRepo: {find: async () => []},
-      garmentRepo: {find: async () => [{orderItemId: 'item-1', status: 'damaged'}]},
-      itemRepo: {find: async () => [{id: 'catalog-1', name: 'Shirt'}]},
-    }) as SalesReturnController;
+    const controller = Object.assign(
+      Object.create(SalesReturnController.prototype),
+      {
+        storeScopeService: {assertOrderVisible: async () => {}},
+        dataSource: {
+          execute: async () => [],
+          beginTransaction: async () => ({
+            commit: async () => {},
+            rollback: async () => {},
+          }),
+        },
+        invoiceRepo: {
+          findOne: async () => ({id: 'invoice-1', status: 'issued'}),
+        },
+        orderRepo: {findOne: async () => ({id: 'order-1', status: 'ready'})},
+        orderItemRepo: {
+          find: async () => [{id: 'item-1', itemId: 'catalog-1', quantity: 1}],
+        },
+        salesReturnRepo: {find: async () => []},
+        garmentRepo: {
+          find: async () => [{orderItemId: 'item-1', status: 'damaged'}],
+        },
+        itemRepo: {find: async () => [{id: 'catalog-1', name: 'Shirt'}]},
+      },
+    ) as SalesReturnController;
 
     try {
       await controller.create({} as UserProfile, 'order-1', {
+        reason: 'Damaged',
         returnedItems: [{orderItemId: 'item-1', quantity: 1, amount: 252}],
       });
       throw new Error('Expected a conflicting sales return');
@@ -89,6 +113,7 @@ describe('sales return pricing', () => {
     let returnedGarmentId: string | undefined;
     const invoice = {
       id: 'invoice-a',
+      status: 'issued',
       isConsolidated: true,
       subtotal: 200,
       totalAmount: 200,
@@ -121,6 +146,7 @@ describe('sales return pricing', () => {
         orderRepo: {
           findOne: async () => ({
             id: 'order-b',
+            status: 'ready',
             subtotal: 100,
             discountAmount: 0,
             totalAmount: 118,
@@ -145,7 +171,9 @@ describe('sales return pricing', () => {
             linkUpdate = value;
           },
         },
+        storeScopeService: {assertOrderVisible: async () => {}},
         dataSource: {
+          execute: async () => [],
           beginTransaction: async () => ({
             commit: async () => {},
             rollback: async () => {},
@@ -170,10 +198,9 @@ describe('sales return pricing', () => {
 
     await controller.approve({} as UserProfile, 'return-b');
     expect(invoiceUpdate).to.containEql({
-      subtotal: 170,
-      totalAmount: 170,
       balanceDue: 170,
     });
+    expect(invoice.totalAmount).to.equal(200);
     expect(linkUpdate).to.containEql({orderTotal: 70});
     expect(returnUpdate).to.containEql({invoiceId: invoice.id});
     expect(returnedGarmentId).to.equal('garment-b');

@@ -174,6 +174,10 @@ export class WhatsAppService {
     return process.env.WHATSAPP_ATTACHMENTS_ENABLED === 'true';
   }
 
+  private deliveryPaymentLinkEnabled(): boolean {
+    return process.env.WHATSAPP_DELIVERY_PAYMENT_LINK_ENABLED !== 'false';
+  }
+
   private phone(number: string, countryCode = '+91'): string | undefined {
     const input = number.trim();
     if (!/^[+\d\s()-]+$/.test(input)) return undefined;
@@ -337,6 +341,12 @@ export class WhatsAppService {
   async sendTemplateMessage(
     input: SendWhatsAppTemplateInput,
   ): Promise<boolean> {
+    if (
+      input.templateId ===
+        'pulse_ready_to_deliver_with_rider_details_with_paymentlink_221026' &&
+      !this.deliveryPaymentLinkEnabled()
+    )
+      return false;
     if (!this.configured()) return false;
     const spec = TEMPLATES[input.templateId];
     const to = this.phone(input.to);
@@ -824,6 +834,8 @@ export class WhatsAppService {
               media,
             };
           }
+          // Pause only unpaid assignment messages before preparing documents or links.
+          if (!this.deliveryPaymentLinkEnabled()) return undefined;
           // Reuse the existing gateway operation, without also sending its
           // separate payment-link template. Never invent a payment URL.
           const invoice = await this.invoice(order.id);

@@ -22,6 +22,12 @@ import {Media} from './media.model';
         keys: { countryCode: 1, phone: 1 },
         options: { unique: true },
       },
+      // Phone search (customer/rider lookups) uses ILIKE '%q%', which only a
+      // trigram index can serve.
+      usersPhoneTrgm: {
+        keys: 'phone gin_trgm_ops',
+        type: 'gin',
+      },
     },
   },
 })

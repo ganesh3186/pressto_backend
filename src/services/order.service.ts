@@ -74,6 +74,7 @@ import {
   DeliveryOrderRepository,
   DeliveryTypeConfigurationRepository,
   InvoiceRepository,
+  InvoiceOrderLinkRepository,
   IntakeRejectedItemRepository,
   ItemRepository,
   MediaRepository,
@@ -358,6 +359,8 @@ export class OrderService {
     @inject('services.notification')
     private notificationService: NotificationService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
+    @repository(InvoiceOrderLinkRepository)
+    private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
   ) {}
 
   // ─── Inspection ──────────────────────────────────────────────────────────
@@ -4421,10 +4424,9 @@ export class OrderService {
   // Records who collected the order at the counter and marks it delivered. This
   // is the no-rider dispatch path. Steps:
   //   1. order must be in a handover-eligible status
-  //   2. hard block if any balance is still due
-  //   3. resolve the collector (self | saved contact | ad-hoc, optionally saved)
-  //   4. write the order_handover record
-  //   5. order → delivered, and cascade every active garment → delivered
+  //   2. resolve the collector (self | saved contact | ad-hoc, optionally saved)
+  //   3. write the order_handover record
+  //   4. order → delivered, and cascade every active garment → delivered
 
   async handoverInStore(params: {
     orderId: string;
@@ -4457,49 +4459,7 @@ export class OrderService {
       where: {id: order.customerId, isDeleted: false},
     });
 
-    // 2. Hard block on outstanding balance. Refund entries are money out — not
-    // counted toward what the customer has paid. Waived only when THIS order
-    // was actually billed on account (order.isOnAccount) — they're billed
-    // later via one consolidated invoice covering several delivered orders,
-    // not per-order before handover. Deliberately NOT gated on the
-    // customer's general on-account eligibility: an eligible customer who
-    // chose Pay Later (or any other mode) for this specific order still
-    // owes it in full before it leaves the store, same as anyone else.
-    //
-    // Split-aware: a split order's payment lives in allocatedPayment, not a
-    // PaymentTransaction row of its own (see the same pattern at ~line 1636
-    // and the "Child orders carry no transaction records" comment further
-    // down this file) — falling back to the raw transaction sum here alone
-    // meant a fully-paid split fragment still read as owing its whole total.
-    const payments = await this.paymentTransactionRepo.find({
-      where: {orderId: params.orderId},
-    });
-    const paid = payments.reduce(
-      (s, p) =>
-        s +
-        ((p as any).transactionType === 'refund' ? 0 : Number(p.amount ?? 0)),
-      0,
-    );
-    // Same formula as computeBalanceDue() — a CHILD's collected amount is
-    // its allocatedPayment PLUS any direct payments of its own; a split
-    // PARENT's is allocatedPayment alone (keyed off hasBeenSplit, not
-    // allocatedPayment > 0 — a split that sent 100% of the pre-split
-    // payment to a child leaves the parent's allocatedPayment at exactly
-    // 0, and `> 0` reading that as "not split" fell back to the stale raw
-    // transaction sum, letting an unpaid split parent pass this gate).
-    const isChildOrder = !!order.parentOrderId;
-    const allocPay = Number(order.allocatedPayment ?? 0);
-    const collected = isChildOrder
-      ? allocPay + paid
-      : order.hasBeenSplit
-        ? allocPay
-        : paid;
-    const balanceDue = rupeeBalance(order.totalAmount, collected);
-    if (balanceDue > 0 && !order.isOnAccount) {
-      throw new HttpErrors.BadRequest(
-        `Cannot hand over: ₹${balanceDue} is still due. Collect the balance first.`,
-      );
-    }
+    // Delivery and collection are independent: any unpaid balance remains due.
 
     // Reject a second active handover on the same order.
     const existing = await this.orderHandoverRepo.findOne({
@@ -5358,17 +5318,14 @@ export class OrderService {
       parentOrders.map(o => [o.id, (o as any).orderNumber]),
     );
 
-    const [garments, invoices] = await Promise.all([
+    const [garments, invoicedOrders] = await Promise.all([
       orderItems.length
         ? this.garmentRepo.find({
             where: {orderItemId: {inq: orderItems.map(item => item.id)}, isDeleted: false},
             fields: {id: true, orderItemId: true, status: true},
           })
         : Promise.resolve([]),
-      this.invoiceRepo.find({
-        where: {orderId: {inq: orderIds}},
-        fields: {orderId: true},
-      }),
+      this.getInvoicedOrderIds(orderIds),
     ]);
     const orderIdByItem = new Map(orderItems.map(item => [item.id, item.orderId]));
     const orderIdByGarment = new Map(
@@ -5407,7 +5364,6 @@ export class OrderService {
         pendingDamageGarments.add(approval.entityId);
       }
     }
-    const invoicedOrders = new Set(invoices.map(invoice => invoice.orderId));
     const garmentsByOrder = new Map<string, typeof garments>();
     for (const garment of garments) {
       const orderId = orderIdByItem.get(garment.orderItemId);
@@ -5510,6 +5466,7 @@ export class OrderService {
         status: order.status,
         isOnAccount: order.isOnAccount ?? false,
         hasPendingCustomerApproval: customerApprovalOrders.has(order.id),
+        hasInvoice: invoicedOrders.has(order.id),
         canGenerateInvoice:
           !order.isOnAccount &&
           ['ready', 'partially_dispatched', 'out_for_delivery', 'delivered'].includes(order.status ?? '') &&
@@ -5647,6 +5604,8 @@ export class OrderService {
       splitChildren,
       orderLabelAssignments,
       couponRedemptions,
+      invoicedOrders,
+      creditNotes,
     ] = await Promise.all([
       this.orderItemRepo.find({where: {orderId}}),
       this.orderChargeRepo.find({where: {orderId}}),
@@ -5666,6 +5625,8 @@ export class OrderService {
         where: {orderId, isDeleted: false} as any,
       }),
       this.couponRedemptionRepo.find({where: {orderId, isReversed: false} as object}),
+      this.getInvoicedOrderIds([orderId]),
+      this.salesReturnRepo.find({where: {orderId, status: 'approved'} as object}),
     ]);
 
     const orderLabels = orderLabelAssignments.length
@@ -6143,6 +6104,10 @@ export class OrderService {
     return {
       order: {
         ...order,
+        hasInvoice: invoicedOrders.has(orderId),
+        creditNotesTotal: creditNotes.filter(note => (note.returnedItems ?? []).some(line =>
+          Boolean((line as {invoiceBasis?: unknown}).invoiceBasis ?? (line as {preservesInvoice?: boolean}).preservesInvoice)))
+          .reduce((sum, note) => sum + Number(note.creditAmount ?? 0), 0),
         createdByName,
         receivedByName: createdByName,
         couponRedemptions: couponRedemptions.map(row => ({
@@ -6597,6 +6562,30 @@ export class OrderService {
 
   // ─── Split Order ─────────────────────────────────────────────────────────
 
+  private async getInvoicedOrderIds(
+    orderIds: string[],
+    options?: Options,
+  ): Promise<Set<string>> {
+    if (!orderIds.length) return new Set();
+    const filter = {
+      where: {orderId: {inq: orderIds}},
+      fields: {orderId: true},
+    };
+    const [invoices, links] = await Promise.all([
+      this.invoiceRepo.find(filter, options),
+      this.invoiceOrderLinkRepo.find(filter, options),
+    ]);
+    return new Set([...invoices, ...links].map(row => row.orderId));
+  }
+
+  private async assertOrderNotInvoiced(orderId: string, options?: Options) {
+    if ((await this.getInvoicedOrderIds([orderId], options)).has(orderId)) {
+      throw new HttpErrors.Conflict(
+        'This ticket cannot be split because an invoice has already been generated.',
+      );
+    }
+  }
+
   async splitOrder(
     orderId: string,
     garmentIds: string[],
@@ -6615,6 +6604,7 @@ export class OrderService {
       where: {id: orderId, isDeleted: false},
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
+    await this.assertOrderNotInvoiced(orderId);
     if (
       order.status === OrderStatus.CANCELLED ||
       order.status === OrderStatus.DELIVERED
@@ -6958,6 +6948,12 @@ export class OrderService {
       isolationLevel: 'READ COMMITTED' as any,
     });
     try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+        [orderId],
+        {transaction: tx},
+      );
+      await this.assertOrderNotInvoiced(orderId, {transaction: tx});
       const now = new Date();
       const subOrderNumber = await this.resolveNextOrderNumber(order.storeId, tx);
 
