@@ -38,8 +38,8 @@ export enum HandoverCollectorType {
 @model({
   settings: {
     postgresql: {table: 'order_handover', schema: 'public'},
-    // One active handover per order. (isDeleted lets a mistaken handover be
-    // voided and redone without violating this.)
+    // One current handover per order. Completing a partial collection updates
+    // this row and retains its previous snapshot in audit_log.
     indexes: {
       uniqueOrderHandover: {
         keys: ['orderId', 'isDeleted'],

@@ -551,7 +551,7 @@ export class CustomerBillingController {
     const {v4} = await import('uuid');
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED'} as any);
     try {
-      const invoiceNumber = await this.orderService.allocateInvoiceNumber(tx);
+      const invoiceNumber = await this.orderService.allocateInvoiceNumber(tx, orders[0].storeId);
       const invoice = await this.invoiceRepo.create(
         {
           id: v4(),

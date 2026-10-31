@@ -14,6 +14,9 @@ export async function migrate(args: string[]) {
   await dataSource.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm');
 
   await app.migrateSchema({ existingSchema });
+  await require('../scripts/add-invoice-number-sequences.cjs').addInvoiceNumberSequences();
+  await require('../scripts/add-ticket-number-sequences.cjs').addTicketNumberSequences();
+  await require('../scripts/add-garment-tag-sequence.cjs').addGarmentTagSequence();
 
   // Connectors usually keep a pool of opened connections,
   // this keeps the process running even after all work is done.

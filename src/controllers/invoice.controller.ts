@@ -1,3 +1,5 @@
+import {PresstoDataSource} from '../datasources';
+import {OrderService} from '../services/order.service';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {Count, repository, Where} from '@loopback/repository';
@@ -37,6 +39,8 @@ export class InvoiceController {
     private storeScopeService: StoreScopeService,
     @repository(SalesReturnRepository)
     private salesReturnRepo: SalesReturnRepository,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
+    @inject('services.order') private orderService: OrderService,
   ) {}
 
   private async creditTotals(invoiceIds: string[]) {
@@ -339,117 +343,155 @@ export class InvoiceController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('orderId') orderId: string,
   ): Promise<object> {
-    const order = await this.orderRepo.findOne({
-      where: {id: orderId, isDeleted: false},
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser);
+    const tx = await this.dataSource.beginTransaction({
+      isolationLevel: 'READ COMMITTED',
     });
-    if (!order) throw new HttpErrors.NotFound('Order not found.');
-
-    // On-account orders are billed only through a consolidated on-account
-    // invoice (see CustomerBillingController) — an individual one would bill
-    // the same order twice.
-    if (order.isOnAccount) {
-      throw new HttpErrors.BadRequest(
-        'On-account orders are billed on a consolidated on-account invoice, not an individual invoice.',
+    const options = {transaction: tx};
+    try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+        [orderId],
+        options,
       );
-    }
-
-    const ALLOWED_STATUSES = [
-      OrderStatus.READY,
-      OrderStatus.PARTIALLY_DISPATCHED,
-      OrderStatus.OUT_FOR_DELIVERY,
-      OrderStatus.DELIVERED,
-    ];
-    if (!ALLOWED_STATUSES.includes(order.status as OrderStatus)) {
-      throw new HttpErrors.BadRequest(
-        'Invoice can only be generated after processing and quality checks are complete (status must be ready or beyond).',
+      const order = await this.orderRepo.findOne(
+        {
+          where: {id: orderId, isDeleted: false},
+        },
+        options,
       );
+      if (!order) throw new HttpErrors.NotFound('Order not found.');
+
+      // On-account orders are billed only through a consolidated on-account
+      // invoice (see CustomerBillingController) — an individual one would bill
+      // the same order twice.
+      if (order.isOnAccount) {
+        throw new HttpErrors.BadRequest(
+          'On-account orders are billed on a consolidated on-account invoice, not an individual invoice.',
+        );
+      }
+
+      const ALLOWED_STATUSES = [
+        OrderStatus.READY,
+        OrderStatus.PARTIALLY_DISPATCHED,
+        OrderStatus.OUT_FOR_DELIVERY,
+        OrderStatus.DELIVERED,
+      ];
+      if (!ALLOWED_STATUSES.includes(order.status as OrderStatus)) {
+        throw new HttpErrors.BadRequest(
+          'Invoice can only be generated after processing and quality checks are complete (status must be ready or beyond).',
+        );
+      }
+
+      // Guard: only one invoice per order
+      const existingInvoice = await this.invoiceRepo.findOne(
+        {
+          where: {orderId},
+        } as any,
+        options,
+      );
+      if (existingInvoice) {
+        await tx.commit();
+        return {
+          message: 'Invoice already exists for this order.',
+          invoice: existingInvoice,
+        };
+      }
+
+      // Snapshot current order items
+      const orderItems = await this.orderItemRepo.find(
+        {where: {orderId}},
+        options,
+      );
+      const items = orderItems.map(oi => ({
+        orderItemId: oi.id,
+        serviceId: oi.serviceId,
+        itemId: oi.itemId,
+        quantity: Number(oi.quantity) || 0,
+        // Postgres numeric columns come back as strings — coerce so downstream
+        // math sums numerically instead of concatenating.
+        unitPrice: Number(oi.unitPrice) || 0,
+        totalPrice: Number(oi.totalPrice) || 0,
+        additionalServiceIds: oi.additionalServiceIds ?? [],
+        // Shown on the invoice as a ₹0 "Rejected at intake" line for the record.
+        rejectedAtIntake: oi.rejectedAtIntake ?? false,
+        rejectionReason: oi.rejectionReason ?? null,
+      }));
+
+      const subtotal = parseFloat(
+        items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0).toFixed(2),
+      );
+      const gstRate = 0.09;
+      const discount = Math.min(Number(order.discountAmount) || 0, subtotal);
+      const taxableSubtotal = Math.max(0, subtotal - discount);
+      const cgst = parseFloat((taxableSubtotal * gstRate).toFixed(2));
+      const sgst = parseFloat((taxableSubtotal * gstRate).toFixed(2));
+      // Final total is a whole rupee (≥ .5 rounds up); components keep decimals.
+      const totalAmount = Math.round(subtotal - discount + cgst + sgst);
+
+      // Refund transactions are outgoing money, not amount received.
+      const payments = await this.paymentRepo.find(
+        {where: {orderId}} as any,
+        options,
+      );
+      const amountReceived = payments.reduce(
+        (s: number, p: any) =>
+          s + (p.transactionType === 'refund' ? 0 : Number(p.amount) || 0),
+        0,
+      );
+      const balanceDue = parseFloat(
+        Math.max(0, totalAmount - amountReceived).toFixed(2),
+      );
+
+      const invoiceNumber = await this.orderService.allocateInvoiceNumber(
+        tx,
+        order.storeId,
+      );
+
+      const {v4} = await import('uuid');
+
+      // Find the challan to link and mark it converted
+      const challan = await this.challanRepo.findOne(
+        {where: {orderId}} as any,
+        options,
+      );
+      if (challan) {
+        await this.challanRepo.updateById(
+          challan.id,
+          {
+            status: ChallanStatus.CONVERTED_TO_INVOICE,
+          },
+          options,
+        );
+      }
+
+      const invoice = await this.invoiceRepo.create(
+        {
+          id: v4(),
+          orderId,
+          challanId: challan?.id,
+          invoiceNumber,
+          generatedBy: currentUser[securityId],
+          items,
+          subtotal: parseFloat(Number(subtotal).toFixed(2)),
+          discount,
+          deliveryCharge: 0,
+          cgst,
+          sgst,
+          totalAmount,
+          amountReceived: parseFloat(amountReceived.toFixed(2)),
+          balanceDue,
+          status: InvoiceStatus.ISSUED,
+        } as Partial<Invoice>,
+        options,
+      );
+
+      await tx.commit();
+      return {message: 'Invoice generated.', invoice};
+    } catch (error) {
+      await tx.rollback();
+      throw error;
     }
-
-    // Guard: only one invoice per order
-    const existingInvoice = await this.invoiceRepo.findOne({
-      where: {orderId},
-    } as any);
-    if (existingInvoice) {
-      return {
-        message: 'Invoice already exists for this order.',
-        invoice: existingInvoice,
-      };
-    }
-
-    // Snapshot current order items
-    const orderItems = await this.orderItemRepo.find({where: {orderId}});
-    const items = orderItems.map(oi => ({
-      orderItemId: oi.id,
-      serviceId: oi.serviceId,
-      itemId: oi.itemId,
-      quantity: Number(oi.quantity) || 0,
-      // Postgres numeric columns come back as strings — coerce so downstream
-      // math sums numerically instead of concatenating.
-      unitPrice: Number(oi.unitPrice) || 0,
-      totalPrice: Number(oi.totalPrice) || 0,
-      additionalServiceIds: oi.additionalServiceIds ?? [],
-      // Shown on the invoice as a ₹0 "Rejected at intake" line for the record.
-      rejectedAtIntake: oi.rejectedAtIntake ?? false,
-      rejectionReason: oi.rejectionReason ?? null,
-    }));
-
-    const subtotal = parseFloat(
-      items.reduce((s, i) => s + (Number(i.totalPrice) || 0), 0).toFixed(2),
-    );
-    const gstRate = 0.09;
-    const discount = Math.min(Number(order.discountAmount) || 0, subtotal);
-    const taxableSubtotal = Math.max(0, subtotal - discount);
-    const cgst = parseFloat((taxableSubtotal * gstRate).toFixed(2));
-    const sgst = parseFloat((taxableSubtotal * gstRate).toFixed(2));
-    // Final total is a whole rupee (≥ .5 rounds up); components keep decimals.
-    const totalAmount = Math.round(subtotal - discount + cgst + sgst);
-
-    // Refund transactions are outgoing money, not amount received.
-    const payments = await this.paymentRepo.find({where: {orderId}} as any);
-    const amountReceived = payments.reduce(
-      (s: number, p: any) =>
-        s + (p.transactionType === 'refund' ? 0 : Number(p.amount) || 0),
-      0,
-    );
-    const balanceDue = parseFloat(
-      Math.max(0, totalAmount - amountReceived).toFixed(2),
-    );
-
-    // Generate invoice number: INV-YYYYMM-00001
-    const now = new Date();
-    const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const count = await this.invoiceRepo.count();
-    const invoiceNumber = `INV-${ym}-${String(count.count + 1).padStart(5, '0')}`;
-
-    const {v4} = await import('uuid');
-
-    // Find the challan to link and mark it converted
-    const challan = await this.challanRepo.findOne({where: {orderId}} as any);
-    if (challan) {
-      await this.challanRepo.updateById(challan.id, {
-        status: ChallanStatus.CONVERTED_TO_INVOICE,
-      });
-    }
-
-    const invoice = await this.invoiceRepo.create({
-      id: v4(),
-      orderId,
-      challanId: challan?.id,
-      invoiceNumber,
-      generatedBy: currentUser[securityId],
-      items,
-      subtotal: parseFloat(Number(subtotal).toFixed(2)),
-      discount,
-      deliveryCharge: 0,
-      cgst,
-      sgst,
-      totalAmount,
-      amountReceived: parseFloat(amountReceived.toFixed(2)),
-      balanceDue,
-      status: InvoiceStatus.ISSUED,
-    } as Partial<Invoice>);
-
-    return {message: 'Invoice generated.', invoice};
   }
 
   // ─── Get Invoice ──────────────────────────────────────────────────────────

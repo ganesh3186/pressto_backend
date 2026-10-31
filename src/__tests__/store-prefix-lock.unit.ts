@@ -98,7 +98,7 @@ describe('store prefix lock', () => {
     await expect(resolve.resolveNextOrderNumber('store-1', tx)).to.be.rejectedWith(/no order number prefix/);
   });
 
-  it('uses the next issued sequence without adding N to the number', async () => {
+  it('allocates a six-digit ticket number from the store and month counter', async () => {
     const tx = {};
     const steps: string[] = [];
     const service = Object.assign(Object.create(OrderService.prototype), {
@@ -106,52 +106,34 @@ describe('store prefix lock', () => {
         findOne: async (_filter: object, options: object) => {
           expect(options).to.eql({transaction: tx});
           steps.push('store');
-          return {storePrefix: 'ABC', orderNumberSequence: 5};
-        },
-        updateById: async (id: string, data: object, options: object) => {
-          expect(id).to.equal('store-1');
-          expect(data).to.eql({orderNumberSequence: 6});
-          expect(options).to.eql({transaction: tx});
-          steps.push('save');
+          return {storePrefix: 'ABC', orderNumberSequence: 99999};
         },
       },
-      dataSource: {execute: async (sql: string, params: string[], options: object) => {
+      dataSource: {execute: async (sql: string, params: unknown[], options: object) => {
         expect(options).to.eql({transaction: tx});
         if (sql.includes('FOR UPDATE')) {
           expect(params).to.deepEqual(['store-1']);
           steps.push('lock');
           return [{id: 'store-1'}];
         }
-        expect(params).to.deepEqual(['ABC']);
-        expect(sql).to.containEql('MAX(substring(ordernumber');
-        expect(sql).to.containEql("left(ordernumber, length($1) + 1) = $1 || '-'");
+        expect(params).to.deepEqual(['store-1', 202611]);
+        expect(sql).to.containEql('ON CONFLICT (storeid,period)');
         steps.push('sequence');
-        return [{seq: '3'}];
+        return [{sequence: '1'}];
       }},
     }) as OrderService;
-    const resolve = service as unknown as {resolveNextOrderNumber: (storeId: string, tx: object) => Promise<string>};
-    expect(await resolve.resolveNextOrderNumber('store-1', tx)).to.match(/ABC-\d{4}-0006/);
-    expect(steps).to.deepEqual(['lock', 'store', 'sequence', 'save']);
+    const resolve = service as unknown as {resolveNextOrderNumber: (storeId: string, tx: object, at: Date) => Promise<string>};
+    expect(await resolve.resolveNextOrderNumber('store-1', tx, new Date('2026-10-31T18:30:00Z'))).to.equal('ABC-1126-000001');
+    expect(steps).to.deepEqual(['lock', 'store', 'sequence']);
   });
 
-  it('advances past numbers issued for this prefix even after their orders moved stores', async () => {
-    const tx = {};
+  it('keeps ticket sequences longer than six digits', async () => {
     const service = Object.assign(Object.create(OrderService.prototype), {
-      storeRepo: {
-        findOne: async () => ({storePrefix: 'ABC', orderNumberSequence: 5}),
-        updateById: async (_id: string, data: {orderNumberSequence: number}) => {
-          expect(data.orderNumberSequence).to.equal(9);
-        },
-      },
-      dataSource: {execute: async (sql: string, params: string[]) => {
-        if (sql.includes('FOR UPDATE')) return [{id: 'store-1'}];
-        expect(params).to.deepEqual(['ABC']);
-        expect(sql).not.to.containEql('storeid = $1');
-        return [{seq: '8'}];
-      }},
+      storeRepo: {findOne: async () => ({storePrefix: 'ABC'})},
+      dataSource: {execute: async (sql: string) => sql.includes('FOR UPDATE') ? [] : [{sequence: '1000000'}]},
     }) as OrderService;
-    const resolve = service as unknown as {resolveNextOrderNumber: (storeId: string, tx: object) => Promise<string>};
-    expect(await resolve.resolveNextOrderNumber('store-1', tx)).to.match(/ABC-\d{4}-0009/);
+    const resolve = service as unknown as {resolveNextOrderNumber: (storeId: string, tx: object, at: Date) => Promise<string>};
+    expect(await resolve.resolveNextOrderNumber('store-1', {}, new Date('2026-11-15T00:00:00Z'))).to.equal('ABC-1126-1000000');
   });
 
   it('locks the prefix in the order transaction and detects a concurrent edit', async () => {

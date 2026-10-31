@@ -459,6 +459,7 @@ export class OrderController {
     // same endpoint for, and they must keep seeing those). Every other
     // caller is unaffected: omitting it keeps today's additive behavior.
     @param.query.boolean('homeStoreOnly') homeStoreOnly?: boolean,
+    @param.query.string('invoiceNumber') invoiceNumber?: string,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
@@ -475,6 +476,7 @@ export class OrderController {
         : undefined;
     return this.orderService.listOrders({
       search,
+      invoiceNumber,
       dateFrom,
       dateTo,
       orderType,
@@ -506,6 +508,7 @@ export class OrderController {
       properties: {
         customerName: {type: 'string'},
         orderId: {type: 'string'},
+        invoiceNumber: {type: 'string'},
         placedBy: {type: 'string'},
         source: {type: 'string'},
         orderType: {type: 'string'},

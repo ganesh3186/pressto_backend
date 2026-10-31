@@ -51,6 +51,7 @@ describe('draft inspection persistence', () => {
         draftUnitInspections: [unit]}]},
       garmentRepo: {count: async () => ({count: 0}),
         create: async (row: object) => {savedGarment = row; return {id: 'garment-1'};}},
+      getNextGarmentTag: async () => 'GT10758174',
       garmentStatusHistoryRepo: {create: async () => {}},
       saveGarmentInspection: async (_id: string, inspection: object) => {savedInspection = inspection;},
       createUnitAdditionalServices: async () => {},
