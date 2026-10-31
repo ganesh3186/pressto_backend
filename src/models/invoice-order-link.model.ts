@@ -16,6 +16,8 @@ import {Entity, model, property} from '@loopback/repository';
         keys: {invoiceId: 1, orderId: 1},
         options: {unique: true},
       },
+      // Already in the DB; declared so `npm run migrate` doesn't drop it.
+      idx_invoice_order_link_orderid: {keys: ['orderId']},
     },
   },
 })
