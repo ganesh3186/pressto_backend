@@ -1,3 +1,5 @@
+import {formatInvoiceNumber, invoiceNumberPeriod} from '../utils/invoice-number';
+import {ticketNumberPeriod} from '../utils/ticket-number';
 import {dispatchWhatsApp, WalletWhatsAppNotification, WhatsAppService} from './whatsapp.service';
 import {PaymentService} from './payment.service';
 import {BindingScope, inject, injectable} from '@loopback/core';
@@ -56,6 +58,7 @@ import {CouponDiscountType} from '../models/coupon-discount-type.enum';
 import {
   AdditionalChargeMasterRepository,
   ApprovalAuditLogRepository,
+  AuditLogRepository,
   ApprovalRequestRepository,
   ChallanRepository,
   ClusterPriceListRepository,
@@ -375,6 +378,7 @@ export class OrderService {
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
     @repository(InvoiceOrderLinkRepository)
     private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
+    @repository(AuditLogRepository) private auditLogRepo: AuditLogRepository,
   ) {}
 
   // ─── Inspection ──────────────────────────────────────────────────────────
@@ -1465,6 +1469,7 @@ export class OrderService {
   private async resolveNextOrderNumber(
     storeId: string,
     tx: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+    at: Date = new Date(),
   ): Promise<string> {
     await this.dataSource.execute('SELECT id FROM public.store WHERE id = $1 FOR UPDATE',
       [storeId], {transaction: tx});
@@ -1477,19 +1482,17 @@ export class OrderService {
         'This store has no order number prefix set. Set one in Store Master before creating orders.',
       );
     }
-    const now = new Date();
-    const mmyy = `${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getFullYear()).slice(-2)}`;
+    const {period, monthYear} = ticketNumberPeriod(at);
     const rows = await this.dataSource.execute(
-      `SELECT COALESCE(MAX(substring(ordernumber from '-([0-9]+)$')::bigint), 0) AS seq
-       FROM public.orders
-       WHERE left(ordernumber, length($1) + 1) = $1 || '-'
-         AND ordernumber ~ '-[0-9]+$'`,
-      [store.storePrefix], {transaction: tx},
+      `INSERT INTO public.ticket_number_sequence AS counter (storeid,period,lastnumber)
+       VALUES ($1,$2,1)
+       ON CONFLICT (storeid,period) DO UPDATE SET
+         lastnumber=counter.lastnumber+1,updatedat=CURRENT_TIMESTAMP
+       RETURNING lastnumber::text AS sequence`,
+      [storeId, period], {transaction: tx},
     );
-    const nextSequence = Math.max(Number(store.orderNumberSequence) || 0, Number(rows[0].seq) || 0) + 1;
-    await this.storeRepo.updateById(storeId, {orderNumberSequence: nextSequence}, {transaction: tx});
-    const seq = String(nextSequence).padStart(4, '0');
-    return `${store.storePrefix}-${mmyy}-${seq}`;
+    const seq = String(rows[0].sequence).padStart(6, '0');
+    return `${store.storePrefix}-${monthYear}-${seq}`;
   }
 
   private async lockStorePrefix(
@@ -2361,10 +2364,6 @@ export class OrderService {
       const createdGarments: object[] = [];
       if (isStoreDropoffOrder) {
         const now = new Date();
-        // Fetch count once — inside a transaction uncommitted rows aren't visible,
-        // so querying per-garment returns the same value every time → duplicate tags.
-        const baseGarmentCount = await this.garmentRepo.count();
-        let garmentSeq = baseGarmentCount.count;
 
         for (let itemIdx = 0; itemIdx < createdItems.length; itemIdx++) {
           const orderItem = createdItems[itemIdx];
@@ -2378,8 +2377,7 @@ export class OrderService {
 
           for (let unitIdx = 0; unitIdx < orderItem.quantity; unitIdx++) {
             const unitInspection = inputItem.units?.[unitIdx];
-            garmentSeq++;
-            const garmentTagNumber = `GT${String(garmentSeq).padStart(8, '0')}`;
+            const garmentTagNumber = await this.getNextGarmentTag({transaction: tx});
 
             const garment = await this.garmentRepo.create(
               {
@@ -4523,74 +4521,74 @@ export class OrderService {
     remarks?: string;
     handedOverBy: string;
   }): Promise<object> {
+    return this.completeHandover(params, 'store');
+  }
+
+  private async completeHandover(
+    params: Parameters<OrderService['recordDeliveryHandover']>[0],
+    channel: 'store' | 'rider',
+  ): Promise<{message: string; handover: OrderHandover; garmentsDelivered: number}> {
     const {v4} = await import('uuid');
-    const order = await this.orderRepo.findOne({
-      where: {id: params.orderId, isDeleted: false},
-    });
-    if (!order) throw new HttpErrors.NotFound('Order not found.');
-
-    // 1. Status must allow the move to delivered (same rule the transition map enforces).
-    const allowed = ORDER_STATUS_TRANSITIONS[order.status!] ?? [];
-    if (!allowed.includes(OrderStatus.DELIVERED)) {
-      throw new HttpErrors.BadRequest(
-        `Order in '${order.status}' cannot be handed over. It must be ready or out for delivery.`,
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const options = {transaction: tx};
+    let previousStatus: OrderStatus;
+    let result: {message: string; handover: OrderHandover; garmentsDelivered: number};
+    try {
+      await this.dataSource.execute('SELECT id FROM public.orders WHERE id=$1 FOR UPDATE', [params.orderId], options);
+      const order = await this.orderRepo.findOne({where: {id: params.orderId, isDeleted: false}}, options);
+      if (!order) throw new HttpErrors.NotFound('Order not found.');
+      if (order.status === OrderStatus.DELIVERED) throw new HttpErrors.Conflict('This order has already been handed over.');
+      const allowed = ORDER_STATUS_TRANSITIONS[order.status!] ?? [];
+      if (!allowed.includes(OrderStatus.DELIVERED) || (channel === 'rider' && order.status !== OrderStatus.OUT_FOR_DELIVERY)) {
+        throw new HttpErrors.BadRequest('Order is not ready for this handover.');
+      }
+      previousStatus = order.status!;
+      await this.dataSource.execute(
+        'SELECT g.id FROM public.garment g JOIN public.order_item oi ON oi.id=g.orderitemid WHERE oi.orderid=$1 AND g.isdeleted=false FOR UPDATE OF g',
+        [order.id], options,
       );
+      await this.assertGarmentsReadyForDelivery([order.id], options);
+      await this.assertGarmentsHomeForDispatch([order.id], options);
+      const items = await this.orderItemRepo.find({where: {orderId: order.id}}, options);
+      const garments = items.length ? await this.garmentRepo.find({
+        where: {orderItemId: {inq: items.map(item => item.id)}, isDeleted: false},
+      }, options) : [];
+      const remaining = garments.filter(garment => [GarmentStatus.READY, GarmentStatus.OUT_FOR_DELIVERY].includes(garment.status!));
+      const existing = await this.orderHandoverRepo.findOne({where: {orderId: order.id, isDeleted: false}}, options);
+      if ((existing || garments.length) && !remaining.length) throw new HttpErrors.Conflict('All eligible garments have already been handed over.');
+      const stop = channel === 'rider' ? (await this.deliveryOrderRepo.find({
+        where: {orderId: order.id}, order: ['createdAt DESC'], limit: 1,
+      }, options))[0] : undefined;
+      if (channel === 'rider' && ((!stop && params.deliveryId) ||
+        (stop && (stop.status === DeliveryOrderStatus.RETURN_TO_STORE || stop.status === DeliveryOrderStatus.DELIVERED ||
+          (params.deliveryId && stop.deliveryId !== params.deliveryId))))) {
+        throw new HttpErrors.Conflict('This delivery stop is no longer available for handover.');
+      }
+      const customer = await this.customerRepo.findOne({where: {id: order.customerId, isDeleted: false}}, options);
+      const handover = await this._createHandoverRecord(order, customer, params, v4, options, existing ?? undefined);
+      if (existing) await this.auditLogRepo.create({
+        id: v4(), entityType: 'order', entityId: order.id, actionType: 'handover_updated', before: existing,
+        after: {...handover, garmentIds: remaining.map(garment => garment.id), channel},
+        performedBy: params.handedOverBy, performedAt: handover.handedOverAt,
+        remarks: 'Previous partial handover retained; remaining garments collected.',
+      }, options);
+      await this.orderRepo.updateById(order.id, {status: OrderStatus.DELIVERED, updatedAt: handover.handedOverAt}, options);
+      await this.statusHistoryRepo.create({
+        id: v4(), orderId: order.id, status: OrderStatus.DELIVERED,
+        changedAt: handover.handedOverAt, changedBy: params.handedOverBy,
+        remarks: (channel === 'store' ? 'In-store handover to ' : 'Delivery handover to ') +
+          handover.collectorName + (params.remarks?.trim() ? ' - ' + params.remarks.trim() : ''),
+      }, options);
+      const garmentsDelivered = await this._cascadeGarmentsToDelivered(order.id, params.handedOverBy, v4, tx);
+      if (stop) await this.deliveryOrderRepo.updateById(stop.id, {status: DeliveryOrderStatus.DELIVERED}, options);
+      result = {message: 'Order handed over.', handover, garmentsDelivered};
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      throw error;
     }
-    await this.assertGarmentsReadyForDelivery([params.orderId]);
-
-    const handoverCustomer = await this.customerRepo.findOne({
-      where: {id: order.customerId, isDeleted: false},
-    });
-
-    // Delivery and collection are independent: any unpaid balance remains due.
-
-    // Reject a second active handover on the same order.
-    const existing = await this.orderHandoverRepo.findOne({
-      where: {orderId: params.orderId, isDeleted: false} as any,
-    });
-    if (existing)
-      throw new HttpErrors.Conflict('This order has already been handed over.');
-
-    // 3+4. Resolve the collector and write the handover record.
-    const handover = await this._createHandoverRecord(
-      order,
-      handoverCustomer,
-      params,
-      v4,
-    );
-
-    // 5a. Order → delivered (+ status history).
-    await this.orderRepo.updateById(params.orderId, {
-      status: OrderStatus.DELIVERED,
-    });
-    await this.statusHistoryRepo.create({
-      id: v4(),
-      orderId: params.orderId,
-      status: OrderStatus.DELIVERED,
-      changedAt: new Date(),
-      changedBy: params.handedOverBy,
-      remarks: `In-store handover to ${handover.collectorName}${params.remarks ? ` — ${params.remarks.trim()}` : ''}`,
-    });
-
-    // 5b. Cascade every still-active garment on the order to delivered.
-    const cascaded = await this._cascadeGarmentsToDelivered(
-      params.orderId,
-      params.handedOverBy,
-      v4,
-    );
-
-    this.notifyStatusChange(
-      params.orderId,
-      OrderStatus.DELIVERED,
-      order.status,
-      'collected',
-    );
-
-    return {
-      message: 'Order handed over.',
-      handover,
-      garmentsDelivered: cascaded,
-    };
+    this.notifyStatusChange(params.orderId, OrderStatus.DELIVERED, previousStatus, channel === 'store' ? 'collected' : 'delivered');
+    return result;
   }
 
   // Shared collector-resolution + record-write, used by both handoverInStore
@@ -4612,6 +4610,8 @@ export class OrderService {
       handedOverBy: string;
     },
     v4: () => string,
+    options?: Options,
+    existing?: OrderHandover,
   ): Promise<OrderHandover> {
     let collectorName = (params.collectorName ?? '').trim();
     let collectorPhone = (params.collectorPhone ?? '').trim();
@@ -4637,13 +4637,13 @@ export class OrderService {
       }
       const member = await this.familyMemberRepo.findOne({
         where: {id: familyGroupMemberId, isDeleted: false} as any,
-      });
+      }, options);
       if (!member)
         throw new HttpErrors.NotFound('Selected family member not found.');
       // The member must belong to this order customer's own family group.
       const group = await this.familyGroupRepo.findOne({
         where: {id: member.groupId, isDeleted: false} as any,
-      });
+      }, options);
       if (!group || group.primaryCustomerId !== order.customerId) {
         throw new HttpErrors.BadRequest(
           'That family member does not belong to this order’s customer.',
@@ -4662,7 +4662,7 @@ export class OrderService {
       }
       const contact = await this.customerContactRepo.findOne({
         where: {id: customerContactId, isDeleted: false} as any,
-      });
+      }, options);
       if (!contact)
         throw new HttpErrors.NotFound('Selected contact not found.');
       // Guard against picking a contact that belongs to a different customer.
@@ -4718,13 +4718,13 @@ export class OrderService {
           name: collectorName,
           phone: collectorPhone || 'N/A',
           relationship: collectorRelationship ?? ContactRelationship.OTHER,
-        } as any);
+        } as any, options);
         customerContactId = saved.id;
       }
     }
 
-    return this.orderHandoverRepo.create({
-      id: v4(),
+    if (!collectorName) throw new HttpErrors.BadRequest('Enter the name of the person collecting the order.');
+    const snapshot = {
       orderId: order.id,
       collectorType: params.collectorType,
       customerContactId,
@@ -4736,17 +4736,30 @@ export class OrderService {
       remarks: params.remarks?.trim() || undefined,
       handedOverBy: params.handedOverBy,
       handedOverAt: new Date(),
-    });
+    };
+    if (existing) {
+      await this.orderHandoverRepo.updateById(existing.id, {
+        ...snapshot,
+        customerContactId: customerContactId ?? null,
+        familyGroupMemberId: familyGroupMemberId ?? null,
+        collectorPhone: collectorPhone || null,
+        collectorRelationship: collectorRelationship ?? null,
+        photoMediaId: photoMediaId ?? null,
+        remarks: params.remarks?.trim() || null,
+        updatedAt: snapshot.handedOverAt,
+      } as unknown as Partial<OrderHandover>, options);
+      return this.orderHandoverRepo.findById(existing.id, undefined, options);
+    }
+    return this.orderHandoverRepo.create({id: v4(), ...snapshot}, options);
   }
 
   // ─── Rider delivery handover (deliver-to recipient capture) ────────────────
-  // Called from RiderDeliveryController.deliver() — payment collection and
-  // the order → delivered transition already happen there; this only
-  // resolves the collector and writes the order_handover record, same
-  // shared logic as the in-store path above.
+  // Called after optional payment collection. Recipient capture, status and
+  // garment completion share one transaction, including partial-handover updates.
 
   async recordDeliveryHandover(params: {
     orderId: string;
+    deliveryId?: string;
     collectorType: HandoverCollectorType;
     customerContactId?: string;
     familyGroupMemberId?: string;
@@ -4758,23 +4771,7 @@ export class OrderService {
     remarks?: string;
     handedOverBy: string;
   }): Promise<OrderHandover> {
-    const {v4} = await import('uuid');
-    const order = await this.orderRepo.findOne({
-      where: {id: params.orderId, isDeleted: false},
-    });
-    if (!order) throw new HttpErrors.NotFound('Order not found.');
-
-    const existing = await this.orderHandoverRepo.findOne({
-      where: {orderId: params.orderId, isDeleted: false} as any,
-    });
-    if (existing)
-      throw new HttpErrors.Conflict('This order has already been handed over.');
-
-    const handoverCustomer = await this.customerRepo.findOne({
-      where: {id: order.customerId, isDeleted: false},
-    });
-
-    return this._createHandoverRecord(order, handoverCustomer, params, v4);
+    return (await this.completeHandover(params, 'rider')).handover;
   }
 
   // ─── Delivery Return (failed/undeliverable attempt) ────────────────────────
@@ -4877,10 +4874,10 @@ export class OrderService {
    * check: still set means still away, so dispatch is blocked regardless
    * of who's asking.
    */
-  async assertGarmentsHomeForDispatch(orderIds: string[]): Promise<void> {
+  async assertGarmentsHomeForDispatch(orderIds: string[], options?: Options): Promise<void> {
     const orderItems = await this.orderItemRepo.find({
       where: {orderId: {inq: orderIds}} as object,
-    });
+    }, options);
     const orderItemIds = orderItems.map(oi => oi.id);
     if (!orderItemIds.length) return;
 
@@ -4891,7 +4888,7 @@ export class OrderService {
         isDeleted: false,
       } as object,
       fields: {garmentTagNumber: true} as object,
-    });
+    }, options);
     if (awayGarments.length) {
       throw new HttpErrors.BadRequest(
         `Still away at another store, not back home yet — cannot dispatch: ${awayGarments
@@ -4901,16 +4898,16 @@ export class OrderService {
     }
   }
 
-  async assertGarmentsReadyForDelivery(orderIds: string[]): Promise<void> {
+  async assertGarmentsReadyForDelivery(orderIds: string[], options?: Options): Promise<void> {
     const orderItems = await this.orderItemRepo.find({
       where: {orderId: {inq: orderIds}} as object,
       fields: {id: true, orderId: true} as object,
-    });
+    }, options);
     if (!orderItems.length) return;
     const garments = await this.garmentRepo.find({
       where: {orderItemId: {inq: orderItems.map(item => item.id)}, isDeleted: false} as object,
       fields: {id: true, orderItemId: true, status: true} as object,
-    });
+    }, options);
     if (!garments.length) return;
     const pending = await this.approvalRequestRepo.findOne({
       where: {
@@ -4919,7 +4916,7 @@ export class OrderService {
         entityType: 'garment',
         entityId: {inq: garments.map(garment => garment.id)},
       } as object,
-    });
+    }, options);
     if (pending) {
       throw new HttpErrors.BadRequest('Resolve the pending damage approval before delivery or handover.');
     }
@@ -5028,6 +5025,23 @@ export class OrderService {
     };
   }
 
+  /** Global garment tags never reuse historical numbers or reset with tickets. */
+  async getNextGarmentTag(options?: Options): Promise<string> {
+    const rows = await this.dataSource.execute(
+      `WITH guard AS MATERIALIZED (
+         SELECT pg_advisory_xact_lock_shared(hashtext('pressto.garment-tag-sequence'))
+       )
+       SELECT nextval('public.garment_tag_seq')::text AS seq FROM guard`,
+      [],
+      options,
+    ) as {seq: string}[];
+    const sequence = rows[0]?.seq;
+    if (!sequence || !/^[1-9][0-9]*$/.test(sequence)) {
+      throw new Error('Could not allocate a garment tag number.');
+    }
+    return `GT${sequence.padStart(8, '0')}`;
+  }
+
   private async autoCreateGarments(
     orderId: string,
     changedBy: string,
@@ -5039,9 +5053,6 @@ export class OrderService {
     const now = new Date();
     const created: object[] = [];
 
-    // Fetch once so the sequence stays consistent across multiple creates
-    const baseCount = await this.garmentRepo.count(undefined, options);
-    let garmentSeq = baseCount.count;
 
     for (const item of orderItems) {
       if (item.rejectedAtIntake) continue;
@@ -5056,8 +5067,7 @@ export class OrderService {
       for (let i = 0; i < toCreate; i++) {
         const unitIndex = existing.count + i;
         const inspection = (item.draftUnitInspections?.[unitIndex] ?? {}) as UnitInspectionInput;
-        garmentSeq++;
-        const garmentTagNumber = `GT${String(garmentSeq).padStart(8, '0')}`;
+        const garmentTagNumber = await this.getNextGarmentTag(options);
 
         const garment = await this.garmentRepo.create({
           orderItemId: item.id,
@@ -5118,6 +5128,7 @@ export class OrderService {
       (skip, limit) =>
         this.listOrders({
           dateFrom: filters.dateFrom,
+          invoiceNumber: filters.invoiceNumber,
           dateTo: filters.dateTo,
           status:
             filters.status && filters.status !== 'all'
@@ -5133,6 +5144,7 @@ export class OrderService {
 
   async listOrders(params: {
     search?: string;
+    invoiceNumber?: string;
     dateFrom?: string;
     dateTo?: string;
     orderType?: string;
@@ -5184,6 +5196,22 @@ export class OrderService {
 
     // Scopes the list to a single customer (used by the customer-facing APIs).
     if (params.customerId) baseConditions.push({customerId: params.customerId});
+    if (params.invoiceNumber?.trim()) {
+      const invoices = await this.invoiceRepo.find({
+        where: {invoiceNumber: {ilike: `%${params.invoiceNumber.trim()}%`}},
+        fields: {id: true, orderId: true},
+      });
+      if (!invoices.length) return {rows: [], total: 0};
+      const links = await this.invoiceOrderLinkRepo.find({
+        where: {invoiceId: {inq: invoices.map(invoice => invoice.id)}},
+        fields: {orderId: true},
+      });
+      const matchingOrderIds = [...new Set([
+        ...invoices.map(invoice => invoice.orderId),
+        ...links.map(link => link.orderId),
+      ])];
+      baseConditions.push({id: {inq: matchingOrderIds}});
+    }
     if (params.status === 'pending') {
       baseConditions.push({
         status: {nin: ['draft', 'delivered', 'cancelled', 'returned']},
@@ -6321,6 +6349,7 @@ export class OrderService {
       transferItems,
       deliveryOrders,
       orderHandovers,
+      handoverAuditRows,
       pickupRequests,
     ] = await Promise.all([
       this.statusHistoryRepo.find({where: {orderId}}),
@@ -6342,6 +6371,9 @@ export class OrderService {
       this.transferItemRepo.find({where: {orderId}}),
       this.deliveryOrderRepo.find({where: {orderId}}),
       this.orderHandoverRepo.find({where: {orderId}}),
+      this.auditLogRepo.find({where: {
+        entityType: 'order', entityId: orderId, actionType: 'handover_updated',
+      }}),
       this.pickupRequestRepo.find({where: order.pickupRequestId
         ? {id: order.pickupRequestId}
         : {convertedOrderId: orderId}}),
@@ -6402,6 +6434,7 @@ export class OrderService {
     transferCustodyRows.forEach(r => collect(r.performedBy));
     deliveryCustodyRows.forEach(r => collect(r.performedBy));
     orderHandovers.forEach(r => collect(r.handedOverBy));
+    handoverAuditRows.forEach(row => collect((row.before as Partial<OrderHandover> | undefined)?.handedOverBy));
     pickupRequests.forEach(r => collect(r.assignedBy));
 
     const actors = actorIds.size
@@ -6587,6 +6620,21 @@ export class OrderService {
         performedAt: row.performedAt,
         performedById: row.performedBy ?? null,
         performedByName: nameFor(row.performedBy),
+      });
+    }
+
+    for (const row of handoverAuditRows) {
+      const previous = row.before as Partial<OrderHandover> | undefined;
+      const at = previous?.handedOverAt ?? row.performedAt;
+      if (!previous || !at) continue;
+      entries.push({
+        id: row.id + ':previous-handover', entityType: 'order',
+        garmentId: null, garmentTagNumber: null,
+        action: 'Previous partial handover',
+        detail: [previous.collectorName ? `To ${previous.collectorName} (${previous.collectorType})` : '',
+          previous.collectorPhone, previous.remarks].filter(Boolean).join(' - ') || null,
+        performedAt: new Date(String(at)), performedById: previous.handedOverBy ?? null,
+        performedByName: nameFor(previous.handedOverBy),
       });
     }
 
@@ -7392,7 +7440,7 @@ export class OrderService {
           }));
           // Serialize our invoice allocation across orders, not just repeated
           // payments for the same order. Existing invoice numbers are retained.
-          const invoiceNumber = await this.allocateInvoiceNumber(tx);
+          const invoiceNumber = await this.allocateInvoiceNumber(tx, order.storeId);
           const {v4} = await import('uuid');
           const tax = Number(order.taxAmount) || 0;
           const cgst = Math.round(tax * 50) / 100;
@@ -7434,21 +7482,19 @@ export class OrderService {
 
   async allocateInvoiceNumber(
     transaction: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+    storeId: string,
+    at: Date = new Date(),
   ): Promise<string> {
     const options = {transaction};
-    await this.dataSource.execute(
-      "SELECT pg_advisory_xact_lock(hashtext('pressto.invoice-number'))",
-      [],
-      options,
-    );
+    const store = await this.storeRepo.findOne({where: {id: storeId, isDeleted: false}}, options);
+    if (!store) throw new HttpErrors.NotFound('Invoice store not found.');
+    if (!store.storePrefix?.trim()) throw new HttpErrors.UnprocessableEntity('Set the store prefix before generating an invoice.');
+    const period = invoiceNumberPeriod(at);
     const rows = await this.dataSource.execute(
-      "SELECT COALESCE(MAX(substring(invoicenumber from '([0-9]+)$')::bigint), 0) + 1 AS next_number FROM public.invoice WHERE invoicenumber ~ '^INV-[0-9]{6}-[0-9]+$'",
-      [],
-      options,
-    );
-    const now = new Date();
-    const ym = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
-    return `INV-${ym}-${String(rows[0].next_number).padStart(5, '0')}`;
+      'INSERT INTO public.invoice_number_sequence AS counter (storeid,financialyear,lastnumber) VALUES ($1,$2,1) ON CONFLICT (storeid,financialyear) DO UPDATE SET lastnumber=counter.lastnumber+1,updatedat=CURRENT_TIMESTAMP RETURNING lastnumber::text AS sequence',
+      [store.id, period.financialYear], options,
+    ) as {sequence: string}[];
+    return formatInvoiceNumber(store.storePrefix, period.monthYear, rows[0].sequence);
   }
 
   async getPaymentResult(orderId: string) {

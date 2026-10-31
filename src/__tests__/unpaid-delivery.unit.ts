@@ -34,7 +34,7 @@ function counter(paid = 0) {
       },
       orderItemRepo: {find: async () => [{id: 'item', orderId: 'order'}]},
       garmentRepo: {
-        find: async () => [garment],
+        find: async (filter: any) => filter.where?.activeTransferId ? [] : [garment],
         updateById: async (_id: string, patch: object) =>
           Object.assign(garment, patch),
       },
@@ -46,6 +46,10 @@ function counter(paid = 0) {
       statusHistoryRepo: {create: async () => undefined},
       garmentStatusHistoryRepo: {create: async () => undefined},
       paymentTransactionRepo: {find: async () => payments},
+      dataSource: {
+        execute: async () => [],
+        beginTransaction: async () => ({commit: async () => undefined, rollback: async () => undefined}),
+      },
       notifyStatusChange: () => undefined,
     },
   );
@@ -60,6 +64,8 @@ function counter(paid = 0) {
 
 function rider() {
   let paymentCalls = 0;
+  let handoverCalls = 0;
+  let statusCalls = 0;
   let delivered = false;
   let closed = false;
   const bodyPayments: any[] = [];
@@ -99,6 +105,12 @@ function rider() {
           bodyPayments.push({amount: payment.amount, wallet});
         },
         changeStatus: async () => {
+          statusCalls++;
+          delivered = true;
+          closed = true;
+        },
+        recordDeliveryHandover: async () => {
+          handoverCalls++;
           delivered = true;
           closed = true;
         },
@@ -123,6 +135,8 @@ function rider() {
     deliver,
     payments: bodyPayments,
     paymentCalls: () => paymentCalls,
+    handoverCalls: () => handoverCalls,
+    statusCalls: () => statusCalls,
     delivered: () => delivered,
   };
 }
@@ -170,6 +184,14 @@ describe('delivery independent of payment', () => {
     await test.deliver({amount: 250});
     expect(test.delivered()).to.equal(true);
     expect(test.payments).to.eql([{amount: 250, wallet: 0}]);
+  });
+
+  it('does not repeat the delivered transition after recipient handover completes it', async () => {
+    const test = rider();
+    await test.deliver({deliverTo: {collectorType: HandoverCollectorType.SELF}});
+    expect(test.delivered()).to.equal(true);
+    expect(test.handoverCalls()).to.equal(1);
+    expect(test.statusCalls()).to.equal(0);
   });
 
   it('still validates supplied rider payment before delivery', async () => {

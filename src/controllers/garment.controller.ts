@@ -163,8 +163,7 @@ export class GarmentController {
       );
     }
 
-    const totalCount = await this.garmentRepository.count();
-    const garmentTagNumber = `GT${String(totalCount.count + 1).padStart(8, '0')}`;
+    const garmentTagNumber = await this.orderService.getNextGarmentTag();
 
     const garment = await this.garmentRepository.create({
       orderItemId,

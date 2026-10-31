@@ -553,13 +553,14 @@ export class RiderDeliveryController {
     if (body.deliverTo) {
       await this.orderService.recordDeliveryHandover({
         orderId,
+        deliveryId: id,
         ...body.deliverTo,
         remarks: body.remarks,
         handedOverBy: rider.userId,
       });
+    } else {
+      await this.orderService.changeStatus(orderId, OrderStatus.DELIVERED, rider.userId, body.remarks);
     }
-
-    await this.orderService.changeStatus(orderId, OrderStatus.DELIVERED, rider.userId, body.remarks);
 
     const {v4} = await import('uuid');
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);

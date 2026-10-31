@@ -1,6 +1,7 @@
 export interface OrderExportFilters {
   customerName?: string;
   orderId?: string;
+  invoiceNumber?: string;
   placedBy?: string;
   source?: string;
   orderType?: string;
