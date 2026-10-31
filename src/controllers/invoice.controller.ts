@@ -7,6 +7,7 @@ import {authorize} from '../authorization';
 import {ChallanStatus} from '../models/challan.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
+import {SalesReturnStatus} from '../models/sales-return.model';
 import {
   ChallanRepository,
   CustomerRepository,
@@ -15,6 +16,7 @@ import {
   OrderItemRepository,
   OrderRepository,
   PaymentTransactionRepository,
+  SalesReturnRepository,
   UsersRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
@@ -25,12 +27,38 @@ export class InvoiceController {
     @repository(ChallanRepository) private challanRepo: ChallanRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(OrderItemRepository) private orderItemRepo: OrderItemRepository,
-    @repository(PaymentTransactionRepository) private paymentRepo: PaymentTransactionRepository,
+    @repository(PaymentTransactionRepository)
+    private paymentRepo: PaymentTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(UsersRepository) private usersRepo: UsersRepository,
-    @repository(InvoiceOrderLinkRepository) private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
-    @inject('services.store-scope') private storeScopeService: StoreScopeService,
+    @repository(InvoiceOrderLinkRepository)
+    private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
+    @repository(SalesReturnRepository)
+    private salesReturnRepo: SalesReturnRepository,
   ) {}
+
+  private async creditTotals(invoiceIds: string[]) {
+    const notes = await this.salesReturnRepo.find({
+      where: {invoiceId: {inq: invoiceIds}, status: SalesReturnStatus.APPROVED},
+    });
+    const totals = new Map<string, number>();
+    for (const note of notes) {
+      if (
+        !(note.returnedItems ?? []).some(line =>
+          Boolean(
+            (line as {invoiceBasis?: unknown}).invoiceBasis ??
+            (line as {preservesInvoice?: boolean}).preservesInvoice,
+          ),
+        )
+      )
+        continue;
+      const id = note.invoiceId!;
+      totals.set(id, (totals.get(id) ?? 0) + Number(note.creditAmount ?? 0));
+    }
+    return totals;
+  }
 
   // ─── List Invoices ────────────────────────────────────────────────────────
   // Real Invoice rows — not orders. A regular invoice covers exactly one
@@ -41,7 +69,10 @@ export class InvoiceController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/invoices')
-  @response(200, {description: 'Array of Invoice records, enriched with order/customer summary'})
+  @response(200, {
+    description:
+      'Array of Invoice records, enriched with order/customer summary',
+  })
   async find(
     @param.query.string('search') search?: string,
     @param.query.number('limit') limit?: number,
@@ -51,7 +82,13 @@ export class InvoiceController {
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<object[]> {
-    const where = await this._buildInvoiceWhere({search, status, type, dateFrom, dateTo});
+    const where = await this._buildInvoiceWhere({
+      search,
+      status,
+      type,
+      dateFrom,
+      dateTo,
+    });
     const invoices = await this.invoiceRepo.find({
       where,
       order: ['createdAt DESC'],
@@ -64,7 +101,9 @@ export class InvoiceController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/invoices/count')
-  @response(200, {description: 'Count of Invoice records matching the same filters as find()'})
+  @response(200, {
+    description: 'Count of Invoice records matching the same filters as find()',
+  })
   async count(
     @param.query.string('search') search?: string,
     @param.query.string('status') status?: string,
@@ -72,7 +111,13 @@ export class InvoiceController {
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<Count> {
-    const where = await this._buildInvoiceWhere({search, status, type, dateFrom, dateTo});
+    const where = await this._buildInvoiceWhere({
+      search,
+      status,
+      type,
+      dateFrom,
+      dateTo,
+    });
     return this.invoiceRepo.count(where);
   }
 
@@ -118,7 +163,9 @@ export class InvoiceController {
         this._orderIdsMatchingCustomer(q, digits),
         this._orderIdsMatchingNumber(q),
       ]);
-      const orderIdsBySearch = [...new Set([...orderIdsByCustomer, ...orderIdsByNumber])];
+      const orderIdsBySearch = [
+        ...new Set([...orderIdsByCustomer, ...orderIdsByNumber]),
+      ];
       const orClauses: object[] = [{invoiceNumber: {ilike: `%${q}%`}}];
       if (orderIdsBySearch.length) {
         orClauses.push({orderId: {inq: orderIdsBySearch}});
@@ -132,7 +179,9 @@ export class InvoiceController {
   /** Order ids belonging to an on-account-eligible customer (business, or opted in). */
   private async _onAccountOrderIds(): Promise<string[]> {
     const onAccountCustomers = await this.customerRepo.find({
-      where: {or: [{customerEntityType: 'business'}, {isOnAccountEligible: true}]},
+      where: {
+        or: [{customerEntityType: 'business'}, {isOnAccountEligible: true}],
+      },
       fields: {id: true},
     });
     if (!onAccountCustomers.length) return [];
@@ -144,7 +193,10 @@ export class InvoiceController {
   }
 
   /** Order ids whose customer's name or phone matches the search term. */
-  private async _orderIdsMatchingCustomer(query: string, digits: string): Promise<string[]> {
+  private async _orderIdsMatchingCustomer(
+    query: string,
+    digits: string,
+  ): Promise<string[]> {
     const customerWhere: object[] = [
       {firstName: {ilike: `%${query}%`}},
       {lastName: {ilike: `%${query}%`}},
@@ -185,15 +237,22 @@ export class InvoiceController {
   /** Attach orderNumber/customer summary/type/orderCount to a page of invoices. */
   private async _enrichInvoices(invoices: Invoice[]): Promise<object[]> {
     if (!invoices.length) return [];
+    const creditTotals = await this.creditTotals(
+      invoices.map(invoice => invoice.id),
+    );
 
-    const orderIds = [...new Set(invoices.map(inv => inv.orderId).filter(Boolean))];
+    const orderIds = [
+      ...new Set(invoices.map(inv => inv.orderId).filter(Boolean)),
+    ];
     const orders = await this.orderRepo.find({
       where: {id: {inq: orderIds}},
       fields: {id: true, orderNumber: true, customerId: true, status: true},
     });
     const orderById = new Map(orders.map(o => [o.id, o]));
 
-    const customerIds = [...new Set(orders.map(o => o.customerId).filter(Boolean))];
+    const customerIds = [
+      ...new Set(orders.map(o => o.customerId).filter(Boolean)),
+    ];
     const customers = customerIds.length
       ? await this.customerRepo.find({
           where: {id: {inq: customerIds}},
@@ -211,11 +270,16 @@ export class InvoiceController {
 
     const userIds = [...new Set(customers.map(c => c.userId).filter(Boolean))];
     const users = userIds.length
-      ? await this.usersRepo.find({where: {id: {inq: userIds}}, fields: {id: true, phone: true}})
+      ? await this.usersRepo.find({
+          where: {id: {inq: userIds}},
+          fields: {id: true, phone: true},
+        })
       : [];
     const userById = new Map(users.map(u => [u.id, u]));
 
-    const consolidatedIds = invoices.filter(inv => inv.isConsolidated).map(inv => inv.id);
+    const consolidatedIds = invoices
+      .filter(inv => inv.isConsolidated)
+      .map(inv => inv.id);
     const orderCountByInvoiceId = new Map<string, number>();
     if (consolidatedIds.length) {
       const links = await this.invoiceOrderLinkRepo.find({
@@ -223,7 +287,10 @@ export class InvoiceController {
         fields: {invoiceId: true},
       });
       for (const link of links) {
-        orderCountByInvoiceId.set(link.invoiceId, (orderCountByInvoiceId.get(link.invoiceId) ?? 0) + 1);
+        orderCountByInvoiceId.set(
+          link.invoiceId,
+          (orderCountByInvoiceId.get(link.invoiceId) ?? 0) + 1,
+        );
       }
     }
 
@@ -232,19 +299,29 @@ export class InvoiceController {
       const customer = order ? customerById.get(order.customerId) : undefined;
       const user = customer?.userId ? userById.get(customer.userId) : undefined;
       const isOnAccount =
-        customer?.customerEntityType === 'business' || customer?.isOnAccountEligible === true;
+        customer?.customerEntityType === 'business' ||
+        customer?.isOnAccountEligible === true;
 
       return {
         ...inv,
+        creditNotesTotal: creditTotals.get(inv.id) ?? 0,
+        netPayable: Math.max(
+          0,
+          Number(inv.totalAmount ?? 0) - (creditTotals.get(inv.id) ?? 0),
+        ),
         orderNumber: order?.orderNumber ?? null,
         orderStatus: order?.status ?? null,
         customer: {
           id: customer?.id ?? null,
-          name: customer ? `${customer.firstName} ${customer.lastName}`.trim() : null,
+          name: customer
+            ? `${customer.firstName} ${customer.lastName}`.trim()
+            : null,
           phone: user?.phone ?? null,
         },
         type: isOnAccount ? 'onAccount' : 'regular',
-        orderCount: inv.isConsolidated ? orderCountByInvoiceId.get(inv.id) ?? 1 : 1,
+        orderCount: inv.isConsolidated
+          ? (orderCountByInvoiceId.get(inv.id) ?? 1)
+          : 1,
       };
     });
   }
@@ -262,7 +339,9 @@ export class InvoiceController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('orderId') orderId: string,
   ): Promise<object> {
-    const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
+    const order = await this.orderRepo.findOne({
+      where: {id: orderId, isDeleted: false},
+    });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     // On-account orders are billed only through a consolidated on-account
@@ -278,16 +357,23 @@ export class InvoiceController {
       OrderStatus.READY,
       OrderStatus.PARTIALLY_DISPATCHED,
       OrderStatus.OUT_FOR_DELIVERY,
-      OrderStatus.DELIVERED
+      OrderStatus.DELIVERED,
     ];
     if (!ALLOWED_STATUSES.includes(order.status as OrderStatus)) {
-      throw new HttpErrors.BadRequest('Invoice can only be generated after processing and quality checks are complete (status must be ready or beyond).');
+      throw new HttpErrors.BadRequest(
+        'Invoice can only be generated after processing and quality checks are complete (status must be ready or beyond).',
+      );
     }
 
     // Guard: only one invoice per order
-    const existingInvoice = await this.invoiceRepo.findOne({where: {orderId}} as any);
+    const existingInvoice = await this.invoiceRepo.findOne({
+      where: {orderId},
+    } as any);
     if (existingInvoice) {
-      return {message: 'Invoice already exists for this order.', invoice: existingInvoice};
+      return {
+        message: 'Invoice already exists for this order.',
+        invoice: existingInvoice,
+      };
     }
 
     // Snapshot current order items
@@ -320,9 +406,14 @@ export class InvoiceController {
 
     // Refund transactions are outgoing money, not amount received.
     const payments = await this.paymentRepo.find({where: {orderId}} as any);
-    const amountReceived = payments.reduce((s: number, p: any) =>
-      s + (p.transactionType === 'refund' ? 0 : Number(p.amount) || 0), 0);
-    const balanceDue = parseFloat(Math.max(0, totalAmount - amountReceived).toFixed(2));
+    const amountReceived = payments.reduce(
+      (s: number, p: any) =>
+        s + (p.transactionType === 'refund' ? 0 : Number(p.amount) || 0),
+      0,
+    );
+    const balanceDue = parseFloat(
+      Math.max(0, totalAmount - amountReceived).toFixed(2),
+    );
 
     // Generate invoice number: INV-YYYYMM-00001
     const now = new Date();
@@ -335,7 +426,9 @@ export class InvoiceController {
     // Find the challan to link and mark it converted
     const challan = await this.challanRepo.findOne({where: {orderId}} as any);
     if (challan) {
-      await this.challanRepo.updateById(challan.id, {status: ChallanStatus.CONVERTED_TO_INVOICE});
+      await this.challanRepo.updateById(challan.id, {
+        status: ChallanStatus.CONVERTED_TO_INVOICE,
+      });
     }
 
     const invoice = await this.invoiceRepo.create({
@@ -371,13 +464,24 @@ export class InvoiceController {
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(orderId, currentUser!);
 
-    const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
+    const order = await this.orderRepo.findOne({
+      where: {id: orderId, isDeleted: false},
+    });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     const invoice = await this.invoiceRepo.findOne({where: {orderId}} as any);
-    if (!invoice) throw new HttpErrors.NotFound('No invoice found for this order.');
+    if (!invoice)
+      throw new HttpErrors.NotFound('No invoice found for this order.');
 
-    return {invoice};
+    const credits =
+      (await this.creditTotals([invoice.id])).get(invoice.id) ?? 0;
+    return {
+      invoice: {
+        ...invoice,
+        creditNotesTotal: credits,
+        netPayable: Math.max(0, Number(invoice.totalAmount ?? 0) - credits),
+      },
+    };
   }
 
   // ─── Mark Printed ─────────────────────────────────────────────────────────
@@ -386,9 +490,12 @@ export class InvoiceController {
   @authorize({roles: ['super_admin'], permissions: ['order:update']})
   @patch('/orders/{orderId}/invoice/print')
   @response(200, {description: 'Invoice marked as printed'})
-  async markPrinted(@param.path.string('orderId') orderId: string): Promise<object> {
+  async markPrinted(
+    @param.path.string('orderId') orderId: string,
+  ): Promise<object> {
     const invoice = await this.invoiceRepo.findOne({where: {orderId}} as any);
-    if (!invoice) throw new HttpErrors.NotFound('No invoice found for this order.');
+    if (!invoice)
+      throw new HttpErrors.NotFound('No invoice found for this order.');
 
     await this.invoiceRepo.updateById(invoice.id, {
       isPrinted: true,

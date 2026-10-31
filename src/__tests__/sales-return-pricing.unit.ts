@@ -26,7 +26,10 @@ describe('sales return pricing', () => {
             rollback: async () => {},
           }),
         },
-        orderRepo: {findOne: async () => ({id: 'order-1'})},
+        invoiceRepo: {
+          findOne: async () => ({id: 'invoice-1', status: 'issued'}),
+        },
+        orderRepo: {findOne: async () => ({id: 'order-1', status: 'ready'})},
         orderItemRepo: {
           find: async () => [{id: 'item-1', itemId: 'catalog-1', quantity: 1}],
         },
@@ -40,6 +43,7 @@ describe('sales return pricing', () => {
 
     try {
       await controller.create({} as UserProfile, 'order-1', {
+        reason: 'Damaged',
         returnedItems: [{orderItemId: 'item-1', quantity: 1, amount: 252}],
       });
       throw new Error('Expected a conflicting sales return');
@@ -54,6 +58,7 @@ describe('sales return pricing', () => {
     let returnUpdate: Record<string, unknown> | undefined;
     const invoice = {
       id: 'invoice-a',
+      status: 'issued',
       isConsolidated: true,
       subtotal: 200,
       totalAmount: 200,
@@ -85,6 +90,7 @@ describe('sales return pricing', () => {
         orderRepo: {
           findOne: async () => ({
             id: 'order-b',
+            status: 'ready',
             subtotal: 100,
             discountAmount: 0,
             totalAmount: 118,
@@ -131,10 +137,9 @@ describe('sales return pricing', () => {
 
     await controller.approve({} as UserProfile, 'return-b');
     expect(invoiceUpdate).to.containEql({
-      subtotal: 170,
-      totalAmount: 170,
       balanceDue: 170,
     });
+    expect(invoice.totalAmount).to.equal(200);
     expect(linkUpdate).to.containEql({orderTotal: 70});
     expect(returnUpdate).to.containEql({invoiceId: invoice.id});
   });

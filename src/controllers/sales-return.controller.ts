@@ -19,6 +19,7 @@ import {
 } from '../models/order-status.enum';
 import {GarmentStatus} from '../models/garment-status.enum';
 import {Order} from '../models/order.model';
+import {InvoiceStatus} from '../models/invoice.model';
 import {RefundDueStatus} from '../models/refund-due-status.enum';
 import {RefundMethod} from '../models/refund-method.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
@@ -54,6 +55,41 @@ function roundRupee(value: unknown): number {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
+interface CreditBasis {
+  subtotal: number;
+  discount: number;
+  tax: number;
+  total: number;
+}
+interface CreditLine {
+  orderItemId: string;
+  quantity: number;
+  originalAmount: number;
+  amount: number;
+  taxAmount: number;
+  grossAmount: number;
+  garmentIds: string[];
+  invoiceBasis: CreditBasis;
+}
+
+/** Credit follows the issued invoice's discount and tax, never its payment state. */
+export function invoiceCreditValue(amount: number, basis: CreditBasis) {
+  const discount =
+    basis.subtotal > 0 ? money((amount * basis.discount) / basis.subtotal) : 0;
+  const discounted = money(Math.max(0, amount - discount));
+  const taxable = money(Math.max(0, basis.subtotal - basis.discount));
+  const taxAmount = taxable > 0 ? money((discounted * basis.tax) / taxable) : 0;
+  const rounding = basis.total - money(taxable + basis.tax);
+  const roundingShare =
+    basis.subtotal > 0 ? (rounding * amount) / basis.subtotal : 0;
+  return {
+    amount: discounted,
+    taxAmount,
+    grossAmount: money(discounted + taxAmount + roundingShare),
+  };
+}
+
+/** Legacy pricing helper; new invoice credits use invoiceCreditValue. */
 export function calculateSalesReturnCreditAmount(
   preTaxAmount: unknown,
   gstRate: unknown,
@@ -167,46 +203,13 @@ export class SalesReturnController {
    * Upgrade that changes the subtotal without recomputing tax), which would
    * silently carry that drift into every credit note's GST gross-up.
    */
-  private async _resolveGstRate(options?: Options): Promise<number> {
-    const gstConfig = await this.gstConfigRepo.findOne(
-      {
-        where: {isActive: true, isDeleted: false} as object,
-      },
-      options,
-    );
+  private async _resolveGstRate(): Promise<number> {
+    const gstConfig = await this.gstConfigRepo.findOne({
+      where: {isActive: true, isDeleted: false} as object,
+    });
     return gstConfig
       ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
       : 0;
-  }
-
-  private async _isOrderPaid(
-    order: Order,
-    options?: Options,
-  ): Promise<boolean> {
-    const payments = await this.paymentRepo.find(
-      {
-        where: {orderId: order.id},
-      },
-      options,
-    );
-    const transactionCollected = payments.reduce(
-      (sum: number, payment) =>
-        sum +
-        (payment.transactionType === 'refund' ? 0 : money(payment.amount)),
-      0,
-    );
-    const paymentOrder = order as Order & {
-      allocatedPayment?: number;
-      parentOrderId?: string;
-    };
-    const allocatedPayment = money(paymentOrder.allocatedPayment);
-    const collected = paymentOrder.parentOrderId
-      ? money(allocatedPayment + transactionCollected)
-      : order.hasBeenSplit
-        ? allocatedPayment
-        : transactionCollected;
-
-    return collected >= money(order.totalAmount);
   }
 
   /**
@@ -271,7 +274,7 @@ export class SalesReturnController {
                 },
               },
               // Picked up front — only ever used if this return leaves a
-              // refund due; approve() pays it out immediately with this.
+              // refund due; submission pays it out immediately with this.
               refundMethod: {type: 'string', enum: Object.values(RefundMethod)},
               cashShiftId: {type: 'string', format: 'uuid'},
               bankDetails: {
@@ -301,6 +304,7 @@ export class SalesReturnController {
       cashShiftId?: string;
       bankDetails?: RefundBankDetails;
     },
+    @param.query.boolean('preview') preview = false,
   ): Promise<object> {
     await this.storeScopeService.assertOrderVisible(orderId, currentUser);
     const tx = await this.dataSource.beginTransaction({
@@ -320,21 +324,45 @@ export class SalesReturnController {
         options,
       );
       if (!order) throw new HttpErrors.NotFound('Order not found.');
-
       if (
-        !body.returnedItems?.length ||
+        ![
+          OrderStatus.READY,
+          OrderStatus.PARTIALLY_DISPATCHED,
+          OrderStatus.OUT_FOR_DELIVERY,
+          OrderStatus.DELIVERED,
+          OrderStatus.RETURNED,
+        ].includes(order.status!)
+      ) {
+        throw new HttpErrors.BadRequest(
+          'Credit notes require a Ready or later ticket with a final invoice.',
+        );
+      }
+      if (!body.reason?.trim() || !body.returnedItems?.length) {
+        throw new HttpErrors.BadRequest(
+          'Select at least one item and provide a credit-note reason.',
+        );
+      }
+      const invoice = await this.findInvoiceForOrder(orderId, options);
+      if (!invoice || invoice.status !== InvoiceStatus.ISSUED) {
+        throw new HttpErrors.BadRequest(
+          'Generate a final invoice before creating a credit note.',
+        );
+      }
+      if (
+        new Set(body.returnedItems.map(line => line.orderItemId)).size !==
+          body.returnedItems.length ||
         body.returnedItems.some(
           line =>
+            !line.orderItemId ||
             !Number.isSafeInteger(line.quantity) ||
-            line.quantity < 1 ||
-            !Number.isFinite(Number(line.amount)) ||
-            Number(line.amount) < 0,
+            line.quantity < 1,
         )
       ) {
         throw new HttpErrors.BadRequest(
-          'Select items with a positive whole-number quantity and valid amount.',
+          'Return each item once with a positive whole-number quantity.',
         );
       }
+
       // A returned or damaged garment was already removed from ticket billing;
       // only still-billable pieces may enter a sales return.
       const requestedQtyByOrderItemId = new Map<string, number>();
@@ -413,22 +441,24 @@ export class SalesReturnController {
             garmentQtyByItemId.has(id)
               ? (billableQtyByItemId.get(id) ?? 0) -
                   existingReturns
-                    .filter(
-                      record => record.status === SalesReturnStatus.PENDING,
-                    )
-                    .flatMap(record => record.returnedItems ?? [])
-                    .reduce((sum, raw) => {
-                      const line = raw as {
-                        orderItemId?: string;
-                        quantity?: number;
-                      };
-                      return (
+                    .filter(ret => ret.status === SalesReturnStatus.PENDING)
+                    .reduce(
+                      (sum, ret) =>
                         sum +
-                        (line.orderItemId === id
-                          ? Number(line.quantity) || 0
-                          : 0)
-                      );
-                    }, 0)
+                        (ret.returnedItems ?? []).reduce((n, raw) => {
+                          const line = raw as {
+                            orderItemId?: string;
+                            quantity?: number;
+                          };
+                          return (
+                            n +
+                            (line.orderItemId === id
+                              ? Number(line.quantity) || 0
+                              : 0)
+                          );
+                        }, 0),
+                      0,
+                    )
               : totalQty,
           );
           return (requestedQtyByOrderItemId.get(id) ?? 0) > remaining;
@@ -456,60 +486,206 @@ export class SalesReturnController {
         }
       }
 
-      const invoice = await this.findInvoiceForOrder(orderId, options);
-
-      // GST is applied once, at the order level (see order.service.ts's
-      // createOrder), never per line item — OrderItem.totalPrice, and so the
-      // per-item `amount` the frontend sends here, is pre-tax. Gross the
-      // aggregate up by the CURRENT real GST rate before storing it as
-      // creditAmount, so the credit note (and the wallet refund it drives in
-      // approve()) matches what the customer actually paid, GST included —
-      // not just the item's pre-tax price.
-      //
-      // Deliberately not derived from the order's own taxAmount/subtotal
-      // ratio (an "effective tax rate") — that pair can go stale relative to
-      // each other (e.g. after an Upgrade that changes the subtotal), and an
-      // effective-rate derivation would silently inherit that drift into
-      // every credit note's own GST gross-up, over- or under-crediting the
-      // customer. OrderService.splitOrder() still does this the old,
-      // stale-prone way — flagging for a follow-up, not fixed here.
-      const returnedItems = (body.returnedItems ?? []).map(item => {
-        const originalAmount = money(item.amount);
-        return {
-          ...item,
-          originalAmount,
-          amount: calculateDiscountedSalesReturnAmount(
-            originalAmount,
-            order.subtotal,
-            order.discountAmount,
+      const orderItems = await this.orderItemRepo.find(
+        {where: {orderId}},
+        options,
+      );
+      const previousReturns = await this.salesReturnRepo.find(
+        {where: {orderId, status: {neq: SalesReturnStatus.REJECTED}}},
+        options,
+      );
+      const previousLines = previousReturns.flatMap(
+        record => record.returnedItems ?? [],
+      ) as CreditLine[];
+      const previousBasis = previousLines.find(
+        line => line.invoiceBasis,
+      )?.invoiceBasis;
+      // Individual invoices retain their issued prices. Consolidated documents
+      // snapshot the ticket basis on the first request because they cover a batch.
+      const basis: CreditBasis = !invoice.isConsolidated
+        ? {
+            subtotal: money(invoice.subtotal),
+            discount: money(invoice.discount),
+            tax: money(Number(invoice.cgst ?? 0) + Number(invoice.sgst ?? 0)),
+            total: money(invoice.totalAmount),
+          }
+        : (previousBasis ?? {
+            subtotal: money(order.subtotal),
+            discount: money(order.discountAmount),
+            tax: money(order.taxAmount),
+            total: money(order.totalAmount),
+          });
+      const snapshotItems = (invoice.items ?? []) as {
+        orderItemId: string;
+        quantity: number;
+        totalPrice: number;
+      }[];
+      const allGarments = await this.garmentRepo.find(
+        {
+          where: {
+            orderItemId: {inq: orderItems.map(item => item.id)},
+            isDeleted: false,
+          },
+          order: ['createdAt ASC', 'id ASC'],
+        },
+        options,
+      );
+      const reservedIds = new Set(
+        previousLines.flatMap(line => line.garmentIds ?? []),
+      );
+      const returnedItems: CreditLine[] = [];
+      for (const requested of body.returnedItems ?? []) {
+        const item = orderItems.find(row => row.id === requested.orderItemId);
+        if (!item || item.rejectedAtIntake)
+          throw new HttpErrors.BadRequest(
+            'Selected item is not billable on this ticket.',
+          );
+        const snapshot = snapshotItems.find(row => row.orderItemId === item.id);
+        if (!invoice.isConsolidated && !snapshot)
+          throw new HttpErrors.BadRequest(
+            'Selected item is missing from the final invoice.',
+          );
+        const eligible = allGarments.filter(
+          garment =>
+            garment.orderItemId === item.id &&
+            ![
+              GarmentStatus.RETURNED_TO_CUSTOMER,
+              GarmentStatus.DAMAGED,
+            ].includes(garment.status!) &&
+            !reservedIds.has(garment.id),
+        );
+        const legacyReserved = previousReturns
+          .filter(record => record.status === SalesReturnStatus.PENDING)
+          .flatMap(record => record.returnedItems ?? [])
+          .reduce((sum, raw) => {
+            const line = raw as CreditLine;
+            return (
+              sum +
+              (line.orderItemId === item.id && !line.garmentIds?.length
+                ? Number(line.quantity) || 0
+                : 0)
+            );
+          }, 0);
+        const selected = eligible.slice(
+          legacyReserved,
+          legacyReserved + requested.quantity,
+        );
+        if (
+          allGarments.some(garment => garment.orderItemId === item.id) &&
+          selected.length !== requested.quantity
+        )
+          throw new HttpErrors.Conflict(
+            'Selected garments are already credited or reserved by another credit note.',
+          );
+        let originalAmount = 0;
+        for (const garment of selected) {
+          const price = await this.approvalService.calculateGarmentReturnAmount(
+            garment.id,
+          );
+          const siblings = allGarments.filter(
+            row => row.orderItemId === item.id,
+          );
+          const area = (row: typeof garment) =>
+            Math.max(0, Number(row.length) * Number(row.width)) || 0;
+          const totalArea = siblings.reduce((sum, row) => sum + area(row), 0);
+          const share =
+            area(garment) > 0 && totalArea > 0
+              ? area(garment) / totalArea
+              : 1 / Math.max(1, Number(snapshot?.quantity));
+          const primary = snapshot
+            ? money(snapshot.totalPrice) * share
+            : price.itemPrice;
+          const invoiceIncludesExtras =
+            invoice.isConsolidated === true ||
+            basis.subtotal >
+              snapshotItems.reduce(
+                (sum, row) => sum + money(row.totalPrice),
+                0,
+              ) +
+                0.01;
+          originalAmount +=
+            primary +
+            (invoiceIncludesExtras
+              ? price.additionalServiceCharge + price.addOnCharge
+              : 0);
+        }
+        if (!selected.length)
+          originalAmount =
+            (money(snapshot?.totalPrice ?? item.totalPrice) *
+              requested.quantity) /
+            Math.max(1, Number(snapshot?.quantity ?? item.quantity));
+        const amounts = invoiceCreditValue(originalAmount, basis);
+        returnedItems.push({
+          orderItemId: item.id,
+          quantity: requested.quantity,
+          originalAmount: money(originalAmount),
+          ...amounts,
+          garmentIds: selected.map(garment => garment.id),
+          invoiceBasis: basis,
+        });
+      }
+      const pendingCredit = previousReturns
+        .filter(record => record.status === SalesReturnStatus.PENDING)
+        .reduce((sum, record) => sum + money(record.creditAmount), 0);
+      // Round cumulative invoice credits so separate piece returns do not
+      // leave a rupee outstanding after the final piece is credited.
+      const priorInvoiceNotes = previousReturns.filter(record =>
+        (record.returnedItems as CreditLine[]).every(line => line.invoiceBasis),
+      );
+      const priorGross = priorInvoiceNotes.reduce(
+        (sum, record) =>
+          sum +
+          (record.returnedItems as CreditLine[]).reduce(
+            (n, line) => n + line.grossAmount,
+            0,
           ),
-        };
-      });
-      const preTaxCreditAmount = returnedItems.reduce(
-        (sum, item) => sum + (Number(item.amount) || 0),
         0,
       );
-      const gstRate = await this._resolveGstRate(options);
-      const orderPaid = await this._isOrderPaid(order, options);
-      const creditAmount = calculateSalesReturnCreditAmount(
-        preTaxCreditAmount,
-        gstRate,
-        orderPaid,
+      const priorCredit = priorInvoiceNotes.reduce(
+        (sum, record) => sum + money(record.creditAmount),
+        0,
       );
+      const roundedCredit =
+        roundRupee(
+          priorGross +
+            returnedItems.reduce((sum, line) => sum + line.grossAmount, 0),
+        ) - priorCredit;
       if (
-        creditAmount <= 0 ||
-        roundRupee(creditAmount) > roundRupee(order.totalAmount)
+        roundedCredit >
+        Math.max(0, roundRupee(order.totalAmount) - pendingCredit) + 1
       ) {
-        throw new HttpErrors.BadRequest(
-          'Credit must be positive and cannot exceed the remaining ticket value.',
+        throw new HttpErrors.Conflict(
+          'Selected credit exceeds the remaining invoice value. Review earlier credits and item adjustments.',
         );
       }
+      const creditAmount = Math.min(
+        roundedCredit,
+        Math.max(0, roundRupee(order.totalAmount) - pendingCredit),
+      );
+      if (creditAmount <= 0)
+        throw new HttpErrors.BadRequest(
+          'Selected items have no remaining invoice value to credit.',
+        );
+      const quote = await this._previewCreditNote(
+        {orderId, creditAmount} as SalesReturn,
+        order,
+        options,
+      );
+      if (preview) {
+        await tx.commit();
+        return {
+          quote: {
+            creditAmount,
+            ...quote,
+            invoiceNumber: invoice.invoiceNumber,
+            invoiceTotal: invoice.totalAmount,
+            returnedItems,
+          },
+        };
+      }
 
-      // Refund method is picked here, up front, rather than at approval time
-      // or later on the invoice screen — approve() pays out immediately with
-      // whatever's captured here if the math ends up owing the customer
-      // money. Defaults to wallet so an older/other caller that omits this
-      // entirely still gets a sane, harmless choice.
+      // Apply any refund using the method captured on submission.
+      // Older callers that omit a method retain the existing wallet default.
       const refundMethod = body.refundMethod ?? RefundMethod.WALLET;
       if (refundMethod === RefundMethod.CASH) {
         if (body.cashShiftId) {
@@ -567,7 +743,12 @@ export class SalesReturnController {
         [],
         options,
       );
-      const count = await this.salesReturnRepo.count(undefined, options);
+      const numbers = (await this.dataSource.execute(
+        "SELECT COALESCE(MAX(substring(creditnotenumber from '([0-9]+)$')::bigint), 0) + 1 AS \"nextNumber\" FROM public.sales_return WHERE creditnotenumber ~ '^CN-[0-9]{6}-[0-9]+$'",
+        [],
+        options,
+      )) as {nextNumber: string}[];
+      const count = {count: Number(numbers[0].nextNumber) - 1};
       const creditNoteNumber = `CN-${ym}-${String(count.count + 1).padStart(5, '0')}`;
 
       const {v4} = await import('uuid');
@@ -596,15 +777,16 @@ export class SalesReturnController {
       );
 
       await this.applyCreditNote(salesReturn, currentUser, options);
-      const applied = await this.salesReturnRepo.findById(
+      const appliedReturn = await this.salesReturnRepo.findById(
         salesReturn.id,
         undefined,
         options,
       );
       await tx.commit();
       return {
-        message: 'Sales return applied. Recorded in Finance history.',
-        salesReturn: applied,
+        message:
+          'Sales return applied immediately. Credit note recorded in Finance history.',
+        salesReturn: appliedReturn,
       };
     } catch (error) {
       await tx.rollback();
@@ -860,6 +1042,13 @@ export class SalesReturnController {
         undefined,
         options,
       );
+      if (!record) throw new HttpErrors.NotFound('Sales return not found.');
+      if (record.status !== SalesReturnStatus.PENDING) {
+        throw new HttpErrors.BadRequest(
+          `Sales return is already ${record.status}.`,
+        );
+      }
+
       const result = await this.applyCreditNote(record, currentUser, options);
       await tx.commit();
       return result;
@@ -869,15 +1058,17 @@ export class SalesReturnController {
     }
   }
 
+  /** Apply a credit and any refund once, inside the caller's locked transaction. */
   private async applyCreditNote(
     record: SalesReturn,
     currentUser: UserProfile,
     options: Options,
-  ): Promise<object> {
-    if (record.status !== SalesReturnStatus.PENDING)
+  ): Promise<{message: string; creditNoteNumber?: string}> {
+    if (record.status !== SalesReturnStatus.PENDING) {
       throw new HttpErrors.BadRequest(
         `Sales return is already ${record.status}.`,
       );
+    }
     const id = record.id;
     const tx = options.transaction;
     const order = await this.orderRepo.findOne(
@@ -887,17 +1078,31 @@ export class SalesReturnController {
       options,
     );
     if (!order) throw new HttpErrors.NotFound('Order not found.');
-
     if (
-      money(record.creditAmount) <= 0 ||
-      roundRupee(record.creditAmount) > roundRupee(order.totalAmount)
+      ![
+        OrderStatus.READY,
+        OrderStatus.PARTIALLY_DISPATCHED,
+        OrderStatus.OUT_FOR_DELIVERY,
+        OrderStatus.DELIVERED,
+        OrderStatus.RETURNED,
+      ].includes(order.status!)
     ) {
       throw new HttpErrors.Conflict(
-        'Credit exceeds the remaining ticket value. Review the sales return.',
+        'Ticket is no longer eligible for a credit note.',
       );
     }
+    if (
+      money(record.creditAmount) <= 0 ||
+      money(record.creditAmount) > money(order.totalAmount) + 1
+    ) {
+      throw new HttpErrors.Conflict(
+        'Credit no longer matches the remaining ticket value. Reject and recreate it.',
+      );
+    }
+
     const {v4} = await import('uuid');
-    // Settlement and payout run together on submission, or for a legacy pending approval.
+    // New sales returns settle during creation. Older pending notes use the
+    // same operation when approved. Refunds share the credit transaction.
     const {newOrderTotal, refundAmount, newBalanceDue} =
       await this._previewCreditNote(record, order, options);
     if (refundAmount > 0 && record.refundMethod === RefundMethod.CASH) {
@@ -914,14 +1119,16 @@ export class SalesReturnController {
     let invoice = record.invoiceId
       ? await this.invoiceRepo.findById(record.invoiceId, undefined, options)
       : await this.findInvoiceForOrder(record.orderId, options);
-    if (invoice) {
-      await this.dataSource.execute(
-        'SELECT id FROM public.invoice WHERE id = $1 FOR UPDATE',
-        [invoice.id],
-        options,
+    if (!invoice || invoice.status !== InvoiceStatus.ISSUED)
+      throw new HttpErrors.BadRequest(
+        'A final invoice is required to approve a credit note.',
       );
-      invoice = await this.invoiceRepo.findById(invoice.id, undefined, options);
-    }
+    await this.dataSource.execute(
+      'SELECT id FROM public.invoice WHERE id = $1 FOR UPDATE',
+      [invoice.id],
+      options,
+    );
+    invoice = await this.invoiceRepo.findById(invoice.id, undefined, options);
     const invoiceLink = invoice?.isConsolidated
       ? await this.invoiceOrderLinkRepo.findOne(
           {
@@ -936,11 +1143,9 @@ export class SalesReturnController {
       );
     }
 
-    // The returned item lines are always pre-tax. A paid order stores a
-    // GST-inclusive creditAmount, while an unpaid order stores only its
-    // discounted item/services/add-on value. Use the returned lines instead
-    // of reverse-grossing creditAmount so both cases update subtotal correctly.
-    const gstRate = await this._resolveGstRate(options);
+    // New notes retain the issued invoice discount and GST; older notes keep
+    // their existing pricing behavior. Payment state only affects the refund.
+    const gstRate = await this._resolveGstRate();
     const preTaxCreditAmount = money(
       (record.returnedItems ?? []).reduce(
         (sum, item) => sum + (Number((item as {amount?: unknown}).amount) || 0),
@@ -960,7 +1165,9 @@ export class SalesReturnController {
     const returnedDiscount = money(
       Math.max(0, rawReturnedAmount - preTaxCreditAmount),
     );
-    const newSubtotal = money(money(order.subtotal) - rawReturnedAmount);
+    const newSubtotal = money(
+      Math.max(0, money(order.subtotal) - rawReturnedAmount),
+    );
     const newDiscount = money(
       Math.max(0, money(order.discountAmount) - returnedDiscount),
     );
@@ -970,8 +1177,21 @@ export class SalesReturnController {
     // by an earlier Upgrade (see approval.service.ts's
     // _applyUpgradeOnOrderItem, fixed the same way).
     const newTaxableAmount = money(newSubtotal - newDiscount);
-    const newTaxAmount =
-      gstRate > 0 ? money((newTaxableAmount * gstRate) / 100) : 0;
+    const invoiceLines = record.returnedItems as CreditLine[];
+    const newTaxAmount = invoiceLines.every(line => line.invoiceBasis)
+      ? money(
+          Math.max(
+            0,
+            money(order.taxAmount) -
+              invoiceLines.reduce(
+                (sum, line) => sum + money(line.taxAmount),
+                0,
+              ),
+          ),
+        )
+      : gstRate > 0
+        ? money((newTaxableAmount * gstRate) / 100)
+        : 0;
 
     await this.orderRepo.updateById(
       record.orderId,
@@ -997,6 +1217,9 @@ export class SalesReturnController {
         {
           where: {
             orderItemId: line.orderItemId,
+            ...((line as CreditLine).garmentIds?.length
+              ? {id: {inq: (line as CreditLine).garmentIds}}
+              : {}),
             status: {
               nin: [GarmentStatus.RETURNED_TO_CUSTOMER, GarmentStatus.DAMAGED],
             },
@@ -1007,6 +1230,13 @@ export class SalesReturnController {
         options,
       );
       const quantity = Math.max(0, Number(line.quantity) || 0);
+      if (
+        (line as CreditLine).garmentIds?.length &&
+        garments.length !== quantity
+      )
+        throw new HttpErrors.Conflict(
+          'Selected garments changed after this credit note was requested. Reject and recreate it.',
+        );
       for (const garment of garments.slice(0, quantity)) {
         await this.garmentRepo.updateById(
           garment.id,
@@ -1024,39 +1254,31 @@ export class SalesReturnController {
           money(invoiceLink.orderTotal),
           money(record.creditAmount),
         );
-
-        await this.invoiceRepo.updateById(
-          invoice.id,
-          {
-            subtotal: money(Math.max(0, money(invoice.subtotal) - credit)),
-            totalAmount: roundRupee(
-              Math.max(0, money(invoice.totalAmount) - credit),
-            ),
-            balanceDue: roundRupee(
-              Math.max(0, money(invoice.balanceDue) - credit),
-            ),
-            updatedAt: new Date(),
-          },
-          {transaction: tx},
-        );
-        await this.invoiceOrderLinkRepo.updateById(
-          invoiceLink.id,
-          {
-            orderTotal: money(
-              Math.max(0, money(invoiceLink.orderTotal) - credit),
-            ),
-          },
-          {transaction: tx},
-        );
+        {
+          await this.invoiceRepo.updateById(
+            invoice.id,
+            {
+              balanceDue: roundRupee(
+                Math.max(0, money(invoice.balanceDue) - credit),
+              ),
+              updatedAt: new Date(),
+            },
+            {transaction: tx},
+          );
+          await this.invoiceOrderLinkRepo.updateById(
+            invoiceLink.id,
+            {
+              orderTotal: money(
+                Math.max(0, money(invoiceLink.orderTotal) - credit),
+              ),
+            },
+            {transaction: tx},
+          );
+        }
       } else {
         await this.invoiceRepo.updateById(
           invoice.id,
           {
-            subtotal: newSubtotal,
-            discount: newDiscount,
-            cgst: money(newTaxAmount / 2),
-            sgst: money(newTaxAmount - money(newTaxAmount / 2)),
-            totalAmount: newOrderTotal,
             balanceDue: newBalanceDue,
             updatedAt: new Date(),
           } as any,
@@ -1110,6 +1332,10 @@ export class SalesReturnController {
         resolvedBy: currentUser[securityId],
         resolvedAt: new Date(),
         refundAmount,
+        returnedItems: (record.returnedItems ?? []).map(line => ({
+          ...line,
+          preservesInvoice: true,
+        })),
         creditAppliedAs:
           refundAmount > 0
             ? (record.refundMethod ?? RefundMethod.WALLET)
@@ -1183,7 +1409,7 @@ export class SalesReturnController {
     }
 
     return {
-      message: 'Sales return approved. Credit note issued.',
+      message: 'Sales return applied. Credit note issued.',
       creditNoteNumber: record.creditNoteNumber,
     };
   }
