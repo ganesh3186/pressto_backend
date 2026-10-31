@@ -645,8 +645,8 @@ export class RiderPickupController {
         bagNumber: bagId ? bagNumberById.get(bagId) ?? null : null,
         ...(request.itemCategoryEstimate ? {itemCategoryEstimate: request.itemCategoryEstimate.map(line => ({
           ...line,
-          itemCategoryName: categoryNameById.get(line.itemCategoryId) ?? null,
-          serviceName: line.serviceId ? serviceNameById.get(line.serviceId) ?? null : null,
+          itemCategoryName: line.itemCategoryName ?? categoryNameById.get(line.itemCategoryId) ?? null,
+          serviceName: line.serviceName ?? (line.serviceId ? serviceNameById.get(line.serviceId) ?? null : null),
         }))} : {}),
         ...(actualItemsByService ? {actualItemsByService: actualItemsByService.map(line => {
           const {bagId: lineBagId, ...publicLine} = line;

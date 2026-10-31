@@ -23,8 +23,10 @@ import {
   BagRepository,
   CustomerRepository,
   ItemCategoryRepository,
+  ItemRepository,
   MediaRepository,
   OrderRepository,
+  OrderItemRepository,
   PickupDeliverySlotRepository,
   PickupEscalationRepository,
   PickupRequestRepository,
@@ -96,6 +98,8 @@ export class PickupRequestController {
     private riderPincodeMappingRepository: RiderPincodeMappingRepository,
     @repository(OrderRepository)
     private orderRepository: OrderRepository,
+    @repository(OrderItemRepository)
+    private orderItemRepository: OrderItemRepository,
     @repository(ApprovalRequestRepository)
     private approvalRequestRepository: ApprovalRequestRepository,
     @repository(BagRepository)
@@ -104,6 +108,8 @@ export class PickupRequestController {
     private mediaRepository: MediaRepository,
     @repository(ItemCategoryRepository)
     private itemCategoryRepository: ItemCategoryRepository,
+    @repository(ItemRepository)
+    private itemRepository: ItemRepository,
     @repository(ServiceRepository)
     private serviceRepository: ServiceRepository,
     @repository(ServiceCategoryRepository)
@@ -283,6 +289,22 @@ export class PickupRequestController {
       const store = await this.storeRepository.findOne({where: {id: body.storeId}});
       if (!store) throw new HttpErrors.NotFound('Store not found.');
     }
+    if (body.itemCategoryEstimate?.length && !body.isReworkPickup) {
+      const categoryIds = [...new Set(body.itemCategoryEstimate.map(line => line.itemCategoryId))];
+      const serviceIds = [...new Set(body.itemCategoryEstimate.map(line => line.serviceId).filter((id): id is string => Boolean(id)))];
+      const [categories, services] = await Promise.all([
+        this.itemCategoryRepository.find({where: {id: {inq: categoryIds}, isDeleted: false, isActive: true} as object}),
+        serviceIds.length
+          ? this.serviceRepository.find({where: {id: {inq: serviceIds}, isDeleted: false, isActive: true} as object})
+          : [],
+      ]);
+      if (categories.length !== categoryIds.length) {
+        throw new HttpErrors.BadRequest('Select valid item categories for this pickup.');
+      }
+      if (services.length !== serviceIds.length) {
+        throw new HttpErrors.BadRequest('Select valid services for this pickup.');
+      }
+    }
     if (body.isReworkPickup) {
       if (!body.reworkOfOrderId || !body.reworkApprovalRequestId) {
         throw new HttpErrors.BadRequest(
@@ -299,6 +321,20 @@ export class PickupRequestController {
       });
       if (!approval) {
         throw new HttpErrors.NotFound('No matching reprocess request found for this order.');
+      }
+      if (body.itemCategoryEstimate?.length) {
+        const originalItems = await this.orderItemRepository.find({where: {orderId: body.reworkOfOrderId}});
+        const itemIds = [...new Set(originalItems.map(item => item.itemId))];
+        const originalCatalogItems = itemIds.length
+          ? await this.itemRepository.find({where: {id: {inq: itemIds}} as object})
+          : [];
+        const categoryByItemId = new Map(originalCatalogItems.map(item => [item.id, item.itemCategoryId]));
+        const originalPairs = new Set(originalItems.map(item =>
+          `${item.serviceId}:${categoryByItemId.get(item.itemId)}`));
+        if (body.itemCategoryEstimate.some(line =>
+          !originalPairs.has(`${line.serviceId}:${line.itemCategoryId}`))) {
+          throw new HttpErrors.BadRequest('Rework service and item category must belong to the original order.');
+        }
       }
       const reworkOrderId = (approval.metadata as Record<string, unknown> | undefined)?.reworkOrderId;
       if (!reworkOrderId && approval.status !== ApprovalRequestStatus.APPROVED) {
@@ -539,8 +575,8 @@ export class PickupRequestController {
       riderMediaUrls: toUrls(riderMediaIds),
       itemCategoryEstimate: (pickupRequest.itemCategoryEstimate ?? []).map(line => ({
         ...line,
-        itemCategoryName: itemCategoryNameById.get(line.itemCategoryId) ?? null,
-        serviceName: line.serviceId ? serviceNameById.get(line.serviceId) ?? null : null,
+        itemCategoryName: line.itemCategoryName ?? itemCategoryNameById.get(line.itemCategoryId) ?? null,
+        serviceName: line.serviceName ?? (line.serviceId ? serviceNameById.get(line.serviceId) ?? null : null),
       })),
       actualItemsByService: (pickupRequest.actualItemsByService ?? []).map(line => {
         const serviceCategoryId = serviceCategoryIdByServiceId.get(line.serviceId);

@@ -117,6 +117,8 @@ export class PickupRequest extends Entity {
     itemCategoryId: string;
     quantity: number;
     serviceId?: string;
+    itemCategoryName?: string | null;
+    serviceName?: string | null;
     deliverySpeed?: DeliveryType;
   }>;
 

@@ -41,6 +41,7 @@ import {
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 import {ApprovalService} from '../services/approval.service';
+import {OrderService} from '../services/order.service';
 
 /** Coerce a Postgres numeric (returned as a string) to a usable 2dp number. */
 function money(value: unknown): number {
@@ -146,6 +147,7 @@ export class SalesReturnController {
     private storeScopeService: StoreScopeService,
     @inject('services.approval') private approvalService: ApprovalService,
     @repository(ShiftRepository) private shiftRepo: ShiftRepository,
+    @inject('services.order') private orderService: OrderService,
   ) {}
 
   private async findInvoiceForOrder(orderId: string) {
@@ -244,6 +246,7 @@ export class SalesReturnController {
                   type: 'object',
                   properties: {
                     orderItemId: {type: 'string'},
+                    garmentId: {type: 'string', format: 'uuid'},
                     quantity: {type: 'number'},
                     amount: {type: 'number'},
                   },
@@ -273,6 +276,7 @@ export class SalesReturnController {
       remarks?: string;
       returnedItems?: Array<{
         orderItemId: string;
+        garmentId?: string;
         quantity: number;
         amount: number;
       }>;
@@ -341,12 +345,30 @@ export class SalesReturnController {
           (billableQtyByItemId.get(garment.orderItemId) ?? 0) + 1,
         );
       }
+      const garmentById = new Map(garments.map(garment => [garment.id, garment]));
+      const reservedGarmentIds = new Set(existingReturns.flatMap(existing =>
+        (existing.returnedItems ?? []) as Array<{garmentId?: string}>,
+      ).map(line => line.garmentId).filter(Boolean));
+      const selectedGarmentIds = new Set<string>();
+      for (const line of body.returnedItems ?? []) {
+        if (!line.garmentId) continue;
+        const garment = garmentById.get(line.garmentId);
+        if (Number(line.quantity) !== 1 || !garment ||
+          garment.orderItemId !== line.orderItemId ||
+          garment.status === GarmentStatus.RETURNED_TO_CUSTOMER ||
+          garment.status === GarmentStatus.DAMAGED ||
+          reservedGarmentIds.has(line.garmentId) || selectedGarmentIds.has(line.garmentId)) {
+          throw new HttpErrors.Conflict('Selected garment is no longer available for return. Refresh the ticket.');
+        }
+        selectedGarmentIds.add(line.garmentId);
+      }
 
       const overRequestedIds = requestedOrderItemIds.filter(id => {
         const totalQty = totalQtyByItemId.get(id) ?? 0;
-        const remaining =
-          Math.min(totalQty, garmentQtyByItemId.has(id) ? billableQtyByItemId.get(id) ?? 0 : totalQty) -
-          (alreadyCreditedQtyByItemId.get(id) ?? 0);
+        const remaining = Math.max(0, Math.min(
+          totalQty - (alreadyCreditedQtyByItemId.get(id) ?? 0),
+          garmentQtyByItemId.has(id) ? billableQtyByItemId.get(id) ?? 0 : totalQty,
+        ));
         return (requestedQtyByOrderItemId.get(id) ?? 0) > remaining;
       });
       if (overRequestedIds.length) {
@@ -386,10 +408,35 @@ export class SalesReturnController {
     // every credit note's own GST gross-up, over- or under-crediting the
     // customer. OrderService.splitOrder() still does this the old,
     // stale-prone way — flagging for a follow-up, not fixed here.
+    const details = await this.orderService.getOrderDetails(orderId) as {
+      items?: Array<{id: string; itemName?: string; serviceName?: string;
+        unitPrice?: number; isMeasurement?: boolean; garments?: Array<{id: string}>}>;
+    };
+    const detailItems = new Map((details.items ?? []).map(item => [item.id, item]));
+    const gstConfig = await this.gstConfigRepo.findOne({
+      where: {isActive: true, isDeleted: false} as object,
+    });
+    const cgstRate = Number(gstConfig?.cgstPercentage) || 0;
+    const sgstRate = Number(gstConfig?.sgstPercentage) || 0;
+    const orderPaid = await this._isOrderPaid(order);
     const returnedItems = (body.returnedItems ?? []).map(item => {
       const originalAmount = money(item.amount);
+      const source = detailItems.get(item.orderItemId);
+      const garmentSnapshot = item.garmentId
+        ? source?.garments?.find(garment => garment.id === item.garmentId)
+        : undefined;
+      if (item.garmentId && !garmentSnapshot) {
+        throw new HttpErrors.Conflict('Selected garment details changed. Refresh the ticket.');
+      }
       return {
         ...item,
+        itemName: source?.itemName,
+        serviceName: source?.serviceName,
+        unitPrice: source?.unitPrice,
+        isMeasurement: source?.isMeasurement,
+        garmentSnapshot,
+        cgstRate: orderPaid ? cgstRate : 0,
+        sgstRate: orderPaid ? sgstRate : 0,
         originalAmount,
         amount: calculateDiscountedSalesReturnAmount(
           originalAmount,
@@ -402,8 +449,7 @@ export class SalesReturnController {
       (sum, item) => sum + (Number(item.amount) || 0),
       0,
     );
-    const gstRate = await this._resolveGstRate();
-    const orderPaid = await this._isOrderPaid(order);
+    const gstRate = cgstRate + sgstRate;
     const creditAmount = calculateSalesReturnCreditAmount(
       preTaxCreditAmount,
       gstRate,
@@ -506,7 +552,13 @@ export class SalesReturnController {
       throw new HttpErrors.NotFound(
         'No sales return / credit note found for this order.',
       );
-    return {creditNote: salesReturn};
+    const preview = salesReturn.status === SalesReturnStatus.PENDING
+      ? await this._previewCreditNote(salesReturn, order)
+      : null;
+    return {creditNote: {
+      ...salesReturn,
+      ...(preview ? {refundAmount: preview.refundAmount, newBalanceDue: preview.newBalanceDue} : {}),
+    }};
   }
 
   // ─── List Sales Returns ───────────────────────────────────────────────────
@@ -528,8 +580,18 @@ export class SalesReturnController {
       where: {orderId},
       order: ['createdAt DESC'],
     });
-
-    return {salesReturns};
+    if (!salesReturns.some(note => note.status === SalesReturnStatus.PENDING)) {
+      return {salesReturns};
+    }
+    const order = await this.orderRepo.findById(orderId);
+    const [payments, unpaidRefundDues] = await Promise.all([
+      this.paymentRepo.find({where: {orderId}}),
+      this.refundDueRepo.find({where: {orderId,
+        status: {inq: [RefundDueStatus.PENDING, RefundDueStatus.REQUESTED]}}}),
+    ]);
+    return {salesReturns: salesReturns.map(note => note.status === SalesReturnStatus.PENDING
+      ? {...note, ...previewCreditNoteRefund(note, order, payments, unpaidRefundDues)}
+      : note)};
   }
 
   // ─── List Credit Notes (global) ────────────────────────────────────────────
@@ -739,6 +801,18 @@ export class SalesReturnController {
         'Order is missing from its on-account invoice.',
       );
     }
+    for (const line of (record.returnedItems ?? []) as Array<{
+      orderItemId?: string; garmentId?: string;
+    }>) {
+      if (!line.garmentId) continue;
+      const garment = await this.garmentRepo.findOne({where: {
+        id: line.garmentId, orderItemId: line.orderItemId, isDeleted: false,
+      } as object});
+      if (!garment || garment.status === GarmentStatus.RETURNED_TO_CUSTOMER ||
+        garment.status === GarmentStatus.DAMAGED) {
+        throw new HttpErrors.Conflict('Selected garment is no longer available for return.');
+      }
+    }
 
     // The returned item lines are always pre-tax. A paid order stores a
     // GST-inclusive creditAmount, while an unpaid order stores only its
@@ -790,18 +864,24 @@ export class SalesReturnController {
     // only the money would leave those items looking active on printouts.
     for (const line of (record.returnedItems ?? []) as Array<{
       orderItemId?: string;
+      garmentId?: string;
       quantity?: number;
     }>) {
       if (!line.orderItemId) continue;
       const garments = await this.garmentRepo.find({
         where: {
           orderItemId: line.orderItemId,
+          ...(line.garmentId ? {id: line.garmentId} : {}),
           status: {neq: GarmentStatus.RETURNED_TO_CUSTOMER},
           isDeleted: false,
         } as object,
         order: ['createdAt ASC'],
       });
       const quantity = Math.max(0, Number(line.quantity) || 0);
+      if (line.garmentId && (quantity !== 1 || garments.length !== 1 ||
+        garments[0].status === GarmentStatus.DAMAGED)) {
+        throw new HttpErrors.Conflict('Selected garment is no longer available for return.');
+      }
       for (const garment of garments.slice(0, quantity)) {
         await this.garmentRepo.updateById(garment.id, {
           status: GarmentStatus.RETURNED_TO_CUSTOMER,

@@ -161,7 +161,8 @@ The detail response contains the `PickupRequest` fields and its
 - `riderMediaUrls` containing all rider-added photos from confirmed service
   lines and pickup escalations.
 - `itemCategoryEstimate[].itemCategoryName` and `serviceName` for the booking
-  estimate.
+  estimate. New requests save these names at creation, so later master renames
+  do not change the displayed selection; older requests use current master names.
 - `actualItemsByService[].serviceName`, `serviceCategoryId`,
   `serviceCategoryName`, `bagNumber`, and `mediaUrls` for rider-confirmed items.
   The rider's note is `actualItemsByService[].remarks`; the top-level `remarks`
