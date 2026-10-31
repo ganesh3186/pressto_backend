@@ -34,6 +34,7 @@ describe('return approval billing', () => {
       items: [...documentItems]};
     const requests = new Map<string, any>();
     const refundDues: any[] = [];
+    let approvalNotifications = 0;
     let paidAmount = 100;
     const items = [returningItem, remainingItem];
     const emptyFind = {find: async () => []};
@@ -98,6 +99,7 @@ describe('return approval billing', () => {
         updateById: async (_id: string, patch: any) => Object.assign(challan, patch),
       },
       auditService: {log: async () => {}},
+      notifyApprovalRequired: () => { approvalNotifications += 1; },
       _maybeMarkOrderReturned: async () => {},
       _updateGarmentStatus: async (id: string, status: GarmentStatus) => {
         Object.assign(garments.find(g => g.id === id)!, {status});
@@ -114,6 +116,7 @@ describe('return approval billing', () => {
     expect(challan.totalAmount).to.equal(118);
     expect(returningItem.quantity).to.equal(0);
     expect(refundDues).to.have.length(0);
+    expect(approvalNotifications).to.equal(1);
     order.status = 'ready';
     invoice.items = invoice.items.filter(item => item.orderItemId !== returningItem.id);
     challan.items = challan.items.filter(item => item.orderItemId !== returningItem.id);
@@ -184,11 +187,13 @@ describe('return approval billing', () => {
     await service.createRequest({
       type: ApprovalRequestType.RETURN_ITEM,
       entityType: 'garment', entityId: 'garment-2', requestedBy: 'user-1',
+      metadata: {source: 'direct_intake_return'},
     });
     expect(order.totalAmount).to.equal(0);
     expect(invoice.totalAmount).to.equal(0);
     expect(refundDues).to.have.length(1);
     expect(refundDues[0].amount).to.equal(118);
+    expect(approvalNotifications).to.equal(2);
   });
 
   it('keeps the returned item and its charge removed after ticket payment succeeds', async () => {

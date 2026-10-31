@@ -20,12 +20,15 @@ describe('direct intake return billing', () => {
       Object.create(IntakeRejectionController.prototype),
       {
         orderRepo: {findOne: async () => ({id: 'order-1'})},
+        storeScopeService: {assertOrderVisible: async () => {}},
         orderItemRepo: {findOne: async () => ({id: 'item-1'})},
         garmentRepo: {findOne: async () => garment},
         dataSource,
         approvalService: {
-          createRequest: async (request: any) => {
+          createRequest: async (request: any, transaction: unknown, suppressNotification: boolean) => {
             calls.push('return billing');
+            expect(transaction).to.equal(undefined);
+            expect(suppressNotification).to.equal(true);
             expect(request.type).to.equal(ApprovalRequestType.RETURN_ITEM);
             expect(request.entityId).to.equal(garment.id);
             expect(request.metadata.source).to.equal('direct_intake_return');
@@ -68,6 +71,7 @@ describe('direct intake return billing', () => {
     const existing = {id: 'intake-1'};
     const controller = Object.assign(Object.create(IntakeRejectionController.prototype), {
       orderRepo: {findOne: async () => ({id: 'order-1'})},
+      storeScopeService: {assertOrderVisible: async () => {}},
       orderItemRepo: {findOne: async () => ({id: 'item-1'})},
       garmentRepo: {findOne: async () => ({id: 'garment-1', status: GarmentStatus.RETURNED_TO_CUSTOMER})},
       dataSource,
@@ -90,8 +94,12 @@ describe('direct intake return billing', () => {
     let billingCalls = 0;
     let record: any;
     let lock = Promise.resolve();
+    let activeTransactions = 0;
+    let maxActiveTransactions = 0;
     const concurrentDataSource = {
       beginTransaction: async () => {
+        activeTransactions += 1;
+        maxActiveTransactions = Math.max(maxActiveTransactions, activeTransactions);
         let release = () => {};
         return {
           acquire: async () => {
@@ -99,8 +107,8 @@ describe('direct intake return billing', () => {
             lock = new Promise<void>((resolve) => { release = resolve; });
             await previous;
           },
-          commit: async () => release(),
-          rollback: async () => release(),
+          commit: async () => { activeTransactions -= 1; release(); },
+          rollback: async () => { activeTransactions -= 1; release(); },
         };
       },
       execute: async (_sql: string, _params: unknown[], options: any) =>
@@ -108,6 +116,7 @@ describe('direct intake return billing', () => {
     };
     const controller = Object.assign(Object.create(IntakeRejectionController.prototype), {
       orderRepo: {findOne: async () => ({id: 'order-1'})},
+      storeScopeService: {assertOrderVisible: async () => {}},
       orderItemRepo: {findOne: async () => ({id: 'item-1'})},
       garmentRepo: {findOne: async () => garment},
       dataSource: concurrentDataSource,
@@ -127,13 +136,14 @@ describe('direct intake return billing', () => {
     }) as IntakeRejectionController;
 
     const input = {reason: IntakeRejectionReason.OTHER, garmentId: garment.id, directReturn: true};
-    const results = await Promise.all([
-      controller.rejectItem({[securityId]: 'staff-1'} as any, 'order-1', 'item-1', input),
-      controller.rejectItem({[securityId]: 'staff-2'} as any, 'order-1', 'item-1', input),
-    ]) as Array<{record: {id: string}}>;
+    const results = await Promise.all(Array.from({length: 10}, (_, index) =>
+      controller.rejectItem(
+        {[securityId]: `staff-${index}`} as any, 'order-1', 'item-1', input,
+      ))) as Array<{record: {id: string}}>;
 
     expect(billingCalls).to.equal(1);
-    expect(results.map(result => result.record.id)).to.eql(['intake-1', 'intake-1']);
+    expect(maxActiveTransactions).to.be.belowOrEqual(5);
+    expect(results.every(result => result.record.id === 'intake-1')).to.equal(true);
   });
 
   it('finishes an interrupted return without billing it again', async () => {
@@ -144,6 +154,7 @@ describe('direct intake return billing', () => {
     let challanSyncs = 0;
     const controller = Object.assign(Object.create(IntakeRejectionController.prototype), {
       orderRepo: {findOne: async () => ({id: 'order-1'})},
+      storeScopeService: {assertOrderVisible: async () => {}},
       orderItemRepo: {findOne: async () => ({id: 'item-1'})},
       garmentRepo: {findOne: async () => garment},
       dataSource,
@@ -180,5 +191,24 @@ describe('direct intake return billing', () => {
     expect(recordWrites).to.equal(2);
     expect(challanSyncs).to.equal(1);
     expect(result.record.garmentId).to.equal(garment.id);
+  });
+
+  it('checks store access before reading or changing a rejection', async () => {
+    const denied = new Error('Order not found.');
+    const currentUser = {[securityId]: 'staff-1'} as any;
+    let repositoryCalls = 0;
+    const controller = Object.assign(Object.create(IntakeRejectionController.prototype), {
+      storeScopeService: {assertOrderVisible: async () => { throw denied; }},
+      orderRepo: {findOne: async () => { repositoryCalls += 1; }},
+      intakeRejectedRepo: {findOne: async () => { repositoryCalls += 1; }},
+    }) as IntakeRejectionController;
+
+    await expect(controller.rejectItem(
+      currentUser, 'other-store-order', 'item-1', {reason: IntakeRejectionReason.OTHER},
+    )).to.be.rejectedWith('Order not found.');
+    await expect(controller.resolveRejection(
+      currentUser, 'other-store-order', 'item-1', {outcome: 'process_anyway'} as any,
+    )).to.be.rejectedWith('Order not found.');
+    expect(repositoryCalls).to.equal(0);
   });
 });

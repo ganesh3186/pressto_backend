@@ -27,6 +27,27 @@ import {ApprovalService} from '../services/approval.service';
 import {OrderService} from '../services/order.service';
 import {StoreScopeService} from '../services/store-scope.service';
 
+const directReturnWaiters: Array<() => void> = [];
+let activeDirectReturns = 0;
+
+async function withDirectReturnSlot<T>(work: () => Promise<T>): Promise<T> {
+  await new Promise<void>(resolve => {
+    if (activeDirectReturns < 5) {
+      activeDirectReturns += 1;
+      resolve();
+    } else {
+      directReturnWaiters.push(resolve);
+    }
+  });
+  try {
+    return await work();
+  } finally {
+    const next = directReturnWaiters.shift();
+    if (next) next();
+    else activeDirectReturns -= 1;
+  }
+}
+
 export class IntakeRejectionController {
   constructor(
     @repository(IntakeRejectedItemRepository) private intakeRejectedRepo: IntakeRejectedItemRepository,
@@ -83,6 +104,8 @@ export class IntakeRejectionController {
       directReturn?: boolean;
     },
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser);
+
     const order = await this.orderRepo.findOne({where: {id: orderId, isDeleted: false}});
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
@@ -102,12 +125,13 @@ export class IntakeRejectionController {
       if (!body.garmentId) {
         throw new HttpErrors.BadRequest('A garment is required to reject and return at intake.');
       }
+      const garmentId = body.garmentId;
       const performedBy = currentUser[securityId];
       const createResolvedRecord = () => this.intakeRejectedRepo.create({
         id: v4(),
         orderId,
         orderItemId,
-        garmentId: body.garmentId,
+        garmentId,
         reason: body.reason,
         remarks: body.remarks,
         mediaIds: body.mediaIds,
@@ -121,21 +145,22 @@ export class IntakeRejectionController {
         const challan = await this.challanRepo.findOne({where: {orderId}});
         if (challan) await this.orderService.syncChallanTotalsForOrder(orderId, challan);
       };
-      const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
-      try {
+      return withDirectReturnSlot(async () => {
+        const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+        try {
         await this.dataSource.execute(
           'SELECT pg_advisory_xact_lock(hashtext($1))',
-          [`direct-intake-return:${body.garmentId}`],
+          [`direct-intake-return:${garmentId}`],
           {transaction: tx},
         );
         const currentGarment = await this.garmentRepo.findOne({
-          where: {id: body.garmentId, orderItemId, isDeleted: false},
+          where: {id: garmentId, orderItemId, isDeleted: false},
         });
         if (currentGarment?.status === GarmentStatus.RETURNED_TO_CUSTOMER) {
           let record = await this.intakeRejectedRepo.findOne({where: {
             orderId,
             orderItemId,
-            garmentId: body.garmentId,
+            garmentId,
             status: IntakeRejectionStatus.RESOLVED,
             outcome: IntakeRejectionOutcome.RETURN_TO_CUSTOMER,
           }});
@@ -144,7 +169,7 @@ export class IntakeRejectionController {
               where: {
                 type: ApprovalRequestType.RETURN_ITEM,
                 entityType: 'garment',
-                entityId: body.garmentId,
+                entityId: garmentId,
               },
               order: ['createdAt DESC'],
             });
@@ -171,12 +196,12 @@ export class IntakeRejectionController {
         const request = await this.approvalService.createRequest({
           type: ApprovalRequestType.RETURN_ITEM,
           entityType: 'garment',
-          entityId: body.garmentId,
+          entityId: garmentId,
           requestedBy: performedBy,
           requestReason: `Rejected at intake (${body.reason})${body.remarks ? ` — ${body.remarks}` : ''}`,
           mediaIds: body.mediaIds,
           metadata: {source: 'direct_intake_return'},
-        });
+        }, undefined, true);
         await this.approvalService.resolve({
           requestId: request.id,
           action: ApprovalActionType.APPROVED,
@@ -189,10 +214,11 @@ export class IntakeRejectionController {
         await syncChallan();
         await tx.commit();
         return {message: 'Garment rejected at intake and returned to customer.', record};
-      } catch (error) {
-        await tx.rollback();
-        throw error;
-      }
+        } catch (error) {
+          await tx.rollback();
+          throw error;
+        }
+      });
     }
 
     // ── Standard flow: create a pending rejection for manager resolution ─────
@@ -246,6 +272,8 @@ export class IntakeRejectionController {
     })
     body: {outcome: IntakeRejectionOutcome; outcomeRemarks?: string},
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(orderId, currentUser);
+
     const record = await this.intakeRejectedRepo.findOne({
       where: {orderItemId, orderId, status: IntakeRejectionStatus.PENDING} as any,
     });

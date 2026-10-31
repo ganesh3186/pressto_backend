@@ -412,11 +412,6 @@ export class CustomerOrderController {
 
     const invoice = await this.invoiceRepo.findOne({where: {orderId} as any});
     if (!invoice) throw new HttpErrors.NotFound('No invoice generated for this order yet.');
-    const challan = await this.challanRepo.findOne({where: {orderId}});
-    if (challan) {
-      await this.orderService.syncChallanTotalsForOrder(orderId, challan);
-      return {invoice: await this.invoiceRepo.findById(invoice.id)};
-    }
     return {invoice: await this.orderService.syncInvoiceTotalsForOrder(order)};
   }
 

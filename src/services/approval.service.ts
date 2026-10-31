@@ -476,7 +476,10 @@ export class ApprovalService {
     requestReason?: string;
     mediaIds?: string[];
     metadata?: Record<string, unknown>;
-  }, transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>): Promise<ApprovalRequest> {
+  },
+  transaction?: Awaited<ReturnType<PresstoDataSource['beginTransaction']>>,
+  suppressNotification = false,
+  ): Promise<ApprovalRequest> {
     const reprocessGarmentIds = params.metadata?.garmentIds;
     if (params.type === ApprovalRequestType.REPROCESS && params.entityType === 'order' &&
       (!Array.isArray(reprocessGarmentIds) || !reprocessGarmentIds.length ||
@@ -520,7 +523,7 @@ export class ApprovalService {
       }, options);
     }
 
-    if (params.type !== ApprovalRequestType.REPROCESS &&
+    if (!suppressNotification && params.type !== ApprovalRequestType.REPROCESS &&
       !(transaction && params.type === ApprovalRequestType.ORDER_ITEMS_DOWNGRADE)) {
       this.notifyApprovalRequired(request, params.requestReason);
     }
