@@ -155,7 +155,7 @@ This deliberately reuses the **existing** `Order.status` machine
 change `status` by itself; dispatching still goes through the existing
 `POST /orders/{id}/status` call, separately.
 
-### 2.1 Single order — via the existing order PATCH
+### 2.1 Order metadata and store pickup — via the existing order PATCH
 
 ```
 PATCH /orders/{id}
@@ -163,14 +163,16 @@ PATCH /orders/{id}
 New optional fields alongside the order's other existing patchable fields:
 ```json
 {
-  "assignedRiderId": "uuid",
-  "deliveryMethod": "home_delivery",
-  "deliverySlot": "free string",
+  "deliveryMethod": "store_pickup",
   "deliveryAddressId": "uuid"
 }
 ```
-- `assignedRiderId` → server resolves and denormalizes `assignedRiderName`
-  onto the order (`400` if the rider doesn't exist or is inactive).
+- `assignedRiderId` is rejected with `400`. Use
+  `POST /orders/delivery-assignment` for initial assignment or reassignment;
+  it updates the order and rider-visible run together.
+- `deliveryDate`, `deliverySlot`, and `deliverySlotId` are editable here only
+  while the order has no active rider stop. An active stop returns `409`; use
+  `POST /orders/delivery-assignment` to reschedule the order and run together.
 - `deliveryAddressId` → server resolves the `CustomerAddress` and freezes a
   text snapshot onto `Order.deliveryAddress` (address line, floor/flat,
   society, landmark, city, state, country, pincode — joined,
@@ -178,6 +180,14 @@ New optional fields alongside the order's other existing patchable fields:
   order's history. `400` if the address isn't found.
 - Blocked (`400`) on an order that's already `delivered`, `cancelled`, or
   `returned` — same guard as every other order-field PATCH.
+- Setting `deliveryMethod` to `store_pickup` removes the order from any
+  unstarted rider run in the same transaction. A run containing only that
+  order is cancelled and its owned bag is released; a shared run keeps its
+  other stops. A failed stop stays in the previous run as history, even when
+  that run is still carrying other orders. The order's rider and slot fields
+  are cleared. An in-progress stop returns `409` and remains unchanged.
+  `deliveryDate` is retained
+  because it also represents the order's estimated completion date.
 
 ### 2.2 Bulk delivery assignment (Manual Assign — delivery side)
 
@@ -190,11 +200,15 @@ POST /orders/delivery-assignment
   "riderId": "uuid",
   "deliverySlot": "required",
   "deliveryDate": "2026-08-12T00:00:00.000Z",
+  "deliveryAddressId": "optional saved address UUID for a single order",
   "remarks": "optional"
 }
 ```
 Assigns one rider + slot/date to several orders in one call — the "several
 ready orders, one rider run" case.
+For a single order, send `deliveryAddressId` or raw `deliveryAddress` to save
+the confirmed address in the same transaction as the assignment. Address
+fields are rejected for a multi-order assignment.
 
 **Preconditions (all server-enforced):**
 - Every order must currently be `READY` or `PARTIALLY_DISPATCHED` — `400`

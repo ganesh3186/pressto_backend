@@ -757,7 +757,10 @@ export class WhatsAppService {
     for (const stop of stops) {
       if (stop.status && stop.status !== DeliveryOrderStatus.PENDING) continue;
       await this.once(
-        'delivery-assigned:' + deliveryId + ':' + stop.orderId,
+        'delivery-assigned:' + deliveryId + ':' + stop.orderId + ':' +
+          delivery.assignedAt?.toISOString() + ':' +
+          delivery.deliveryDate?.toISOString() + ':' + delivery.deliverySlotId + ':' +
+          delivery.deliverySlot + ':' + delivery.riderId,
         async () => {
           const order = await (
             await this.getOrders()

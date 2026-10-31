@@ -25,6 +25,7 @@ import {HandoverCollectorType} from '../models/order-handover.model';
 import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
 import {BagStatus} from '../models/bag-status.enum';
 import {DeliveryStatus} from '../models/delivery-status.enum';
+import {Delivery} from '../models/delivery.model';
 import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
 import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.enum';
 import {
@@ -672,13 +673,17 @@ export class OrderController {
   @response(200, {description: 'Order updated'})
   async updateById(
     @param.path.string('id') id: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @requestBody({
       content: {
         'application/json': {
           schema: {
             type: 'object',
             properties: {
-              deliveryDate: {type: 'string', format: 'date-time'},
+              deliveryDate: {
+                type: 'string', format: 'date-time',
+                description: 'For an active rider run, reschedule with POST /orders/delivery-assignment.',
+              },
               specialInstructions: {type: 'string'},
               specialInstructionMediaIds: {
                 type: 'array',
@@ -695,13 +700,16 @@ export class OrderController {
               assignedRiderId: {
                 type: 'string',
                 format: 'uuid',
-                description: 'Rider assigned for home delivery of this order.',
+                description: 'Use POST /orders/delivery-assignment instead; PATCH rejects this field.',
               },
               deliveryMethod: {
                 type: 'string',
                 enum: Object.values(OrderDeliveryMethod),
               },
-              deliverySlot: {type: 'string'},
+              deliverySlot: {
+                type: 'string',
+                description: 'For an active rider run, reschedule with POST /orders/delivery-assignment.',
+              },
               deliverySlotId: {
                 type: 'string',
                 format: 'uuid',
@@ -744,6 +752,10 @@ export class OrderController {
       where: {id, isDeleted: false},
     });
     if (!order) throw new HttpErrors.NotFound('Order not found.');
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (!this.storeScopeService.allows(scope, order.storeId)) {
+      throw new HttpErrors.NotFound('Order not found.');
+    }
     if (
       order.status === OrderStatus.DELIVERED ||
       order.status === OrderStatus.CANCELLED ||
@@ -757,7 +769,6 @@ export class OrderController {
       .some(key => Object.prototype.hasOwnProperty.call(body, key))) {
       throw new HttpErrors.BadRequest('Update delivery charges with the order items so the ticket is repriced.');
     }
-
     const {
       orderLabelIds,
       assignedRiderId,
@@ -765,18 +776,10 @@ export class OrderController {
       deliverySlotId,
       ...orderFields
     } = body;
-
     if (assignedRiderId !== undefined) {
-      const rider = await this.riderRepository.findOne({
-        where: {id: assignedRiderId, isDeleted: false},
-      });
-      if (!rider) throw new HttpErrors.BadRequest('Assigned rider not found.');
-      if (!rider.isActive)
-        throw new HttpErrors.BadRequest('Assigned rider is inactive.');
-      Object.assign(orderFields, {
-        assignedRiderId,
-        assignedRiderName: `${rider.firstName} ${rider.lastName}`,
-      });
+      throw new HttpErrors.BadRequest(
+        'Assign or reassign riders with POST /orders/delivery-assignment.',
+      );
     }
 
     if (deliveryAddressId !== undefined) {
@@ -803,6 +806,181 @@ export class OrderController {
       Object.assign(orderFields, {deliverySlotId, deliverySlot: slot.label});
     }
 
+    if (body.deliveryMethod === OrderDeliveryMethod.STORE_PICKUP) {
+      const {v4} = await import('uuid');
+      const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+      try {
+        await this.dataSource.execute(
+          'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+          [id], {transaction: tx},
+        );
+        const lockedOrder = await this.orderRepository.findOne({
+          where: {id, isDeleted: false},
+        }, {transaction: tx});
+        if (!lockedOrder || !this.storeScopeService.allows(scope, lockedOrder.storeId)) {
+          throw new HttpErrors.NotFound('Order not found.');
+        }
+        if (lockedOrder.status === OrderStatus.DELIVERED ||
+            lockedOrder.status === OrderStatus.CANCELLED ||
+            lockedOrder.status === OrderStatus.RETURNED) {
+          throw new HttpErrors.Conflict('Order status changed. Refresh and retry.');
+        }
+        if (lockedOrder.status === OrderStatus.OUT_FOR_DELIVERY) {
+          throw new HttpErrors.Conflict('An in-progress delivery cannot be changed to store pickup.');
+        }
+
+        const oldStops = await this.deliveryOrderRepository.find({
+          where: {orderId: id} as object,
+        }, {transaction: tx});
+        const runIds = [...new Set(oldStops.map(stop => stop.deliveryId))].sort();
+        for (const runId of runIds) {
+          await this.dataSource.execute(
+            'SELECT id FROM public.delivery WHERE id = $1 FOR UPDATE',
+            [runId], {transaction: tx},
+          );
+        }
+        const runs = runIds.length ? await this.deliveryRepository.find({
+          where: {id: {inq: runIds},
+            status: {inq: [DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY]},
+            isDeleted: false} as object,
+        }, {transaction: tx}) : [];
+        for (const bagId of [...new Set(runs.map(run => run.bagId)
+          .filter((value): value is string => !!value))].sort()) {
+          await this.dataSource.execute(
+            'SELECT id FROM public.bag WHERE id = $1 FOR UPDATE',
+            [bagId], {transaction: tx},
+          );
+        }
+        for (const run of runs) {
+          const stops = await this.deliveryOrderRepository.find({
+            where: {deliveryId: run.id} as object,
+          }, {transaction: tx});
+          const moving = stops.filter(stop => stop.orderId === id &&
+            stop.status !== DeliveryOrderStatus.RETURN_TO_STORE &&
+            stop.status !== DeliveryOrderStatus.DELIVERED);
+          if (!moving.length) continue;
+          if (run.status !== DeliveryStatus.ASSIGNED ||
+              moving.some(stop => stop.status && stop.status !== DeliveryOrderStatus.PENDING)) {
+            throw new HttpErrors.Conflict('An in-progress delivery cannot be changed to store pickup.');
+          }
+          if (moving.length === stops.length) {
+            await this.deliveryRepository.updateById(run.id, {
+              status: DeliveryStatus.CANCELLED, cancelledAt: new Date(),
+              cancelledBy: currentUser[securityId],
+            }, {transaction: tx});
+            await this.deliveryCustodyEventRepository.create({
+              id: v4(), deliveryId: run.id,
+              eventType: DeliveryCustodyEventType.CANCELLED,
+              performedBy: currentUser[securityId],
+            }, {transaction: tx});
+            if (run.bagId) {
+              const bag = await this.bagRepository.findById(
+                run.bagId, undefined, {transaction: tx},
+              );
+              if (bag.currentDeliveryId === run.id) {
+                await this.bagRepository.updateById(run.bagId, {
+                  status: BagStatus.AVAILABLE,
+                  currentDeliveryId: null as unknown as string,
+                }, {transaction: tx});
+                await this.deliveryCustodyEventRepository.create({
+                  id: v4(), deliveryId: run.id,
+                  eventType: DeliveryCustodyEventType.BAG_RELEASED,
+                  performedBy: currentUser[securityId],
+                }, {transaction: tx});
+              }
+            }
+          } else {
+            for (const stop of moving) {
+              await this.deliveryOrderRepository.deleteById(stop.id, {transaction: tx});
+            }
+            await this.deliveryRepository.updateById(run.id, {
+              orderCount: stops.length - moving.length,
+            }, {transaction: tx});
+          }
+        }
+
+        await this.orderRepository.updateById(id, {
+          ...orderFields,
+          deliveryMethod: OrderDeliveryMethod.STORE_PICKUP,
+          assignedRiderId: null as unknown as string,
+          assignedRiderName: null as unknown as string,
+          deliverySlot: null as unknown as string,
+          deliverySlotId: null as unknown as string,
+        }, {transaction: tx});
+        if (orderLabelIds !== undefined) {
+          await this.orderLabelAssignmentRepository.deleteAll(
+            {orderId: id}, {transaction: tx},
+          );
+          for (const orderLabelId of orderLabelIds) {
+            await this.orderLabelAssignmentRepository.create({
+              orderId: id, orderLabelId,
+            }, {transaction: tx});
+          }
+        }
+        await tx.commit();
+      } catch (error) {
+        await tx.rollback();
+        throw error;
+      }
+      return {message: 'Order updated.'};
+    }
+
+    if (body.deliveryDate !== undefined || body.deliverySlot !== undefined ||
+        deliverySlotId !== undefined) {
+      const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+      try {
+        await this.dataSource.execute(
+          'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+          [id], {transaction: tx},
+        );
+        const lockedOrder = await this.orderRepository.findOne({
+          where: {id, isDeleted: false},
+        }, {transaction: tx});
+        if (!lockedOrder || !this.storeScopeService.allows(scope, lockedOrder.storeId)) {
+          throw new HttpErrors.NotFound('Order not found.');
+        }
+        if (lockedOrder.status === OrderStatus.DELIVERED ||
+            lockedOrder.status === OrderStatus.CANCELLED ||
+            lockedOrder.status === OrderStatus.RETURNED) {
+          throw new HttpErrors.Conflict('Order status changed. Refresh and retry.');
+        }
+        const stops = await this.deliveryOrderRepository.find({
+          where: {orderId: id} as object,
+        }, {transaction: tx});
+        const activeStops = stops.filter(stop =>
+          stop.status !== DeliveryOrderStatus.RETURN_TO_STORE &&
+          stop.status !== DeliveryOrderStatus.DELIVERED);
+        if (activeStops.length) {
+          const runs = await this.deliveryRepository.find({
+            where: {id: {inq: [...new Set(activeStops.map(stop => stop.deliveryId))]},
+              status: {inq: [DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY]},
+              isDeleted: false} as object,
+          }, {transaction: tx});
+          if (runs.length) {
+            throw new HttpErrors.Conflict(
+              'Change an assigned delivery schedule with POST /orders/delivery-assignment.',
+            );
+          }
+        }
+        await this.orderRepository.updateById(id, orderFields, {transaction: tx});
+        if (orderLabelIds !== undefined) {
+          await this.orderLabelAssignmentRepository.deleteAll(
+            {orderId: id}, {transaction: tx},
+          );
+          for (const orderLabelId of orderLabelIds) {
+            await this.orderLabelAssignmentRepository.create({
+              orderId: id, orderLabelId,
+            }, {transaction: tx});
+          }
+        }
+        await tx.commit();
+      } catch (error) {
+        await tx.rollback();
+        throw error;
+      }
+      return {message: 'Order updated.'};
+    }
+
     if (Object.keys(orderFields).length > 0) {
       await this.orderRepository.updateById(id, orderFields);
     }
@@ -817,34 +995,6 @@ export class OrderController {
           orderLabelId,
         });
       }
-    }
-
-    // A direct single-order rider (re)assignment, distinct from the bulk
-    // assignDelivery() flow above — same notify-new/notify-old-if-changed
-    // shape. Not awaited — a slow/unreachable FCM call must never delay
-    // this response (notifyRider already swallows its own errors).
-    if (
-      assignedRiderId !== undefined &&
-      assignedRiderId !== order.assignedRiderId
-    ) {
-      Promise.all([
-        this.notificationService.notifyRider(assignedRiderId, {
-          type: RIDER_NOTIFICATION_TYPES.DELIVERY_ASSIGNED,
-          title: 'New delivery assigned',
-          body: `A delivery has been assigned to you for order ${order.orderNumber ?? ''}.`,
-          data: {orderId: id},
-        }),
-        ...(order.assignedRiderId
-          ? [
-              this.notificationService.notifyRider(order.assignedRiderId, {
-                type: RIDER_NOTIFICATION_TYPES.DELIVERY_REASSIGNED,
-                title: 'Delivery reassigned',
-                body: `Order ${order.orderNumber ?? ''} has been reassigned to another rider.`,
-                data: {orderId: id},
-              }),
-            ]
-          : []),
-      ]).catch(() => {});
     }
 
     return {message: 'Order updated.'};
@@ -883,12 +1033,14 @@ export class OrderController {
                   "If given, overrides deliverySlot with this slot's label.",
               },
               deliveryDate: {type: 'string', format: 'date-time'},
+              deliveryAddressId: {type: 'string', format: 'uuid'},
+              deliveryAddress: {type: 'string'},
               remarks: {type: 'string'},
               bagId: {
                 type: 'string',
                 format: 'uuid',
                 description:
-                  'Optional. When given, also creates a Delivery (bag-custody run the rider app can see) — see DeliveryController/RiderDeliveryController. Omit to keep the plain per-order assignment behavior (e.g. Manual Assign).',
+                  'Optional. When given, attaches a custody bag to the rider-visible Delivery run.',
               },
             },
           },
@@ -901,6 +1053,8 @@ export class OrderController {
       deliverySlot: string;
       deliverySlotId?: string;
       deliveryDate: string;
+      deliveryAddressId?: string;
+      deliveryAddress?: string;
       remarks?: string;
       bagId?: string;
     },
@@ -926,11 +1080,19 @@ export class OrderController {
       slotWindow,
     );
 
-    const orders = await this.orderRepository.find({
+    let orders = await this.orderRepository.find({
       where: {id: {inq: body.orderIds}, isDeleted: false} as object,
     });
     if (orders.length !== body.orderIds.length) {
       throw new HttpErrors.NotFound('One or more orders were not found.');
+    }
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (orders.some(order => !this.storeScopeService.allows(scope, order.storeId))) {
+      throw new HttpErrors.NotFound('One or more orders were not found.');
+    }
+    if ((body.deliveryAddressId !== undefined || body.deliveryAddress !== undefined) &&
+        body.orderIds.length !== 1) {
+      throw new HttpErrors.BadRequest('A delivery address can only be set for one order at a time.');
     }
     const notDeliverable = orders.filter(
       o =>
@@ -956,34 +1118,6 @@ export class OrderController {
     // block it if anything is still away.
     await this.orderService.assertGarmentsHomeForDispatch(body.orderIds);
 
-    // Only riders mapped to an order's delivery pincode may be assigned to
-    // it — Order itself has no pincode column, so resolve it via each
-    // order's CustomerAddress. Orders with no resolvable pincode (no
-    // deliveryAddressId, or address not found) skip the check rather than
-    // being blocked by a data-quality gap unrelated to this feature.
-    const addressIds = [
-      ...new Set(
-        orders
-          .map(o => o.deliveryAddressId)
-          .filter((id): id is string => Boolean(id)),
-      ),
-    ];
-    if (addressIds.length) {
-      const addresses = await this.customerAddressRepository.find({
-        where: {id: {inq: addressIds}} as object,
-      });
-      const pincodeByAddressId = new Map(addresses.map(a => [a.id, a.pincode]));
-      for (const order of orders) {
-        const pincode = order.deliveryAddressId
-          ? pincodeByAddressId.get(order.deliveryAddressId)
-          : undefined;
-        await this.riderAssignmentService.assertRiderCoversPincode(
-          body.riderId,
-          pincode,
-        );
-      }
-    }
-
     let deliverySlot = body.deliverySlot;
     if (body.deliverySlotId !== undefined) {
       const slot = await this.pickupDeliverySlotRepository.findOne({
@@ -993,9 +1127,7 @@ export class OrderController {
       deliverySlot = slot.label;
     }
 
-    // bagId is optional — Manual Assign calls this endpoint without one and
-    // must keep working exactly as before (plain per-order assignment, no
-    // Delivery created). Only Dispatch's newer bag-aware flow supplies it.
+    // A bag is optional; every assignment creates or reuses a rider-visible run.
     let bag = null;
     if (body.bagId !== undefined) {
       bag = await this.bagRepository.findOne({
@@ -1004,11 +1136,6 @@ export class OrderController {
       if (!bag) throw new HttpErrors.NotFound('Bag not found.');
       if (!bag.isActive)
         throw new HttpErrors.BadRequest('This bag is inactive.');
-      if (bag.status !== BagStatus.AVAILABLE) {
-        throw new HttpErrors.Conflict(
-          `Bag ${bag.bagNumber} is already ${bag.status === BagStatus.FULL ? 'full' : 'in use'}.`,
-        );
-      }
     }
 
     const {v4} = await import('uuid');
@@ -1019,6 +1146,146 @@ export class OrderController {
       IsolationLevel.READ_COMMITTED,
     );
     try {
+      // Serialize repeated assignments for the same orders before checking
+      // their current runs, including retries arriving at the same time.
+      for (const id of [...body.orderIds].sort()) {
+        await this.dataSource.execute(
+          'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+          [id], {transaction: tx},
+        );
+      }
+      orders = await this.orderRepository.find({
+        where: {id: {inq: body.orderIds}, isDeleted: false} as object,
+      }, {transaction: tx});
+      if (orders.some(order => !this.storeScopeService.allows(scope, order.storeId))) {
+        throw new HttpErrors.NotFound('One or more orders were not found.');
+      }
+      if (orders.length !== body.orderIds.length || orders.some(order =>
+        order.status !== OrderStatus.READY &&
+        order.status !== OrderStatus.PARTIALLY_DISPATCHED)) {
+        throw new HttpErrors.Conflict('Order status changed. Refresh and retry.');
+      }
+      let addressFields: {deliveryAddressId?: string; deliveryAddress?: string} = {};
+      if (body.deliveryAddressId !== undefined) {
+        const address = await this.customerAddressRepository.findOne({
+          where: {id: body.deliveryAddressId, customerId: orders[0].customerId, isDeleted: false} as object,
+        }, {transaction: tx});
+        if (!address) throw new HttpErrors.BadRequest('Delivery address not found for this customer.');
+        addressFields = {
+          deliveryAddressId: address.id,
+          deliveryAddress: this.customerAddressService.toDisplaySnapshot(address),
+        };
+      } else if (body.deliveryAddress !== undefined) {
+        const address = body.deliveryAddress.trim();
+        if (!address) throw new HttpErrors.BadRequest('Delivery address is required.');
+        addressFields = {deliveryAddressId: null as unknown as string, deliveryAddress: address};
+      }
+      if (Object.keys(addressFields).length) Object.assign(orders[0], addressFields);
+      // Validate the address after locking its order so a concurrent address
+      // edit cannot change the pincode between validation and assignment.
+      const addressIds = [...new Set(orders.map(order => order.deliveryAddressId)
+        .filter((id): id is string => Boolean(id)))];
+      if (addressIds.length) {
+        const addresses = await this.customerAddressRepository.find({
+          where: {id: {inq: addressIds}} as object,
+        }, {transaction: tx});
+        const pincodeByAddressId = new Map(addresses.map(address => [address.id, address.pincode]));
+        for (const order of orders) {
+          await this.riderAssignmentService.assertRiderCoversPincode(
+            body.riderId,
+            order.deliveryAddressId ? pincodeByAddressId.get(order.deliveryAddressId) : undefined,
+          );
+        }
+      }
+      const oldStops = await this.deliveryOrderRepository.find({
+        where: {orderId: {inq: body.orderIds}} as object,
+      }, {transaction: tx});
+      const oldRunIds = [...new Set(oldStops.map(stop => stop.deliveryId))].sort();
+      for (const id of oldRunIds) {
+        await this.dataSource.execute(
+          'SELECT id FROM public.delivery WHERE id = $1 FOR UPDATE',
+          [id], {transaction: tx},
+        );
+      }
+      const oldRuns = oldRunIds.length ? await this.deliveryRepository.find({
+        where: {id: {inq: oldRunIds},
+          status: {inq: [DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY]},
+          isDeleted: false} as object,
+      }, {transaction: tx}) : [];
+      for (const id of [...new Set([body.bagId, ...oldRuns.map(run => run.bagId)].filter(
+        (value): value is string => !!value,
+      ))].sort()) {
+        await this.dataSource.execute(
+          'SELECT id FROM public.bag WHERE id = $1 FOR UPDATE',
+          [id], {transaction: tx},
+        );
+      }
+      const selectedIds = new Set(body.orderIds);
+      const latestRun = oldRuns.sort((a, b) =>
+        new Date(b.assignedAt).getTime() - new Date(a.assignedAt).getTime())[0];
+      const latestStops = body.orderIds.length === 1 && latestRun
+        ? await this.deliveryOrderRepository.find({
+            where: {deliveryId: latestRun.id} as object,
+          }, {transaction: tx}) : [];
+      const reusable = latestRun?.status === DeliveryStatus.ASSIGNED &&
+        latestStops.length === 1 && latestStops[0].orderId === body.orderIds[0] &&
+        (!latestStops[0].status || latestStops[0].status === DeliveryOrderStatus.PENDING) &&
+        (!latestRun.bagId || latestRun.riderId === body.riderId) &&
+        (!bag || bag.id === latestRun.bagId) ? latestRun : undefined;
+      for (const run of oldRuns) {
+        if (run.id === reusable?.id) continue;
+        const stops = await this.deliveryOrderRepository.find({
+          where: {deliveryId: run.id} as object,
+        }, {transaction: tx});
+        const moving = stops.filter(stop => selectedIds.has(stop.orderId) &&
+          stop.status !== DeliveryOrderStatus.RETURN_TO_STORE &&
+          stop.status !== DeliveryOrderStatus.DELIVERED);
+        if (!moving.length) continue;
+        if (run.status !== DeliveryStatus.ASSIGNED ||
+            moving.some(stop => stop.status && stop.status !== DeliveryOrderStatus.PENDING)) {
+          throw new HttpErrors.Conflict('An in-progress delivery cannot be reassigned.');
+        }
+        if (moving.length === stops.length) {
+          await this.deliveryRepository.updateById(run.id, {
+            status: DeliveryStatus.CANCELLED, cancelledAt: new Date(),
+            cancelledBy: currentUser[securityId],
+          }, {transaction: tx});
+          await this.deliveryCustodyEventRepository.create({
+            id: v4(), deliveryId: run.id,
+            eventType: DeliveryCustodyEventType.CANCELLED,
+            performedBy: currentUser[securityId],
+          }, {transaction: tx});
+          if (run.bagId) {
+            const currentBag = await this.bagRepository.findById(
+              run.bagId, undefined, {transaction: tx},
+            );
+            if (currentBag.currentDeliveryId === run.id) {
+              await this.bagRepository.updateById(run.bagId, {
+                status: reusable?.bagId === run.bagId ? BagStatus.IN_USE : BagStatus.AVAILABLE,
+                currentDeliveryId: (reusable?.bagId === run.bagId ? reusable.id : null) as unknown as string,
+              }, {transaction: tx});
+              await this.deliveryCustodyEventRepository.create({
+                id: v4(), deliveryId: run.id,
+                eventType: DeliveryCustodyEventType.BAG_RELEASED,
+                performedBy: currentUser[securityId],
+              }, {transaction: tx});
+            }
+          }
+        } else {
+          for (const stop of moving) {
+            await this.deliveryOrderRepository.deleteById(stop.id, {transaction: tx});
+          }
+          await this.deliveryRepository.updateById(run.id, {
+            orderCount: stops.length - moving.length,
+          }, {transaction: tx});
+        }
+      }
+      if (bag && bag.id !== reusable?.bagId) {
+        const currentBag = await this.bagRepository.findById(bag.id, undefined, {transaction: tx});
+        if (currentBag.status !== BagStatus.AVAILABLE) {
+          throw new HttpErrors.Conflict(`Bag ${bag.bagNumber} is already in use.`);
+        }
+      }
       for (const order of orders) {
         await this.orderRepository.updateById(
           order.id,
@@ -1027,21 +1294,18 @@ export class OrderController {
             assignedRiderId: body.riderId,
             assignedRiderName,
             deliverySlot,
-            ...(body.deliverySlotId !== undefined
-              ? {deliverySlotId: body.deliverySlotId}
-              : {}),
+            deliverySlotId: (body.deliverySlotId ?? null) as unknown as string,
             deliveryDate,
+            ...addressFields,
             ...(body.remarks ? {remarks: body.remarks} : {}),
           },
           {transaction: tx},
         );
       }
 
-      // A Delivery (the rider-app-visible run) is created on every
-      // assignment, not just when a bag is supplied — the rider app reads
-      // from this table, not Order.assignedRiderId directly, so without it
-      // the rider would never see the delivery at all. bagId only adds
-      // custody-bag tracking on top when one happens to be given.
+      // Keep the existing single-order run when rescheduling. New assignments
+      // still need a Delivery because the rider app reads this table, not
+      // Order.assignedRiderId.
       const store = await this.storeRepository.findOne({
         where: {id: orders[0].storeId},
       });
@@ -1054,10 +1318,29 @@ export class OrderController {
 
       const now = new Date();
       const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
-      const seq = (await this.deliveryRepository.count()).count + 1;
-      const deliveryNumber = `DL-${store?.code ?? 'ST'}-${ddMM}-${seq}`;
+      const seq = reusable ? 0 : (await this.deliveryRepository.count()).count + 1;
+      const deliveryNumber = reusable?.deliveryNumber ?? `DL-${store?.code ?? 'ST'}-${ddMM}-${seq}`;
+      const scheduleChanged = reusable && (
+        reusable.riderId !== body.riderId ||
+        new Date(reusable.deliveryDate ?? 0).getTime() !== deliveryDate.getTime() ||
+        (reusable.deliverySlotId ?? null) !== (body.deliverySlotId ?? null) ||
+        reusable.deliverySlot !== deliverySlot
+      );
+      // assignedAt doubles as the notification revision for a reused run.
+      // Keep it on retries, but advance it even for changes within one ms.
+      const assignedAt = reusable && !scheduleChanged ? reusable.assignedAt :
+        new Date(Math.max(now.getTime(),
+          reusable ? new Date(reusable.assignedAt).getTime() + 1 : 0));
 
-      const delivery = await this.deliveryRepository.create(
+      const delivery: Delivery = reusable
+        ? await this.deliveryRepository.updateById(reusable.id, {
+            riderId: body.riderId, riderName: assignedRiderName,
+            deliverySlot, deliverySlotId: (body.deliverySlotId ?? null) as unknown as string,
+            deliveryDate,
+            assignedAt, assignedBy: currentUser[securityId],
+            remarks: body.remarks,
+          }, {transaction: tx}).then(() => this.deliveryRepository.findById(reusable.id, undefined, {transaction: tx}))
+        : await this.deliveryRepository.create(
         {
           id: v4(),
           deliveryNumber,
@@ -1077,7 +1360,7 @@ export class OrderController {
         {transaction: tx},
       );
 
-      for (const order of orders) {
+      for (const order of reusable ? [] : orders) {
         const customer = customerById.get(order.customerId);
         const {due} = await this.orderService.computeBalanceDue(order);
         await this.deliveryOrderRepository.create(
@@ -1095,7 +1378,7 @@ export class OrderController {
         );
       }
 
-      await this.deliveryCustodyEventRepository.create(
+      if (!reusable) await this.deliveryCustodyEventRepository.create(
         {
           id: v4(),
           deliveryId: delivery.id,

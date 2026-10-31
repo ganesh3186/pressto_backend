@@ -3,8 +3,9 @@ import {DeliveryStatus} from './delivery-status.enum';
 
 /**
  * Header record for one rider's run of customer deliveries — created on
- * every POST /orders/delivery-assignment call, from any caller (Dispatch,
- * Manual Assign). This is what the rider app actually reads
+ * first POST /orders/delivery-assignment call for an order, from any caller
+ * (Dispatch, Manual Assign); unstarted single-order runs are reused when
+ * rescheduled. This is what the rider app actually reads
  * (GET /rider/deliveries queries this table by riderId, never
  * Order.assignedRiderId directly), so it always has to exist for an
  * assignment to be visible to the rider at all.

@@ -11,6 +11,7 @@ import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
 import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
 import {DeliveryStatus} from '../models/delivery-status.enum';
 import {Delivery} from '../models/delivery.model';
+import {DeliveryOrder} from '../models/delivery-order.model';
 import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -26,6 +27,7 @@ import {
   DeliveryRepository,
   OrderItemRepository,
   OrderRepository,
+  OrderStatusHistoryRepository,
   PaymentTransactionRepository,
   PickupDeliverySlotRepository,
   RiderCashHandoverItemRepository,
@@ -51,6 +53,8 @@ export class RiderDeliveryController {
     private custodyEventRepository: DeliveryCustodyEventRepository,
     @repository(BagRepository) private bagRepository: BagRepository,
     @repository(OrderRepository) private orderRepository: OrderRepository,
+    @repository(OrderStatusHistoryRepository)
+    private orderStatusHistoryRepository: OrderStatusHistoryRepository,
     @repository(OrderItemRepository) private orderItemRepository: OrderItemRepository,
     @repository(CustomerRepository) private customerRepository: CustomerRepository,
     @repository(PaymentTransactionRepository)
@@ -99,6 +103,42 @@ export class RiderDeliveryController {
     });
   }
 
+  private async currentStopIds(stops: DeliveryOrder[]): Promise<Set<string>> {
+    if (!stops.length) return new Set();
+    const orderIds = [...new Set(stops.map(stop => stop.orderId))];
+    const allStops = await this.deliveryOrderRepository.find({
+      where: {orderId: {inq: orderIds}} as object,
+    });
+    const [runs, orders] = await Promise.all([
+      this.deliveryRepository.find({
+        // Completed newer attempts also supersede older assigned duplicates.
+        where: {id: {inq: [...new Set(allStops.map(stop => stop.deliveryId))]},
+          status: {inq: [DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY, DeliveryStatus.COMPLETED]},
+          isDeleted: false} as object,
+        order: ['assignedAt DESC'],
+      }),
+      this.orderRepository.find({where: {id: {inq: orderIds}, isDeleted: false,
+        status: {nin: [OrderStatus.CANCELLED, OrderStatus.RETURNED]}} as object}),
+    ]);
+    const stopsByRun = new Map<string, DeliveryOrder[]>();
+    for (const stop of allStops) {
+      const runStops = stopsByRun.get(stop.deliveryId) ?? [];
+      runStops.push(stop);
+      stopsByRun.set(stop.deliveryId, runStops);
+    }
+    const orderById = new Map(orders.map(order => [order.id, order]));
+    const chosen = new Map<string, string>();
+    for (const run of runs) {
+      for (const stop of stopsByRun.get(run.id) ?? []) {
+        const order = orderById.get(stop.orderId);
+        if (order?.assignedRiderId === run.riderId && !chosen.has(stop.orderId)) {
+          chosen.set(stop.orderId, stop.id);
+        }
+      }
+    }
+    return new Set(chosen.values());
+  }
+
   // 6-digit numeric, unique among currently-PENDING batches only — same
   // convention as RiderPickupHandoverController.generateHandoverCode.
   private async generateCashHandoverCode(): Promise<string> {
@@ -142,7 +182,23 @@ export class RiderDeliveryController {
       } as object,
       order: ['assignedAt DESC'],
     });
-    return {deliveries: await this.enrichDeliveries(deliveries)};
+    const active = deliveries.filter(d =>
+      d.status === DeliveryStatus.ASSIGNED || d.status === DeliveryStatus.OUT_FOR_DELIVERY,
+    );
+    const stops = active.length ? await this.deliveryOrderRepository.find({
+      where: {deliveryId: {inq: active.map(d => d.id)}} as object,
+    }) : [];
+    const currentIds = await this.currentStopIds(stops);
+    const currentCountByRun = new Map<string, number>();
+    for (const stop of stops) {
+      if (!currentIds.has(stop.id)) continue;
+      currentCountByRun.set(stop.deliveryId, (currentCountByRun.get(stop.deliveryId) ?? 0) + 1);
+    }
+    const visible = deliveries.filter(d =>
+      (!active.includes(d) || currentCountByRun.has(d.id)),
+    ).map(d => currentCountByRun.has(d.id)
+      ? Object.assign(d, {orderCount: currentCountByRun.get(d.id)}) : d);
+    return {deliveries: await this.enrichDeliveries(visible)};
   }
 
   // ─── Delivery detail ──────────────────────────────────────────────────────
@@ -162,7 +218,13 @@ export class RiderDeliveryController {
       throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
     }
 
-    const deliveryOrders = await this.deliveryOrderRepository.find({where: {deliveryId: id} as object});
+    const allDeliveryOrders = await this.deliveryOrderRepository.find({where: {deliveryId: id} as object});
+    const currentIds = delivery.status === DeliveryStatus.ASSIGNED ||
+      delivery.status === DeliveryStatus.OUT_FOR_DELIVERY
+      ? await this.currentStopIds(allDeliveryOrders) : null;
+    const deliveryOrders = currentIds
+      ? allDeliveryOrders.filter(stop => currentIds.has(stop.id)) : allDeliveryOrders;
+    if (currentIds) delivery.orderCount = deliveryOrders.length;
     const orderIds = deliveryOrders.map(o => o.orderId);
     const orders = orderIds.length
       ? await this.orderRepository.find({where: {id: {inq: orderIds}} as object})
@@ -224,50 +286,81 @@ export class RiderDeliveryController {
     body: {status: DeliveryStatus},
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
-    const delivery = await this.deliveryRepository.findOne({where: {id, isDeleted: false}});
-    if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
-    if (delivery.riderId !== rider.id) {
-      throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
-    }
     if (body.status !== DeliveryStatus.OUT_FOR_DELIVERY) {
       throw new HttpErrors.BadRequest(`Riders can only set status to ${DeliveryStatus.OUT_FOR_DELIVERY}.`);
     }
-    if (delivery.status !== DeliveryStatus.ASSIGNED) {
-      throw new HttpErrors.BadRequest(`Cannot start a delivery that is ${delivery.status}, not assigned.`);
-    }
-
-    const deliveryOrders = await this.deliveryOrderRepository.find({where: {deliveryId: id} as object});
-    const orders = await this.orderRepository.find({
-      where: {id: {inq: deliveryOrders.map(o => o.orderId)}} as object,
-    });
-    for (const order of orders) {
-      if (order.status === OrderStatus.READY || order.status === OrderStatus.PARTIALLY_DISPATCHED) {
-        await this.orderService.changeStatus(order.id, OrderStatus.OUT_FOR_DELIVERY, rider.userId, undefined);
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      const initialStops = await this.deliveryOrderRepository.find(
+        {where: {deliveryId: id} as object}, {transaction: tx},
+      );
+      for (const orderId of [...new Set(initialStops.map(stop => stop.orderId))].sort()) {
+        await this.dataSource.execute(
+          'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+          [orderId], {transaction: tx},
+        );
       }
-    }
-
-    await this.deliveryRepository.updateById(id, {
-      status: DeliveryStatus.OUT_FOR_DELIVERY,
-      startedAt: new Date(),
-      startedBy: currentUser[securityId],
-    });
-    for (const stop of deliveryOrders) {
-      if (!stop.status || stop.status === DeliveryOrderStatus.PENDING) {
-        await this.deliveryOrderRepository.updateById(stop.id, {
-          status: DeliveryOrderStatus.OUT_FOR_DELIVERY,
-        });
+      const delivery = await this.deliveryRepository.findOne(
+        {where: {id, isDeleted: false}}, {transaction: tx},
+      );
+      if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
+      if (delivery.riderId !== rider.id) {
+        throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
       }
+      if (delivery.status !== DeliveryStatus.ASSIGNED) {
+        throw new HttpErrors.BadRequest(`Cannot start a delivery that is ${delivery.status}, not assigned.`);
+      }
+      const runStops = await this.deliveryOrderRepository.find(
+        {where: {deliveryId: id} as object}, {transaction: tx},
+      );
+      const currentIds = await this.currentStopIds(runStops);
+      const deliveryOrders = runStops.filter(stop => currentIds.has(stop.id));
+      if (!deliveryOrders.length) {
+        throw new HttpErrors.Conflict('This delivery has no current orders.');
+      }
+      const orders = await this.orderRepository.find({
+        where: {id: {inq: deliveryOrders.map(stop => stop.orderId)}, isDeleted: false} as object,
+      }, {transaction: tx});
+      if (orders.length !== deliveryOrders.length) {
+        throw new HttpErrors.Conflict('Delivery orders changed. Refresh and retry.');
+      }
+      const {v4} = await import('uuid');
+      for (const order of orders) {
+        if (order.status === OrderStatus.READY || order.status === OrderStatus.PARTIALLY_DISPATCHED) {
+          await this.orderRepository.updateById(order.id, {
+            status: OrderStatus.OUT_FOR_DELIVERY,
+          }, {transaction: tx});
+          await this.orderStatusHistoryRepository.create({
+            id: v4(), orderId: order.id, status: OrderStatus.OUT_FOR_DELIVERY,
+            changedAt: new Date(), changedBy: rider.userId,
+          }, {transaction: tx});
+        } else if (order.status !== OrderStatus.OUT_FOR_DELIVERY) {
+          throw new HttpErrors.Conflict('Delivery order status changed. Refresh and retry.');
+        }
+      }
+      await this.deliveryRepository.updateById(id, {
+        status: DeliveryStatus.OUT_FOR_DELIVERY,
+        startedAt: new Date(),
+        startedBy: currentUser[securityId],
+      }, {transaction: tx});
+      for (const stop of deliveryOrders) {
+        if (!stop.status || stop.status === DeliveryOrderStatus.PENDING) {
+          await this.deliveryOrderRepository.updateById(stop.id, {
+            status: DeliveryOrderStatus.OUT_FOR_DELIVERY,
+          }, {transaction: tx});
+        }
+      }
+      await this.custodyEventRepository.create({
+        id: v4(), deliveryId: id,
+        eventType: DeliveryCustodyEventType.OUT_FOR_DELIVERY,
+        performedBy: currentUser[securityId],
+      }, {transaction: tx});
+      await tx.commit();
+      return {message: 'Delivery started.'};
+    } catch (error) {
+      await tx.rollback();
+      throw error;
     }
-
-    const {v4} = await import('uuid');
-    await this.custodyEventRepository.create({
-      id: v4(),
-      deliveryId: id,
-      eventType: DeliveryCustodyEventType.OUT_FOR_DELIVERY,
-      performedBy: currentUser[securityId],
-    });
-
-    return {message: 'Delivery started.'};
   }
 
   // ─── Mark reached at one stop ─────────────────────────────────────────────
@@ -297,28 +390,52 @@ export class RiderDeliveryController {
     body: {status: DeliveryOrderStatus},
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
-    const delivery = await this.deliveryRepository.findOne({where: {id, isDeleted: false}});
-    if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
-    if (delivery.riderId !== rider.id) {
-      throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
-    }
     if (body.status !== DeliveryOrderStatus.ARRIVED) {
       throw new HttpErrors.BadRequest(`Riders can only set status to ${DeliveryOrderStatus.ARRIVED}.`);
     }
-    const deliveryOrder = await this.deliveryOrderRepository.findOne({
-      where: {deliveryId: id, orderId} as object,
-    });
-    if (!deliveryOrder) throw new HttpErrors.NotFound('This order is not on this delivery.');
-    if (deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE || deliveryOrder.status === DeliveryOrderStatus.DELIVERED) {
-      throw new HttpErrors.BadRequest('This delivery stop is already closed.');
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      const initialDelivery = await this.deliveryRepository.findOne(
+        {where: {id, isDeleted: false}}, {transaction: tx},
+      );
+      if (!initialDelivery) throw new HttpErrors.NotFound('Delivery not found.');
+      if (initialDelivery.riderId !== rider.id) {
+        throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
+      }
+      const initialStop = await this.deliveryOrderRepository.findOne(
+        {where: {deliveryId: id, orderId} as object}, {transaction: tx},
+      );
+      if (!initialStop) throw new HttpErrors.NotFound('This order is not on this delivery.');
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+        [orderId], {transaction: tx},
+      );
+      const delivery = await this.deliveryRepository.findOne(
+        {where: {id, isDeleted: false}}, {transaction: tx},
+      );
+      if (!delivery || delivery.riderId !== rider.id) {
+        throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
+      }
+      const deliveryOrder = await this.deliveryOrderRepository.findOne(
+        {where: {deliveryId: id, orderId} as object}, {transaction: tx},
+      );
+      if (!deliveryOrder || !(await this.currentStopIds([deliveryOrder])).has(deliveryOrder.id)) {
+        throw new HttpErrors.NotFound('This order is no longer on this delivery.');
+      }
+      if (deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE ||
+          deliveryOrder.status === DeliveryOrderStatus.DELIVERED) {
+        throw new HttpErrors.BadRequest('This delivery stop is already closed.');
+      }
+      await this.deliveryOrderRepository.updateById(deliveryOrder.id, {
+        status: DeliveryOrderStatus.ARRIVED,
+        arrivedAt: new Date(),
+      }, {transaction: tx});
+      await tx.commit();
+      return {message: 'Marked as reached.'};
+    } catch (error) {
+      await tx.rollback();
+      throw error;
     }
-
-    await this.deliveryOrderRepository.updateById(deliveryOrder.id, {
-      status: DeliveryOrderStatus.ARRIVED,
-      arrivedAt: new Date(),
-    });
-
-    return {message: 'Marked as reached.'};
   }
 
   // ─── Deliver an order + collect payment ──────────────────────────────────
@@ -390,6 +507,9 @@ export class RiderDeliveryController {
       where: {deliveryId: id, orderId} as object,
     });
     if (!deliveryOrder) throw new HttpErrors.NotFound('This order is not on this delivery.');
+    if (!(await this.currentStopIds([deliveryOrder])).has(deliveryOrder.id)) {
+      throw new HttpErrors.NotFound('This order is no longer on this delivery.');
+    }
 
     const order = await this.orderRepository.findOne({where: {id: orderId, isDeleted: false}});
     if (deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE || deliveryOrder.status === DeliveryOrderStatus.DELIVERED) {
@@ -468,7 +588,9 @@ export class RiderDeliveryController {
       const allDeliveryOrders = await this.deliveryOrderRepository.find({
         where: {deliveryId: id} as object,
       });
+      const currentIds = await this.currentStopIds(allDeliveryOrders);
       const remaining = allDeliveryOrders.filter(o =>
+        currentIds.has(o.id) &&
         o.orderId !== orderId &&
         o.status !== DeliveryOrderStatus.DELIVERED &&
         o.status !== DeliveryOrderStatus.RETURN_TO_STORE,
@@ -551,6 +673,9 @@ export class RiderDeliveryController {
       where: {deliveryId: id, orderId} as object,
     });
     if (!deliveryOrder) throw new HttpErrors.NotFound('This order is not on this delivery.');
+    if (!(await this.currentStopIds([deliveryOrder])).has(deliveryOrder.id)) {
+      throw new HttpErrors.NotFound('This order is no longer on this delivery.');
+    }
 
     const trimmedRemarks = body.remarks?.trim();
     await this.orderService.returnDeliveryToStore({
@@ -566,7 +691,9 @@ export class RiderDeliveryController {
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
       const allDeliveryOrders = await this.deliveryOrderRepository.find({where: {deliveryId: id} as object});
+      const currentIds = await this.currentStopIds(allDeliveryOrders);
       const remaining = allDeliveryOrders.filter(o =>
+        currentIds.has(o.id) &&
         o.orderId !== orderId &&
         o.status !== DeliveryOrderStatus.DELIVERED &&
         o.status !== DeliveryOrderStatus.RETURN_TO_STORE,
