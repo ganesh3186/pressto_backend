@@ -11,6 +11,11 @@ export enum InvoiceStatus {
     indexes: {
       uniqueInvoiceNumber: {keys: ['invoiceNumber'], options: {unique: true}},
       invoiceOrderId: {keys: ['orderId']},
+      // Manage Ticket's invoice-number search uses ILIKE '%q%', which only
+      // a trigram index can serve — the unique index above can't help a
+      // leading wildcard, so this was a full sequential scan (~6s on
+      // 1.97M rows, confirmed via EXPLAIN ANALYZE).
+      invoiceNumberTrgm: {keys: 'invoiceNumber gin_trgm_ops', type: 'gin'},
     },
   },
 })
