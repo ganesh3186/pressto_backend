@@ -5591,6 +5591,7 @@ export class OrderService {
       orderLabelAssignments,
       couponRedemptions,
       invoicedOrders,
+      creditNotes,
     ] = await Promise.all([
       this.orderItemRepo.find({where: {orderId}}),
       this.orderChargeRepo.find({where: {orderId}}),
@@ -5611,6 +5612,7 @@ export class OrderService {
       }),
       this.couponRedemptionRepo.find({where: {orderId, isReversed: false} as object}),
       this.getInvoicedOrderIds([orderId]),
+      this.salesReturnRepo.find({where: {orderId, status: 'approved'} as object}),
     ]);
 
     const orderLabels = orderLabelAssignments.length
@@ -6088,6 +6090,9 @@ export class OrderService {
       order: {
         ...order,
         hasInvoice: invoicedOrders.has(orderId),
+        creditNotesTotal: creditNotes.filter(note => (note.returnedItems ?? []).some(line =>
+          Boolean((line as {invoiceBasis?: unknown}).invoiceBasis ?? (line as {preservesInvoice?: boolean}).preservesInvoice)))
+          .reduce((sum, note) => sum + Number(note.creditAmount ?? 0), 0),
         createdByName,
         receivedByName: createdByName,
         couponRedemptions: couponRedemptions.map(row => ({

@@ -48,6 +48,7 @@ interface SummaryDetails {
   order: Order & {
     customer?: {fullName?: string; phone?: string} | null;
     receivedByName?: string;
+    creditNotesTotal?: number;
   };
   items: {
     itemName?: string;
@@ -236,6 +237,7 @@ export class OrderSummaryPdfService {
           ...primary,
           order: {
             ...primary.order,
+            creditNotesTotal: entries.reduce((sum, entry) => sum + Number(entry.order.creditNotesTotal ?? 0), 0),
             orderNumber: entries
               .map(entry => entry.order.orderNumber)
               .join(', '),
@@ -933,7 +935,7 @@ export class OrderSummaryPdfService {
         invoice &&
         !invoice.isConsolidated &&
         hasReturns &&
-        num(order.totalAmount) > 0,
+        (num(order.totalAmount) > 0 || num(order.creditNotesTotal) > 0),
       );
       let subtotal =
         invoice && !liveInvoiceTotals
@@ -953,7 +955,7 @@ export class OrderSummaryPdfService {
           : num(order.taxAmount) - cgst;
       const total =
         invoice && !liveInvoiceTotals
-          ? num(invoice.totalAmount)
+          ? Math.max(0, num(invoice.totalAmount) - num(order.creditNotesTotal))
           : num(order.totalAmount);
       const activeItems = lines
         .filter(line => !line.returned)
@@ -1006,8 +1008,13 @@ export class OrderSummaryPdfService {
         true,
       );
       rule(true);
-      // A consolidated invoice can bill remaining balances after older ticket
-      // payments/refunds. Its own balances are authoritative; do not charge or
+      if (invoice && num(order.creditNotesTotal) > 0) {
+        pair('Original Invoice:', whole(invoice.totalAmount));
+        pair('Approved Credits:', `- ${whole(order.creditNotesTotal)}`);
+        pair('Net Payable:', whole(total), true);
+      }
+      // A consolidated invoice can bill balances after older ticket payments/refunds.
+      // Its own balances are authoritative; do not charge or
       // refund those historical ticket transactions a second time here.
       const paidRefund = invoice?.isConsolidated
         ? 0
