@@ -5661,6 +5661,7 @@ export class OrderService {
             ? [rider.firstName, rider.lastName].filter(Boolean).join(' ')
             : collector?.fullName || collector?.username || null,
         } : {}),
+        itpvId: (order as any).itpvId ?? null,
         parentOrderId: (order as any).parentOrderId ?? null,
         parentOrderNumber: (order as any).parentOrderId
           ? (parentOrderMap.get((order as any).parentOrderId) ?? null)
