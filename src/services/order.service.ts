@@ -5142,6 +5142,59 @@ export class OrderService {
     );
   }
 
+  /**
+   * One page of listOrders() for a free-text search: order number, customer
+   * name, or the customer's login phone. The customer/phone matches run as SQL
+   * subqueries. They used to be resolved into customer-id lists in Node first:
+   * a one-letter search ("m") matched ~300K customers, built a 59K+ parameter
+   * IN list, pinned the event loop and froze the whole API on live.
+   */
+  private async searchOrderPage(
+    where: object,
+    q: string,
+    limit: number,
+    skip: number,
+  ): Promise<[Order[], {count: number}]> {
+    const connector = this.dataSource.connector as unknown as {
+      buildWhere(model: string, where: object): {sql: string; params: unknown[]};
+      parameterize(ps: {sql: string; params: unknown[]}): {sql: string; params: unknown[]};
+    };
+    const base = connector.buildWhere(this.orderRepo.entityClass.modelName, where);
+    const like = `%${q}%`;
+    const searchSql =
+      '(ordernumber ILIKE ?' +
+      ' OR customerid IN (SELECT c.id FROM public.customer c' +
+      ' WHERE c.isdeleted = false AND (c.firstname ILIKE ? OR c.lastname ILIKE ?))' +
+      ' OR customerid IN (SELECT c.id FROM public.customer c' +
+      ' JOIN public.users u ON u.id::text = c.userid' +
+      ' WHERE c.isdeleted = false AND u.isdeleted = false AND u.phone ILIKE ?))';
+    const whereSql = base.sql
+      ? `WHERE (${base.sql.replace(/^WHERE /, '')}) AND ${searchSql}`
+      : `WHERE ${searchSql}`;
+    const whereParams = [...base.params, like, like, like, like];
+
+    const page = connector.parameterize({
+      sql: `SELECT id FROM public.orders ${whereSql} ORDER BY createdat DESC, id DESC LIMIT ? OFFSET ?`,
+      params: [...whereParams, limit, skip],
+    });
+    const count = connector.parameterize({
+      sql: `SELECT count(*)::int AS count FROM public.orders ${whereSql}`,
+      params: whereParams,
+    });
+    const [pageRows, countRows]: [{id: string}[], {count: number}[]] = await Promise.all([
+      this.dataSource.execute(page.sql, page.params),
+      this.dataSource.execute(count.sql, count.params),
+    ]);
+
+    const ids = pageRows.map(row => row.id);
+    const found = ids.length
+      ? await this.orderRepo.find({where: {id: {inq: ids}} as any})
+      : [];
+    const byId = new Map(found.map(order => [order.id, order]));
+    const orders = ids.map(id => byId.get(id)).filter((o): o is Order => Boolean(o));
+    return [orders, {count: Number(countRows[0]?.count ?? 0)}];
+  }
+
   async listOrders(params: {
     search?: string;
     invoiceNumber?: string;
@@ -5249,63 +5302,21 @@ export class OrderService {
       baseConditions.push({createdAt: {lte: dateTo}});
     }
 
-    if (params.search) {
-      const q = params.search.trim();
-      const orConditions: object[] = [{orderNumber: {ilike: `%${q}%`}}];
-
-      // Match by customer name
-      const nameCustomers = await this.customerRepo.find({
-        where: {
-          and: [
-            {isDeleted: false},
-            {
-              or: [
-                {firstName: {ilike: `%${q}%`}},
-                {lastName: {ilike: `%${q}%`}},
-              ],
-            },
-          ],
-        } as any,
-        fields: {id: true} as any,
-      });
-      const nameCustomerIds = nameCustomers.map(c => c.id);
-
-      // Match by phone via users table
-      const phoneUsers = await this.userRepo.find({
-        where: {and: [{isDeleted: false}, {phone: {ilike: `%${q}%`}}]} as any,
-        fields: {id: true} as any,
-      });
-      let phoneCustomerIds: string[] = [];
-      if (phoneUsers.length) {
-        const userIds = phoneUsers.map(u => u.id);
-        const phoneCustomers = await this.customerRepo.find({
-          where: {and: [{isDeleted: false}, {userId: {inq: userIds}}]} as any,
-          fields: {id: true} as any,
-        });
-        phoneCustomerIds = phoneCustomers.map(c => c.id);
-      }
-
-      const allCustomerIds = [
-        ...new Set([...nameCustomerIds, ...phoneCustomerIds]),
-      ];
-      if (allCustomerIds.length)
-        orConditions.push({customerId: {inq: allCustomerIds}});
-
-      baseConditions.push({or: orConditions});
-    }
-
     const where =
       baseConditions.length === 1 ? baseConditions[0] : {and: baseConditions};
 
-    const [orders, countResult] = await Promise.all([
-      this.orderRepo.find({
-        where: where as any,
-        order: ['createdAt DESC', 'id DESC'],
-        limit,
-        skip,
-      }),
-      this.orderRepo.count(where as any),
-    ]);
+    const search = params.search?.trim();
+    const [orders, countResult] = search
+      ? await this.searchOrderPage(where, search, limit, skip)
+      : await Promise.all([
+          this.orderRepo.find({
+            where: where as any,
+            order: ['createdAt DESC', 'id DESC'],
+            limit,
+            skip,
+          }),
+          this.orderRepo.count(where as any),
+        ]);
 
     if (!orders.length) return {rows: [], total: 0};
 
