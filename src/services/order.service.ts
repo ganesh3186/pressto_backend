@@ -5156,7 +5156,7 @@ export class OrderService {
    */
   private async searchOrderPage(
     where: object,
-    q: string,
+    terms: {search?: string; invoiceNumber?: string},
     limit: number,
     skip: number,
   ): Promise<[Order[], {count: number}]> {
@@ -5165,34 +5165,35 @@ export class OrderService {
       parameterize(ps: {sql: string; params: unknown[]}): {sql: string; params: unknown[]};
     };
     const base = connector.buildWhere(this.orderRepo.entityClass.modelName, where);
-    const like = `%${q}%`;
-    // Specific terms (a name, a phone, an order number) match few customers:
-    // resolve them through the trigram indexes and pass them as ONE array
-    // parameter so orders are found via their customerid index. Broad terms
-    // ("m", "2") match too many for that, so fall back to a per-order EXISTS,
-    // which stops as soon as the page is filled because matches are dense.
-    const customerRows: {id: string}[] = await this.dataSource.execute(
-      `SELECT c.id FROM public.customer c
-        WHERE c.isdeleted = false AND (c.firstname ILIKE $1 OR c.lastname ILIKE $1)
-       UNION
-       SELECT c.id FROM public.users u JOIN public.customer c ON c.userid = u.id::text
-        WHERE u.isdeleted = false AND c.isdeleted = false AND u.phone ILIKE $1
-       LIMIT ${SEARCH_CUSTOMER_LIST_CAP + 1}`,
-      [like],
-    );
-    const fewCustomers = customerRows.length <= SEARCH_CUSTOMER_LIST_CAP;
-    const searchSql = fewCustomers
-      ? '(o.ordernumber ILIKE ? OR o.customerid = ANY(?::uuid[]))'
-      : '(o.ordernumber ILIKE ? OR EXISTS (SELECT 1 FROM public.customer c' +
-        ' LEFT JOIN public.users u ON u.id = c.userid::uuid AND u.isdeleted = false' +
-        ' WHERE c.id = o.customerid AND c.isdeleted = false' +
-        ' AND (c.firstname ILIKE ? OR c.lastname ILIKE ? OR u.phone ILIKE ?)))';
-    const whereSql = base.sql
-      ? `WHERE (${base.sql.replace(/^WHERE /, '')}) AND ${searchSql}`
-      : `WHERE ${searchSql}`;
-    const whereParams = fewCustomers
-      ? [...base.params, like, customerRows.map(row => row.id)]
-      : [...base.params, like, like, like, like];
+    const sqlConditions: string[] = [];
+    const sqlParams: unknown[] = [];
+
+    // Invoice number filter (Manage Ticket). Invoice numbers start with the
+    // store code ("ST013/…"), so a partial value can match 50K+ invoices;
+    // resolving those to an order-id IN list froze live. Check per order.
+    if (terms.invoiceNumber) {
+      const invoiceLike = `%${terms.invoiceNumber}%`;
+      sqlConditions.push(
+        '(EXISTS (SELECT 1 FROM public.invoice i WHERE i.orderid = o.id AND i.invoicenumber ILIKE ?)' +
+          ' OR EXISTS (SELECT 1 FROM public.invoice_order_link l' +
+          ' JOIN public.invoice i ON i.id = l.invoiceid' +
+          ' WHERE l.orderid = o.id AND i.invoicenumber ILIKE ?))',
+      );
+      sqlParams.push(invoiceLike, invoiceLike);
+    }
+
+    if (terms.search) {
+      const [searchSql, searchParams] = await this.orderSearchCondition(terms.search);
+      sqlConditions.push(searchSql);
+      sqlParams.push(...searchParams);
+    }
+
+    const conditions = [
+      ...(base.sql ? [`(${base.sql.replace(/^WHERE /, '')})`] : []),
+      ...sqlConditions,
+    ];
+    const whereSql = `WHERE ${conditions.join(' AND ')}`;
+    const whereParams = [...base.params, ...sqlParams];
 
     const page = connector.parameterize({
       sql: `SELECT o.id FROM public.orders o ${whereSql} ORDER BY o.createdat DESC, o.id DESC LIMIT ? OFFSET ?`,
@@ -5218,6 +5219,35 @@ export class OrderService {
     const byId = new Map(found.map(order => [order.id, order]));
     const orders = ids.map(id => byId.get(id)).filter((o): o is Order => Boolean(o));
     return [orders, {count: Number(countRows[0]?.count ?? 0)}];
+  }
+
+  /** SQL condition (with `?` placeholders) for listOrders' free-text search. */
+  private async orderSearchCondition(q: string): Promise<[string, unknown[]]> {
+    const like = `%${q}%`;
+    // Specific terms (a name, a phone, an order number) match few customers:
+    // resolve them through the trigram indexes and pass them as ONE array
+    // parameter so orders are found via their customerid index. Broad terms
+    // ("m", "2") match too many for that, so fall back to a per-order EXISTS,
+    // which stops as soon as the page is filled because matches are dense.
+    const customerRows: {id: string}[] = await this.dataSource.execute(
+      `SELECT c.id FROM public.customer c
+        WHERE c.isdeleted = false AND (c.firstname ILIKE $1 OR c.lastname ILIKE $1)
+       UNION
+       SELECT c.id FROM public.users u JOIN public.customer c ON c.userid = u.id::text
+        WHERE u.isdeleted = false AND c.isdeleted = false AND u.phone ILIKE $1
+       LIMIT ${SEARCH_CUSTOMER_LIST_CAP + 1}`,
+      [like],
+    );
+    const fewCustomers = customerRows.length <= SEARCH_CUSTOMER_LIST_CAP;
+    const searchSql = fewCustomers
+      ? '(o.ordernumber ILIKE ? OR o.customerid = ANY(?::uuid[]))'
+      : '(o.ordernumber ILIKE ? OR EXISTS (SELECT 1 FROM public.customer c' +
+        ' LEFT JOIN public.users u ON u.id = c.userid::uuid AND u.isdeleted = false' +
+        ' WHERE c.id = o.customerid AND c.isdeleted = false' +
+        ' AND (c.firstname ILIKE ? OR c.lastname ILIKE ? OR u.phone ILIKE ?)))';
+    return fewCustomers
+      ? [searchSql, [like, customerRows.map(row => row.id)]]
+      : [searchSql, [like, like, like, like]];
   }
 
   async listOrders(params: {
@@ -5274,22 +5304,6 @@ export class OrderService {
 
     // Scopes the list to a single customer (used by the customer-facing APIs).
     if (params.customerId) baseConditions.push({customerId: params.customerId});
-    if (params.invoiceNumber?.trim()) {
-      const invoices = await this.invoiceRepo.find({
-        where: {invoiceNumber: {ilike: `%${params.invoiceNumber.trim()}%`}},
-        fields: {id: true, orderId: true},
-      });
-      if (!invoices.length) return {rows: [], total: 0};
-      const links = await this.invoiceOrderLinkRepo.find({
-        where: {invoiceId: {inq: invoices.map(invoice => invoice.id)}},
-        fields: {orderId: true},
-      });
-      const matchingOrderIds = [...new Set([
-        ...invoices.map(invoice => invoice.orderId),
-        ...links.map(link => link.orderId),
-      ])];
-      baseConditions.push({id: {inq: matchingOrderIds}});
-    }
     if (params.status === 'pending') {
       baseConditions.push({
         status: {nin: ['draft', 'delivered', 'cancelled', 'returned']},
@@ -5331,8 +5345,9 @@ export class OrderService {
       baseConditions.length === 1 ? baseConditions[0] : {and: baseConditions};
 
     const search = params.search?.trim();
-    const [orders, countResult] = search
-      ? await this.searchOrderPage(where, search, limit, skip)
+    const invoiceNumber = params.invoiceNumber?.trim();
+    const [orders, countResult] = search || invoiceNumber
+      ? await this.searchOrderPage(where, {search, invoiceNumber}, limit, skip)
       : await Promise.all([
           this.orderRepo.find({
             where: where as any,
