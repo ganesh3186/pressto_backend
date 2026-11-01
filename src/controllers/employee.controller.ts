@@ -438,7 +438,7 @@ export class EmployeeController {
     @param.filter(Employee) filter?: Filter<Employee>,
     // Explicit search/pagination/filter params — kept separate from `filter`
     // above because `search`/`role` aren't plain Employee-table where
-    // clauses: search reaches across the userId relation to Users.phone,
+    // clauses: search reaches across the userId relation to Users.email/phone,
     // and role reaches across UserRoles/Roles. Neither is expressible in a
     // plain LoopBack Filter<Employee>.where.
     @param.query.string('search') search?: string,
@@ -525,18 +525,16 @@ export class EmployeeController {
         {lastName: {ilike: `%${q}%`}},
         {employeeCode: {ilike: `%${q}%`}},
       ];
-      // Phone lives on Users, not Employee — resolve matching Users rows
-      // first, then fold their ids into the same OR as an additional
-      // matchable condition. Require a few digits so a 1-2 digit search
-      // doesn't turn into an accidental "match every phone number" scan.
-      if (digits.length >= 3) {
-        const matchedUsers = await this.usersRepository.find({
-          where: {phone: {like: `%${digits}%`}},
-          fields: {id: true},
-        });
-        if (matchedUsers.length) {
-          orClauses.push({userId: {inq: matchedUsers.map(u => u.id)}});
-        }
+      // Email and phone live on Users, not Employee. Require a few digits
+      // for phone so a short search doesn't match almost every number.
+      const userMatches: object[] = [{email: {ilike: `%${q}%`}}];
+      if (digits.length >= 3) userMatches.push({phone: {like: `%${digits}%`}});
+      const matchedUsers = await this.usersRepository.find({
+        where: {or: userMatches},
+        fields: {id: true},
+      });
+      if (matchedUsers.length) {
+        orClauses.push({userId: {inq: matchedUsers.map(u => u.id)}});
       }
       clauses.push({or: orClauses});
     }
