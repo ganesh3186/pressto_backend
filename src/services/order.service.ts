@@ -133,6 +133,11 @@ import {
   RIDER_NOTIFICATION_TYPES,
 } from './notification.service';
 
+/** Most matches an order list search will count (see searchOrderPage). */
+const SEARCH_COUNT_CAP = 1000;
+/** Above this many matching customers a search is "broad" (see searchOrderPage). */
+const SEARCH_CUSTOMER_LIST_CAP = 5000;
+
 export interface OrderPaymentInput {
   paymentMode: PaymentMode;
   amount: number;
@@ -5142,6 +5147,79 @@ export class OrderService {
     );
   }
 
+  /**
+   * One page of listOrders() for a free-text search: order number, customer
+   * name, or the customer's login phone. The customer/phone matches run as SQL
+   * subqueries. They used to be resolved into customer-id lists in Node first:
+   * a one-letter search ("m") matched ~300K customers, built a 59K+ parameter
+   * IN list, pinned the event loop and froze the whole API on live.
+   */
+  private async searchOrderPage(
+    where: object,
+    q: string,
+    limit: number,
+    skip: number,
+  ): Promise<[Order[], {count: number}]> {
+    const connector = this.dataSource.connector as unknown as {
+      buildWhere(model: string, where: object): {sql: string; params: unknown[]};
+      parameterize(ps: {sql: string; params: unknown[]}): {sql: string; params: unknown[]};
+    };
+    const base = connector.buildWhere(this.orderRepo.entityClass.modelName, where);
+    const like = `%${q}%`;
+    // Specific terms (a name, a phone, an order number) match few customers:
+    // resolve them through the trigram indexes and pass them as ONE array
+    // parameter so orders are found via their customerid index. Broad terms
+    // ("m", "2") match too many for that, so fall back to a per-order EXISTS,
+    // which stops as soon as the page is filled because matches are dense.
+    const customerRows: {id: string}[] = await this.dataSource.execute(
+      `SELECT c.id FROM public.customer c
+        WHERE c.isdeleted = false AND (c.firstname ILIKE $1 OR c.lastname ILIKE $1)
+       UNION
+       SELECT c.id FROM public.users u JOIN public.customer c ON c.userid = u.id::text
+        WHERE u.isdeleted = false AND c.isdeleted = false AND u.phone ILIKE $1
+       LIMIT ${SEARCH_CUSTOMER_LIST_CAP + 1}`,
+      [like],
+    );
+    const fewCustomers = customerRows.length <= SEARCH_CUSTOMER_LIST_CAP;
+    const searchSql = fewCustomers
+      ? '(o.ordernumber ILIKE ? OR o.customerid = ANY(?::uuid[]))'
+      : '(o.ordernumber ILIKE ? OR EXISTS (SELECT 1 FROM public.customer c' +
+        ' LEFT JOIN public.users u ON u.id = c.userid::uuid AND u.isdeleted = false' +
+        ' WHERE c.id = o.customerid AND c.isdeleted = false' +
+        ' AND (c.firstname ILIKE ? OR c.lastname ILIKE ? OR u.phone ILIKE ?)))';
+    const whereSql = base.sql
+      ? `WHERE (${base.sql.replace(/^WHERE /, '')}) AND ${searchSql}`
+      : `WHERE ${searchSql}`;
+    const whereParams = fewCustomers
+      ? [...base.params, like, customerRows.map(row => row.id)]
+      : [...base.params, like, like, like, like];
+
+    const page = connector.parameterize({
+      sql: `SELECT o.id FROM public.orders o ${whereSql} ORDER BY o.createdat DESC, o.id DESC LIMIT ? OFFSET ?`,
+      params: [...whereParams, limit, skip],
+    });
+    // Counting every match of a broad term means visiting every matching order
+    // (1M+ for "m"), which held DB connections for 10s+ and starved the pool.
+    // Count only up to SEARCH_COUNT_CAP; a specific search still gets its exact
+    // count, a broad one reports the cap (pagination stops there).
+    const count = connector.parameterize({
+      sql: `SELECT count(*)::int AS count FROM (SELECT 1 FROM public.orders o ${whereSql} LIMIT ?) matches`,
+      params: [...whereParams, SEARCH_COUNT_CAP],
+    });
+    const [pageRows, countRows]: [{id: string}[], {count: number}[]] = await Promise.all([
+      this.dataSource.execute(page.sql, page.params),
+      this.dataSource.execute(count.sql, count.params),
+    ]);
+
+    const ids = pageRows.map(row => row.id);
+    const found = ids.length
+      ? await this.orderRepo.find({where: {id: {inq: ids}} as any})
+      : [];
+    const byId = new Map(found.map(order => [order.id, order]));
+    const orders = ids.map(id => byId.get(id)).filter((o): o is Order => Boolean(o));
+    return [orders, {count: Number(countRows[0]?.count ?? 0)}];
+  }
+
   async listOrders(params: {
     search?: string;
     invoiceNumber?: string;
@@ -5249,63 +5327,21 @@ export class OrderService {
       baseConditions.push({createdAt: {lte: dateTo}});
     }
 
-    if (params.search) {
-      const q = params.search.trim();
-      const orConditions: object[] = [{orderNumber: {ilike: `%${q}%`}}];
-
-      // Match by customer name
-      const nameCustomers = await this.customerRepo.find({
-        where: {
-          and: [
-            {isDeleted: false},
-            {
-              or: [
-                {firstName: {ilike: `%${q}%`}},
-                {lastName: {ilike: `%${q}%`}},
-              ],
-            },
-          ],
-        } as any,
-        fields: {id: true} as any,
-      });
-      const nameCustomerIds = nameCustomers.map(c => c.id);
-
-      // Match by phone via users table
-      const phoneUsers = await this.userRepo.find({
-        where: {and: [{isDeleted: false}, {phone: {ilike: `%${q}%`}}]} as any,
-        fields: {id: true} as any,
-      });
-      let phoneCustomerIds: string[] = [];
-      if (phoneUsers.length) {
-        const userIds = phoneUsers.map(u => u.id);
-        const phoneCustomers = await this.customerRepo.find({
-          where: {and: [{isDeleted: false}, {userId: {inq: userIds}}]} as any,
-          fields: {id: true} as any,
-        });
-        phoneCustomerIds = phoneCustomers.map(c => c.id);
-      }
-
-      const allCustomerIds = [
-        ...new Set([...nameCustomerIds, ...phoneCustomerIds]),
-      ];
-      if (allCustomerIds.length)
-        orConditions.push({customerId: {inq: allCustomerIds}});
-
-      baseConditions.push({or: orConditions});
-    }
-
     const where =
       baseConditions.length === 1 ? baseConditions[0] : {and: baseConditions};
 
-    const [orders, countResult] = await Promise.all([
-      this.orderRepo.find({
-        where: where as any,
-        order: ['createdAt DESC', 'id DESC'],
-        limit,
-        skip,
-      }),
-      this.orderRepo.count(where as any),
-    ]);
+    const search = params.search?.trim();
+    const [orders, countResult] = search
+      ? await this.searchOrderPage(where, search, limit, skip)
+      : await Promise.all([
+          this.orderRepo.find({
+            where: where as any,
+            order: ['createdAt DESC', 'id DESC'],
+            limit,
+            skip,
+          }),
+          this.orderRepo.count(where as any),
+        ]);
 
     if (!orders.length) return {rows: [], total: 0};
 
