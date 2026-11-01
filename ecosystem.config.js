@@ -14,7 +14,10 @@ module.exports = {
       name: 'pressto-backend',
       cwd: '.',
       script: 'dist/index.js',
-      node_args: '-r source-map-support/register',
+      // Absolute path: in cluster mode PM2 starts workers from its own install
+      // dir, where a bare `-r source-map-support/register` can't be resolved
+      // ("Cannot find module") and every worker crash-loops.
+      node_args: `-r ${require.resolve('source-map-support/register')}`,
       // Was fork mode with an implicit single instance — every concurrent
       // request (go-live: ~100 staff logging in/searching at once) funneled
       // through ONE Node event loop on ONE CPU core, so one slow request

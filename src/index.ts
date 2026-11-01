@@ -17,7 +17,10 @@ export async function main(options: ApplicationConfig = {}) {
   return app;
 }
 
-if (require.main === module) {
+// PM2 cluster mode loads this file through its own ProcessContainer, so
+// require.main is PM2's wrapper, not this module, and the app would never
+// listen. PM2 sets NODE_APP_INSTANCE on every cluster worker.
+if (require.main === module || process.env.NODE_APP_INSTANCE !== undefined) {
   // Run the application
   const config = {
     rest: {
