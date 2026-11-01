@@ -21,6 +21,9 @@ import {PickupRequestSource} from './pickup-request-source.enum';
       idx_orders_status: {keys: ['status']},
       // Customer order history, newest first.
       orderCustomerIdCreatedAt: {keys: ['customerId', 'createdAt']},
+      // Order list for multi-store/global users, newest first. Without it an
+      // unscoped search sorted all ~2M orders (seq scan + sort, ~3.4s on live).
+      orderCreatedAt: {keys: ['createdAt']},
       orderShiftId: {keys: ['shiftId']},
       orderAssignedRiderId: {keys: ['assignedRiderId']},
       orderPickupRequestId: {keys: ['pickupRequestId']},
