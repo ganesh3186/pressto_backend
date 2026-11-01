@@ -31,10 +31,6 @@ import {PickupRequestSource} from './pickup-request-source.enum';
       orderReprocessOfOrderId: {keys: ['reprocessOfOrderId']},
       // Order-number search uses ILIKE '%q%', which only a trigram index can serve.
       orderOrderNumberTrgm: {keys: 'orderNumber gin_trgm_ops', type: 'gin'},
-      // Global-scope staff (no storeId filter) hit `where:{isDeleted:false},
-      // order:['createdAt DESC']` with none of the store-scoped composites
-      // above able to help — was a full table scan + sort on every page load.
-      orderIsDeletedCreatedAt: {keys: ['isDeleted', 'createdAt']},
     },
   },
 })
