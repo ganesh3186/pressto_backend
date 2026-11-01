@@ -505,17 +505,22 @@ export class EmployeeController {
     if (params.storeId) {
       clauses.push({storeId: params.storeId});
     }
+    // Both user lookups below join through employee in SQL, so the id list is
+    // bounded by the employee count. Matching all Users first (~396K, mostly
+    // customers) turned a one-letter email search into a huge IN list — the
+    // same pattern that froze live via the rider and order searches.
     if (params.role) {
-      const roleRow = await this.rolesRepository.findOne({where: {value: params.role}});
-      const userRoles = roleRow
-        ? await this.userRolesRepository.find({
-            where: {rolesId: roleRow.id, isDeleted: false},
-            fields: {usersId: true},
-          })
-        : [];
+      const roleUsers: {userId: string}[] = await this.dataSource.execute(
+        `SELECT DISTINCT e.userid AS "userId"
+           FROM public.employee e
+           JOIN public.user_roles ur ON ur.usersid::text = e.userid AND ur.isdeleted = false
+           JOIN public.roles r ON r.id = ur.rolesid
+          WHERE e.isdeleted = false AND r.value = $1`,
+        [params.role],
+      );
       // Empty on no match — correctly yields zero rows rather than
       // accidentally matching everyone by omitting the clause.
-      clauses.push({userId: {inq: userRoles.map(ur => ur.usersId)}});
+      clauses.push({userId: {inq: roleUsers.map(row => row.userId)}});
     }
     if (params.search?.trim()) {
       const q = params.search.trim();
@@ -527,14 +532,16 @@ export class EmployeeController {
       ];
       // Email and phone live on Users, not Employee. Require a few digits
       // for phone so a short search doesn't match almost every number.
-      const userMatches: object[] = [{email: {ilike: `%${q}%`}}];
-      if (digits.length >= 3) userMatches.push({phone: {like: `%${digits}%`}});
-      const matchedUsers = await this.usersRepository.find({
-        where: {or: userMatches},
-        fields: {id: true},
-      });
+      const matchedUsers: {userId: string}[] = await this.dataSource.execute(
+        `SELECT e.userid AS "userId"
+           FROM public.employee e
+           JOIN public.users u ON u.id::text = e.userid
+          WHERE e.isdeleted = false
+            AND (u.email ILIKE $1 OR ($2::boolean AND u.phone LIKE $3))`,
+        [`%${q}%`, digits.length >= 3, `%${digits}%`],
+      );
       if (matchedUsers.length) {
-        orClauses.push({userId: {inq: matchedUsers.map(u => u.id)}});
+        orClauses.push({userId: {inq: matchedUsers.map(row => row.userId)}});
       }
       clauses.push({or: orClauses});
     }

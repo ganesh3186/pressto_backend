@@ -6,13 +6,12 @@ describe('employee email search', () => {
     const listFilters: object[] = [];
     const countFilters: object[] = [];
     const controller = Object.assign(Object.create(EmployeeController.prototype), {
-      usersRepository: {
-        find: async (filter: object) => {
-          expect(filter).to.eql({
-            where: {or: [{email: {ilike: '%Abida@Example.com%'}}]},
-            fields: {id: true},
-          });
-          return [{id: 'user-1'}];
+      dataSource: {
+        execute: async (sql: string, params: unknown[]) => {
+          // Matched within employees only, never across all Users.
+          expect(sql).to.match(/FROM public\.employee e\s+JOIN public\.users u/);
+          expect(params).to.eql(['%Abida@Example.com%', false, '%%']);
+          return [{userId: 'user-1'}];
         },
       },
       employeeRepository: {
