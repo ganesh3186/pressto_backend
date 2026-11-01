@@ -133,6 +133,11 @@ import {
   RIDER_NOTIFICATION_TYPES,
 } from './notification.service';
 
+/** Most matches an order list search will count (see searchOrderPage). */
+const SEARCH_COUNT_CAP = 1000;
+/** Above this many matching customers a search is "broad" (see searchOrderPage). */
+const SEARCH_CUSTOMER_LIST_CAP = 5000;
+
 export interface OrderPaymentInput {
   paymentMode: PaymentMode;
   amount: number;
@@ -5161,25 +5166,45 @@ export class OrderService {
     };
     const base = connector.buildWhere(this.orderRepo.entityClass.modelName, where);
     const like = `%${q}%`;
-    const searchSql =
-      '(ordernumber ILIKE ?' +
-      ' OR customerid IN (SELECT c.id FROM public.customer c' +
-      ' WHERE c.isdeleted = false AND (c.firstname ILIKE ? OR c.lastname ILIKE ?))' +
-      ' OR customerid IN (SELECT c.id FROM public.customer c' +
-      ' JOIN public.users u ON u.id::text = c.userid' +
-      ' WHERE c.isdeleted = false AND u.isdeleted = false AND u.phone ILIKE ?))';
+    // Specific terms (a name, a phone, an order number) match few customers:
+    // resolve them through the trigram indexes and pass them as ONE array
+    // parameter so orders are found via their customerid index. Broad terms
+    // ("m", "2") match too many for that, so fall back to a per-order EXISTS,
+    // which stops as soon as the page is filled because matches are dense.
+    const customerRows: {id: string}[] = await this.dataSource.execute(
+      `SELECT c.id FROM public.customer c
+        WHERE c.isdeleted = false AND (c.firstname ILIKE $1 OR c.lastname ILIKE $1)
+       UNION
+       SELECT c.id FROM public.users u JOIN public.customer c ON c.userid = u.id::text
+        WHERE u.isdeleted = false AND c.isdeleted = false AND u.phone ILIKE $1
+       LIMIT ${SEARCH_CUSTOMER_LIST_CAP + 1}`,
+      [like],
+    );
+    const fewCustomers = customerRows.length <= SEARCH_CUSTOMER_LIST_CAP;
+    const searchSql = fewCustomers
+      ? '(o.ordernumber ILIKE ? OR o.customerid = ANY(?::uuid[]))'
+      : '(o.ordernumber ILIKE ? OR EXISTS (SELECT 1 FROM public.customer c' +
+        ' LEFT JOIN public.users u ON u.id = c.userid::uuid AND u.isdeleted = false' +
+        ' WHERE c.id = o.customerid AND c.isdeleted = false' +
+        ' AND (c.firstname ILIKE ? OR c.lastname ILIKE ? OR u.phone ILIKE ?)))';
     const whereSql = base.sql
       ? `WHERE (${base.sql.replace(/^WHERE /, '')}) AND ${searchSql}`
       : `WHERE ${searchSql}`;
-    const whereParams = [...base.params, like, like, like, like];
+    const whereParams = fewCustomers
+      ? [...base.params, like, customerRows.map(row => row.id)]
+      : [...base.params, like, like, like, like];
 
     const page = connector.parameterize({
-      sql: `SELECT id FROM public.orders ${whereSql} ORDER BY createdat DESC, id DESC LIMIT ? OFFSET ?`,
+      sql: `SELECT o.id FROM public.orders o ${whereSql} ORDER BY o.createdat DESC, o.id DESC LIMIT ? OFFSET ?`,
       params: [...whereParams, limit, skip],
     });
+    // Counting every match of a broad term means visiting every matching order
+    // (1M+ for "m"), which held DB connections for 10s+ and starved the pool.
+    // Count only up to SEARCH_COUNT_CAP; a specific search still gets its exact
+    // count, a broad one reports the cap (pagination stops there).
     const count = connector.parameterize({
-      sql: `SELECT count(*)::int AS count FROM public.orders ${whereSql}`,
-      params: whereParams,
+      sql: `SELECT count(*)::int AS count FROM (SELECT 1 FROM public.orders o ${whereSql} LIMIT ?) matches`,
+      params: [...whereParams, SEARCH_COUNT_CAP],
     });
     const [pageRows, countRows]: [{id: string}[], {count: number}[]] = await Promise.all([
       this.dataSource.execute(page.sql, page.params),
