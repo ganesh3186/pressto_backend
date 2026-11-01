@@ -752,26 +752,27 @@ export class ShiftController {
     };
     let paidCashRefunds = 0;
 
-    const orders = await this.orderRepository.find({
-      where: {storeId: shift.storeId} as object,
-      fields: {
-        id: true,
-        status: true,
-        totalAmount: true,
-        allocatedPayment: true,
-        parentOrderId: true,
-      } as object,
-    });
-    // Cash movements still count after an order is cancelled or returned.
-    const orderIds = orders.map(o => o.id);
-    if (orderIds.length) {
-      const transactions = await this.paymentTransactionRepository.find({
-        where: {
-          orderId: {inq: orderIds},
-          riderId: null,
-          paymentDate: {between: [shift.openedAt, windowEnd]},
-        } as object,
-      });
+    // This shift's window only, joined to the store's orders in SQL. Loading
+    // the store's whole order history first (up to ~120K ids after the
+    // migration) into one IN list broke this endpoint on live. Cash movements
+    // still count after an order is cancelled or returned (no status filter).
+    type ShiftTransactionRow = {
+      orderId: string;
+      amount: string | number;
+      paymentMode: string;
+      transactionType: string;
+      cashShiftId: string | null;
+    };
+    const transactions = (await this.paymentTransactionRepository.execute(
+      `SELECT pt.orderid AS "orderId", pt.amount, pt.paymentmode AS "paymentMode",
+              pt.transactiontype AS "transactionType", pt.cashshiftid AS "cashShiftId"
+         FROM public.payment_transaction pt
+         JOIN public.orders o ON o.id = pt.orderid
+        WHERE o.storeid = $1 AND pt.riderid IS NULL
+          AND pt.paymentdate BETWEEN $2 AND $3`,
+      [shift.storeId, shift.openedAt, windowEnd],
+    )) as ShiftTransactionRow[];
+    {
 
       // pgLink is real PGLink (Razorpay gateway) payments only — UPI
       // collected directly (staff-side UPI app/QR, no gateway) gets its
@@ -817,7 +818,19 @@ export class ShiftController {
         paymentDate: {between: [shift.openedAt, windowEnd]},
       } as object,
     });
-    const ownOrderIds = new Set(orderIds);
+    // Which of these refunds' orders belong to this store (already counted
+    // above): checked for just these few orders, not the store's history.
+    const refundOrderIds = [...new Set(crossStoreRefunds.map(refund => refund.orderId))];
+    const ownOrderIds = new Set(
+      refundOrderIds.length
+        ? (
+            await this.orderRepository.find({
+              where: {id: {inq: refundOrderIds}, storeId: shift.storeId} as object,
+              fields: {id: true} as object,
+            })
+          ).map(order => order.id)
+        : [],
+    );
     paidCashRefunds += crossStoreRefunds.reduce(
       (sum, refund) => sum + (ownOrderIds.has(refund.orderId) ? 0 : Number(refund.amount) || 0),
       0,

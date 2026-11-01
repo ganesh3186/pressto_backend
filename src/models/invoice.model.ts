@@ -16,6 +16,10 @@ export enum InvoiceStatus {
       // leading wildcard, so this was a full sequential scan (~6s on
       // 1.97M rows, confirmed via EXPLAIN ANALYZE).
       invoiceNumberTrgm: {keys: 'invoiceNumber gin_trgm_ops', type: 'gin'},
+      // Manage Invoice always sorts by createdAt DESC (and filters by a
+      // createdAt date range). Without this every page was a parallel seq
+      // scan + sort of all 1.97M rows to keep 10 (~530ms, EXPLAIN ANALYZE).
+      invoiceCreatedAt: {keys: ['createdAt']},
     },
   },
 })
