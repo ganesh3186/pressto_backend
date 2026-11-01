@@ -46,6 +46,7 @@
     "migrate:garment-tags": "node scripts/add-garment-tag-sequence.cjs",
     "migrate:dashboard-indexes": "node scripts/add-dashboard-indexes.cjs",
     "migrate:invoice-number-trgm": "node scripts/add-invoice-number-trgm-index.cjs",
+    "migrate:order-approval-indexes": "node scripts/add-order-approval-indexes.cjs",
     "migrate:approved-damaged-garments": "node scripts/backfill-approved-damaged-garments.cjs",
     "repair:legacy-reprocess": "node dist/repair-legacy-reprocess.js",
     "migrate:order-item-names": "node scripts/backfill-order-item-names.cjs",

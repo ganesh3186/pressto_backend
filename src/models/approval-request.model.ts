@@ -37,7 +37,17 @@ export const CUSTOMER_ACTIONS_BY_TYPE: Partial<Record<ApprovalRequestType, Appro
 
 export {ApprovalActionType, ApprovalRequestStatus, ApprovalRequestType};
 
-@model({settings: {postgresql: {table: 'approval_request', schema: 'public'}}})
+@model({
+  settings: {
+    postgresql: {table: 'approval_request', schema: 'public'},
+    indexes: {
+      // listOrders (order.service.ts) queries this table unconditionally on
+      // every Manage Order page load, filtered by status + entityType/Id —
+      // was a full sequential scan with no index at all.
+      approvalPendingByEntity: {keys: ['status', 'entityType', 'entityId']},
+    },
+  },
+})
 export class ApprovalRequest extends Entity {
   @property({type: 'string', id: true, generated: false, postgresql: {dataType: 'uuid'}})
   id: string;

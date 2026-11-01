@@ -15,6 +15,25 @@ module.exports = {
       cwd: '.',
       script: 'dist/index.js',
       node_args: '-r source-map-support/register',
+      // Was fork mode with an implicit single instance — every concurrent
+      // request (go-live: ~100 staff logging in/searching at once) funneled
+      // through ONE Node event loop on ONE CPU core, so one slow request
+      // stalled everyone else's too. Cluster mode load-balances across
+      // instances/cores instead.
+      //
+      // `instances: 2` is a conservative starting point, NOT a measured
+      // number — this server also runs migration (and, when active,
+      // staging) side by side, so going higher without checking actual
+      // core count (`nproc` on the server) risks starving them instead.
+      // Raise it after confirming cores are actually free, and raise
+      // PG_POOL_MAX (pressto.datasource.ts) in step — more instances means
+      // more separate connection pools against the same Postgres server.
+      //
+      // Switching exec_mode requires a fresh start, not a plain restart:
+      //   pm2 delete pressto-prod-backend
+      //   pm2 start ecosystem.config.js --name pressto-prod-backend
+      exec_mode: 'cluster',
+      instances: Number(process.env.PM2_INSTANCES) || 2,
       env: {
         NODE_ENV: 'production',
       },
