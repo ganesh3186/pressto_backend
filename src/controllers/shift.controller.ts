@@ -470,6 +470,15 @@ export class ShiftController {
     if (!body.remarks?.trim()) {
       throw new HttpErrors.BadRequest('Remarks are required to open a shift.');
     }
+    const cashInTillActual = body.openingBalances?.cashInTill?.actual;
+    if (
+      typeof cashInTillActual !== 'number' ||
+      !Number.isFinite(cashInTillActual) ||
+      cashInTillActual < 0 ||
+      cashInTillActual > 4000
+    ) {
+      throw new HttpErrors.BadRequest('Cash In Till Actual must be between ₹0 and ₹4,000.');
+    }
 
     const caller = await this.resolveCallerStore(currentUser, body.storeId);
 

@@ -69,6 +69,9 @@ store.") if the logged-in user has no store assignment. Only send
 `actual` per category — `supposed` is server-computed (see below), never
 client-supplied.
 
+Cash In Till `actual` must be between ₹0 and ₹4,000, inclusive. The API rejects
+amounts outside this range with `400 Bad Request`.
+
 **"Supposed" values** — `pettyCash` is the store's **real, live petty
 cash balance** right now (see `PETTY_CASH_API.md` — computed from actual
 finance top-ups and approved expenses, not chained). The other three
