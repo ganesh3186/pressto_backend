@@ -11,13 +11,22 @@ const config = {
   user: process.env.PG_USER,
   password: process.env.PG_PASSWORD,
   database: process.env.PG_DATABASE,
-  debug: true,
   // Previously unset, so pg.Pool defaulted to max:10 and no connection
   // timeout — once all 10 were busy (slow unindexed queries, wildcard
   // searches), every other request queued forever with no error, looking
   // like the whole app had hung. A bounded wait at least fails fast and
   // surfaces in logs instead of hanging the UI indefinitely.
-  max: 20,
+  //
+  // Configurable via PG_POOL_MAX because PM2 cluster mode (see
+  // ecosystem.config.js) runs several instances of this process, EACH with
+  // its OWN pool of this size — total DB connections from this app alone is
+  // roughly `PM2_INSTANCES * PG_POOL_MAX`, which has to fit under Postgres's
+  // max_connections alongside every other environment sharing this server
+  // (migration, staging). Defaults to 15/instance; with the 2-instance
+  // default in ecosystem.config.js that's 30 total for production — verify
+  // actual `max_connections` on the server and tune both knobs together
+  // before raising either one.
+  max: Number(process.env.PG_POOL_MAX) || 15,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 };
