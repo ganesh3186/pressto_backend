@@ -11,6 +11,11 @@ import {Customer} from './customer.model';
       // Exact-match login lookup (customer-auth.controller).
       customerPhonePhoneCountryCode: {keys: ['phone', 'countryCode']},
       customerPhoneCustomerId: {keys: ['customerId']},
+      // Customer search matches secondary numbers with LIKE '%digits%'.
+      customerPhonePhoneTrgm: {
+        keys: 'phone gin_trgm_ops',
+        type: 'gin',
+      },
     },
   },
 })

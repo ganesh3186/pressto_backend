@@ -535,6 +535,16 @@ export class CustomerController {
         {customerCode: {ilike: `%${q}%`}},
         {email: {ilike: `%${q}%`}},
       ];
+      // A full name ("arun dh") spans firstName and lastName, so neither
+      // column contains it whole. Each word must match one of the two.
+      const words = q.split(/\s+/);
+      if (words.length > 1) {
+        orClauses.push({
+          and: words.map(w => ({
+            or: [{firstName: {ilike: `%${w}%`}}, {lastName: {ilike: `%${w}%`}}],
+          })),
+        });
+      }
       // Phone lives on Users, not Customer — resolve matching Users rows
       // first, then fold their ids into the same OR as an additional
       // matchable condition. Require a few digits so a 1-2 digit search

@@ -40,6 +40,14 @@ import {CustomerPersona} from './customer-persona.enum';
         keys: 'customerCode gin_trgm_ops',
         type: 'gin',
       },
+      // Email is in the same search OR as name/code; one unindexed branch
+      // turns the whole OR into a full table scan.
+      customerEmailTrgm: {
+        keys: 'email gin_trgm_ops',
+        type: 'gin',
+      },
+      // Customer list: isDeleted/isActive (status) filter, newest first.
+      customerStatusCreatedAt: {keys: ['isDeleted', 'isActive', 'createdAt']},
     },
   },
 })
