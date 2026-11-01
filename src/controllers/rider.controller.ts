@@ -51,10 +51,17 @@ export class RiderController {
 
     const digits = query.replace(/\D/g, '');
     const phoneQuery = digits.length >= 10 ? digits.slice(-10) : query;
-    const matchingUsers = await this.usersRepository.find({
-      where: {phone: {ilike: `%${phoneQuery}%`}} as object,
-      fields: {id: true},
-    });
+    // Match phones only among riders' own login accounts, inside the DB. Searching
+    // all users first pulled every customer whose phone contained the term (200K+
+    // ids for a one-digit search) into one IN list, which pinned the event loop
+    // and stalled every other request, login included.
+    const matchingUsers: {userId: string}[] = await this.dataSource.execute(
+      `SELECT r.userid AS "userId"
+         FROM public.rider r
+         JOIN public.users u ON u.id::text = r.userid
+        WHERE u.phone ILIKE $1`,
+      [`%${phoneQuery}%`],
+    );
 
     return {
       or: [
@@ -62,7 +69,7 @@ export class RiderController {
         {firstName: {ilike: `%${query}%`}},
         {lastName: {ilike: `%${query}%`}},
         {alternateNumber: {ilike: `%${phoneQuery}%`}},
-        ...(matchingUsers.length ? [{userId: {inq: matchingUsers.map(user => user.id)}}] : []),
+        ...(matchingUsers.length ? [{userId: {inq: matchingUsers.map(row => row.userId)}}] : []),
       ],
     };
   }
