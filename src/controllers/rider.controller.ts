@@ -23,6 +23,18 @@ import { BcryptHasher } from '../services/hash.password.bcrypt';
 // login has something to resolve.
 const RIDER_ROLE_VALUE = 'rider';
 
+// The login account fields rider responses may carry. Listed explicitly so the
+// password hash and OTP fields never reach a client.
+const RIDER_USER_FIELDS = {
+  id: true,
+  fullName: true,
+  email: true,
+  countryCode: true,
+  phone: true,
+  username: true,
+  isActive: true,
+};
+
 export class RiderController {
   constructor(
     @repository(RiderRepository)
@@ -328,9 +340,22 @@ export class RiderController {
 
       await tx.commit();
 
+      // A reused account comes back as the full record, secrets included.
+      const savedUser = {...user, ...userUpdates};
       return {
         message: 'Rider created successfully',
-        rider: { ...rider, user: { ...user, ...userUpdates, password: undefined } },
+        rider: {
+          ...rider,
+          user: {
+            id: savedUser.id,
+            fullName: savedUser.fullName,
+            email: savedUser.email,
+            countryCode: savedUser.countryCode,
+            phone: savedUser.phone,
+            username: savedUser.username,
+            isActive: savedUser.isActive,
+          },
+        },
       };
     } catch (error) {
       await tx.rollback();
@@ -354,7 +379,7 @@ export class RiderController {
     return this.riderRepository.find({
       ...filter,
       where: this.combineRiderWhere(filter?.where as object | undefined, searchWhere),
-      include: [{ relation: 'user' }],
+      include: [{ relation: 'user', scope: { fields: RIDER_USER_FIELDS } }],
     });
   }
 
@@ -413,7 +438,7 @@ export class RiderController {
   async findById(@param.path.string('id') id: string): Promise<Rider> {
     const rider = await this.riderRepository.findOne({
       where: { id, isDeleted: false },
-      include: [{ relation: 'user' }],
+      include: [{ relation: 'user', scope: { fields: RIDER_USER_FIELDS } }],
     });
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
     return rider;
