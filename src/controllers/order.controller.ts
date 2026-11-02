@@ -1577,6 +1577,7 @@ export class OrderController {
       otherReason?: string;
     },
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     const updated = await this.orderService.returnDeliveryToStore({
       orderId: id,
       remarks: body.remarks,
@@ -2043,6 +2044,7 @@ export class OrderController {
       remarks?: string;
     },
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     return this.orderService.splitOrder(
       id,
       body.garmentIds,
@@ -2067,8 +2069,10 @@ export class OrderController {
       'Whether paying this order fully via wallet right now would get a discount',
   })
   async walletFullPaymentPreview(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     return this.orderService.previewWalletFullPaymentDiscount(id);
   }
 
@@ -2216,6 +2220,7 @@ export class OrderController {
       remarks?: string;
     },
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     return this.orderService.handoverInStore({
       orderId: id,
       collectorType: body.collectorType,
@@ -2365,6 +2370,7 @@ export class OrderController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     const order = await this.orderRepository.findOne({
       where: {id, isDeleted: false},
     });

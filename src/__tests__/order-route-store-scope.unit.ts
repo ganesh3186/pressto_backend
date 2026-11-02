@@ -34,6 +34,10 @@ function buildController(transferGrantsOrder = false) {
       getOrderDetails: reached,
       correctPaymentMode: reached,
       getActivityLog: reached,
+      handoverInStore: reached,
+      returnDeliveryToStore: reached,
+      splitOrder: reached,
+      previewWalletFullPaymentDiscount: reached,
     },
     orderRepository: {
       findOne: async () => ({id: 'order-1', status: 'processing'}),
@@ -56,6 +60,23 @@ const routes: {name: string; call: (c: OrderController, u: UserProfile) => Promi
   },
   {name: 'GET /orders/{id}/status-history', call: (c, u) => c.statusHistory(u, 'order-1')},
   {name: 'GET /orders/{id}/activity-log', call: (c, u) => c.activityLog(u, 'order-1')},
+  {
+    name: 'POST /orders/{id}/handover',
+    call: (c, u) => c.handover(u, 'order-1', {collectorType: 'self' as never}),
+  },
+  {
+    name: 'POST /orders/{id}/delivery-return',
+    call: (c, u) => c.deliveryReturn(u, 'order-1', {remarks: 'Customer away'}),
+  },
+  {
+    name: 'POST /orders/{id}/split',
+    call: (c, u) => c.splitOrder(u, 'order-1', {garmentIds: ['garment-1']}),
+  },
+  {
+    name: 'GET /orders/{id}/wallet-full-payment-preview',
+    call: (c, u) => c.walletFullPaymentPreview(u, 'order-1'),
+  },
+  {name: 'DELETE /orders/{id}', call: (c, u) => c.deleteById(u, 'order-1')},
 ];
 
 describe('order routes respect store scope', () => {
