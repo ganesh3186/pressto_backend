@@ -23,6 +23,8 @@ import {
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 
+type InvoiceListScope = {storeIds: string[]; extraOrderIds: string[]};
+
 export class InvoiceController {
   constructor(
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
@@ -78,6 +80,7 @@ export class InvoiceController {
       'Array of Invoice records, enriched with order/customer summary',
   })
   async find(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('search') search?: string,
     @param.query.number('limit') limit?: number,
     @param.query.number('skip') skip?: number,
@@ -93,12 +96,15 @@ export class InvoiceController {
       dateFrom,
       dateTo,
     });
-    const invoices = await this.invoiceRepo.find({
-      where,
-      order: ['createdAt DESC'],
-      ...(limit !== undefined ? {limit} : {}),
-      ...(skip !== undefined ? {skip} : {}),
-    });
+    const scope = await this._invoiceListScope(currentUser);
+    const invoices = scope
+      ? await this._findScopedInvoices(where, scope, limit, skip)
+      : await this.invoiceRepo.find({
+          where,
+          order: ['createdAt DESC'],
+          ...(limit !== undefined ? {limit} : {}),
+          ...(skip !== undefined ? {skip} : {}),
+        });
     return this._enrichInvoices(invoices);
   }
 
@@ -109,6 +115,7 @@ export class InvoiceController {
     description: 'Count of Invoice records matching the same filters as find()',
   })
   async count(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('search') search?: string,
     @param.query.string('status') status?: string,
     @param.query.string('type') type?: string,
@@ -122,7 +129,137 @@ export class InvoiceController {
       dateFrom,
       dateTo,
     });
-    return this.invoiceRepo.count(where);
+    const scope = await this._invoiceListScope(currentUser);
+    return scope
+      ? this._countScopedInvoices(where, scope)
+      : this.invoiceRepo.count(where);
+  }
+
+  /**
+   * Which orders' invoices this caller may list, or null for an all-stores
+   * caller. Same access as assertOrderVisible: the caller's stores, plus orders
+   * with a garment at one of those stores through an active transfer.
+   *
+   * A consolidated invoice can span stores but names one representative order,
+   * so it is in scope through that order when any of its linked orders is. An
+   * order on a consolidated invoice can't have another invoice (see
+   * generateOnAccountInvoice), so this exposes nothing else.
+   */
+  private async _invoiceListScope(
+    currentUser: UserProfile,
+  ): Promise<InvoiceListScope | null> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (scope.global) return null;
+    if (!scope.storeIds.length) return {storeIds: [], extraOrderIds: []};
+
+    const transferOrderIds = await this.storeScopeService.transferGrantedOrderIds(
+      scope.storeIds,
+    );
+    const consolidated: {orderid: string}[] = await this.dataSource.execute(
+      `SELECT DISTINCT i.orderid
+         FROM public.invoice i
+         JOIN public.invoice_order_link l ON l.invoiceid = i.id
+         JOIN public.orders o ON o.id = l.orderid
+        WHERE i.isconsolidated = true
+          AND (o.storeid = ANY($1) OR o.id = ANY($2))`,
+      [scope.storeIds, transferOrderIds],
+    );
+    return {
+      storeIds: scope.storeIds,
+      extraOrderIds: [
+        ...new Set([
+          ...transferOrderIds,
+          ...consolidated.map(row => row.orderid),
+        ]),
+      ],
+    };
+  }
+
+  /**
+   * FROM/WHERE for invoices in the caller's scope. Invoices have no storeId and
+   * reach a store only through their order, and one store can have more orders
+   * than fit in a Node-built IN list, so the match runs inside SQL. Kept as one
+   * IN subquery so Postgres can pick the invoiceCreatedAt index for a busy store
+   * or the order's store index for a quiet one.
+   */
+  private _scopedInvoiceQuery(
+    where: Where<Invoice>,
+    scope: InvoiceListScope,
+  ): {fromSql: string; params: unknown[]} {
+    const base = this._connector().buildWhere(
+      this.invoiceRepo.entityClass.modelName,
+      where,
+    );
+    const conditions = [
+      ...(base.sql ? [`(${base.sql.replace(/^WHERE /, '')})`] : []),
+      'i.orderid IN (SELECT o.id FROM public.orders o' +
+        ' WHERE o.storeid = ANY(?) OR o.id = ANY(?))',
+    ];
+    return {
+      fromSql: `FROM public.invoice i WHERE ${conditions.join(' AND ')}`,
+      params: [...base.params, scope.storeIds, scope.extraOrderIds],
+    };
+  }
+
+  /** One page of find() for a caller limited to certain stores. */
+  private async _findScopedInvoices(
+    where: Where<Invoice>,
+    scope: InvoiceListScope,
+    limit?: number,
+    skip?: number,
+  ): Promise<Invoice[]> {
+    if (!scope.storeIds.length) return [];
+    const {fromSql, params} = this._scopedInvoiceQuery(where, scope);
+    const page = this._connector().parameterize({
+      sql:
+        `SELECT i.id ${fromSql} ORDER BY i.createdat DESC, i.id DESC` +
+        (limit !== undefined ? ' LIMIT ?' : '') +
+        (skip !== undefined ? ' OFFSET ?' : ''),
+      params: [
+        ...params,
+        ...(limit !== undefined ? [limit] : []),
+        ...(skip !== undefined ? [skip] : []),
+      ],
+    });
+    const rows: {id: string}[] = await this.dataSource.execute(
+      page.sql,
+      page.params,
+    );
+    const ids = rows.map(row => row.id);
+    if (!ids.length) return [];
+    const found = await this.invoiceRepo.find({where: {id: {inq: ids}}});
+    const byId = new Map(found.map(invoice => [invoice.id, invoice]));
+    return ids
+      .map(id => byId.get(id))
+      .filter((invoice): invoice is Invoice => Boolean(invoice));
+  }
+
+  /** count() for a caller limited to certain stores. Matches _findScopedInvoices. */
+  private async _countScopedInvoices(
+    where: Where<Invoice>,
+    scope: InvoiceListScope,
+  ): Promise<Count> {
+    if (!scope.storeIds.length) return {count: 0};
+    const {fromSql, params} = this._scopedInvoiceQuery(where, scope);
+    const query = this._connector().parameterize({
+      sql: `SELECT count(*)::int AS count ${fromSql}`,
+      params,
+    });
+    const rows: {count: number}[] = await this.dataSource.execute(
+      query.sql,
+      query.params,
+    );
+    return {count: Number(rows[0]?.count ?? 0)};
+  }
+
+  private _connector() {
+    return this.dataSource.connector as unknown as {
+      buildWhere(model: string, where: object): {sql: string; params: unknown[]};
+      parameterize(ps: {sql: string; params: unknown[]}): {
+        sql: string;
+        params: unknown[];
+      };
+    };
   }
 
   /**
