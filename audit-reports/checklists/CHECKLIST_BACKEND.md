@@ -6,10 +6,10 @@
 
 ## P0: Security
 
-- [ ] **Lock down `FileUploadController`.** Require JWT on upload, remove the list routes and `POST /files/{processId}`, and block customer document folders on the public file routes. Single-file image GETs stay public because `<img>` tags can't send a JWT. **Status: code on `fix/file-upload-auth` (`ecc146a`). Live on migration, staging and production since Nov 2. Next: verify with real logins, including rider app punch-in, then tick this.** `ARC-020`
-- [ ] **Remove the password hash and OTP fields from `GET /riders`, `GET /riders/{id}` and the `POST /riders` response.** **Status: code on `code-audit` (`0f13fa9`). Live on migration, staging and production since Nov 2. Next: verify the rider list, edit and add screens with a real login, then tick this.** `ARC-018`
-- [ ] **Add the store filter to `GET /invoices` and `/invoices/count`.** They return every store's invoices. **Status: code on `code-audit` (`3787847`). Live on migration, staging and production since Nov 2, with the index created on all three. Next: verify Manage Invoices with store, cluster, region and all-stores logins, then tick this.** `ARC-022b`
-- [ ] **Add the store-visibility check to the order routes that skip it.** The audit listed 5 routes; 5 more were found while fixing it (`POST` handover, delivery-return and split, `DELETE /orders/{id}`, `GET` wallet-full-payment-preview). **Status: code on `code-audit` (`7b2afa0`, `58ce51b`). Live on migration, staging and production since Nov 2. Next: verify order details, payments, handover, split, delivery return and cancel with store, cluster, region and all-stores logins, then tick this.** `ARC-023`
+- [ ] **Lock down `FileUploadController`.** Require JWT on upload, remove the list routes and `POST /files/{processId}`, and block customer document folders on the public file routes. Single-file image GETs stay public because `<img>` tags can't send a JWT. **Status: on `main` (`c0bab14`). Live on migration, staging and production since Nov 2. Next: verify with real logins, including rider app punch-in, then tick this.** `ARC-020`
+- [ ] **Remove the password hash and OTP fields from `GET /riders`, `GET /riders/{id}` and the `POST /riders` response.** **Status: on `main` (`e25f3e0`). Live on migration, staging and production since Nov 2. Next: verify the rider list, edit and add screens with a real login, then tick this.** `ARC-018`
+- [ ] **Add the store filter to `GET /invoices` and `/invoices/count`.** They return every store's invoices. **Status: on `main` (`e655a31`). Live on migration, staging and production since Nov 2, with the index created on all three. Next: verify Manage Invoices with store, cluster, region and all-stores logins, then tick this.** `ARC-022b`
+- [ ] **Add the store-visibility check to the order routes that skip it.** The audit listed 5 routes; 5 more were found while fixing it (`POST` handover, delivery-return and split, `DELETE /orders/{id}`, `GET` wallet-full-payment-preview). **Status: on `main` (`56e6dc1`, `c30f8b8`). Live on migration, staging and production since Nov 2. Next: verify order details, payments, handover, split, delivery return and cancel with store, cluster, region and all-stores logins, then tick this.** `ARC-023`
 
 ## P0: Money and data correctness
 
@@ -39,7 +39,7 @@
 
 ## P2
 
-- [ ] **Update the unit tests broken by the Nov 1 SQL changes.** 4 fail on `main`. The 2 shift tests are fixed on `fix/shift-collected-tests` (`504ae53`), not merged. The 2 Manage Ticket invoice filter tests are still open.
+- [ ] **Update the unit tests broken by the Nov 1 SQL changes.** The 2 shift tests are fixed on `main` (`72bdeed`). The 2 Manage Ticket invoice filter tests still fail.
 - [ ] **Fix the `GET /shifts/collected` 500.** It falls into the `/shifts/{id}` route and fails with `invalid input syntax for type uuid: "collected"`. Seen in live logs after Nov 1 05:43. `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Fix the 5xx on `GET /riders/availability-for-slot`** with a `fallback:` slot ID. Seen in the same logs.
 - [ ] **Add an idempotency key to order creation.** `ARC-026b`
