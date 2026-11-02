@@ -6,7 +6,7 @@
 
 ## P0: Security
 
-- [ ] **Add auth to all 6 `FileUploadController` routes.** Files can be listed, downloaded and uploaded with no login. Do this first. `ARC-020`
+- [ ] **Lock down `FileUploadController`.** Require JWT on upload, remove the list routes and `POST /files/{processId}`, and block customer document folders on the public file routes. Single-file image GETs stay public because `<img>` tags can't send a JWT. **Status: code done on `fix/file-upload-auth` (`ecc146a`). Not deployed. Next: test on migration, including rider app punch-in, then deploy to live.** `ARC-020`
 - [ ] **Remove the password hash and OTP fields from `GET /riders` and `GET /riders/{id}`.** `ARC-018`
 - [ ] **Add the store filter to `GET /invoices` and `/invoices/count`.** They return every store's invoices. `ARC-022b`
 - [ ] **Add the store-visibility check to the 5 order sub-resource endpoints.** `ARC-023`
