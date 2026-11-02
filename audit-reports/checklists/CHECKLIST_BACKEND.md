@@ -20,7 +20,7 @@
 
 ## P0: Performance under staff load
 
-- [ ] **Commit and deploy the `GET /shifts/{id}/collected` fix.** It is uncommitted in the working tree. `workaround.md` records a live crash at 7,016 parameters.
+- [x] **Commit and deploy the `GET /shifts/{id}/collected` fix.** Done in `b601200` on `main`, and the deployed live code contains it. `workaround.md` records the live crash at 7,016 parameters.
 - [ ] **Find and fix other Node-built `IN` lists.** The oversized `bind message` errors on Nov 1 came from this pattern; order and employee search are already fixed. `BE-017`, `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Paginate `GET /transfers`.** `BE-002`
 - [ ] **Bound `GET /approval-requests`** and push paging into SQL. `BE-005`
@@ -39,6 +39,7 @@
 
 ## P2
 
+- [ ] **Update the unit tests broken by the Nov 1 SQL changes.** 4 fail on `main`. The 2 shift tests are fixed on `fix/shift-collected-tests` (`504ae53`), not merged. The 2 Manage Ticket invoice filter tests are still open.
 - [ ] **Fix the `GET /shifts/collected` 500.** It falls into the `/shifts/{id}` route and fails with `invalid input syntax for type uuid: "collected"`. Seen in live logs after Nov 1 05:43. `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Fix the 5xx on `GET /riders/availability-for-slot`** with a `fallback:` slot ID. Seen in the same logs.
 - [ ] **Add an idempotency key to order creation.** `ARC-026b`
