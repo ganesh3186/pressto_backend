@@ -2236,7 +2236,11 @@ export class OrderController {
   @response(200, {
     description: 'Handover record for an order (null if not handed over)',
   })
-  async getHandover(@param.path.string('id') id: string): Promise<object> {
+  async getHandover(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     const handover = await this.orderService.getHandover(id);
     return {handover};
   }
@@ -2247,7 +2251,11 @@ export class OrderController {
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}/payments')
   @response(200, {description: 'Payment transactions for an order'})
-  async getPayments(@param.path.string('id') id: string): Promise<object> {
+  async getPayments(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     const order = await this.orderRepository.findOne({
       where: {id, isDeleted: false},
     });
@@ -2295,6 +2303,7 @@ export class OrderController {
     })
     body: {paymentMode: PaymentMode; reason: string},
   ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     const userLabel = currentUser as {name?: string; email?: string};
     const performedByLabel =
       userLabel.name ?? userLabel.email ?? currentUser[securityId];
@@ -2314,7 +2323,11 @@ export class OrderController {
   @authorize({roles: ['super_admin'], permissions: ['order:read']})
   @get('/orders/{id}/status-history')
   @response(200, {description: 'Order status change history'})
-  async statusHistory(@param.path.string('id') id: string): Promise<object> {
+  async statusHistory(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     const history = await this.statusHistoryRepository.find({
       where: {orderId: id},
       order: ['changedAt DESC'],
@@ -2334,7 +2347,11 @@ export class OrderController {
   @response(200, {
     description: 'Unified activity log for an order and its garments',
   })
-  async activityLog(@param.path.string('id') id: string): Promise<object> {
+  async activityLog(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    await this.storeScopeService.assertOrderVisible(id, currentUser);
     return this.orderService.getActivityLog(id);
   }
 
