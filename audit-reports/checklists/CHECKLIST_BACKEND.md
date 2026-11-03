@@ -13,8 +13,8 @@
 
 ## P0: Money and data correctness
 
-- [ ] **Make wallet credit/debit atomic** with a row lock or conditional update. `ARC-008`
-- [ ] **Move the checkout wallet balance read inside the transaction.** `ARC-009`
+- [ ] **Make wallet credit/debit atomic** with a row lock or conditional update. **Status: code on `fix/wallet-atomic` (`878ff45`). Not merged or deployed. Covers recharges, admin debits and a double-credit race in `confirmRecharge`. Next: check the SQL on Postgres, test on migration.** `ARC-008`
+- [ ] **Move the checkout wallet balance read inside the transaction.** **Status: code on `fix/wallet-atomic` (`3096d01`). Not merged or deployed. Order creation, `addPayment` and approval refunds now use the same atomic update as `ARC-008`. Next: test wallet payments and refunds on migration.** `ARC-009`
 - [ ] **Make security deposit add/deduct atomic.** `ARC-010`
 - [ ] **Close the shift-open race** (DB constraint is in `CHECKLIST_DATABASE.md`). `ARC-011`
 
