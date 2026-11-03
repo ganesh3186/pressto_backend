@@ -21,7 +21,7 @@
 ## P0: Performance under staff load
 
 - [x] **Commit and deploy the `GET /shifts/{id}/collected` fix.** Done in `b601200` on `main`, and the deployed live code contains it. `workaround.md` records the live crash at 7,016 parameters.
-- [ ] **Find and fix other Node-built `IN` lists.** The oversized `bind message` errors on Nov 1 came from this pattern; order and employee search are already fixed. **Status: in progress on `fix/unbounded-in-lists`, classifying about 471 `inq`/`nin` uses. Invoice search and the invoice type filter are known cases.** `BE-017`, `SERVER_INCIDENT_AUDIT.md`
+- [ ] **Find and fix other Node-built `IN` lists.** The oversized `bind message` errors on Nov 1 came from this pattern; order and employee search are already fixed. **Status: in progress on `fix/unbounded-in-lists`. Of about 471 `inq`/`nin` uses, 50 look risky. Manage Invoices search and type filter are fixed there (`8abad9c`), not merged. Next: time those queries on migration (needs SSH), and fix the wallet, rider, customer, approval and transfer lists.** `BE-017`, `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Paginate `GET /transfers`.** `BE-002`
 - [ ] **Bound `GET /approval-requests`** and push paging into SQL. `BE-005`
 - [ ] **Batch pricing lookups in order creation.** Test carefully, because this is the core order path. `BE-008`
