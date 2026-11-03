@@ -14,10 +14,11 @@ import {ShiftStatus} from './shift-status.enum';
  * (userId, storeId), which let two different employees each hold their
  * own open shift at the same store simultaneously). userId records who
  * opened it and is the only one who can close it (see close()'s
- * ownership check). Enforced in the controller (no DB constraint
- * precedent for a status-conditional unique index elsewhere in this
- * codebase, matching RiderPincodeMapping's same posture for "one active
- * mapping per pincode").
+ * ownership check). Enforced by a per-store advisory lock in open(), the only
+ * place shifts are created. Don't add a partial unique index for this:
+ * `npm run migrate` can't express one. Declared on the model, it would build a
+ * plain unique index on storeId wherever the index is missing (one shift per
+ * store, ever); left off the model, migrate drops it.
  */
 @model({
   settings: {
