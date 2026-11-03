@@ -1,9 +1,81 @@
 import {expect} from '@loopback/testlab';
+import fs from 'fs';
+import path from 'path';
 import {ReferenceType} from '../models';
 import {WalletRepository} from '../repositories';
+import {ApprovalService} from '../services/approval.service';
 import {WalletService} from '../services/wallet.service';
 
 describe('wallet balance changes', () => {
+  describe('every writer', () => {
+    // Tests run from dist/__tests__, so step back up to the TypeScript sources.
+    const servicesDir = path.join(__dirname, '../../src/services');
+
+    it('uses adjustBalance, so no path can overwrite a concurrent change', () => {
+      const offenders = fs
+        .readdirSync(servicesDir)
+        .filter(file => file.endsWith('.ts'))
+        .filter(file => /wallet(Repo|Repository)\s*\.\s*(updateById|replaceById|updateAll)\s*\(/.test(
+          fs.readFileSync(path.join(servicesDir, file), 'utf8'),
+        ));
+      expect(offenders).to.eql([]);
+    });
+
+    it('deducts order payments through adjustBalance on both order paths', () => {
+      const source = fs.readFileSync(path.join(servicesDir, 'order.service.ts'), 'utf8');
+      expect(source.match(/walletRepo\.adjustBalance\(\s*wallet\.id,\s*-(walletAmount|thisWallet),/g)).to.have.length(2);
+    });
+  });
+
+  describe('approval refund credit', () => {
+    function buildApproval(balance: number | null) {
+      const state = {
+        adjusted: [] as unknown[][],
+        ledger: [] as Record<string, unknown>[],
+        locks: [] as string[],
+      };
+      const service = Object.assign(Object.create(ApprovalService.prototype), {
+        dataSource: {
+          execute: async (sql: string) => {
+            state.locks.push(sql);
+            return [];
+          },
+        },
+        walletRepo: {
+          findOne: async () => ({id: 'wallet-1', currentBalance: 100}),
+          adjustBalance: async (...args: unknown[]) => {
+            state.adjusted.push(args);
+            return balance;
+          },
+        },
+        walletTransactionRepo: {
+          create: async (entry: Record<string, unknown>) => {
+            state.ledger.push(entry);
+            return entry;
+          },
+        },
+      });
+      return {service, state};
+    }
+    const creditWallet = (service: unknown, ...args: unknown[]) =>
+      (service as {_creditWallet: (...a: unknown[]) => Promise<void>})._creditWallet(...args);
+
+    it('credits by the amount, not a balance calculated in Node', async () => {
+      const {service, state} = buildApproval(150);
+      const options = {transaction: {}};
+      await creditWallet(service, 'customer-1', 50, 'Credit note', 'order-1', options);
+
+      expect(state.adjusted).to.eql([['wallet-1', 50, options]]);
+      expect(state.ledger[0]).to.containEql({transactionType: 'credit', amount: 50, referenceId: 'order-1'});
+    });
+
+    it('writes no ledger row if the wallet could not be credited', async () => {
+      const {service, state} = buildApproval(null);
+      await expect(creditWallet(service, 'customer-1', 50, 'Credit note')).to.be.rejectedWith(/Could not credit/);
+      expect(state.ledger).to.have.length(0);
+    });
+  });
+
   describe('adjustBalance', () => {
     function repositoryReturning(result: object) {
       const calls: {sql: string; params: unknown[]; options: unknown}[] = [];
