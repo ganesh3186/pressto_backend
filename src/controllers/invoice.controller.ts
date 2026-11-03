@@ -35,7 +35,9 @@ type InvoiceListFilter = {
 /** Most matches an invoice list search will count (see _countInvoicesBySql). */
 const INVOICE_SEARCH_COUNT_CAP = 1000;
 /** Above this many matching orders a search is "broad" (see _invoiceSearchCondition). */
-const INVOICE_SEARCH_ORDER_LIST_CAP = 20000;
+const INVOICE_SEARCH_ORDER_LIST_CAP = 50000;
+/** Above this many matching customers a 1-2 character term is "broad" (see _invoiceSearchCondition). */
+const INVOICE_SEARCH_SHORT_TERM_CUSTOMER_CAP = 5000;
 
 export class InvoiceController {
   constructor(
@@ -111,7 +113,7 @@ export class InvoiceController {
       dateTo,
     });
     const invoices =
-      scope || filter.conditions.length
+      scope !== null || filter.conditions.length > 0
         ? await this._findInvoicesBySql(filter, scope, limit, skip)
         : await this.invoiceRepo.find({
             where: filter.where,
@@ -145,7 +147,7 @@ export class InvoiceController {
       dateFrom,
       dateTo,
     });
-    return scope || filter.conditions.length
+    return scope !== null || filter.conditions.length > 0
       ? this._countInvoicesBySql(filter, scope)
       : this.invoiceRepo.count(filter.where);
   }
@@ -360,7 +362,13 @@ export class InvoiceController {
    * and pass them as ONE array parameter, so invoices are found via their
    * orderid index. Broad terms ("m", "2") match too many for that, so fall back
    * to a per-invoice EXISTS, which stops as soon as the page is filled because
-   * matches are dense.
+   * matches are dense. A common surname fits the array path: at 44K matching
+   * orders it took 4 ms a page, against 1.7 s for the EXISTS.
+   *
+   * A 1-2 character term can't use the trigram indexes, so looking up its orders
+   * scans orders and customers (about 3 s). If it matches many customers it is
+   * broad, so skip that. A rare one ("qz") must still do it: the EXISTS would
+   * walk all 2M invoices to fill a page (over 25 s, measured on migration).
    */
   private async _invoiceSearchCondition(
     q: string,
@@ -371,31 +379,34 @@ export class InvoiceController {
     const digits = q.replace(/\D/g, '');
     const phoneLike = digits.length >= 3 ? `%${digits}%` : null;
 
-    // UNION ALL, not UNION, so a broad term stops at the LIMIT instead of first
-    // collecting every match to remove duplicates.
-    const orderRows: {id: string}[] = await this.dataSource.execute(
-      `SELECT o.id FROM public.orders o WHERE o.ordernumber ILIKE $1
-       UNION ALL
-       SELECT o.id FROM public.customer c JOIN public.orders o ON o.customerid = c.id
-        WHERE c.firstname ILIKE $1 OR c.lastname ILIKE $1
-       ${
-         phoneLike
-           ? `UNION ALL
-       SELECT o.id FROM public.users u
-         JOIN public.customer c ON c.userid = u.id::text
-         JOIN public.orders o ON o.customerid = c.id
-        WHERE u.phone LIKE $2`
-           : ''
-       }
-       LIMIT ${INVOICE_SEARCH_ORDER_LIST_CAP + 1}`,
-      phoneLike ? [like, phoneLike] : [like],
-    );
-
-    if (orderRows.length <= INVOICE_SEARCH_ORDER_LIST_CAP) {
-      return {
-        sql: '(i.invoicenumber ILIKE ? OR i.orderid = ANY(?::uuid[]))',
-        params: [like, [...new Set(orderRows.map(row => row.id))]],
-      };
+    const isBroadShortTerm =
+      q.length < 3 && (await this._manyCustomersMatch(like));
+    if (!isBroadShortTerm) {
+      // UNION ALL, not UNION, so a broad term stops at the LIMIT instead of
+      // first collecting every match to remove duplicates.
+      const orderRows: {id: string}[] = await this.dataSource.execute(
+        `SELECT o.id FROM public.orders o WHERE o.ordernumber ILIKE $1
+         UNION ALL
+         SELECT o.id FROM public.customer c JOIN public.orders o ON o.customerid = c.id
+          WHERE c.firstname ILIKE $1 OR c.lastname ILIKE $1
+         ${
+           phoneLike
+             ? `UNION ALL
+         SELECT o.id FROM public.users u
+           JOIN public.customer c ON c.userid = u.id::text
+           JOIN public.orders o ON o.customerid = c.id
+          WHERE u.phone LIKE $2`
+             : ''
+         }
+         LIMIT ${INVOICE_SEARCH_ORDER_LIST_CAP + 1}`,
+        phoneLike ? [like, phoneLike] : [like],
+      );
+      if (orderRows.length <= INVOICE_SEARCH_ORDER_LIST_CAP) {
+        return {
+          sql: '(i.invoicenumber ILIKE ? OR i.orderid = ANY(?::uuid[]))',
+          params: [like, [...new Set(orderRows.map(row => row.id))]],
+        };
+      }
     }
     return {
       sql:
@@ -408,6 +419,17 @@ export class InvoiceController {
         ')))',
       params: [like, like, like, like, ...(phoneLike ? [phoneLike] : [])],
     };
+  }
+
+  /** Whether a customer-name pattern matches more than the short-term cap. */
+  private async _manyCustomersMatch(like: string): Promise<boolean> {
+    const rows: unknown[] = await this.dataSource.execute(
+      `SELECT 1 FROM public.customer c
+        WHERE c.firstname ILIKE $1 OR c.lastname ILIKE $1
+        LIMIT ${INVOICE_SEARCH_SHORT_TERM_CUSTOMER_CAP + 1}`,
+      [like],
+    );
+    return rows.length > INVOICE_SEARCH_SHORT_TERM_CUSTOMER_CAP;
   }
 
   /** Attach orderNumber/customer summary/type/orderCount to a page of invoices. */

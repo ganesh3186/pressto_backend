@@ -25,7 +25,8 @@ describe('invoice list search and type filter', () => {
     return new DefaultCrudRepository<Invoice, string>(Invoice, dataSource).modelClass;
   });
 
-  function buildController(matchedOrderIds: string[] = []) {
+  function buildController(matchedOrderIds: string[] = [], matchedCustomers = 0) {
+    const probes: {sql: string; params: unknown[]}[] = [];
     const lookups: {sql: string; params: unknown[]}[] = [];
     const executed: {sql: string; params: unknown[]}[] = [];
     const repoCalls: string[] = [];
@@ -56,6 +57,10 @@ describe('invoice list search and type filter', () => {
           connector: dataSource.connector,
           execute: async (sql: string, params: unknown[]) => {
             if (sql.includes('isconsolidated')) return [];
+            if (sql.includes('SELECT 1 FROM public.customer c')) {
+              probes.push({sql, params});
+              return Array.from({length: matchedCustomers}, () => ({}));
+            }
             if (sql.includes('UNION ALL')) {
               lookups.push({sql, params});
               return matchedOrderIds.map(id => ({id}));
@@ -66,7 +71,7 @@ describe('invoice list search and type filter', () => {
         },
       },
     ) as InvoiceController;
-    return {controller, executed, lookups, repoCalls};
+    return {controller, executed, lookups, probes, repoCalls};
   }
 
   const orderIds = (count: number) =>
@@ -74,7 +79,7 @@ describe('invoice list search and type filter', () => {
 
   describe('search', () => {
     it('passes specific matches as one array parameter, not an IN list', async () => {
-      const ids = orderIds(20000);
+      const ids = orderIds(50000);
       const {controller, executed} = buildController(ids);
       await controller.find(allStores, 'sharma', 10, 0);
 
@@ -87,19 +92,61 @@ describe('invoice list search and type filter', () => {
     });
 
     it('falls back to a per-invoice check above the list cap', async () => {
-      const {controller, executed} = buildController(orderIds(20001));
-      await controller.find(allStores, 'm', 10, 0);
+      const {controller, executed} = buildController(orderIds(50001));
+      await controller.find(allStores, 'sharma', 10, 0);
 
       expect(executed[0].sql).to.containEql('EXISTS (SELECT 1 FROM public.orders o');
       expect(executed[0].sql).to.containEql('o.id = i.orderid');
       expect(executed[0].sql).to.not.containEql('ANY(');
-      expect(executed[0].params).to.eql(['%m%', '%m%', '%m%', '%m%', 10, 0]);
+      expect(executed[0].params).to.eql([
+        '%sharma%',
+        '%sharma%',
+        '%sharma%',
+        '%sharma%',
+        10,
+        0,
+      ]);
     });
 
     it('stops the order lookup just past the list cap', async () => {
       const {controller, lookups} = buildController();
-      await controller.find(allStores, 'm');
-      expect(lookups[0].sql).to.match(/LIMIT 20001\s*$/);
+      await controller.find(allStores, 'sharma');
+      expect(lookups[0].sql).to.match(/LIMIT 50001\s*$/);
+    });
+
+    it('skips the order lookup for a 1-2 character term matching many customers', async () => {
+      for (const term of ['m', 'an']) {
+        const {controller, executed, lookups, probes} = buildController([], 5001);
+        await controller.find(allStores, term, 10, 0);
+
+        expect(probes[0].params).to.eql([`%${term}%`]);
+        expect(probes[0].sql).to.match(/LIMIT 5001\s*$/);
+        expect(lookups).to.have.length(0);
+        expect(executed[0].sql).to.containEql('o.id = i.orderid');
+      }
+    });
+
+    it('still looks up orders for a rare 1-2 character term', async () => {
+      // The per-invoice check would walk every invoice to fill a page.
+      const {controller, executed, lookups} = buildController([], 5000);
+      await controller.find(allStores, 'qz', 10, 0);
+
+      expect(lookups).to.have.length(1);
+      expect(executed[0].sql).to.containEql('i.orderid = ANY($2::uuid[])');
+    });
+
+    it('checks each invoice for a short term matching many orders but few customers', async () => {
+      const {controller, executed, lookups} = buildController(orderIds(50001), 3);
+      await controller.find(allStores, '12', 10, 0);
+
+      expect(lookups).to.have.length(1);
+      expect(executed[0].sql).to.containEql('o.id = i.orderid');
+    });
+
+    it('does not check customer density for 3 or more characters', async () => {
+      const {controller, probes} = buildController();
+      await controller.find(allStores, 'sha');
+      expect(probes).to.have.length(0);
     });
 
     it('searches invoice number, order number, customer name and phone', async () => {
@@ -127,7 +174,7 @@ describe('invoice list search and type filter', () => {
     });
 
     it('includes the phone match in the per-invoice check', async () => {
-      const {controller, executed} = buildController(orderIds(20001));
+      const {controller, executed} = buildController(orderIds(50001));
       await controller.find(allStores, '987');
 
       expect(executed[0].sql).to.containEql('OR u.phone LIKE');
@@ -135,8 +182,8 @@ describe('invoice list search and type filter', () => {
     });
 
     it('leaves out the users join in the per-invoice check without digits', async () => {
-      const {controller, executed} = buildController(orderIds(20001));
-      await controller.find(allStores, 'm');
+      const {controller, executed} = buildController(orderIds(50001));
+      await controller.find(allStores, 'sharma');
       expect(executed[0].sql).to.not.containEql('public.users');
     });
 
