@@ -21,7 +21,7 @@
 ## P0: Performance under staff load
 
 - [x] **Commit and deploy the `GET /shifts/{id}/collected` fix.** Done in `b601200` on `main`, and the deployed live code contains it. `workaround.md` records the live crash at 7,016 parameters.
-- [ ] **Find and fix other Node-built `IN` lists.** The oversized `bind message` errors on Nov 1 came from this pattern; order and employee search are already fixed. `BE-017`, `SERVER_INCIDENT_AUDIT.md`
+- [ ] **Find and fix other Node-built `IN` lists.** The oversized `bind message` errors on Nov 1 came from this pattern; order and employee search are already fixed. **Status: in progress on `fix/unbounded-in-lists`, classifying about 471 `inq`/`nin` uses. Invoice search and the invoice type filter are known cases.** `BE-017`, `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Paginate `GET /transfers`.** `BE-002`
 - [ ] **Bound `GET /approval-requests`** and push paging into SQL. `BE-005`
 - [ ] **Batch pricing lookups in order creation.** Test carefully, because this is the core order path. `BE-008`
@@ -36,9 +36,12 @@
 - [ ] **Add brute-force protection and rate limits on login and OTP.** `ARC-002`, `ARC-017`
 - [ ] **Stop returning the login OTP in the response** when `WHATSAPP_ENABLED=false`. `ARC-021`
 - [ ] **Add a permission and store check to `GET /payments/gateway-links/{id}`.** `ARC-024`
+- [ ] **Fast-forward `client-server` to `main`.** It was 19 commits behind before the Nov 2 merge. Deploying from it would remove the security fixes. Added after the audit.
+- [ ] **Compare wallet balances with their ledgers,** read-only first. The `ARC-008` fix stops new errors but doesn't correct existing ones. Added after the audit.
 
 ## P2
 
+- [ ] **Put `adminRecharge` and `adminTopup` request creation and credit in one transaction.** A failed credit can leave a success request with no money added. Added after the audit.
 - [ ] **Update the unit tests broken by the Nov 1 SQL changes.** The 2 shift tests are fixed on `main` (`72bdeed`). The 2 Manage Ticket invoice filter tests still fail.
 - [ ] **Fix the `GET /shifts/collected` 500.** It falls into the `/shifts/{id}` route and fails with `invalid input syntax for type uuid: "collected"`. Seen in live logs after Nov 1 05:43. `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Fix the 5xx on `GET /riders/availability-for-slot`** with a `fallback:` slot ID. Seen in the same logs.
@@ -57,7 +60,7 @@
 
 - [ ] **Bag endpoints:** missing store filter and permission gate? `ARC-025`
 - [ ] **Rider endpoints:** store and ownership scoping. `ARC-026`
-- [ ] **Store scope coverage** across the remaining controllers. `ARC-004`
+- [ ] **Store scope coverage** across the remaining controllers. Do this sooner: `ARC-023` found 5 more unprotected routes than the audit listed. Include customer-billing routes such as `generateOnAccountInvoice`. `ARC-004`
 - [ ] **`GarmentActionsController`:** read-then-act without a lock. `ARC-007`
 - [ ] **WhatsApp dedup cache:** it is per-process, and production now runs 2 workers. `ARC-013`
 - [ ] **Razorpay client timeout.** `BE-016`

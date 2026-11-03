@@ -6,10 +6,10 @@
 
 ## P0
 
-- [ ] **Back up the live database.** Point the nightly job at `pressto_production`; it currently dumps `pressto_prod`. `INF-S-12` | none
-- [ ] **Copy backups off this server.** They are all on the same disk today. `INF-S-12` | none
-- [ ] **Run a real restore test** and record how long it takes. `INF-S-12` | none
-- [ ] **Alert when a backup fails or is unusually small.** A 0-byte dump exists from Nov 1. `INF-S-12` | none
+- [ ] **Back up the live database.** Point the nightly job at `pressto_production`; it currently dumps `pressto_prod`. **Status: on hold until the server move, by decision. Set up on the new server, and take one manual dump before moving.** `INF-S-12` | none
+- [ ] **Copy backups off this server.** They are all on the same disk today. **Status: on hold until the server move. Needs an off-server destination.** `INF-S-12` | none
+- [ ] **Run a real restore test** and record how long it takes. **Status: on hold until the server move.** `INF-S-12` | none
+- [ ] **Alert when a backup fails or is unusually small.** A 0-byte dump exists from Nov 1. **Status: on hold until the server move.** `INF-S-12` | none
 - [ ] **Install host and Postgres monitoring** with history (CPU, RAM, disk, connections). `INF-S-09` | none
 - [ ] **Add timestamps to PM2 logs** (`log_date_format`). Their absence blocked the incident timeline. `INF-S-09` | reload
 - [ ] **Run a load rehearsal with about 100 staff's usage pattern,** off-hours, because all environments share this VM. `INF-S-08`, report section 18 | none
@@ -38,7 +38,7 @@
 
 ## P3
 
-- [ ] **Fix the backup script's `find` working-directory error** and check its exit code. `INF-S-10` | none
+- [ ] **Fix the backup script's `find` working-directory error** and check its exit code. **Status: on hold until the server move. On the new server, run the script from a folder postgres can read.** `INF-S-10` | none
 - [ ] **Identify the client hitting the `migration_readonly` limit of 5.** `INF-S-04` | none
 - [ ] **Fix the nginx conflicting server name warning.** `INF-S-17` | reload
 - [ ] **Review the Postgres open-files limit** if connections grow. `INF-S-11` | restart
