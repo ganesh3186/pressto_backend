@@ -1,6 +1,6 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {
   get,
   HttpErrors,
@@ -11,6 +11,7 @@ import {
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
+import {PresstoDataSource} from '../datasources';
 import {InvoiceStatus} from '../models/invoice.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -158,6 +159,7 @@ export class ShiftController {
     @inject('services.store-scope')
     private storeScopeService: StoreScopeService,
     @inject('services.petty-cash') private pettyCashService: PettyCashService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -473,91 +475,118 @@ export class ShiftController {
 
     const caller = await this.resolveCallerStore(currentUser, body.storeId);
 
-    // Store-scoped, not per-user: a store runs one shift at a time,
-    // shared across whoever is on the counter, not one per cashier. A
-    // real incident showed two different employees each with their own
-    // OPEN shift at the same store simultaneously, both taking orders,
-    // because this used to only guard against the SAME user double-
-    // opening (findOne also filtered on userId) — a different employee's
-    // own findOne query never saw the other's still-open row.
-    const existingOpen = await this.shiftRepository.findOne({
-      where: {
-        storeId: caller.storeId,
-        status: ShiftStatus.OPEN,
-      } as object,
-    });
-    if (existingOpen) {
-      throw new HttpErrors.Conflict(
-        `A shift is already open for this store (opened by ${existingOpen.userName ?? 'another user'}). ` +
-          'Only they can close it before a new one can be opened.',
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      // One opening per store at a time. Without this, two people opening
+      // together can both pass the check below before either has saved a
+      // shift. The lock is held by the database, so it covers every PM2 worker,
+      // and it is released when this transaction ends.
+      await this.dataSource.execute(
+        'SELECT pg_advisory_xact_lock(hashtext($1))',
+        [`shift-open:${caller.storeId}`],
+        {transaction: tx},
       );
+
+      // Store-scoped, not per-user: a store runs one shift at a time,
+      // shared across whoever is on the counter, not one per cashier. A
+      // real incident showed two different employees each with their own
+      // OPEN shift at the same store simultaneously, both taking orders,
+      // because this used to only guard against the SAME user double-
+      // opening (findOne also filtered on userId) — a different employee's
+      // own findOne query never saw the other's still-open row.
+      const existingOpen = await this.shiftRepository.findOne(
+        {
+          where: {
+            storeId: caller.storeId,
+            status: ShiftStatus.OPEN,
+          } as object,
+        },
+        {transaction: tx},
+      );
+      if (existingOpen) {
+        throw new HttpErrors.Conflict(
+          `A shift is already open for this store (opened by ${existingOpen.userName ?? 'another user'}). ` +
+            'Only they can close it before a new one can be opened.',
+        );
+      }
+
+      const supposed = await this.resolveSupposedOpeningValues(caller.storeId);
+      const opening: Record<
+        string,
+        {supposed: number; actual: number; difference: number}
+      > = {};
+      for (const key of OPENING_CATEGORY_KEYS) {
+        const supposedValue = supposed[key];
+        const actual =
+          Number(body.openingBalances?.[key]?.actual ?? supposedValue) || 0;
+        opening[key] = {
+          supposed: supposedValue,
+          actual,
+          difference: actual - supposedValue,
+          ...(body.openingBalances?.[key]?.denominations
+            ? {denominations: body.openingBalances[key].denominations}
+            : {}),
+        };
+      }
+
+      const count = await this.shiftRepository.count(
+        {storeId: caller.storeId} as object,
+        {transaction: tx},
+      );
+      const openingNo = count.count + 1;
+
+      const {v4} = await import('uuid');
+      const now = new Date();
+      const shift = await this.shiftRepository.create(
+        {
+          id: v4(),
+          openingNo,
+          storeId: caller.storeId,
+          storeCode: caller.storeCode,
+          storeName: caller.storeName,
+          userId: caller.userId,
+          userName: caller.userName,
+          status: ShiftStatus.OPEN,
+          openedAt: now,
+          openingUserId: caller.userId,
+          openingUserName: caller.userName,
+          opening: {...opening, remarks: body.remarks.trim()},
+        },
+        {transaction: tx},
+      );
+
+      // Petty cash is ledger-backed. When the opening count introduces new
+      // physical cash above the existing ledger balance, record only that
+      // difference as a Finance top-up. Merely confirming the carried balance
+      // creates no entry, so repeated shift openings cannot double-count it.
+      const openingPettyCashActual = opening.pettyCash.actual;
+      const pettyCashTopUp = Math.max(
+        0,
+        openingPettyCashActual - supposed.pettyCash,
+      );
+      if (pettyCashTopUp > 0) {
+        await this.pettyCashFinanceRepository.create(
+          {
+            id: v4(),
+            storeId: caller.storeId,
+            storeCode: caller.storeCode,
+            storeName: caller.storeName,
+            amount: pettyCashTopUp,
+            remarks: `Added during shift ${openingNo} opening: ${body.remarks.trim()}`,
+            createdBy: caller.userId,
+            createdByName: caller.userName,
+            createdAt: now,
+          },
+          {transaction: tx},
+        );
+      }
+
+      await tx.commit();
+      return {message: `Shift ${openingNo} opened.`, shift};
+    } catch (error) {
+      await tx.rollback();
+      throw error;
     }
-
-    const supposed = await this.resolveSupposedOpeningValues(caller.storeId);
-    const opening: Record<
-      string,
-      {supposed: number; actual: number; difference: number}
-    > = {};
-    for (const key of OPENING_CATEGORY_KEYS) {
-      const supposedValue = supposed[key];
-      const actual =
-        Number(body.openingBalances?.[key]?.actual ?? supposedValue) || 0;
-      opening[key] = {
-        supposed: supposedValue,
-        actual,
-        difference: actual - supposedValue,
-        ...(body.openingBalances?.[key]?.denominations
-          ? {denominations: body.openingBalances[key].denominations}
-          : {}),
-      };
-    }
-
-    const count = await this.shiftRepository.count({
-      storeId: caller.storeId,
-    } as object);
-    const openingNo = count.count + 1;
-
-    const {v4} = await import('uuid');
-    const now = new Date();
-    const shift = await this.shiftRepository.create({
-      id: v4(),
-      openingNo,
-      storeId: caller.storeId,
-      storeCode: caller.storeCode,
-      storeName: caller.storeName,
-      userId: caller.userId,
-      userName: caller.userName,
-      status: ShiftStatus.OPEN,
-      openedAt: now,
-      openingUserId: caller.userId,
-      openingUserName: caller.userName,
-      opening: {...opening, remarks: body.remarks.trim()},
-    });
-
-    // Petty cash is ledger-backed. When the opening count introduces new
-    // physical cash above the existing ledger balance, record only that
-    // difference as a Finance top-up. Merely confirming the carried balance
-    // creates no entry, so repeated shift openings cannot double-count it.
-    const openingPettyCashActual = opening.pettyCash.actual;
-    const pettyCashTopUp = Math.max(
-      0,
-      openingPettyCashActual - supposed.pettyCash,
-    );
-    if (pettyCashTopUp > 0) {
-      await this.pettyCashFinanceRepository.create({
-        id: v4(),
-        storeId: caller.storeId,
-        storeCode: caller.storeCode,
-        storeName: caller.storeName,
-        amount: pettyCashTopUp,
-        remarks: `Added during shift ${openingNo} opening: ${body.remarks.trim()}`,
-        createdBy: caller.userId,
-        createdByName: caller.userName,
-        createdAt: now,
-      });
-    }
-
-    return {message: `Shift ${openingNo} opened.`, shift};
   }
 
   // ─── Active (this store's open shift, whoever opened it) ───────────────────
