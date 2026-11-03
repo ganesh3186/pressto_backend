@@ -13,10 +13,10 @@
 
 ## P0: Money and data correctness
 
-- [ ] **Make wallet credit/debit atomic** with a row lock or conditional update. **Status: code on `fix/wallet-atomic` (`878ff45`). Not merged or deployed. Covers recharges, admin debits and a double-credit race in `confirmRecharge`. Next: check the SQL on Postgres, test on migration.** `ARC-008`
-- [ ] **Move the checkout wallet balance read inside the transaction.** **Status: code on `fix/wallet-atomic` (`3096d01`). Not merged or deployed. Order creation, `addPayment` and approval refunds now use the same atomic update as `ARC-008`. Next: test wallet payments and refunds on migration.** `ARC-009`
-- [ ] **Make security deposit add/deduct atomic.** **Status: code on `fix/security-deposit-atomic` (`ad1323a`). Not merged or deployed. Also fixes a double-credit race in `confirmTopup`. `deductAmount` has no callers today, so the live risk is lost or doubled top-ups. Next: check the SQL on Postgres, test top-ups on migration.** `ARC-010`
-- [ ] **Close the shift-open race.** **Status: code on `fix/shift-open-race` (`329a13b`). Not merged or deployed. Uses a per-store advisory lock in `open()`, so no schema change. Next: check for existing duplicate open shifts (needs SSH), test opening a shift on migration.** `ARC-011`
+- [ ] **Make wallet credit/debit atomic** with a row lock or conditional update. **Status: on `main` (`bec4c20`), not deployed. Covers recharges, admin debits and a double-credit race in `confirmRecharge`. SQL checked on an in-memory Postgres only. Next: test on migration before any deploy.** `ARC-008`
+- [ ] **Move the checkout wallet balance read inside the transaction.** **Status: on `main` (`1ff822c`), not deployed. Order creation, `addPayment` and approval refunds now use the same atomic update as `ARC-008`. Next: test wallet payments and refunds on migration before any deploy.** `ARC-009`
+- [ ] **Make security deposit add/deduct atomic.** **Status: on `main` (`8c6c275`), not deployed. Also fixes a double-credit race in `confirmTopup`. `deductAmount` has no callers today, so the live risk is lost or doubled top-ups. SQL checked on an in-memory Postgres only. Next: test top-ups on migration before any deploy.** `ARC-010`
+- [ ] **Close the shift-open race.** **Status: on `main` (`b8ba4f9`), not deployed. Uses a per-store advisory lock in `open()`, so no schema change. Next: check for existing duplicate open shifts (needs SSH), test opening a shift on migration before any deploy.** `ARC-011`
 
 ## P0: Performance under staff load
 
