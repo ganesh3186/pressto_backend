@@ -21,7 +21,7 @@
 ## P0: Performance under staff load
 
 - [x] **Commit and deploy the `GET /shifts/{id}/collected` fix.** Done in `b601200` on `main`, and the deployed live code contains it. `workaround.md` records the live crash at 7,016 parameters.
-- [ ] **Find and fix other Node-built `IN` lists.** The oversized `bind message` errors on Nov 1 came from this pattern; order and employee search are already fixed. **Status: in progress on `fix/unbounded-in-lists`. Of about 471 `inq`/`nin` uses, 50 look risky. Manage Invoices search and type filter are fixed there (`8abad9c`, `03e1e30`) and timed on migration, not merged. Next: fix the wallet, rider, customer, approval and transfer lists.** `BE-017`, `SERVER_INCIDENT_AUDIT.md`
+- [ ] **Find and fix other Node-built `IN` lists.** The oversized `bind message` errors on Nov 1 came from this pattern; order and employee search are already fixed. **Status: in progress. Of about 471 `inq`/`nin` uses, 50 look risky. Manage Invoices search and type filter are on `main` (`8abad9c`, `03e1e30`) and timed on migration, not deployed. Next: fix the wallet, rider, customer, approval and transfer lists.** `BE-017`, `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Paginate `GET /transfers`.** `BE-002`
 - [ ] **Bound `GET /approval-requests`** and push paging into SQL. `BE-005`
 - [ ] **Batch pricing lookups in order creation.** Test carefully, because this is the core order path. `BE-008`
@@ -38,6 +38,7 @@
 - [ ] **Add a permission and store check to `GET /payments/gateway-links/{id}`.** `ARC-024`
 - [ ] **Fast-forward `client-server` to `main`.** It was 19 commits behind before the Nov 2 merge. Deploying from it would remove the security fixes. Added after the audit.
 - [ ] **Compare wallet balances with their ledgers,** read-only first. The `ARC-008` fix stops new errors but doesn't correct existing ones. Added after the audit.
+- [ ] **Fix the Manage Invoices "date to" filter.** With both dates set, `_buildInvoiceFilter` sends `createdAt: {gte, lte}`, and the connector reads only the first operator, so `dateTo` is ignored in the list and its total. Split it into two `and` clauses. Other routes may build ranges the same way, so check them too. Added after the audit.
 
 ## P2
 
