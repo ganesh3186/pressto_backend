@@ -13,7 +13,7 @@
 - [ ] **Stop the app using the `postgres` superuser;** create a least-privilege role **(verified live)**. `INF-S-13` | backend reload
 - [ ] **Set a statement timeout for the app role.** `statement_timeout` is 0 today, so runaway queries never stop **(verified live)**. `INF-S-13` | backend reload
 - [ ] **Set `idle_in_transaction_session_timeout`.** It is also 0 **(verified live)**. `INF-S-13` | reload
-- [ ] **Add a DB constraint: one open shift per store/user.** Check for existing duplicates first. Code side is in `CHECKLIST_BACKEND.md`. `ARC-011` | none
+- [ ] **Add a DB constraint: one open shift per store/user.** **Status: not recommended, decision pending. `npm run migrate` can't express a partial unique index: declared on the model it builds a plain unique index on `storeId` (one shift per store, ever), and left off the model migrate drops it. The advisory lock in `CHECKLIST_BACKEND.md` closes the race instead. Still check for existing duplicate open shifts.** `ARC-011` | none
 
 ## P1
 
