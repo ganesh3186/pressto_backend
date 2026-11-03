@@ -461,6 +461,7 @@ export class OrderController {
     // caller is unaffected: omitting it keeps today's additive behavior.
     @param.query.boolean('homeStoreOnly') homeStoreOnly?: boolean,
     @param.query.string('invoiceNumber') invoiceNumber?: string,
+    @param.query.string('paymentStatus') paymentStatus?: string,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
@@ -478,6 +479,7 @@ export class OrderController {
     return this.orderService.listOrders({
       search,
       invoiceNumber,
+      paymentStatus,
       dateFrom,
       dateTo,
       orderType,
