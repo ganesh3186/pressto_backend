@@ -1,7 +1,8 @@
-import {BindingScope, injectable} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {BindingScope, inject, injectable} from '@loopback/core';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
-import {PaymentMode, PaymentRequestStatus, ReferenceType, SecurityDepositStatus, SecurityDepositTransactionType} from '../models';
+import {PresstoDataSource} from '../datasources';
+import {CustomerSecurityDepositTransaction, PaymentMode, PaymentRequestStatus, ReferenceType, SecurityDepositStatus, SecurityDepositTransactionType} from '../models';
 import {SecurityDepositTopupRequest} from '../models/security-deposit-topup-request.model';
 import {CustomerSecurityDepositRepository, CustomerSecurityDepositTransactionRepository, SecurityDepositTopupRequestRepository} from '../repositories';
 
@@ -11,6 +12,7 @@ export class SecurityDepositService {
     @repository(CustomerSecurityDepositRepository) private depositRepository: CustomerSecurityDepositRepository,
     @repository(CustomerSecurityDepositTransactionRepository) private depositTxRepository: CustomerSecurityDepositTransactionRepository,
     @repository(SecurityDepositTopupRequestRepository) private topupRequestRepository: SecurityDepositTopupRequestRepository,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
   async createDeposit(customerId: string, options?: object): Promise<any> {
@@ -23,39 +25,51 @@ export class SecurityDepositService {
   }
 
   async addAmount(depositId: string, amount: number, referenceType: ReferenceType, referenceId?: string, remarks?: string, options?: object): Promise<any> {
-    const deposit = await this.depositRepository.findById(depositId, undefined, options);
-    await this.depositRepository.updateById(depositId, {
-      depositAmount: Number(deposit.depositAmount) + Number(amount),
-      availableBalance: Number(deposit.availableBalance) + Number(amount),
-    }, options);
-    return this.depositTxRepository.create({
-      securityDepositId: depositId,
-      transactionType: SecurityDepositTransactionType.DEPOSIT,
-      amount,
-      referenceType,
-      referenceId,
-      remarks,
-      transactionDate: new Date(),
-    }, options);
+    return this.recordEntry(depositId, SecurityDepositTransactionType.DEPOSIT, amount, referenceType, referenceId, remarks, options);
   }
 
   async deductAmount(depositId: string, amount: number, referenceType: ReferenceType, referenceId?: string, remarks?: string, options?: object): Promise<any> {
-    const deposit = await this.depositRepository.findById(depositId, undefined, options);
-    if (Number(deposit.availableBalance) < Number(amount)) {
-      throw new HttpErrors.BadRequest('Insufficient security deposit balance.');
+    return this.recordEntry(depositId, SecurityDepositTransactionType.DEDUCTION, amount, referenceType, referenceId, remarks, options);
+  }
+
+  // Changes the balance and writes its ledger row together, so neither can
+  // exist without the other. Joins the caller's transaction if there is one.
+  private async recordEntry(
+    depositId: string,
+    transactionType: SecurityDepositTransactionType,
+    amount: number,
+    referenceType: ReferenceType,
+    referenceId?: string,
+    remarks?: string,
+    options?: object,
+  ): Promise<CustomerSecurityDepositTransaction> {
+    const ownTransaction = (options as {transaction?: unknown} | undefined)?.transaction
+      ? undefined
+      : await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const entryOptions = ownTransaction ? {...options, transaction: ownTransaction} : options;
+    try {
+      const delta = transactionType === SecurityDepositTransactionType.DEPOSIT ? Number(amount) : -Number(amount);
+      const balance = await this.depositRepository.adjustBalance(depositId, delta, entryOptions);
+      if (balance === null) {
+        // Throws the usual not-found error if the deposit is what's missing.
+        await this.depositRepository.findById(depositId, undefined, entryOptions);
+        throw new HttpErrors.BadRequest('Insufficient security deposit balance.');
+      }
+      const entry = await this.depositTxRepository.create({
+        securityDepositId: depositId,
+        transactionType,
+        amount,
+        referenceType,
+        referenceId,
+        remarks,
+        transactionDate: new Date(),
+      }, entryOptions);
+      await ownTransaction?.commit();
+      return entry;
+    } catch (error) {
+      await ownTransaction?.rollback();
+      throw error;
     }
-    await this.depositRepository.updateById(depositId, {
-      availableBalance: Number(deposit.availableBalance) - Number(amount),
-    }, options);
-    return this.depositTxRepository.create({
-      securityDepositId: depositId,
-      transactionType: SecurityDepositTransactionType.DEDUCTION,
-      amount,
-      referenceType,
-      referenceId,
-      remarks,
-      transactionDate: new Date(),
-    }, options);
   }
 
   // ─── Top-up flow ──────────────────────────────────────────────────────────
@@ -109,19 +123,32 @@ export class SecurityDepositService {
       throw new HttpErrors.BadRequest(`Top-up request is already ${request.status}.`);
     }
 
-    await this.topupRequestRepository.updateById(topupRequestId, {
-      status: PaymentRequestStatus.SUCCESS,
-      paymentReferenceId,
-      gatewayResponse,
-    });
-
-    await this.addAmount(
-      request.securityDepositId,
-      request.amount,
-      ReferenceType.MANUAL,
-      topupRequestId,
-      `Security deposit top-up - ${request.requestNumber}`,
-    );
+    // Claim the request and credit it together: only one of two simultaneous
+    // confirmations can move it off PENDING, so a top-up can't credit twice, and
+    // a failed credit leaves it PENDING rather than paid with no money.
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      const claimed = await this.topupRequestRepository.updateAll(
+        {status: PaymentRequestStatus.SUCCESS, paymentReferenceId, gatewayResponse},
+        {id: topupRequestId, status: PaymentRequestStatus.PENDING},
+        {transaction: tx},
+      );
+      if (claimed.count !== 1) {
+        throw new HttpErrors.BadRequest('Top-up request has already been processed.');
+      }
+      await this.addAmount(
+        request.securityDepositId,
+        request.amount,
+        ReferenceType.MANUAL,
+        topupRequestId,
+        `Security deposit top-up - ${request.requestNumber}`,
+        {transaction: tx},
+      );
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
 
     const deposit = await this.depositRepository.findById(request.securityDepositId);
     const updatedRequest = await this.topupRequestRepository.findById(topupRequestId);

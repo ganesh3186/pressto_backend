@@ -23,6 +23,22 @@ import {
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
 
+type InvoiceListScope = {storeIds: string[]; extraOrderIds: string[]};
+/** A raw filter on `public.invoice i`, with `?` placeholders. */
+type InvoiceSqlCondition = {sql: string; params: unknown[]};
+type InvoiceListFilter = {
+  where: Where<Invoice>;
+  conditions: InvoiceSqlCondition[];
+  isSearch: boolean;
+};
+
+/** Most matches an invoice list search will count (see _countInvoicesBySql). */
+const INVOICE_SEARCH_COUNT_CAP = 1000;
+/** Above this many matching orders a search is "broad" (see _invoiceSearchCondition). */
+const INVOICE_SEARCH_ORDER_LIST_CAP = 50000;
+/** Above this many matching customers a 1-2 character term is "broad" (see _invoiceSearchCondition). */
+const INVOICE_SEARCH_SHORT_TERM_CUSTOMER_CAP = 5000;
+
 export class InvoiceController {
   constructor(
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
@@ -78,6 +94,7 @@ export class InvoiceController {
       'Array of Invoice records, enriched with order/customer summary',
   })
   async find(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('search') search?: string,
     @param.query.number('limit') limit?: number,
     @param.query.number('skip') skip?: number,
@@ -86,19 +103,24 @@ export class InvoiceController {
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<object[]> {
-    const where = await this._buildInvoiceWhere({
+    const scope = await this._invoiceListScope(currentUser);
+    if (scope && !scope.storeIds.length) return [];
+    const filter = await this._buildInvoiceFilter({
       search,
       status,
       type,
       dateFrom,
       dateTo,
     });
-    const invoices = await this.invoiceRepo.find({
-      where,
-      order: ['createdAt DESC'],
-      ...(limit !== undefined ? {limit} : {}),
-      ...(skip !== undefined ? {skip} : {}),
-    });
+    const invoices =
+      scope !== null || filter.conditions.length > 0
+        ? await this._findInvoicesBySql(filter, scope, limit, skip)
+        : await this.invoiceRepo.find({
+            where: filter.where,
+            order: ['createdAt DESC'],
+            ...(limit !== undefined ? {limit} : {}),
+            ...(skip !== undefined ? {skip} : {}),
+          });
     return this._enrichInvoices(invoices);
   }
 
@@ -109,35 +131,186 @@ export class InvoiceController {
     description: 'Count of Invoice records matching the same filters as find()',
   })
   async count(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('search') search?: string,
     @param.query.string('status') status?: string,
     @param.query.string('type') type?: string,
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<Count> {
-    const where = await this._buildInvoiceWhere({
+    const scope = await this._invoiceListScope(currentUser);
+    if (scope && !scope.storeIds.length) return {count: 0};
+    const filter = await this._buildInvoiceFilter({
       search,
       status,
       type,
       dateFrom,
       dateTo,
     });
-    return this.invoiceRepo.count(where);
+    return scope !== null || filter.conditions.length > 0
+      ? this._countInvoicesBySql(filter, scope)
+      : this.invoiceRepo.count(filter.where);
   }
 
   /**
-   * Shared where-builder for find()/count() — the list and its count must
+   * Which orders' invoices this caller may list, or null for an all-stores
+   * caller. Same access as assertOrderVisible: the caller's stores, plus orders
+   * with a garment at one of those stores through an active transfer.
+   *
+   * A consolidated invoice can span stores but names one representative order,
+   * so it is in scope through that order when any of its linked orders is. An
+   * order on a consolidated invoice can't have another invoice (see
+   * generateOnAccountInvoice), so this exposes nothing else.
+   */
+  private async _invoiceListScope(
+    currentUser: UserProfile,
+  ): Promise<InvoiceListScope | null> {
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (scope.global) return null;
+    if (!scope.storeIds.length) return {storeIds: [], extraOrderIds: []};
+
+    const transferOrderIds = await this.storeScopeService.transferGrantedOrderIds(
+      scope.storeIds,
+    );
+    const consolidated: {orderid: string}[] = await this.dataSource.execute(
+      `SELECT DISTINCT i.orderid
+         FROM public.invoice i
+         JOIN public.invoice_order_link l ON l.invoiceid = i.id
+         JOIN public.orders o ON o.id = l.orderid
+        WHERE i.isconsolidated = true
+          AND (o.storeid = ANY($1) OR o.id = ANY($2))`,
+      [scope.storeIds, transferOrderIds],
+    );
+    return {
+      storeIds: scope.storeIds,
+      extraOrderIds: [
+        ...new Set([
+          ...transferOrderIds,
+          ...consolidated.map(row => row.orderid),
+        ]),
+      ],
+    };
+  }
+
+  /**
+   * FROM/WHERE for the invoices matching a filter and, unless the caller sees
+   * all stores (scope null), the caller's scope. Invoices have no storeId and
+   * reach a store only through their order, and one store can have more orders
+   * than fit in a Node-built IN list, so the match runs inside SQL. Kept as one
+   * IN subquery so Postgres can pick the invoiceCreatedAt index for a busy store
+   * or the order's store index for a quiet one.
+   */
+  private _invoiceQuery(
+    filter: InvoiceListFilter,
+    scope: InvoiceListScope | null,
+  ): {fromSql: string; params: unknown[]} {
+    const base = this._connector().buildWhere(
+      this.invoiceRepo.entityClass.modelName,
+      filter.where,
+    );
+    const conditions = [
+      ...(base.sql ? [`(${base.sql.replace(/^WHERE /, '')})`] : []),
+      ...filter.conditions.map(condition => condition.sql),
+      ...(scope
+        ? [
+            'i.orderid IN (SELECT o.id FROM public.orders o' +
+              ' WHERE o.storeid = ANY(?) OR o.id = ANY(?))',
+          ]
+        : []),
+    ];
+    return {
+      fromSql:
+        'FROM public.invoice i' +
+        (conditions.length ? ` WHERE ${conditions.join(' AND ')}` : ''),
+      params: [
+        ...base.params,
+        ...filter.conditions.flatMap(condition => condition.params),
+        ...(scope ? [scope.storeIds, scope.extraOrderIds] : []),
+      ],
+    };
+  }
+
+  /** One page of find(), for a store-limited caller or a search/type filter. */
+  private async _findInvoicesBySql(
+    filter: InvoiceListFilter,
+    scope: InvoiceListScope | null,
+    limit?: number,
+    skip?: number,
+  ): Promise<Invoice[]> {
+    const {fromSql, params} = this._invoiceQuery(filter, scope);
+    const page = this._connector().parameterize({
+      sql:
+        `SELECT i.id ${fromSql} ORDER BY i.createdat DESC, i.id DESC` +
+        (limit !== undefined ? ' LIMIT ?' : '') +
+        (skip !== undefined ? ' OFFSET ?' : ''),
+      params: [
+        ...params,
+        ...(limit !== undefined ? [limit] : []),
+        ...(skip !== undefined ? [skip] : []),
+      ],
+    });
+    const rows: {id: string}[] = await this.dataSource.execute(
+      page.sql,
+      page.params,
+    );
+    const ids = rows.map(row => row.id);
+    if (!ids.length) return [];
+    const found = await this.invoiceRepo.find({where: {id: {inq: ids}}});
+    const byId = new Map(found.map(invoice => [invoice.id, invoice]));
+    return ids
+      .map(id => byId.get(id))
+      .filter((invoice): invoice is Invoice => Boolean(invoice));
+  }
+
+  /**
+   * count() matching _findInvoicesBySql. Counting every match of a broad search
+   * means visiting most of the table, so a search counts only up to
+   * INVOICE_SEARCH_COUNT_CAP. A specific search still gets its exact count.
+   */
+  private async _countInvoicesBySql(
+    filter: InvoiceListFilter,
+    scope: InvoiceListScope | null,
+  ): Promise<Count> {
+    const {fromSql, params} = this._invoiceQuery(filter, scope);
+    const query = this._connector().parameterize(
+      filter.isSearch
+        ? {
+            sql: `SELECT count(*)::int AS count FROM (SELECT 1 ${fromSql} LIMIT ?) matches`,
+            params: [...params, INVOICE_SEARCH_COUNT_CAP],
+          }
+        : {sql: `SELECT count(*)::int AS count ${fromSql}`, params},
+    );
+    const rows: {count: number}[] = await this.dataSource.execute(
+      query.sql,
+      query.params,
+    );
+    return {count: Number(rows[0]?.count ?? 0)};
+  }
+
+  private _connector() {
+    return this.dataSource.connector as unknown as {
+      buildWhere(model: string, where: object): {sql: string; params: unknown[]};
+      parameterize(ps: {sql: string; params: unknown[]}): {
+        sql: string;
+        params: unknown[];
+      };
+    };
+  }
+
+  /**
+   * Shared filter-builder for find()/count() — the list and its count must
    * always agree on which rows match, or the pagination UI's total would
    * disagree with what's actually shown.
    */
-  private async _buildInvoiceWhere(params: {
+  private async _buildInvoiceFilter(params: {
     search?: string;
     status?: string;
     type?: string;
     dateFrom?: string;
     dateTo?: string;
-  }): Promise<Where<Invoice>> {
+  }): Promise<InvoiceListFilter> {
     const clauses: object[] = [];
+    const conditions: InvoiceSqlCondition[] = [];
 
     if (params.status) {
       clauses.push({status: params.status});
@@ -150,92 +323,113 @@ export class InvoiceController {
     }
 
     if (params.type === 'onAccount' || params.type === 'regular') {
-      const onAccountOrderIds = await this._onAccountOrderIds();
-      // Empty on no match — correctly yields zero rows for 'onAccount'
-      // rather than accidentally matching everything.
-      clauses.push(
-        params.type === 'onAccount'
-          ? {orderId: {inq: onAccountOrderIds}}
-          : {orderId: {nin: onAccountOrderIds}},
+      conditions.push(this._invoiceTypeCondition(params.type));
+    }
+
+    const q = params.search?.trim();
+    if (q) conditions.push(await this._invoiceSearchCondition(q));
+
+    return {
+      where: (clauses.length ? {and: clauses} : {}) as Where<Invoice>,
+      conditions,
+      isSearch: Boolean(q),
+    };
+  }
+
+  /**
+   * Whether the invoice's order belongs to an on-account-eligible customer
+   * (business, or opted in). Runs inside SQL because these orders used to be
+   * loaded into Node and sent back as one oversized IN list.
+   */
+  private _invoiceTypeCondition(
+    type: 'onAccount' | 'regular',
+  ): InvoiceSqlCondition {
+    const onAccount =
+      'EXISTS (SELECT 1 FROM public.orders o' +
+      ' JOIN public.customer c ON c.id = o.customerid' +
+      ' WHERE o.id = i.orderid' +
+      " AND (c.customerentitytype = 'business' OR c.isonaccounteligible = true))";
+    return {sql: type === 'onAccount' ? onAccount : `NOT ${onAccount}`, params: []};
+  }
+
+  /**
+   * Free-text search: invoice number, order number (Transaction ID field),
+   * customer name, or the customer's login phone. These matches used to be
+   * resolved into a Node-built IN list, which failed with an oversized `bind
+   * message` on a broad term.
+   *
+   * Specific terms match few orders: resolve them through the trigram indexes
+   * and pass them as ONE array parameter, so invoices are found via their
+   * orderid index. Broad terms ("m", "2") match too many for that, so fall back
+   * to a per-invoice EXISTS, which stops as soon as the page is filled because
+   * matches are dense. A common surname fits the array path: at 44K matching
+   * orders it took 4 ms a page, against 1.7 s for the EXISTS.
+   *
+   * A 1-2 character term can't use the trigram indexes, so looking up its orders
+   * scans orders and customers (about 3 s). If it matches many customers it is
+   * broad, so skip that. A rare one ("qz") must still do it: the EXISTS would
+   * walk all 2M invoices to fill a page (over 25 s, measured on migration).
+   */
+  private async _invoiceSearchCondition(
+    q: string,
+  ): Promise<InvoiceSqlCondition> {
+    const like = `%${q}%`;
+    // Phone lives on Users, not Customer. Require a few digits so a 1-2 digit
+    // search doesn't turn into an accidental "match everyone" scan.
+    const digits = q.replace(/\D/g, '');
+    const phoneLike = digits.length >= 3 ? `%${digits}%` : null;
+
+    const isBroadShortTerm =
+      q.length < 3 && (await this._manyCustomersMatch(like));
+    if (!isBroadShortTerm) {
+      // UNION ALL, not UNION, so a broad term stops at the LIMIT instead of
+      // first collecting every match to remove duplicates.
+      const orderRows: {id: string}[] = await this.dataSource.execute(
+        `SELECT o.id FROM public.orders o WHERE o.ordernumber ILIKE $1
+         UNION ALL
+         SELECT o.id FROM public.customer c JOIN public.orders o ON o.customerid = c.id
+          WHERE c.firstname ILIKE $1 OR c.lastname ILIKE $1
+         ${
+           phoneLike
+             ? `UNION ALL
+         SELECT o.id FROM public.users u
+           JOIN public.customer c ON c.userid = u.id::text
+           JOIN public.orders o ON o.customerid = c.id
+          WHERE u.phone LIKE $2`
+             : ''
+         }
+         LIMIT ${INVOICE_SEARCH_ORDER_LIST_CAP + 1}`,
+        phoneLike ? [like, phoneLike] : [like],
       );
-    }
-
-    if (params.search?.trim()) {
-      const q = params.search.trim();
-      const digits = q.replace(/\D/g, '');
-      const [orderIdsByCustomer, orderIdsByNumber] = await Promise.all([
-        this._orderIdsMatchingCustomer(q, digits),
-        this._orderIdsMatchingNumber(q),
-      ]);
-      const orderIdsBySearch = [
-        ...new Set([...orderIdsByCustomer, ...orderIdsByNumber]),
-      ];
-      const orClauses: object[] = [{invoiceNumber: {ilike: `%${q}%`}}];
-      if (orderIdsBySearch.length) {
-        orClauses.push({orderId: {inq: orderIdsBySearch}});
-      }
-      clauses.push({or: orClauses});
-    }
-
-    return (clauses.length ? {and: clauses} : {}) as Where<Invoice>;
-  }
-
-  /** Order ids belonging to an on-account-eligible customer (business, or opted in). */
-  private async _onAccountOrderIds(): Promise<string[]> {
-    const onAccountCustomers = await this.customerRepo.find({
-      where: {
-        or: [{customerEntityType: 'business'}, {isOnAccountEligible: true}],
-      },
-      fields: {id: true},
-    });
-    if (!onAccountCustomers.length) return [];
-    const orders = await this.orderRepo.find({
-      where: {customerId: {inq: onAccountCustomers.map(c => c.id)}},
-      fields: {id: true},
-    });
-    return orders.map(o => o.id);
-  }
-
-  /** Order ids whose customer's name or phone matches the search term. */
-  private async _orderIdsMatchingCustomer(
-    query: string,
-    digits: string,
-  ): Promise<string[]> {
-    const customerWhere: object[] = [
-      {firstName: {ilike: `%${query}%`}},
-      {lastName: {ilike: `%${query}%`}},
-    ];
-    // Phone lives on Users, not Customer — resolve matching Users rows
-    // first, then fold their ids into the same OR. Require a few digits so
-    // a 1-2 digit search doesn't turn into an accidental "match everyone" scan.
-    if (digits.length >= 3) {
-      const matchedUsers = await this.usersRepo.find({
-        where: {phone: {like: `%${digits}%`}},
-        fields: {id: true},
-      });
-      if (matchedUsers.length) {
-        customerWhere.push({userId: {inq: matchedUsers.map(u => u.id)}});
+      if (orderRows.length <= INVOICE_SEARCH_ORDER_LIST_CAP) {
+        return {
+          sql: '(i.invoicenumber ILIKE ? OR i.orderid = ANY(?::uuid[]))',
+          params: [like, [...new Set(orderRows.map(row => row.id))]],
+        };
       }
     }
-    const customers = await this.customerRepo.find({
-      where: {or: customerWhere},
-      fields: {id: true},
-    });
-    if (!customers.length) return [];
-    const orders = await this.orderRepo.find({
-      where: {customerId: {inq: customers.map(c => c.id)}},
-      fields: {id: true},
-    });
-    return orders.map(o => o.id);
+    return {
+      sql:
+        '(i.invoicenumber ILIKE ? OR EXISTS (SELECT 1 FROM public.orders o' +
+        ' LEFT JOIN public.customer c ON c.id = o.customerid' +
+        (phoneLike ? ' LEFT JOIN public.users u ON u.id = c.userid::uuid' : '') +
+        ' WHERE o.id = i.orderid AND (o.ordernumber ILIKE ?' +
+        ' OR c.firstname ILIKE ? OR c.lastname ILIKE ?' +
+        (phoneLike ? ' OR u.phone LIKE ?' : '') +
+        ')))',
+      params: [like, like, like, like, ...(phoneLike ? [phoneLike] : [])],
+    };
   }
 
-  /** Order ids whose own order number matches the search term (Transaction ID field). */
-  private async _orderIdsMatchingNumber(query: string): Promise<string[]> {
-    const orders = await this.orderRepo.find({
-      where: {orderNumber: {ilike: `%${query}%`}},
-      fields: {id: true},
-    });
-    return orders.map(o => o.id);
+  /** Whether a customer-name pattern matches more than the short-term cap. */
+  private async _manyCustomersMatch(like: string): Promise<boolean> {
+    const rows: unknown[] = await this.dataSource.execute(
+      `SELECT 1 FROM public.customer c
+        WHERE c.firstname ILIKE $1 OR c.lastname ILIKE $1
+        LIMIT ${INVOICE_SEARCH_SHORT_TERM_CUSTOMER_CAP + 1}`,
+      [like],
+    );
+    return rows.length > INVOICE_SEARCH_SHORT_TERM_CUSTOMER_CAP;
   }
 
   /** Attach orderNumber/customer summary/type/orderCount to a page of invoices. */

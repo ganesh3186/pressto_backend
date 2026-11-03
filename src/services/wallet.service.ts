@@ -1,7 +1,8 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
-import {PaymentMode, PaymentRequestStatus, ReferenceType, WalletTransactionType} from '../models';
+import {PresstoDataSource} from '../datasources';
+import {PaymentMode, PaymentRequestStatus, ReferenceType, WalletTransaction, WalletTransactionType} from '../models';
 import {ADMIN_WALLET_RECHARGE_MODES} from '../models/payment-mode.enum';
 import {WalletRechargeRequest} from '../models/wallet-recharge-request.model';
 import {
@@ -53,6 +54,7 @@ export class WalletService {
     @repository(CustomerPhoneRepository) private customerPhoneRepository: CustomerPhoneRepository,
     @repository(OrderRepository) private orderRepository: OrderRepository,
     @inject('services.whatsapp') private whatsAppService: WhatsAppService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
   async createWallet(customerId: string, options?: object): Promise<any> {
@@ -60,36 +62,51 @@ export class WalletService {
   }
 
   async credit(walletId: string, amount: number, referenceType: ReferenceType, referenceId?: string, remarks?: string, options?: object): Promise<any> {
-    const wallet = await this.walletRepository.findById(walletId, undefined, options);
-    const newBalance = Number(wallet.currentBalance) + Number(amount);
-    await this.walletRepository.updateById(walletId, {currentBalance: newBalance}, options);
-    return this.walletTransactionRepository.create({
-      walletId,
-      transactionType: WalletTransactionType.CREDIT,
-      amount,
-      referenceType,
-      referenceId,
-      remarks,
-      transactionDate: new Date(),
-    }, options);
+    return this.recordEntry(walletId, WalletTransactionType.CREDIT, amount, referenceType, referenceId, remarks, options);
   }
 
   async debit(walletId: string, amount: number, referenceType: ReferenceType, referenceId?: string, remarks?: string, options?: object): Promise<any> {
-    const wallet = await this.walletRepository.findById(walletId, undefined, options);
-    if (Number(wallet.currentBalance) < Number(amount)) {
-      throw new HttpErrors.BadRequest('Insufficient wallet balance.');
+    return this.recordEntry(walletId, WalletTransactionType.DEBIT, amount, referenceType, referenceId, remarks, options);
+  }
+
+  // Changes the balance and writes its ledger row together, so neither can
+  // exist without the other. Joins the caller's transaction if there is one.
+  private async recordEntry(
+    walletId: string,
+    transactionType: WalletTransactionType,
+    amount: number,
+    referenceType: ReferenceType,
+    referenceId?: string,
+    remarks?: string,
+    options?: object,
+  ): Promise<WalletTransaction> {
+    const ownTransaction = (options as {transaction?: unknown} | undefined)?.transaction
+      ? undefined
+      : await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const entryOptions = ownTransaction ? {...options, transaction: ownTransaction} : options;
+    try {
+      const delta = transactionType === WalletTransactionType.CREDIT ? Number(amount) : -Number(amount);
+      const balance = await this.walletRepository.adjustBalance(walletId, delta, entryOptions);
+      if (balance === null) {
+        // Throws the usual not-found error if the wallet is what's missing.
+        await this.walletRepository.findById(walletId, undefined, entryOptions);
+        throw new HttpErrors.BadRequest('Insufficient wallet balance.');
+      }
+      const entry = await this.walletTransactionRepository.create({
+        walletId,
+        transactionType,
+        amount,
+        referenceType,
+        referenceId,
+        remarks,
+        transactionDate: new Date(),
+      }, entryOptions);
+      await ownTransaction?.commit();
+      return entry;
+    } catch (error) {
+      await ownTransaction?.rollback();
+      throw error;
     }
-    const newBalance = Number(wallet.currentBalance) - Number(amount);
-    await this.walletRepository.updateById(walletId, {currentBalance: newBalance}, options);
-    return this.walletTransactionRepository.create({
-      walletId,
-      transactionType: WalletTransactionType.DEBIT,
-      amount,
-      referenceType,
-      referenceId,
-      remarks,
-      transactionDate: new Date(),
-    }, options);
   }
 
   // ─── Recharge flow ────────────────────────────────────────────────────────
@@ -144,19 +161,33 @@ export class WalletService {
       throw new HttpErrors.BadRequest(`Recharge request is already ${request.status}.`);
     }
 
-    await this.rechargeRequestRepository.updateById(rechargeRequestId, {
-      status: PaymentRequestStatus.SUCCESS,
-      paymentReferenceId,
-      gatewayResponse,
-    });
-
-    const transaction = await this.credit(
-      request.walletId,
-      request.amount,
-      ReferenceType.MANUAL,
-      rechargeRequestId,
-      `Wallet recharge - ${request.requestNumber}`,
-    );
+    // Claim the request and credit it together: only one of two simultaneous
+    // confirmations can move it off PENDING, so a recharge can't credit twice,
+    // and a failed credit leaves it PENDING rather than paid with no money.
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    let transaction: WalletTransaction;
+    try {
+      const claimed = await this.rechargeRequestRepository.updateAll(
+        {status: PaymentRequestStatus.SUCCESS, paymentReferenceId, gatewayResponse},
+        {id: rechargeRequestId, status: PaymentRequestStatus.PENDING},
+        {transaction: tx},
+      );
+      if (claimed.count !== 1) {
+        throw new HttpErrors.BadRequest('Recharge request has already been processed.');
+      }
+      transaction = await this.credit(
+        request.walletId,
+        request.amount,
+        ReferenceType.MANUAL,
+        rechargeRequestId,
+        `Wallet recharge - ${request.requestNumber}`,
+        {transaction: tx},
+      );
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
 
     const wallet = await this.walletRepository.findById(request.walletId);
     const updatedRequest = await this.rechargeRequestRepository.findById(rechargeRequestId);

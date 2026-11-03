@@ -24,6 +24,21 @@ Implementation/validation report: [ADMIN_P1_COMPLETION_REPORT.md](../ADMIN_P1_CO
 - [x] **Consolidate on one map library.** Retained live Google Maps; removed unreachable Mapbox code/dependencies and root Mapbox CSS. Moved editor/carousel styles to their owning components. `FE-ADM-007`
 - [x] **Remove unrouted demo template code.** Used an import graph to verify reachability, then removed unused demo screens, routes and their isolated helpers. `FE-ADM-009`
 - [x] **Review page sizes and virtualization.** Reviewed: shared default remains 5/10/25 rows, so no virtualization library is needed for this scope. Revisit if actual page sizes/render measurements justify it. `FE-ADM-005`
+- [ ] **Debounce the Manage Ticket text filters.** They send one request per keystroke. Raised from P2, because broad search terms caused the go-live slowdown. `FE-ADM-001`
+- [ ] **Debounce the Rider Management search.** Raised from P2 for the same reason. `FE-ADM-002`
+- [ ] **Stop fetching the whole order set when a payment filter is on.** Page on the server instead. `FE-ADM-003`
+
+### P2
+
+- [ ] **Reduce the Order Invoice Dialog's polling** of 3 endpoints every 5 seconds. It adds up with many staff logged in. `FE-ADM-004`
+- [ ] **Add `React.memo` to polled list rows.** `FE-ADM-008`
+- [ ] **Remove Redux Toolkit, react-redux and redux-persist** if the single remaining use can go. `FE-ADM-006`
+
+### P3
+
+- [ ] **Consolidate on one map library.** `FE-ADM-007`
+- [ ] **Remove unrouted demo template code.** `FE-ADM-009`
+- [ ] **Review page sizes and virtualization** if larger pages are requested. `FE-ADM-005`
 
 ## Customer Web (`pressto-customer-web`, different team)
 
