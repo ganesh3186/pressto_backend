@@ -20,6 +20,10 @@ export enum InvoiceStatus {
       // createdAt date range). Without this every page was a parallel seq
       // scan + sort of all 1.97M rows to keep 10 (~530ms, EXPLAIN ANALYZE).
       invoiceCreatedAt: {keys: ['createdAt']},
+      // Manage Invoice looks up consolidated invoices on every page for a
+      // store-limited caller. They are a tiny share of the table, and without
+      // this each lookup scanned all 1.97M rows (~1s, EXPLAIN ANALYZE).
+      invoiceIsConsolidated: {keys: ['isConsolidated']},
     },
   },
 })

@@ -11,7 +11,7 @@ describe('shift collections from riders', () => {
     const openedAt = new Date('2026-10-01T09:00:00Z');
     const closedAt = new Date('2026-10-01T17:00:00Z');
     let handoverFilter: Record<string, unknown> | undefined;
-    let paymentFilter: Record<string, unknown> | undefined;
+    let paymentQuery: {sql: string; params: unknown[]} | undefined;
     let summaryFilter: Record<string, unknown> | undefined;
     const controller = Object.assign(Object.create(ShiftController.prototype), {
       shiftRepository: {
@@ -48,9 +48,12 @@ describe('shift collections from riders', () => {
       paymentTransactionRepository: {
         find: async ({where}: {where: Record<string, unknown>}) => {
           if (where.cashShiftId) return [{orderId: 'other-store-order', amount: 30}];
-          paymentFilter = where;
+          return [];
+        },
+        execute: async (sql: string, params: unknown[]) => {
+          paymentQuery = {sql, params};
           return [
-            {paymentMode: 'cash', amount: 50, transactionType: 'payment'},
+            {orderId: 'order-a', paymentMode: 'cash', amount: 50, transactionType: 'payment'},
             {orderId: 'order-b', paymentMode: 'cash', amount: 20, transactionType: 'refund'},
           ];
         },
@@ -113,11 +116,9 @@ describe('shift collections from riders', () => {
       confirmedAt: {between: [openedAt, closedAt]},
       isDeleted: false,
     });
-    expect(paymentFilter).to.deepEqual({
-      orderId: {inq: ['order-a', 'order-b']},
-      riderId: null,
-      paymentDate: {between: [openedAt, closedAt]},
-    });
+    expect(paymentQuery?.params).to.deepEqual(['store-a', openedAt, closedAt]);
+    expect(paymentQuery?.sql).to.match(/o\.storeid = \$1 AND pt\.riderid IS NULL/);
+    expect(paymentQuery?.sql).to.match(/pt\.paymentdate BETWEEN \$2 AND \$3/);
     expect(result.collections.cash).to.equal(170.5);
     expect(result.walletCollections).to.deepEqual({
       cash: 25,
@@ -348,7 +349,7 @@ describe('shift revenue after sales returns', () => {
         ],
       },
       orderItemRepository: {find: async () => []},
-      paymentTransactionRepository: {find: async () => []},
+      paymentTransactionRepository: {find: async () => [], execute: async () => []},
       riderCashHandoverRepository: {find: async () => []},
       walletRechargeRequestRepository: {find: async () => []},
       pettyCashService: {computeWindowActivity: async () => ({})},

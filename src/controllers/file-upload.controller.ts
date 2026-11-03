@@ -1,3 +1,4 @@
+import {authenticate} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {
@@ -11,15 +12,17 @@ import {
   Response,
   RestBindings,
 } from '@loopback/rest';
+import {randomUUID} from 'crypto';
 import fs from 'fs';
-import path from 'path';
-import {promisify} from 'util';
 import {FILE_UPLOAD_SERVICE, STORAGE_DIRECTORY} from '../keys';
 import {MediaRepository} from '../repositories';
 import {FileUploadHandler} from '../types';
+import {
+  MAX_UPLOAD_BYTES,
+  resolvePublicFilePath,
+  resolveUploadExtension,
+} from '../utils/file-upload-policy';
 import * as mime from 'mime-types';
-
-const readdir = promisify(fs.readdir);
 
 /**
  * A controller to handle file uploads using multipart/form-data media type
@@ -32,69 +35,61 @@ export class FileUploadController {
     private mediaRepository: MediaRepository
   ) { }
 
-  slugify(input: string): string {
-    return input
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, '-') // replace non-alphanumeric with hyphens
-      .replace(/-+/g, '-')         // remove multiple hyphens
-      .replace(/^-|-$/g, '');      // trim hyphens
-  }
-
-  private async uploadToFolder(
-    processId: string,
+  private async saveUploads(
     request: Request,
     response: Response,
   ): Promise<object> {
-    const slug = processId ? this.slugify(processId) : '';
-    const uploadDir = path.resolve(this.storageDirectory, slug);
-
-    if (!uploadDir.startsWith(this.storageDirectory)) {
-      throw new HttpErrors.BadRequest('Invalid folder path');
-    }
-
-    if (!fs.existsSync(uploadDir)) {
-      // fs.mkdirSync(uploadDir, { recursive: true });
-      throw new HttpErrors.BadRequest('No such path exist');
-    }
-
     const multer = require('multer');
     const storage = multer.diskStorage({
-      destination: uploadDir,
+      destination: this.storageDirectory,
       filename: (req: Request, file: Express.Multer.File, cb: Function) => {
-        const timestamp = new Date().toISOString().replace(/[-:.]/g, '');
-        cb(null, `${timestamp}_${file.originalname}`);
+        const extension = resolveUploadExtension(
+          file.originalname,
+          file.mimetype,
+        );
+        cb(null, `${randomUUID()}${extension}`);
       },
     });
 
-    const handler = multer({storage}).any();
+    const handler = multer({
+      storage,
+      limits: {fileSize: MAX_UPLOAD_BYTES},
+      fileFilter: (
+        req: Request,
+        file: Express.Multer.File,
+        cb: (error: Error | null, accept?: boolean) => void,
+      ) => {
+        if (resolveUploadExtension(file.originalname, file.mimetype)) {
+          cb(null, true);
+        } else {
+          cb(new HttpErrors.UnsupportedMediaType('This file type is not allowed.'));
+        }
+      },
+    }).any();
 
     return new Promise<object>((resolve, reject) => {
       handler(request, response, (err: unknown) => {
-        if (err) {
+        if ((err as {code?: string} | undefined)?.code === 'LIMIT_FILE_SIZE') {
+          reject(new HttpErrors.PayloadTooLarge('File is too large.'));
+        } else if (err instanceof HttpErrors.HttpError) {
+          reject(err);
+        } else if (err) {
           reject(new HttpErrors.InternalServerError('Upload failed'));
         } else {
-          resolve(FileUploadController.getFilesAndFields(request, slug));
+          resolve(FileUploadController.getFilesAndFields(request));
         }
       });
     });
   }
 
-  @post('/files/{processId}')
-  async uploadWithProcessId(
-    @param.path.string('processId') processId: string,
-    @requestBody.file() request: Request,
-    @inject(RestBindings.Http.RESPONSE) response: Response,
-  ): Promise<object> {
-    return this.uploadToFolder(processId, request, response);
-  }
-
+  @authenticate('jwt')
   @post('/files')
   async uploadToRoot(
     @requestBody.file() request: Request,
     @inject(RestBindings.Http.RESPONSE) response: Response,
   ): Promise<object> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result: any = await this.uploadToFolder('', request, response);
+    const result: any = await this.saveUploads(request, response);
 
     const filesWithIds = [];
 
@@ -151,66 +146,6 @@ export class FileUploadController {
   //   return {files, fields: request.body};
   // }
 
-  @get('/files', {
-    responses: {
-      200: {
-        content: {
-          // string[]
-          'application/json': {
-            schema: {
-              type: 'array',
-              items: {
-                type: 'string',
-              },
-            },
-          },
-        },
-        description: 'A list of files',
-      },
-    },
-  })
-  async listFiles() {
-    const files = await readdir(this.storageDirectory);
-    return files;
-  }
-
-  @get('/files/{folderName}', {
-    responses: {
-      200: {
-        content: {
-          // string[]
-          'application/json': {
-            schema: {
-              type: 'array',
-              items: {
-                type: 'string',
-              },
-            },
-          },
-        },
-        description: 'A list of files',
-      },
-    },
-  })
-  async listFolderFiles(
-    @param.path.string('folderName') folderName: string,
-  ) {
-    const folderPath = path.resolve(this.storageDirectory, folderName);
-
-    // Security check to prevent directory traversal
-    if (!folderPath.startsWith(this.storageDirectory)) {
-      throw new HttpErrors.BadRequest('Invalid folder path');
-    }
-
-    if (!fs.existsSync(folderPath)) {
-      throw new HttpErrors.NotFound(`Folder "${folderName}" not found`);
-    }
-
-    const files = await readdir(folderPath);
-    return files;
-
-  }
-
   @get('/files/file/{path}/{fileName}')
   @oas.response.file()
   async downloadFile(
@@ -228,6 +163,7 @@ export class FileUploadController {
         }
 
         response.setHeader('Content-Type', 'application/octet-stream');
+        response.setHeader('X-Content-Type-Options', 'nosniff');
         response.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
         response.status(200).end(data);
 
@@ -253,6 +189,7 @@ export class FileUploadController {
 
         const contentType = mime.lookup(fileName) || 'application/octet-stream';
         response.setHeader('Content-Type', contentType);
+        response.setHeader('X-Content-Type-Options', 'nosniff');
 
         // ❌ No Content-Disposition (browser will preview if possible)
         response.status(200).end(data);
@@ -267,26 +204,22 @@ export class FileUploadController {
    * @param fileName - File name
    */
   private validateFileName(filePath: string): string {
-    const resolved = path.resolve(this.storageDirectory, filePath);
+    const resolved = resolvePublicFilePath(this.storageDirectory, filePath);
 
-    if (!resolved.startsWith(this.storageDirectory)) {
-      throw new HttpErrors.BadRequest(`Invalid file path: ${filePath}`);
-    }
-
-    if (!fs.existsSync(resolved)) {
+    if (!resolved || !fs.existsSync(resolved)) {
       throw new HttpErrors.NotFound('File not found');
     }
 
     return resolved;
   }
 
-  private static getFilesAndFields(request: Request, slug: string = '') {
+  private static getFilesAndFields(request: Request) {
     const uploadedFiles = request.files;
     const mapper = (f: Express.Multer.File) => ({
       fieldname: f.fieldname,
       fileName: f.originalname,
       newFileName: f.filename,
-      fileUrl: `${process.env.API_ENDPOINT}/files/file/${encodeURIComponent(slug ? slug + '/' + f.filename : f.filename)}`,
+      fileUrl: `${process.env.API_ENDPOINT}/files/file/${encodeURIComponent(f.filename)}`,
       encoding: f.encoding,
       mimetype: f.mimetype,
       size: f.size,
