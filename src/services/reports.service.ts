@@ -7,6 +7,7 @@ import {OrderType} from '../models/order-type.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
 import {PettyCashStatus} from '../models/petty-cash-status.enum';
+import {SalesReturnStatus} from '../models/sales-return.model';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {
   ClusterRepository,
@@ -26,6 +27,7 @@ import {
   PettyCashFinanceEntryRepository,
   PettyCashRegisterEntryRepository,
   RegionRepository,
+  SalesReturnRepository,
   ServiceRepository,
   ShiftRepository,
   StoreMonthlyTargetRepository,
@@ -335,6 +337,8 @@ export class ReportsService {
     @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(InvoiceOrderLinkRepository)
     private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
+    @repository(SalesReturnRepository)
+    private salesReturnRepo: SalesReturnRepository,
     @repository(UsersRepository) private usersRepo: UsersRepository,
     @repository(CustomerAddressRepository)
     private customerAddressRepo: CustomerAddressRepository,
@@ -1505,10 +1509,36 @@ export class ReportsService {
             storeId: {inq: storeIds},
             status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
           } as object,
-          fields: {id: true, storeId: true, orderType: true, status: true} as object,
+          fields: {
+            id: true, storeId: true, orderType: true, status: true,
+            taxAmount: true, totalAmount: true,
+          } as object,
         })
       : [];
     const revenueOrderById = new Map(revenueOrders.map(o => [o.id, o]));
+    const approvedReturns = revenueOrderIds.length
+      ? await this.salesReturnRepo.find({
+          where: {
+            orderId: {inq: revenueOrderIds},
+            status: SalesReturnStatus.APPROVED,
+          } as object,
+          fields: {
+            orderId: true,
+            creditAmount: true,
+            returnedItems: true,
+            resolvedAt: true,
+            updatedAt: true,
+            createdAt: true,
+          } as object,
+        })
+      : [];
+    const returnsByOrderId = new Map<string, typeof approvedReturns>();
+    for (const salesReturn of approvedReturns) {
+      returnsByOrderId.set(
+        salesReturn.orderId,
+        [...(returnsByOrderId.get(salesReturn.orderId) ?? []), salesReturn],
+      );
+    }
 
     const grouped = new Map<string, DailySalesRow>();
     // closureNo/remarks are joined across every shift in a (store, day)
@@ -1537,6 +1567,9 @@ export class ReportsService {
         : 0;
       let pmuRevenue = 0;
       let p2dRevenue = 0;
+      let invoiceTaxes = isMigratedItpvShift
+        ? Number(closing.itpv?.zReport?.revenue?.taxes) || 0
+        : 0;
       for (const link of invoiceOrders) {
         const order = revenueOrderById.get(link.orderId);
         if (!order || order.storeId !== shift.storeId) continue;
@@ -1550,16 +1583,56 @@ export class ReportsService {
         if (invoiceCreatedAt == null || invoiceCreatedAt < windowStart || invoiceCreatedAt > windowEnd) continue;
 
         const orderTotal = Number(link.orderTotal) || 0;
+        const laterReturns = (returnsByOrderId.get(link.orderId) ?? []).filter(salesReturn => {
+          const resolvedAt = salesReturn.resolvedAt ?? salesReturn.updatedAt ?? salesReturn.createdAt;
+          return resolvedAt && new Date(resolvedAt).getTime() > windowEnd;
+        });
+        const returnedGross = laterReturns.reduce(
+          (sum, salesReturn) => sum + (Number(salesReturn.creditAmount) || 0),
+          0,
+        );
+        const returnedTax = laterReturns.reduce((sum, salesReturn) => {
+          const credit = Number(salesReturn.creditAmount) || 0;
+          const items = salesReturn.returnedItems ?? [];
+          const itemTax = items.reduce(
+            (itemSum, item) =>
+              itemSum + (Number((item as {taxAmount?: number}).taxAmount) || 0),
+            0,
+          );
+          const hasItemTax = items.length > 0 && items.every(item =>
+            Object.prototype.hasOwnProperty.call(item, 'taxAmount'),
+          );
+          const preTax = items.reduce(
+            (itemSum, item) =>
+              itemSum + (Number((item as {amount?: number}).amount) || 0),
+            0,
+          );
+          return sum + (hasItemTax ? itemTax : credit - preTax);
+        }, 0);
+        const invoiceOrderTotal = orderTotal + returnedGross;
+        const invoiceOrderTax = Number(order.taxAmount) + returnedTax;
+        const invoiceOrderGross = Number(order.totalAmount) + returnedGross;
+        const tax = invoice.isConsolidated
+          ? invoiceOrderGross
+            ? Math.round(invoiceOrderTotal * invoiceOrderTax / invoiceOrderGross * 100) / 100
+            : 0
+          : (Number(invoice.cgst) || 0) + (Number(invoice.sgst) || 0);
         const value = invoice.isConsolidated
-          ? orderTotal
+          ? invoiceOrderTotal - tax
           : Number(invoice.subtotal) || 0;
         if (isMigratedItpvShift) {
           if ((Number(returnCell.revenue) || 0) > 0 && order.status === OrderStatus.RETURNED) {
             continue;
           }
-          if (order.orderType === OrderType.HOME_PICKUP) pmuRevenue += value;
-          else if (order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY) p2dRevenue += value;
+          if (order.orderType === OrderType.HOME_PICKUP) {
+            pmuRevenue += value;
+            invoiceTaxes += tax;
+          } else if (order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY) {
+            p2dRevenue += value;
+            invoiceTaxes += tax;
+          }
         } else {
+          invoiceTaxes += tax;
           if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
           else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
         }
@@ -1631,9 +1704,11 @@ export class ReportsService {
       row.psbRevenue += psbRevenue;
       row.pmuRevenue += pmuRevenue;
       row.p2dRevenue += p2dRevenue;
-      row.revenue += Number(revenueCell.revenue) || 0;
+      const taxes = invoiceTaxes - (Number(returnCell.taxes) || 0);
+      const savedTaxes = Number(revenueCell.taxes) || 0;
+      row.revenue += (Number(revenueCell.revenue) || 0) - (taxes - savedTaxes);
       row.discount += Number(revenueCell.discount) || 0;
-      row.taxes += Number(revenueCell.taxes) || 0;
+      row.taxes += taxes;
       row.totalSales += Number(revenueCell.totalSales) || 0;
       row.noOfTickets += Number(revenueCell.tickets) || 0;
       row.noOfItems += Number(revenueCell.items) || 0;
