@@ -2466,23 +2466,21 @@ export class OrderService {
 
       // Wallet deduction
       if (walletAmount > 0 && wallet) {
-        const lockedWallet = await this.walletRepo.findById(
+        const newBalance = await this.walletRepo.adjustBalance(
           wallet.id,
-          undefined,
-          {transaction: tx} as any,
-        );
-        if (Number(lockedWallet.currentBalance) < walletAmount) {
-          throw new HttpErrors.BadRequest(
-            `Insufficient wallet balance at checkout. Available: ₹${lockedWallet.currentBalance}, Requested: ₹${walletAmount}`,
-          );
-        }
-
-        const newBalance = Number(lockedWallet.currentBalance) - walletAmount;
-        await this.walletRepo.updateById(
-          wallet.id,
-          {currentBalance: newBalance},
+          -walletAmount,
           {transaction: tx},
         );
+        if (newBalance === null) {
+          const current = await this.walletRepo.findById(
+            wallet.id,
+            undefined,
+            {transaction: tx},
+          );
+          throw new HttpErrors.BadRequest(
+            `Insufficient wallet balance at checkout. Available: ₹${current.currentBalance}, Requested: ₹${walletAmount}`,
+          );
+        }
         const walletTransaction = await this.walletTransactionRepo.create(
           {
             id: v4(),
@@ -7983,12 +7981,23 @@ export class OrderService {
       let walletPayment = null;
       let walletNotification: WalletWhatsAppNotification | undefined;
       if (thisWallet > 0 && wallet) {
-        const newBalance = wallet.currentBalance - thisWallet;
-        await this.walletRepo.updateById(
+        // The check above ran before this transaction, so the balance may have
+        // moved since. adjustBalance re-checks it and uses the current value.
+        const newBalance = await this.walletRepo.adjustBalance(
           wallet.id,
-          {currentBalance: newBalance},
+          -thisWallet,
           {transaction: tx},
         );
+        if (newBalance === null) {
+          const current = await this.walletRepo.findById(
+            wallet.id,
+            undefined,
+            {transaction: tx},
+          );
+          throw new HttpErrors.BadRequest(
+            `Insufficient wallet balance. Available: ₹${current.currentBalance}, Requested: ₹${thisWallet}`,
+          );
+        }
         const walletTransaction = await this.walletTransactionRepo.create(
           {
             id: v4(),

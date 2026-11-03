@@ -1604,13 +1604,10 @@ export class ApprovalService {
         currentBalance: 0,
       }, options);
     }
-    const newBalance = parseFloat(
-      ((Number(wallet.currentBalance) || 0) + amount).toFixed(2),
-    );
-    await this.walletRepo.updateById(wallet.id, {
-      currentBalance: newBalance,
-      updatedAt: new Date(),
-    }, options);
+    const newBalance = await this.walletRepo.adjustBalance(wallet.id, amount, options);
+    if (newBalance === null) {
+      throw new HttpErrors.BadRequest('Could not credit the customer wallet.');
+    }
 
     await this.walletTransactionRepo.create({
       id: v4(),
