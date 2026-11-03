@@ -28,7 +28,6 @@ import {
   PettyCashRegisterEntryRepository,
   RegionRepository,
   SalesReturnRepository,
-  ServiceRepository,
   ShiftRepository,
   StoreMonthlyTargetRepository,
   StoreRepository,
@@ -343,7 +342,6 @@ export class ReportsService {
     @repository(CustomerAddressRepository)
     private customerAddressRepo: CustomerAddressRepository,
     @repository(ItemRepository) private itemRepo: ItemRepository,
-    @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(GstTaxConfigurationRepository)
     private gstTaxConfigurationRepo: GstTaxConfigurationRepository,
     @repository(StoreMonthlyTargetRepository)
@@ -372,14 +370,8 @@ export class ReportsService {
    * payment it later funds both appear: this report lists tenders taken,
    * so summing every row double-counts wallet money by design.
    *
-   * On Account invoices work the same way, for the same reason — see
-   * buildOnAccountInvoiceRows: the invoice GENERATION event shows up as
-   * its own row (paymentMode 'On Account', nothing actually collected
-   * yet), and the eventual real payment against it shows up later, on
-   * whichever day it's actually paid, as a normal payment row — just
-   * with its ticket cell overridden to the same `On Account -
-   * <invoiceNumber>` label (see the ticketNo override in the main
-   * payment-row map below) instead of the underlying order's own number.
+   * Generating an On Account invoice moves no money, so it is excluded.
+   * The eventual payment appears once, under the mode actually collected.
    */
   async buildModeOfPayment(params: {
     storeIds: string[];
@@ -404,7 +396,7 @@ export class ReportsService {
     // can approach the whole orders table across many/all stores), fetch
     // candidate payments by date first — indexed, bounded by the window —
     // then resolve only the specific orders they actually reference.
-    const [candidatePayments, cashShifts, walletRows, onAccountInvoiceRows] = await Promise.all([
+    const [candidatePayments, cashShifts, walletRows] = await Promise.all([
       this.paymentTransactionRepo.find({
         where: {paymentDate: {between: [from, to]}} as object,
         order: ['paymentDate DESC'],
@@ -414,7 +406,6 @@ export class ReportsService {
         fields: {id: true, storeId: true, storeCode: true, storeName: true, closureNo: true} as object,
       }),
       this.buildWalletTopUpRows(storeIds, from, to),
-      this.buildOnAccountInvoiceRows(storeIds, from, to),
     ]);
 
     const cashShiftById = new Map(cashShifts.map(shift => [shift.id, shift]));
@@ -459,21 +450,19 @@ export class ReportsService {
       payoutOrders.forEach(order => orderById.set(order.id, order));
     }
 
-    if (!payments.length && !walletRows.length && !onAccountInvoiceRows.length) return empty;
+    if (!payments.length && !walletRows.length) return empty;
 
-    // The three ledgers are paged as one list, so the whole merged set has
+    // The two ledgers are paged as one list, so the whole merged set has
     // to be ordered in memory before slicing: a DB-side limit/skip on the
-    // payments alone would drop the top-ups/invoices that belong on the
+    // payments alone would drop the top-ups that belong on the
     // same page.
     type Entry =
-      | {date: Date | null; payment: (typeof payments)[number]; wallet?: undefined; onAccountInvoice?: undefined}
-      | {date: Date | null; wallet: ModeOfPaymentRow; payment?: undefined; onAccountInvoice?: undefined}
-      | {date: Date | null; onAccountInvoice: ModeOfPaymentRow; payment?: undefined; wallet?: undefined};
+      | {date: Date | null; payment: (typeof payments)[number]; wallet?: undefined}
+      | {date: Date | null; wallet: ModeOfPaymentRow; payment?: undefined};
 
     const entries: Entry[] = [
       ...payments.map(payment => ({date: payment.paymentDate ?? null, payment})),
       ...walletRows.map(wallet => ({date: wallet.date, wallet})),
-      ...onAccountInvoiceRows.map(onAccountInvoice => ({date: onAccountInvoice.date, onAccountInvoice})),
     ].sort((a, b) => timeOf(b.date) - timeOf(a.date));
 
     // Count and totals come from the whole matching set, never just the
@@ -487,14 +476,6 @@ export class ReportsService {
           const label =
             PAYMENT_MODE_LABELS[entry.wallet.paymentMode] ?? entry.wallet.paymentModeLabel;
           totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + entry.wallet.amount);
-          return acc;
-        }
-        if (entry.onAccountInvoice) {
-          acc.amount += entry.onAccountInvoice.amount;
-          const label =
-            PAYMENT_MODE_LABELS[entry.onAccountInvoice.paymentMode] ??
-            entry.onAccountInvoice.paymentModeLabel;
-          totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + entry.onAccountInvoice.amount);
           return acc;
         }
         const txn = entry.payment;
@@ -536,8 +517,6 @@ export class ReportsService {
 
     const rows: ModeOfPaymentRow[] = pageEntries.map(entry => {
       if (entry.wallet) return entry.wallet;
-      if (entry.onAccountInvoice) return entry.onAccountInvoice;
-
       const txn = entry.payment;
       const order = orderById.get(txn.orderId);
       const isRefund = txn.transactionType === 'refund';
@@ -546,11 +525,6 @@ export class ReportsService {
         ? cashShiftById.get(txn.cashShiftId) : undefined;
       const shift = cashShift ?? (order?.shiftId ? shiftById.get(String(order.shiftId)) : undefined);
       const customer = order?.customerId ? customerById.get(String(order.customerId)) : undefined;
-      // This order was billed through a consolidated On Account invoice —
-      // show the same `On Account - <invoiceNumber>` label the billing-
-      // event row above used, instead of the order's own number, so the
-      // two rows (invoice raised, then eventually paid) read as one
-      // story rather than two unrelated-looking lines.
       const onAccountInvoiceNumber = onAccountInvoiceNumberByOrderId.get(txn.orderId);
 
       return {
@@ -562,9 +536,7 @@ export class ReportsService {
         // closureNo exists only once a shift has been closed; an open
         // shift has no closure number yet, which is not missing data.
         shiftClosureNo: shift?.closureNo != null ? String(shift.closureNo) : '—',
-        ticketNo: onAccountInvoiceNumber
-          ? `On Account - ${onAccountInvoiceNumber}`
-          : order?.orderNumber ?? '—',
+        ticketNo: order?.orderNumber ?? '—',
         invoiceNo: onAccountInvoiceNumber ?? invoiceNumberByOrderId.get(txn.orderId) ?? '-',
         // The staff member who placed the ticket — never the customer, even
         // when placedByName is blank. Who bought it is its own column.
@@ -583,11 +555,9 @@ export class ReportsService {
   /**
    * Wallet top-ups taken for the selected stores, as Mode Of Payment rows.
    *
-   * A top-up has no store of its own — nothing on the recharge request or
-   * the wallet records where the money was handed over — so the customer's
-   * preferred store is the only link the schema offers, and that is what
-   * this matches on. A customer with no preferred store therefore appears
-   * under no store at all, which is the honest answer rather than a guess.
+   * In-store top-ups use the store captured on the recharge request.
+   * Customer preferred store remains the fallback for legacy/self-service
+   * requests that have no store of their own.
    *
    * Source is WalletRechargeRequest, not the WalletTransaction credit it
    * creates: only the request carries a paymentMode, which is the whole
@@ -621,7 +591,7 @@ export class ReportsService {
     const candidateCustomerIds = [...new Set(candidateRequests.map(r => r.customerId))];
     const customers = await findInBatches(candidateCustomerIds, batch =>
       this.customerRepo.find({
-        where: {id: {inq: batch}, preferredStoreId: {inq: storeIds}} as object,
+        where: {id: {inq: batch}} as object,
         fields: {
           id: true,
           firstName: true,
@@ -634,7 +604,11 @@ export class ReportsService {
     if (!customers.length) return [];
     const customerById = new Map(customers.map(c => [String(c.id), c]));
 
-    const requests = candidateRequests.filter(request => customerById.has(String(request.customerId)));
+    const requests = candidateRequests.filter(request => {
+      const customer = customerById.get(String(request.customerId));
+      const storeId = request.storeId ?? customer?.preferredStoreId;
+      return storeId != null && storeIds.includes(String(storeId));
+    });
     if (!requests.length) return [];
 
     const storeNameById = new Map(
@@ -643,13 +617,14 @@ export class ReportsService {
 
     return requests.map(request => {
       const customer = customerById.get(String(request.customerId));
+      const storeId = request.storeId ?? customer?.preferredStoreId;
 
       return {
         // Namespaced so a top-up can never collide with a payment
         // transaction id in the merged list.
         id: `wallet-topup:${request.id}`,
-        storeName: customer?.preferredStoreId
-          ? (storeNameById.get(String(customer.preferredStoreId)) ?? '—')
+        storeName: storeId
+          ? (storeNameById.get(String(storeId)) ?? '—')
           : '—',
         date: request.createdAt ?? null,
         // A top-up is tied to no shift and no ticket. The recharge
@@ -1123,29 +1098,12 @@ export class ReportsService {
   }
 
   /**
-   * Sales Report of GST — one row per INVOICE LINE ITEM, matching the
-   * client's own GST sales register format (Sr No / BU / Region / ... /
-   * Buyer_State_Code).
+   * Sales Report of GST — one row per issued invoice.
    *
    * Keyed by invoice generation date, same as Revenue elsewhere in this
    * file — a ticket only has something taxable to report once it's
    * actually invoiced.
    *
-   * Only plain, single-order invoices contribute: a consolidated
-   * (On Account) invoice never gets a CGST/SGST split or an item
-   * snapshot written to it (see CustomerBillingController.generate...
-   * invoice — subtotal is just the combined balance due, tax fields stay
-   * at their 0 default), so there is nothing GST-relevant to report for
-   * it. This is a real gap in the on-account billing flow, not something
-   * this report can paper over — flagged separately, not silently
-   * skipped.
-   *
-   * Each line's Taxable Value/CGST/SGST is that item's proportional
-   * share of its invoice's totals (`item.totalPrice ÷ invoice.subtotal`),
-   * the same proration technique used for a consolidated invoice's
-   * per-order split elsewhere in this file — here applied per-item
-   * instead, since the invoice stores only aggregate tax figures, never
-   * a per-item breakdown.
    */
   async buildSalesGst(params: OrderReportParams & {state?: string}): Promise<PagedReport<object>> {
     const {storeIds, state, from, to, limit, skip} = params;
@@ -1167,13 +1125,46 @@ export class ReportsService {
     const candidateInvoices = await this.invoiceRepo.find({
       where: {
         status: InvoiceStatus.ISSUED,
-        isConsolidated: false,
         createdAt: {between: [from, to]},
       } as object,
     });
     if (!candidateInvoices.length) return emptyPaged();
 
-    const candidateOrderIds = [...new Set(candidateInvoices.map(inv => inv.orderId))];
+    const consolidatedInvoiceIds = candidateInvoices
+      .filter(invoice => invoice.isConsolidated)
+      .map(invoice => invoice.id);
+    const consolidatedLinks = consolidatedInvoiceIds.length
+      ? await this.invoiceOrderLinkRepo.find({
+          where: {invoiceId: {inq: consolidatedInvoiceIds}} as object,
+          fields: {invoiceId: true, orderId: true, orderTotal: true} as object,
+        })
+      : [];
+    const consolidatedOrders = await findInBatches(
+      [...new Set(consolidatedLinks.map(link => link.orderId))],
+      batch => this.orderRepo.find({
+        where: {id: {inq: batch}} as object,
+        fields: {id: true, storeId: true} as object,
+      }),
+    );
+    const consolidatedStoreByOrderId = new Map(
+      consolidatedOrders.map(order => [String(order.id), String(order.storeId)]),
+    );
+    const linkedStoresByInvoice = new Map<string, Set<string>>();
+    for (const link of consolidatedLinks) {
+      const storeId = consolidatedStoreByOrderId.get(String(link.orderId));
+      if (!storeId) continue;
+      const linkedStores = linkedStoresByInvoice.get(String(link.invoiceId)) ?? new Set<string>();
+      linkedStores.add(storeId);
+      linkedStoresByInvoice.set(String(link.invoiceId), linkedStores);
+    }
+    const selectedStoreSet = new Set(selectedStoreIds.map(String));
+    const scopedCandidateInvoices = candidateInvoices.filter(invoice => {
+      if (!invoice.isConsolidated) return true;
+      const linkedStores = linkedStoresByInvoice.get(String(invoice.id));
+      return linkedStores != null && [...linkedStores].every(storeId => selectedStoreSet.has(storeId));
+    });
+
+    const candidateOrderIds = [...new Set(scopedCandidateInvoices.map(inv => inv.orderId))];
     const orders = await findInBatches(candidateOrderIds, batch =>
       this.orderRepo.find({
         where: {id: {inq: batch}, storeId: {inq: selectedStoreIds}} as object,
@@ -1189,7 +1180,7 @@ export class ReportsService {
     if (!orders.length) return emptyPaged();
     const orderById = new Map(orders.map(o => [String(o.id), o]));
 
-    const invoices = candidateInvoices.filter(invoice => orderById.has(String(invoice.orderId)));
+    const invoices = scopedCandidateInvoices.filter(invoice => orderById.has(String(invoice.orderId)));
     if (!invoices.length) return emptyPaged();
 
     const customerIds = [...new Set(orders.map(o => String(o.customerId)))];
@@ -1214,30 +1205,106 @@ export class ReportsService {
     const addressById = new Map(addresses.map(a => [String(a.id), a]));
     const defaultAddressByCustomer = new Map(defaultAddresses.map(a => [String(a.customerId), a]));
 
-    const itemIds = new Set<string>();
-    const serviceIds = new Set<string>();
-    for (const invoice of invoices) {
-      for (const line of (invoice.items ?? []) as Array<{itemId?: string; serviceId?: string}>) {
-        if (line.itemId) itemIds.add(line.itemId);
-        if (line.serviceId) serviceIds.add(line.serviceId);
-      }
+    const legacyConsolidatedIds = invoices
+      .filter(invoice => invoice.isConsolidated &&
+        (Number(invoice.cgst) || 0) + (Number(invoice.sgst) || 0) === 0)
+      .map(invoice => invoice.id);
+    const legacyConsolidatedIdSet = new Set(legacyConsolidatedIds.map(String));
+    const legacyLinks = consolidatedLinks.filter(link =>
+      legacyConsolidatedIdSet.has(String(link.invoiceId)),
+    );
+    const legacyOrders = await findInBatches(
+      [...new Set(legacyLinks.map(link => link.orderId))],
+      batch => this.orderRepo.find({
+        where: {id: {inq: batch}} as object,
+        fields: {
+          id: true, subtotal: true, discountAmount: true, taxAmount: true, totalAmount: true,
+        } as object,
+      }),
+    );
+    const legacyReturns = legacyOrders.length
+      ? await this.salesReturnRepo.find({
+          where: {
+            orderId: {inq: legacyOrders.map(order => order.id)},
+            status: SalesReturnStatus.APPROVED,
+          } as object,
+          fields: {
+            orderId: true, creditAmount: true, returnedItems: true,
+            resolvedAt: true, updatedAt: true, createdAt: true,
+          } as object,
+        })
+      : [];
+    const legacyPayments = legacyOrders.length
+      ? await this.paymentTransactionRepo.find({
+          where: {
+            orderId: {inq: legacyOrders.map(order => order.id)},
+            transactionType: {neq: 'refund'},
+          } as object,
+          fields: {orderId: true, amount: true, paymentDate: true} as object,
+        })
+      : [];
+    const legacyOrderById = new Map(legacyOrders.map(order => [String(order.id), order]));
+    const legacyInvoiceById = new Map(invoices.map(invoice => [String(invoice.id), invoice]));
+    const legacyReturnsByOrderId = new Map<string, typeof legacyReturns>();
+    const legacyPaymentsByOrderId = new Map<string, typeof legacyPayments>();
+    for (const salesReturn of legacyReturns) {
+      legacyReturnsByOrderId.set(
+        String(salesReturn.orderId),
+        [...(legacyReturnsByOrderId.get(String(salesReturn.orderId)) ?? []), salesReturn],
+      );
     }
-    const [items, services] = await Promise.all([
-      itemIds.size
-        ? this.itemRepo.find({
-            where: {id: {inq: [...itemIds]}} as object,
-            fields: {id: true, name: true} as object,
-          })
-        : Promise.resolve([]),
-      serviceIds.size
-        ? this.serviceRepo.find({
-            where: {id: {inq: [...serviceIds]}} as object,
-            fields: {id: true, name: true} as object,
-          })
-        : Promise.resolve([]),
-    ]);
-    const itemNameById = new Map(items.map(i => [String(i.id), i.name]));
-    const serviceNameById = new Map(services.map(s => [String(s.id), s.name]));
+    for (const payment of legacyPayments) {
+      legacyPaymentsByOrderId.set(
+        String(payment.orderId),
+        [...(legacyPaymentsByOrderId.get(String(payment.orderId)) ?? []), payment],
+      );
+    }
+    const legacyGstByInvoice = new Map<string, {taxable: number; tax: number}>();
+    for (const link of legacyLinks) {
+      const linkedOrder = legacyOrderById.get(String(link.orderId));
+      if (!linkedOrder) continue;
+      const invoice = legacyInvoiceById.get(String(link.invoiceId));
+      const invoiceTime = invoice?.createdAt ? new Date(invoice.createdAt).getTime() : -Infinity;
+      const laterReturns = (legacyReturnsByOrderId.get(String(link.orderId)) ?? [])
+        .filter(salesReturn => {
+          const resolvedAt = salesReturn.resolvedAt ?? salesReturn.updatedAt ?? salesReturn.createdAt;
+          return resolvedAt && new Date(resolvedAt).getTime() > invoiceTime;
+        });
+      const returnedGross = laterReturns.reduce(
+        (sum, salesReturn) => sum + (Number(salesReturn.creditAmount) || 0),
+        0,
+      );
+      const returnedTax = laterReturns.reduce((sum, salesReturn) => {
+        const credit = Number(salesReturn.creditAmount) || 0;
+        const items = salesReturn.returnedItems ?? [];
+        const itemTax = items.reduce(
+          (itemSum, item) => itemSum + (Number((item as {taxAmount?: number}).taxAmount) || 0),
+          0,
+        );
+        const hasItemTax = items.length > 0 && items.every(item =>
+          Object.prototype.hasOwnProperty.call(item, 'taxAmount'),
+        );
+        const preTax = items.reduce(
+          (itemSum, item) => itemSum + (Number((item as {amount?: number}).amount) || 0),
+          0,
+        );
+        return sum + (hasItemTax ? itemTax : credit - preTax);
+      }, 0);
+      const returnedTaxable = returnedGross - returnedTax;
+      const orderTotal = (Number(linkedOrder.totalAmount) || 0) + returnedGross;
+      const paidBeforeInvoice = (legacyPaymentsByOrderId.get(String(link.orderId)) ?? [])
+        .filter(payment => !payment.paymentDate || new Date(payment.paymentDate).getTime() <= invoiceTime)
+        .reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+      const billedTotal = Math.max(0, orderTotal - paidBeforeInvoice);
+      const fraction = orderTotal > 0 ? Math.min(1, billedTotal / orderTotal) : 0;
+      const current = legacyGstByInvoice.get(String(link.invoiceId)) ?? {taxable: 0, tax: 0};
+      current.taxable += (Math.max(
+        0,
+        (Number(linkedOrder.subtotal) || 0) - (Number(linkedOrder.discountAmount) || 0),
+      ) + returnedTaxable) * fraction;
+      current.tax += ((Number(linkedOrder.taxAmount) || 0) + returnedTax) * fraction;
+      legacyGstByInvoice.set(String(link.invoiceId), current);
+    }
 
     const allRows: object[] = [];
     let srNo = 0;
@@ -1246,60 +1313,45 @@ export class ReportsService {
       if (!order) continue;
       const store = storeCtx.get(String(order.storeId));
       const customer = customerById.get(String(order.customerId));
-      const isBusiness = customer?.customerEntityType === 'business';
-
-      const lineItems = (
-        (invoice.items ?? []) as Array<{
-          itemId?: string;
-          serviceId?: string;
-          totalPrice?: number;
-        }>
-      ).filter(line => (Number(line.totalPrice) || 0) > 0);
-      if (!lineItems.length) continue;
-
+      const legacyGst = legacyGstByInvoice.get(String(invoice.id));
       const invoiceSubtotal = Number(invoice.subtotal) || 0;
-      const taxableSubtotal = Math.max(0, invoiceSubtotal - (Number(invoice.discount) || 0));
-      const invoiceCgst = Number(invoice.cgst) || 0;
-      const invoiceSgst = Number(invoice.sgst) || 0;
+      const taxableSubtotal = legacyGst
+        ? roundRupees(legacyGst.taxable)
+        : Math.max(0, invoiceSubtotal - (Number(invoice.discount) || 0));
+      const storedCgst = Number(invoice.cgst) || 0;
+      const storedSgst = Number(invoice.sgst) || 0;
+      const invoiceCgst = legacyGst ? roundRupees(legacyGst.tax / 2) : storedCgst;
+      const invoiceSgst = legacyGst ? roundRupees(legacyGst.tax - invoiceCgst) : storedSgst;
+      const totalTax = roundRupees(invoiceCgst + invoiceSgst);
 
       const address =
         (order.deliveryAddressId ? addressById.get(order.deliveryAddressId) : undefined) ??
         defaultAddressByCustomer.get(String(order.customerId));
-      const customerName = isBusiness
-        ? customer?.companyName ?? [customer?.firstName, customer?.lastName].filter(Boolean).join(' ')
-        : [customer?.firstName, customer?.lastName].filter(Boolean).join(' ');
+      const customerName = customer?.companyName ??
+        [customer?.firstName, customer?.lastName].filter(Boolean).join(' ');
 
-      for (const line of lineItems) {
-        const fraction = invoiceSubtotal > 0 ? (Number(line.totalPrice) || 0) / invoiceSubtotal : 0;
-        const taxableValue = roundRupees(taxableSubtotal * fraction);
-        const cgstAmount = roundRupees(invoiceCgst * fraction);
-        const sgstAmount = roundRupees(invoiceSgst * fraction);
-        const totalTax = roundRupees(cgstAmount + sgstAmount);
-        const itemName = line.itemId ? itemNameById.get(line.itemId) : undefined;
-        const serviceName = line.serviceId ? serviceNameById.get(line.serviceId) : undefined;
-
-        srNo += 1;
-        allRows.push({
-          id: `${invoice.id}:${srNo}`,
+      srNo += 1;
+      allRows.push({
+          id: String(invoice.id),
           srNo,
           bu: BUSINESS_UNIT,
           region: store?.regionName ?? '—',
           cluster: store?.clusterName ?? '—',
           storeName: store?.name ?? '—',
           state: store?.state ?? '—',
-          customerGstin: isBusiness ? customer?.gstNumber ?? '' : '',
+          customerGstin: customer?.gstNumber ?? '',
           customerName: customerName || '—',
-          ticketNo: `${store?.code ?? '—'}/${order.orderNumber ?? '—'}`,
-          ticketDate: invoice.createdAt ?? null,
-          ticketValue: roundRupees(taxableValue + totalTax),
-          description: [itemName, serviceName].filter(Boolean).join(' /') || '—',
+          invoiceNo: invoice.invoiceNumber ?? '—',
+          invoiceDate: invoice.createdAt ?? null,
+          invoiceValue: roundRupees(Number(invoice.totalAmount) || 0),
+          description: 'Laundry services',
           sacHsn: SALES_GST_SAC_CODE,
-          taxableValue,
+          taxableValue: roundRupees(taxableSubtotal),
           totalTax,
           cgstRate: cgstRatePct,
-          cgstAmount,
+          cgstAmount: roundRupees(invoiceCgst),
           sgstRate: sgstRatePct,
-          sgstAmount,
+          sgstAmount: roundRupees(invoiceSgst),
           sellerGstin: SALES_GST_SELLER.gstin,
           sellerLegalName: SALES_GST_SELLER.legalName,
           sellerAddr1: SALES_GST_SELLER.addr1,
@@ -1313,7 +1365,6 @@ export class ReportsService {
           buyerPincode: address?.pincode ?? '—',
           buyerStateCode: resolveBuyerStateCode(customer?.gstNumber, address?.state),
         });
-      }
     }
 
     const totals = {
@@ -1323,8 +1374,8 @@ export class ReportsService {
       totalTax: roundRupees(
         allRows.reduce((sum, row) => sum + ((row as {totalTax: number}).totalTax || 0), 0),
       ),
-      ticketValue: roundRupees(
-        allRows.reduce((sum, row) => sum + ((row as {ticketValue: number}).ticketValue || 0), 0),
+      invoiceValue: roundRupees(
+        allRows.reduce((sum, row) => sum + ((row as {invoiceValue: number}).invoiceValue || 0), 0),
       ),
     };
 
@@ -1352,11 +1403,11 @@ export class ReportsService {
    * the Pulse spec's own example (multiple closure numbers/remarks joined
    * into one row when a store had more than one shift that day).
    *
-   * Revenue/discount/taxes/totalSales/tickets/items/services and the sales-
-   * return figures come straight off Shift.closing (already computed by
+   * Revenue/discount/tickets/items/services and the sales-return figures
+   * come straight off Shift.closing (already computed by
    * ShiftController.close() at closure time via resolveRevenue()/
-   * resolveSalesReturn() — not recomputed here, so this can't drift from
-   * what the cashier actually saw on their closing screen).
+   * resolveSalesReturn()). DSR tax is 18% of revenue less discount; total
+   * sales is that value plus tax, rounded to the nearest rupee.
    *
    * PSB vs P2D is split by invoice generation date and linked order type.
    * The total Revenue column comes from the saved closure snapshot, which
@@ -1541,6 +1592,7 @@ export class ReportsService {
     }
 
     const grouped = new Map<string, DailySalesRow>();
+    const taxableAmounts = new Map<string, number>();
     // closureNo/remarks are joined across every shift in a (store, day)
     // group; cumulative-diff figures are running totals, so only the
     // LAST shift closed that day carries the up-to-date number.
@@ -1567,9 +1619,8 @@ export class ReportsService {
         : 0;
       let pmuRevenue = 0;
       let p2dRevenue = 0;
-      let invoiceTaxes = isMigratedItpvShift
-        ? Number(closing.itpv?.zReport?.revenue?.taxes) || 0
-        : 0;
+      let shiftTaxableAmount = 0;
+      let hasInvoiceDetails = false;
       for (const link of invoiceOrders) {
         const order = revenueOrderById.get(link.orderId);
         if (!order || order.storeId !== shift.storeId) continue;
@@ -1626,13 +1677,16 @@ export class ReportsService {
           }
           if (order.orderType === OrderType.HOME_PICKUP) {
             pmuRevenue += value;
-            invoiceTaxes += tax;
           } else if (order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY) {
             p2dRevenue += value;
-            invoiceTaxes += tax;
           }
         } else {
-          invoiceTaxes += tax;
+          hasInvoiceDetails = true;
+          if (tax !== 0) {
+            shiftTaxableAmount += invoice.isConsolidated
+              ? value
+              : Math.max(0, value - (Number(invoice.discount) || 0));
+          }
           if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
           else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
         }
@@ -1704,12 +1758,19 @@ export class ReportsService {
       row.psbRevenue += psbRevenue;
       row.pmuRevenue += pmuRevenue;
       row.p2dRevenue += p2dRevenue;
-      const taxes = invoiceTaxes - (Number(returnCell.taxes) || 0);
-      const savedTaxes = Number(revenueCell.taxes) || 0;
-      row.revenue += (Number(revenueCell.revenue) || 0) - (taxes - savedTaxes);
-      row.discount += Number(revenueCell.discount) || 0;
-      row.taxes += taxes;
-      row.totalSales += Number(revenueCell.totalSales) || 0;
+      const revenue = Number(revenueCell.revenue) || 0;
+      const discount = Number(revenueCell.discount) || 0;
+      row.revenue += revenue;
+      row.discount += discount;
+      if (isMigratedItpvShift) {
+        const zReportTax = Number(closing.itpv?.zReport?.revenue?.taxes) || 0;
+        shiftTaxableAmount = zReportTax !== 0 ? revenue - discount : 0;
+      } else if (!hasInvoiceDetails && (Number(revenueCell.taxes) || 0) !== 0) {
+        // shortcut: legacy closures without invoice snapshots use their saved tax as the taxable marker.
+        shiftTaxableAmount = revenue - discount;
+      }
+      shiftTaxableAmount -= (Number(returnCell.taxes) || 0) / 0.18;
+      taxableAmounts.set(key, (taxableAmounts.get(key) ?? 0) + shiftTaxableAmount);
       row.noOfTickets += Number(revenueCell.tickets) || 0;
       row.noOfItems += Number(revenueCell.items) || 0;
       row.noOfServices += Number(revenueCell.services) || 0;
@@ -1773,6 +1834,9 @@ export class ReportsService {
     }
 
     for (const [key, row] of grouped) {
+      const taxableAmount = taxableAmounts.get(key) ?? 0;
+      row.taxes = Math.round(taxableAmount * 0.18 * 100) / 100;
+      row.totalSales = Math.round(row.revenue - row.discount + row.taxes);
       row.closureNo = (closureNumbers.get(key) ?? []).join(', ');
       row.shiftOpenRemark = (openRemarks.get(key) ?? []).join(', ') || '—';
       row.shiftClosingRemark = (closeRemarks.get(key) ?? []).join(', ') || '—';

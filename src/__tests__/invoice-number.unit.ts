@@ -181,6 +181,7 @@ describe('invoice numbering entry points', () => {
               status: 'ready',
               isOnAccount: true,
               totalAmount: 100,
+              taxAmount: 10,
             },
           ],
         },
@@ -190,6 +191,7 @@ describe('invoice numbering entry points', () => {
           create: async () => undefined,
         },
         paymentRepo: {find: async () => []},
+        storeScopeService: {resolve: async () => ({global: true}), allows: () => true},
         dataSource: {beginTransaction: async () => tx, execute: async () => []},
         orderService: {
           allocateInvoiceNumber: async (transaction: any, storeId: string) => {
@@ -206,5 +208,8 @@ describe('invoice numbering entry points', () => {
       {orderIds: ['order']},
     )) as any;
     expect(result.invoice.invoiceNumber).to.equal('DLG11-1026-069943');
+    expect(result.invoice).to.containEql({
+      subtotal: 90, discount: 0, cgst: 5, sgst: 5, totalAmount: 100,
+    });
   });
 });
