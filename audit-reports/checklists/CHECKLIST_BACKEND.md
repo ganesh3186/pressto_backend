@@ -13,15 +13,15 @@
 
 ## P0: Money and data correctness
 
-- [ ] **Make wallet credit/debit atomic** with a row lock or conditional update. **Status: on `main` (`bec4c20`), not deployed. Covers recharges, admin debits and a double-credit race in `confirmRecharge`. SQL checked on an in-memory Postgres only. Next: test on migration before any deploy.** `ARC-008`
+- [ ] **Make wallet credit/debit atomic** with a row lock or conditional update. **Status: on `main` (`bec4c20`), not deployed. Covers recharges, admin debits and a double-credit race in `confirmRecharge`. SQL validated against the real tables on migration and production (read-only plan, no writes). Next: test on migration before any deploy.** `ARC-008`
 - [ ] **Move the checkout wallet balance read inside the transaction.** **Status: on `main` (`1ff822c`), not deployed. Order creation, `addPayment` and approval refunds now use the same atomic update as `ARC-008`. Next: test wallet payments and refunds on migration before any deploy.** `ARC-009`
-- [ ] **Make security deposit add/deduct atomic.** **Status: on `main` (`8c6c275`), not deployed. Also fixes a double-credit race in `confirmTopup`. `deductAmount` has no callers today, so the live risk is lost or doubled top-ups. SQL checked on an in-memory Postgres only. Next: test top-ups on migration before any deploy.** `ARC-010`
-- [ ] **Close the shift-open race.** **Status: on `main` (`b8ba4f9`), not deployed. Uses a per-store advisory lock in `open()`, so no schema change. Next: check for existing duplicate open shifts (needs SSH), test opening a shift on migration before any deploy.** `ARC-011`
+- [ ] **Make security deposit add/deduct atomic.** **Status: on `main` (`8c6c275`), not deployed. Also fixes a double-credit race in `confirmTopup`. `deductAmount` has no callers today, so the live risk is lost or doubled top-ups. SQL validated against the real tables on migration and production (read-only plan, no writes). Next: test top-ups on migration before any deploy.** `ARC-010`
+- [ ] **Close the shift-open race.** **Status: on `main` (`b8ba4f9`), not deployed. Uses a per-store advisory lock in `open()`, so no schema change. No store has duplicate open shifts on production or migration (checked Nov 3). Next: test opening a shift on migration before any deploy.** `ARC-011`
 
 ## P0: Performance under staff load
 
 - [x] **Commit and deploy the `GET /shifts/{id}/collected` fix.** Done in `b601200` on `main`, and the deployed live code contains it. `workaround.md` records the live crash at 7,016 parameters.
-- [ ] **Find and fix other Node-built `IN` lists.** The oversized `bind message` errors on Nov 1 came from this pattern; order and employee search are already fixed. **Status: in progress on `fix/unbounded-in-lists`, classifying about 471 `inq`/`nin` uses. Invoice search and the invoice type filter are known cases.** `BE-017`, `SERVER_INCIDENT_AUDIT.md`
+- [ ] **Find and fix other Node-built `IN` lists.** The oversized `bind message` errors on Nov 1 came from this pattern; order and employee search are already fixed. **Status: in progress. Of about 471 `inq`/`nin` uses, 50 look risky. Manage Invoices search and type filter are on `main` (`8abad9c`, `03e1e30`) and timed on migration, not deployed. Next: fix the wallet, rider, customer, approval and transfer lists.** `BE-017`, `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Paginate `GET /transfers`.** `BE-002`
 - [ ] **Bound `GET /approval-requests`** and push paging into SQL. `BE-005`
 - [ ] **Batch pricing lookups in order creation.** Test carefully, because this is the core order path. `BE-008`
@@ -38,6 +38,7 @@
 - [ ] **Add a permission and store check to `GET /payments/gateway-links/{id}`.** `ARC-024`
 - [ ] **Fast-forward `client-server` to `main`.** It was 19 commits behind before the Nov 2 merge. Deploying from it would remove the security fixes. Added after the audit.
 - [ ] **Compare wallet balances with their ledgers,** read-only first. The `ARC-008` fix stops new errors but doesn't correct existing ones. Added after the audit.
+- [ ] **Fix the Manage Invoices "date to" filter.** With both dates set, `_buildInvoiceFilter` sends `createdAt: {gte, lte}`, and the connector reads only the first operator, so `dateTo` is ignored in the list and its total. Split it into two `and` clauses. Other routes may build ranges the same way, so check them too. Added after the audit.
 
 ## P2
 
