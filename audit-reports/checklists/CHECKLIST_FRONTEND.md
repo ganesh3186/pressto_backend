@@ -10,6 +10,7 @@
 - [ ] **Debounce the Manage Ticket text filters.** They send one request per keystroke. Raised from P2, because broad search terms caused the go-live slowdown. **Status: on `main` (`f34805dd`), not deployed. Waits 700 ms after typing.** `FE-ADM-001`
 - [ ] **Debounce the Rider Management search.** Raised from P2 for the same reason. **Status: on `main` (`f34805dd`), not deployed. Waits 700 ms after typing.** `FE-ADM-002`
 - [ ] **Stop fetching the whole order set when a payment filter is on.** Page on the server instead. **Status: on `main` (admin `f34805dd`, `a18622cd`; backend `2a96ef4`), not deployed. Deploy the backend first, or the filter does nothing. Across more than one store it covers up to 90 days, and the 10-second refresh stops while it is on. Next: check on staging with store, cluster, region and all-stores logins.** `FE-ADM-003`
+- [ ] **Debounce the Manage Invoices, Order Summary and Pincode Mapping searches.** They sent a server search on every keystroke. **Status: on `main` (`711b1870`), not deployed. Waits 700 ms after typing.** Added after the audit.
 
 ### P2
 
