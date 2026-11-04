@@ -111,3 +111,11 @@ The first local ORM implementation took roughly 4-7 seconds on a store with appr
 7. Install dependencies from the updated lockfile before building on another machine/server. The lock update used legacy peer dependency resolution; use `npm ci --legacy-peer-deps` with the project's supported Node version, then `npm run build`. No new migration or environment variable is required for P2/P3.
 
 Changes are local and uncommitted; nothing was pushed or deployed as part of this task. Existing local package.json and untracked reference/document files were preserved.
+
+## Changes made during the merge to main
+
+Timing on a 2M-order copy showed the payment filter took about 9 seconds for all stores, while Manage Ticket refreshed every 10 seconds and export repeated the query for every 100 rows. These were changed before merging:
+
+- A payment filter across more than one store now covers up to 90 days, about 1-4 seconds for all stores. The list shows a notice when this applies. A single store has no limit.
+- Manage Ticket stops its 10-second refresh while Success, Partial or Pending is selected.
+- Export finds the matching orders once, about 2 seconds, then loads them in batches.
