@@ -43,9 +43,10 @@
 ## P2
 
 - [ ] **Put `adminRecharge` and `adminTopup` request creation and credit in one transaction.** A failed credit can leave a success request with no money added. Added after the audit.
-- [ ] **Update the unit tests broken by the Nov 1 SQL changes.** The 2 shift tests are fixed on `main` (`72bdeed`). The 2 Manage Ticket invoice filter tests still fail.
+- [x] **Update the unit tests broken by the Nov 1 SQL changes.** The 2 shift tests (`72bdeed`) and the 2 Manage Ticket invoice filter tests (`priority-points`) are fixed on `main`.
 - [ ] **Fix the `GET /shifts/collected` 500.** It falls into the `/shifts/{id}` route and fails with `invalid input syntax for type uuid: "collected"`. Seen in live logs after Nov 1 05:43. `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Fix the 5xx on `GET /riders/availability-for-slot`** with a `fallback:` slot ID. Seen in the same logs.
+- [ ] **Let the Manage Ticket payment filter cover all dates across stores.** It is limited to 90 days because it adds up payments for every order in scope (about 9 s for all stores on 2M orders). A stored paid total on orders would remove the limit. Added after the audit.
 - [ ] **Add an idempotency key to order creation.** `ARC-026b`
 - [ ] **Add transactions to order status changes.** `ARC-005`
 - [ ] **Add a transaction to `DeliveryController.cancel`.** `ARC-006`
@@ -73,6 +74,7 @@
 - [ ] **Batch `ProcessService` log updates.** `BE-010`
 - [ ] **Remove the commented-out `isActive` check** or restore it. `ARC-022`
 - [ ] **Remove or fix `generateShortToken`.** `ARC-003`
+- [ ] **Remove `api-live.out` and `api-live.err` from the repo** and ignore them. They were committed to `main` in `1497c21`. Added after the audit.
 - [ ] **Fix the `Auto-escaping invalid RegExp` warning** on search values such as `%Pune (REG001%`.
 
 ## No action needed
