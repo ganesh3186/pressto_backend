@@ -1511,9 +1511,9 @@ export class ReportsService {
       }),
     ]);
     if (!shifts.length) return emptyPaged();
-    const gstRate = (
-      Number(gstConfig?.cgstPercentage) + Number(gstConfig?.sgstPercentage)
-    ) / 100 || 0.18;
+    const gstRate = gstConfig
+      ? (Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)) / 100
+      : 0.18;
 
     // Per-day target = that month's revenueTarget / days in that month
     // (e.g. a ₹31,000 January target -> ₹1,000/day). Keyed by storeId so

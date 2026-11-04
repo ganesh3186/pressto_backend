@@ -222,6 +222,32 @@ describe('daily sales revenue', () => {
     expect(report.rows[0]).to.containEql({revenue: 100.5, taxes: 18.09, totalSales: 119});
   });
 
+  it('preserves an active zero-percent GST configuration', async () => {
+    const openedAt = new Date('2026-10-03T09:00:00Z');
+    const closedAt = new Date('2026-10-03T17:00:00Z');
+    const service = Object.assign(Object.create(ReportsService.prototype), {
+      shiftRepo: {find: async () => [{
+        id: 'zero-gst', storeId: 'store-a', status: ShiftStatus.CLOSED,
+        openedAt, closedAt, openingNo: 'S-zero',
+        closing: {revenue: {pressto: {revenue: 100, discount: 10}}},
+      }]},
+      buildStoreContext: async () => new Map(),
+      orderRepo: {find: async () => []},
+      paymentTransactionRepo: {find: async () => []},
+      invoiceRepo: {find: async () => []},
+      invoiceOrderLinkRepo: {find: async () => []},
+      salesReturnRepo: {find: async () => []},
+      storeMonthlyTargetRepo: {find: async () => []},
+      gstTaxConfigurationRepo: {
+        findOne: async () => ({cgstPercentage: 0, sgstPercentage: 0}),
+      },
+    }) as ReportsService;
+
+    const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
+
+    expect(report.rows[0]).to.containEql({discountedRevenue: 90, taxes: 0, totalSales: 90});
+  });
+
   it('uses migrated P/Z report revenue for the P2D/PSB split', async () => {
     const openedAt = new Date('2026-10-04T09:00:00Z');
     const closedAt = new Date('2026-10-04T17:00:00Z');
