@@ -326,11 +326,12 @@ export class ShiftController {
     // PettyCashService.computeWindowActivity's own comment for the full
     // derivation of why this specific split reconstructs the same number
     // computeBalance() would return live.
-    const pettyBalance =
+    const pettyBalance = Math.round(
       Number(input.pettyCash.prevSupposed || 0) +
-      Number(input.pettyCash.recvFromFinance || 0) -
-      Number(input.pettyCash.used || 0) +
-      Number(input.pettyCash.disapprovedAmt || 0);
+        Number(input.pettyCash.recvFromFinance || 0) -
+        Number(input.pettyCash.used || 0) +
+        Number(input.pettyCash.disapprovedAmt || 0),
+    );
     const pettyDifference =
       Number(input.pettyCash.actualBalance || 0) - pettyBalance;
 

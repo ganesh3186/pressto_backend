@@ -108,7 +108,11 @@ describe('mode of payment invoice numbers', () => {
       deliveryStatus: 'all', paymentStatus: 'all',
     });
 
-    expect(report.rows[0]).to.containEql({collected: 40, balanceDue: 60});
+    expect(report.rows[0]).to.containEql({
+      collected: 40,
+      balanceDue: 60,
+      paymentMode: 'On Account',
+    });
     expect(report.totals).to.containEql({collected: 40, balanceDue: 60});
   });
 

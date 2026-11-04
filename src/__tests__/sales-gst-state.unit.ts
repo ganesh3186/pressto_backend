@@ -37,13 +37,13 @@ describe('sales GST state filter', () => {
     expect(report.totalCount).to.equal(0);
   });
 
-  it('returns one row per invoice with the customer GST number', async () => {
+  it('returns one row per invoice item with the customer GST number', async () => {
     const createdAt = new Date('2026-10-01T10:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
       invoiceRepo: {find: async () => [{
         id: 'invoice-a', invoiceNumber: 'INV-100', orderId: 'order-a', createdAt,
         subtotal: 1000.25, discount: 100, cgst: 45.03, sgst: 45.02, totalAmount: 990,
-        items: [{totalPrice: 400}, {totalPrice: 600}],
+        items: [{itemId: 'item-shirt', totalPrice: 400}, {itemId: 'item-trouser', totalPrice: 600}],
       }]},
       orderRepo: {find: async () => [{
         id: 'order-a', orderNumber: 'T-100', storeId: 'store-a', customerId: 'customer-a',
@@ -56,6 +56,10 @@ describe('sales GST state filter', () => {
         id: 'customer-a', firstName: 'Customer', gstNumber: '27ABCDE1234F1Z5',
         customerEntityType: 'individual',
       }]},
+      itemRepo: {find: async () => [
+        {id: 'item-shirt', name: 'Shirt'},
+        {id: 'item-trouser', name: 'Trouser'},
+      ]},
       customerAddressRepo: {find: async () => []},
     }) as ReportsService;
 
@@ -63,11 +67,18 @@ describe('sales GST state filter', () => {
       storeIds: ['store-a'], from: createdAt, to: createdAt, limit: 25, skip: 0,
     });
 
-    expect(report.totalCount).to.equal(1);
+    expect(report.totalCount).to.equal(2);
     expect(report.rows[0]).to.containEql({
-      id: 'invoice-a', invoiceNo: 'INV-100', invoiceDate: createdAt,
-      invoiceValue: 990, taxableValue: 900.25, totalTax: 90.05,
+      id: 'invoice-a-0', invoiceNo: 'INV-100', invoiceDate: createdAt,
+      isFirstItem: true, invoiceValue: 990, taxableValue: 900.25, totalTax: 90.05,
       customerGstin: '27ABCDE1234F1Z5',
+      itemName: 'Shirt', description: 'Shirt',
+    });
+    expect(report.rows[1]).to.containEql({
+      id: 'invoice-a-1', invoiceNo: 'INV-100', invoiceDate: createdAt,
+      isFirstItem: false, invoiceValue: 0, taxableValue: 0, totalTax: 0,
+      customerGstin: '27ABCDE1234F1Z5',
+      itemName: 'Trouser', description: 'Trouser',
     });
     expect(report.rows[0]).not.to.have.property('ticketNo');
     expect(report.totals).to.containEql({invoiceValue: 990, taxableValue: 900.25, totalTax: 90.05});
@@ -96,6 +107,8 @@ describe('sales GST state filter', () => {
       gstTaxConfigurationRepo: {findOne: async () => ({cgstPercentage: 5, sgstPercentage: 5})},
       buildStoreContext: async () => new Map([['store-a', {name: 'Store A'}]]),
       customerRepo: {find: async () => [{id: 'customer-a', firstName: 'Customer'}]},
+      orderItemRepo: {find: async () => []},
+      itemRepo: {find: async () => []},
       customerAddressRepo: {find: async () => []},
     }) as ReportsService;
 
