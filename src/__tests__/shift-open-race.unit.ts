@@ -11,7 +11,7 @@ const nextTick = () => new Promise(resolve => setImmediate(resolve));
 
 const body = (pettyCash = 0) => ({
   remarks: 'Morning count',
-  openingBalances: {pettyCash: {actual: pettyCash}} as never,
+  openingBalances: {cashInTill: {actual: 0}, pettyCash: {actual: pettyCash}} as never,
 });
 
 /**

@@ -130,7 +130,10 @@ export function matchesOrderExportFilters(
 
 /** Fetch every page; the table's page/size never limits an export. */
 export async function collectOrderExportRows(
-  loadBatch: (skip: number, limit: number) => Promise<{rows: object[]}>,
+  loadBatch: (
+    skip: number,
+    limit: number,
+  ) => Promise<{rows: object[]; done?: boolean}>,
   filters: OrderExportFilters,
 ): Promise<{rows: object[]; total: number}> {
   const rows: object[] = [];
@@ -140,7 +143,7 @@ export async function collectOrderExportRows(
     rows.push(
       ...batch.rows.filter(row => matchesOrderExportFilters(row, filters)),
     );
-    if (batch.rows.length < batchSize) break;
+    if (batch.done ?? batch.rows.length < batchSize) break;
   }
   return {rows, total: rows.length};
 }

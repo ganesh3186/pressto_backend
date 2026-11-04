@@ -22,6 +22,29 @@ export const ORDER_PAYMENT_FILTERS = [
   'unpaid',
 ] as const;
 
+/** Longest period a payment filter covers across more than one store. */
+export const MULTI_STORE_PAYMENT_FILTER_DAYS = 90;
+
+/**
+ * Start date for a payment filter across more than one store. Without a limit
+ * it adds up payments for every order in scope: about 9 s for all stores on 2M
+ * orders, against about 1 s for 90 days. Returns the caller's start date when
+ * it is already inside the limit, measured back from their end date.
+ */
+export function multiStorePaymentFilterFrom(
+  dateFrom?: string,
+  dateTo?: string,
+  now = new Date(),
+): string {
+  const parsedEnd = dateTo ? new Date(dateTo).getTime() : NaN;
+  const end = Number.isNaN(parsedEnd) ? now.getTime() : parsedEnd;
+  const earliest = end - MULTI_STORE_PAYMENT_FILTER_DAYS * 24 * 60 * 60 * 1000;
+  const from = dateFrom ? new Date(dateFrom).getTime() : NaN;
+  return !Number.isNaN(from) && from >= earliest
+    ? dateFrom!
+    : new Date(earliest).toISOString();
+}
+
 /**
  * Database counterpart of the table's payment summary. Use the same split
  * allocations and whole-rupee outstanding balance as the order list. Cancelled

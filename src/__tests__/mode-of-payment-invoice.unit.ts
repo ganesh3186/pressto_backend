@@ -3,7 +3,7 @@ import {expect} from '@loopback/testlab';
 import {ReportsService} from '../services/reports.service';
 
 (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? describe : describe.skip)('mode of payment invoice numbers', () => {
-  (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? it : it.skip)('shows issued invoice numbers and a dash for tickets without one', async () => {
+  (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? it : it.skip)('keeps the ticket number separate from the on-account invoice number', async () => {
     const paidAt = new Date('2026-10-01T10:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
       orderRepo: {
@@ -13,7 +13,6 @@ import {ReportsService} from '../services/reports.service';
         ],
       },
       buildWalletTopUpRows: async () => [],
-      buildOnAccountInvoiceRows: async () => [],
       shiftRepo: {find: async () => []},
       paymentTransactionRepo: {
         find: async () => [
@@ -21,7 +20,7 @@ import {ReportsService} from '../services/reports.service';
           {id: 'payment-b', orderId: 'order-b', paymentDate: paidAt, amount: 20, paymentMode: 'cash'},
         ],
       },
-      mapOnAccountInvoiceNumbers: async () => new Map(),
+      mapOnAccountInvoiceNumbers: async () => new Map([['order-a', 'OA-INV-1']]),
       invoiceRepo: {
         find: async ({where}: {where: {status: string}}) => {
           expect(where.status).to.equal('issued');
@@ -43,7 +42,7 @@ import {ReportsService} from '../services/reports.service';
     });
 
     expect(report.rows.map(row => [row.ticketNo, row.invoiceNo])).to.deepEqual([
-      ['T-1', 'INV-1'],
+      ['T-1', 'OA-INV-1'],
       ['T-2', '-'],
     ]);
   });
@@ -67,7 +66,6 @@ import {ReportsService} from '../services/reports.service';
             : [],
       },
       buildWalletTopUpRows: async () => [],
-      buildOnAccountInvoiceRows: async () => [],
       paymentTransactionRepo: {find: async () => [refund]},
       mapOnAccountInvoiceNumbers: async () => new Map(),
       invoiceRepo: {find: async () => []},
@@ -91,5 +89,64 @@ import {ReportsService} from '../services/reports.service';
       storeIds: ['bandra'], from: paidAt, to: paidAt, limit: 10, skip: 0,
     });
     expect(ticketStore.rows).to.have.length(0);
+  });
+
+  it('counts only real payments in the on-account billing report', async () => {
+    const createdAt = new Date('2026-10-01T10:00:00Z');
+    const service = Object.assign(Object.create(ReportsService.prototype), {
+      // Count, page and totals come from one SQL query (refunds excluded
+      // there too); the row's own collected amount is looked up here.
+      orderReportPage: async () => ({count: 1, amount: 100, paid: 40, balance: 60, orders: [{
+        id: 'order-a', orderNumber: 'OA-1', storeId: 'store-a', customerId: 'customer-a',
+        totalAmount: 100, status: 'delivered', isOnAccount: true, createdAt,
+      }]}),
+      paymentTransactionRepo: {find: async ({where}: {where: {transactionType: unknown}}) => {
+        expect(where.transactionType).to.deepEqual({neq: 'refund'});
+        return [{orderId: 'order-a', amount: 40}];
+      }},
+      buildDeliveryStatusByOrder: async () => new Map([['order-a', 'delivered']]),
+      buildDeliveredAtByOrder: async () => new Map([['order-a', createdAt]]),
+      buildItemCountByOrder: async () => new Map([['order-a', 1]]),
+      buildStoreContext: async () => new Map([['store-a', {name: 'Store A'}]]),
+      buildCustomerContext: async () => new Map([['customer-a', {name: 'Customer A'}]]),
+    }) as ReportsService;
+
+    const report = await service.buildOnAccountBilling({
+      storeIds: ['store-a'], from: createdAt, to: createdAt, limit: 10, skip: 0,
+      deliveryStatus: 'all', paymentStatus: 'all',
+    });
+
+    expect(report.rows[0]).to.containEql({collected: 40, balanceDue: 60});
+    expect(report.totals).to.containEql({collected: 40, balanceDue: 60});
+  });
+
+  (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? it : it.skip)('includes in-store wallet recharges under their cash, card, and UPI modes', async () => {
+    const paidAt = new Date('2026-10-01T10:00:00Z');
+    const service = Object.assign(Object.create(ReportsService.prototype), {
+      walletRechargeRequestRepo: {find: async () => [
+        {id: 'cash', customerId: 'customer-a', storeId: 'store-a', amount: 100, paymentMode: 'cash', createdAt: paidAt},
+        {id: 'card', customerId: 'customer-a', storeId: 'store-a', amount: 200, paymentMode: 'card', createdAt: paidAt},
+        {id: 'upi', customerId: 'customer-a', storeId: 'store-a', amount: 300, paymentMode: 'upi', createdAt: paidAt},
+      ]},
+      customerRepo: {find: async () => [{id: 'customer-a', firstName: 'Customer'}]},
+      storeRepo: {find: async () => [{id: 'store-a', name: 'Store A'}]},
+      shiftRepo: {find: async () => []},
+      paymentTransactionRepo: {find: async () => []},
+      orderRepo: {find: async () => []},
+      mapOnAccountInvoiceNumbers: async () => new Map(),
+      invoiceRepo: {find: async () => []},
+      mapStores: async () => new Map(),
+      mapShifts: async () => new Map(),
+      mapCustomers: async () => new Map(),
+    }) as ReportsService;
+    paymentSqlFixture(service);
+
+    const report = await service.buildModeOfPayment({
+      storeIds: ['store-a'], from: paidAt, to: paidAt, limit: 10, skip: 0,
+    });
+
+    expect(report.rows).to.have.length(3);
+    expect(report.totals).to.containEql({amount: 600});
+    expect(report.totalsByMode).to.containEql({Cash: 100, Card: 200, UPI: 300});
   });
 });

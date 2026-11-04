@@ -1,4 +1,9 @@
-/** One globally ordered page across tender transactions, top-ups and invoice events. */
+/**
+ * One globally ordered page across tender transactions and wallet top-ups.
+ * On Account invoice generation moves no money, so it is not a row; its
+ * eventual payment appears once, under the mode actually collected. A top-up
+ * reports under the store on its request, else the customer's preferred store.
+ */
 export const PAYMENT_REPORT_SQL = `WITH ledger AS MATERIALIZED (
   SELECT p.id::text AS id, p.id AS sourceid, 'payment' AS kind, p.paymentdate AS at,
     p.cashshiftid, p.paymentmode AS mode,
@@ -12,15 +17,9 @@ export const PAYMENT_REPORT_SQL = `WITH ledger AS MATERIALIZED (
       OR p.cashshiftid IS NULL OR s.storeid = ANY($1::uuid[]))
   UNION ALL
   SELECT 'wallet-topup:' || r.id, r.id, 'wallet', r.createdat, null::uuid, r.paymentmode, COALESCE(r.amount,0),0
-  FROM public.wallet_recharge_request r JOIN public.customer c ON c.id = r.customerid
-  WHERE r.status = 'success' AND r.createdat BETWEEN $2 AND $3 AND c.preferredstoreid = ANY($1::uuid[])
-  UNION ALL
-  SELECT 'on-account-invoice:' || i.id || ':' || o.storeid, i.id, 'invoice', i.createdat,
-    null::uuid,'on_account',floor(sum(COALESCE(l.ordertotal,0))*100+.5)/100,0
-  FROM public.invoice i JOIN public.invoice_order_link l ON l.invoiceid = i.id JOIN public.orders o ON o.id = l.orderid
-  WHERE i.status = 'issued' AND i.isconsolidated = true AND i.createdat BETWEEN $2 AND $3
-    AND o.storeid = ANY($1::uuid[])
-  GROUP BY i.id,i.createdat,o.storeid HAVING sum(COALESCE(l.ordertotal,0)) > 0
+  FROM public.wallet_recharge_request r LEFT JOIN public.customer c ON c.id = r.customerid
+  WHERE r.status = 'success' AND r.createdat BETWEEN $2 AND $3
+    AND COALESCE(r.storeid, c.preferredstoreid) = ANY($1::uuid[])
 ), modes AS (
   SELECT mode, floor(sum(amount)*100+.5)/100 AS amount FROM ledger WHERE refund = 0 GROUP BY mode
 )

@@ -13,7 +13,7 @@ export function paymentSqlFixture(service: any) {
         CREATE TEMP TABLE payment_transaction(id text,orderid text,paymentdate timestamptz,
           cashshiftid text,paymentmode text,transactiontype text,amount numeric) ON COMMIT DROP;
         CREATE TEMP TABLE customer(id text,preferredstoreid text) ON COMMIT DROP;
-        CREATE TEMP TABLE wallet_recharge_request(id text,customerid text,createdat timestamptz,status text,paymentmode text,amount numeric) ON COMMIT DROP;
+        CREATE TEMP TABLE wallet_recharge_request(id text,customerid text,storeid text,createdat timestamptz,status text,paymentmode text,amount numeric) ON COMMIT DROP;
         CREATE TEMP TABLE invoice(id text,createdat timestamptz,status text,isconsolidated boolean) ON COMMIT DROP;
         CREATE TEMP TABLE invoice_order_link(invoiceid text,orderid text,ordertotal numeric) ON COMMIT DROP`);
       const rows = async (repo: any, filter: any) => repo?.find ? repo.find(filter) : [];
@@ -30,6 +30,9 @@ export function paymentSqlFixture(service: any) {
         ['id','orderId','paymentDate','cashShiftId','paymentMode','transactionType','amount']);
       await insert('invoice', await rows(service.invoiceRepo,{where:{status:'issued'}}),['id','createdAt','status','isConsolidated'],
         {status:'issued',isConsolidated:Boolean(service.invoiceOrderLinkRepo)});
+      await insert('customer', await rows(service.customerRepo,{where:{}}),['id','preferredStoreId']);
+      await insert('wallet_recharge_request', await rows(service.walletRechargeRequestRepo,{where:{}}),
+        ['id','customerId','storeId','createdAt','status','paymentMode','amount'],{status:'success'});
       await insert('invoice_order_link',await rows(service.invoiceOrderLinkRepo,{where:{}}),['invoiceId','orderId','orderTotal']);
       return (await c.query(sql.replace(/public\./g,'pg_temp.').replace(/uuid/g,'text'),params)).rows;
     } finally {await c.query('ROLLBACK');await c.end();}

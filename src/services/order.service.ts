@@ -12,7 +12,12 @@ import {
   collectOrderExportRows,
   OrderExportFilters,
 } from '../utils/order-export';
-import {ORDER_PAYMENT_FILTERS, orderPaymentFilterSql, resolveOrderPaymentStatus} from '../utils/payment-status';
+import {
+  multiStorePaymentFilterFrom,
+  ORDER_PAYMENT_FILTERS,
+  orderPaymentFilterSql,
+  resolveOrderPaymentStatus,
+} from '../utils/payment-status';
 import {
   EditOrderUnitInput,
   editedGarmentFields,
@@ -141,6 +146,8 @@ import {
 const SEARCH_COUNT_CAP = 1000;
 /** Above this many matching customers a search is "broad" (see searchOrderPage). */
 const SEARCH_CUSTOMER_LIST_CAP = 5000;
+/** Most orders one payment-filtered export will resolve (see exportOrders). */
+const EXPORT_MATCHING_ORDER_CAP = 2000000;
 
 export interface OrderPaymentInput {
   paymentMode: PaymentMode;
@@ -5216,38 +5223,69 @@ export class OrderService {
     filters: OrderExportFilters,
     storeIds?: string[] | null,
   ): Promise<{rows: object[]; total: number}> {
+    const listParams = {
+      dateFrom: filters.dateFrom,
+      invoiceNumber: filters.invoiceNumber,
+      paymentStatus: filters.paymentStatus,
+      dateTo: filters.dateTo,
+      status:
+        filters.status && filters.status !== 'all'
+          ? filters.status
+          : undefined,
+      storeIds,
+    };
+    const rowFilters = {...filters, paymentStatus: undefined};
+    // A payment filter adds up payments across the whole scope, so running it
+    // for each batch of 100 would repeat that work thousands of times on a big
+    // export. Find the matching orders once, then load them in batches.
+    const {orderIds} = await this.listOrders({
+      ...listParams,
+      matchingIdsOnly: true,
+    });
+    if (orderIds) {
+      return collectOrderExportRows(async (skip, limit) => {
+        const batch = orderIds.slice(skip, skip + limit);
+        const {rows} = batch.length
+          ? await this.listOrders({orderIds: batch, storeIds, limit})
+          : {rows: []};
+        return {rows, done: skip + limit >= orderIds.length};
+      }, rowFilters);
+    }
     return collectOrderExportRows(
-      (skip, limit) =>
-        this.listOrders({
-          dateFrom: filters.dateFrom,
-          invoiceNumber: filters.invoiceNumber,
-          paymentStatus: filters.paymentStatus,
-          dateTo: filters.dateTo,
-          status:
-            filters.status && filters.status !== 'all'
-              ? filters.status
-              : undefined,
-          storeIds,
-          skip,
-          limit,
-        }),
-      {...filters, paymentStatus: undefined},
+      (skip, limit) => this.listOrders({...listParams, skip, limit}),
+      rowFilters,
     );
   }
 
-  /**
-   * One page of listOrders() for a free-text search: order number, customer
-   * name, or the customer's login phone. The customer/phone matches run as SQL
-   * subqueries. They used to be resolved into customer-id lists in Node first:
-   * a one-letter search ("m") matched ~300K customers, built a 59K+ parameter
-   * IN list, pinned the event loop and froze the whole API on live.
-   */
+  /** One page of listOrders() for a free-text search or payment filter. */
   private async searchOrderPage(
     where: object,
     terms: {search?: string; invoiceNumber?: string; paymentStatus?: string},
     limit: number,
     skip: number,
   ): Promise<[Order[], {count: number}]> {
+    const {ids, count} = await this.searchOrderIds(where, terms, limit, skip);
+    const found = ids.length
+      ? await this.orderRepo.find({where: {id: {inq: ids}} as any})
+      : [];
+    const byId = new Map(found.map(order => [order.id, order]));
+    const orders = ids.map(id => byId.get(id)).filter((o): o is Order => Boolean(o));
+    return [orders, {count}];
+  }
+
+  /**
+   * Matching order ids for a free-text search: order number, customer name, or
+   * the customer's login phone. The customer/phone matches run as SQL
+   * subqueries. They used to be resolved into customer-id lists in Node first:
+   * a one-letter search ("m") matched ~300K customers, built a 59K+ parameter
+   * IN list, pinned the event loop and froze the whole API on live.
+   */
+  private async searchOrderIds(
+    where: object,
+    terms: {search?: string; invoiceNumber?: string; paymentStatus?: string},
+    limit: number,
+    skip: number,
+  ): Promise<{ids: string[]; count: number}> {
     const connector = this.dataSource.connector as unknown as {
       buildWhere(model: string, where: object): {sql: string; params: unknown[]};
       parameterize(ps: {sql: string; params: unknown[]}): {sql: string; params: unknown[]};
@@ -5312,11 +5350,10 @@ export class OrderService {
         params: [...base.params, limit, skip],
       });
       const result: {count: number; ids: string[]}[] = await this.dataSource.execute(query.sql, query.params);
-      const ids = result[0]?.ids ?? [];
-      const found = ids.length ? await this.orderRepo.find({where: {id: {inq: ids}}}) : [];
-      const byId = new Map(found.map(order => [order.id, order]));
-      return [ids.map(id => byId.get(id)).filter((order): order is Order => Boolean(order)),
-        {count: Number(result[0]?.count ?? 0)}];
+      return {
+        ids: result[0]?.ids ?? [],
+        count: Number(result[0]?.count ?? 0),
+      };
     }
 
     const page = connector.parameterize({
@@ -5337,13 +5374,10 @@ export class OrderService {
       this.dataSource.execute(count.sql, count.params),
     ]);
 
-    const ids = pageRows.map(row => row.id);
-    const found = ids.length
-      ? await this.orderRepo.find({where: {id: {inq: ids}} as any})
-      : [];
-    const byId = new Map(found.map(order => [order.id, order]));
-    const orders = ids.map(id => byId.get(id)).filter((o): o is Order => Boolean(o));
-    return [orders, {count: Number(countRows[0]?.count ?? 0)}];
+    return {
+      ids: pageRows.map(row => row.id),
+      count: Number(countRows[0]?.count ?? 0),
+    };
   }
 
   /** SQL condition (with `?` placeholders) for listOrders' free-text search. */
@@ -5409,7 +5443,17 @@ export class OrderService {
      * filter with an OR, never narrows it. Omitted/empty changes nothing.
      */
     transferGrantedOrderIds?: string[];
-  }): Promise<{rows: object[]; total: number}> {
+    /** Export only: load exactly these orders, already matched to the filters. */
+    orderIds?: string[];
+    /** Export only: return every order id matching a payment filter, no rows. */
+    matchingIdsOnly?: boolean;
+  }): Promise<{
+    rows: object[];
+    total: number;
+    /** Start date a multi-store payment filter was limited to, when it was. */
+    paymentFilterFrom?: string;
+    orderIds?: string[];
+  }> {
     const limit = Math.min(Number(params.limit ?? 20), 100);
     const skip = Number(params.skip ?? 0);
     const paymentStatus = params.paymentStatus?.trim().toLowerCase();
@@ -5417,9 +5461,15 @@ export class OrderService {
       !(ORDER_PAYMENT_FILTERS as readonly string[]).includes(paymentStatus)) {
       throw new HttpErrors.BadRequest('Unsupported payment status filter.');
     }
+    const paymentFilter =
+      paymentStatus && !['all', 'cancelled'].includes(paymentStatus)
+        ? paymentStatus
+        : undefined;
+    if (params.matchingIdsOnly && !paymentFilter) return {rows: [], total: 0};
 
     const baseConditions: object[] = [{isDeleted: false}];
     if (paymentStatus === 'cancelled') baseConditions.push({status: OrderStatus.CANCELLED});
+    if (params.orderIds) baseConditions.push({id: {inq: params.orderIds}});
 
     if (Array.isArray(params.storeIds)) {
       baseConditions.push(
@@ -5463,22 +5513,38 @@ export class OrderService {
     if (params.excludeStatuses?.length)
       baseConditions.push({status: {nin: params.excludeStatuses}});
     if (params.orderType) baseConditions.push({orderType: params.orderType});
-    if (params.dateFrom) baseConditions.push({createdAt: {gte: params.dateFrom}});
-    if (params.dateTo) {
-      // Date filters represent whole local calendar days. A bare YYYY-MM-DD
-      // otherwise compares at midnight and excludes nearly the entire end day.
-      const dateTo = /^\d{4}-\d{2}-\d{2}$/.test(params.dateTo)
+    // Date filters represent whole local calendar days. A bare YYYY-MM-DD
+    // otherwise compares at midnight and excludes nearly the entire end day.
+    const dateTo =
+      params.dateTo && /^\d{4}-\d{2}-\d{2}$/.test(params.dateTo)
         ? new Date(`${params.dateTo}T23:59:59.999`).toISOString()
         : params.dateTo;
-      baseConditions.push({createdAt: {lte: dateTo}});
-    }
+    const spansStores =
+      !params.customerId &&
+      (!Array.isArray(params.storeIds) || params.storeIds.length > 1);
+    const dateFrom =
+      paymentFilter && spansStores
+        ? multiStorePaymentFilterFrom(params.dateFrom, dateTo)
+        : params.dateFrom;
+    if (dateFrom) baseConditions.push({createdAt: {gte: dateFrom}});
+    if (dateTo) baseConditions.push({createdAt: {lte: dateTo}});
 
     const where =
       baseConditions.length === 1 ? baseConditions[0] : {and: baseConditions};
 
     const search = params.search?.trim();
     const invoiceNumber = params.invoiceNumber?.trim();
-    const paymentFilter = paymentStatus && !['all', 'cancelled'].includes(paymentStatus) ? paymentStatus : undefined;
+    if (params.matchingIdsOnly) {
+      const {ids} = await this.searchOrderIds(
+        where,
+        {invoiceNumber, paymentStatus: paymentFilter},
+        EXPORT_MATCHING_ORDER_CAP,
+        0,
+      );
+      return {rows: [], total: ids.length, orderIds: ids};
+    }
+    const limitedFrom =
+      dateFrom !== params.dateFrom ? {paymentFilterFrom: dateFrom} : {};
     const [orders, countResult] = search || invoiceNumber || paymentFilter
       ? await this.searchOrderPage(where, {search, invoiceNumber, paymentStatus: paymentFilter}, limit, skip)
       : await Promise.all([
@@ -5491,7 +5557,7 @@ export class OrderService {
           this.orderRepo.count(where as any),
         ]);
 
-    if (!orders.length) return {rows: [], total: countResult.count};
+    if (!orders.length) return {rows: [], total: countResult.count, ...limitedFrom};
 
     const orderIds = orders.map(o => o.id);
     const stops = await this.deliveryOrderRepo.find({
@@ -5834,7 +5900,7 @@ export class OrderService {
       };
     });
 
-    return {rows, total: countResult.count};
+    return {rows, total: countResult.count, ...limitedFrom};
   }
 
   // ─── Get Order Details ────────────────────────────────────────────────────

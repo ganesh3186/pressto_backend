@@ -163,7 +163,7 @@ describe('shift revenue after sales returns', () => {
           {invoiceId: invoice.id, orderId: 'order-b', orderTotal: 50.25},
         ],
       },
-      orderRepository: {find: async () => [{id: 'order-a'}]},
+      orderRepository: {find: async () => [{id: 'order-a', taxAmount: 9, totalAmount: 59}]},
       orderItemRepository: {find: async () => []},
     }) as ShiftController;
     batchedStubs(controller);
@@ -174,12 +174,13 @@ describe('shift revenue after sales returns', () => {
           from: Date,
           to: Date,
         ) => Promise<{
-          pressto: {revenue: number; totalSales: number; tickets: number};
+          pressto: {revenue: number; taxes: number; totalSales: number; tickets: number};
         }>;
       }
     ).resolveRevenue('store-a', new Date('2026-10-01'), new Date('2026-10-02'));
     expect(revenue.pressto).to.containEql({
-      revenue: 50.25,
+      revenue: 42.58,
+      taxes: 7.67,
       totalSales: 50.25,
       tickets: 1,
     });
