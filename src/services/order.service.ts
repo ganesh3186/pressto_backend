@@ -9,7 +9,7 @@ import {
   collectOrderExportRows,
   OrderExportFilters,
 } from '../utils/order-export';
-import {resolveOrderPaymentStatus} from '../utils/payment-status';
+import {ORDER_PAYMENT_FILTERS, orderPaymentFilterSql, resolveOrderPaymentStatus} from '../utils/payment-status';
 import {
   EditOrderUnitInput,
   editedGarmentFields,
@@ -5132,6 +5132,7 @@ export class OrderService {
         this.listOrders({
           dateFrom: filters.dateFrom,
           invoiceNumber: filters.invoiceNumber,
+          paymentStatus: filters.paymentStatus,
           dateTo: filters.dateTo,
           status:
             filters.status && filters.status !== 'all'
@@ -5141,7 +5142,7 @@ export class OrderService {
           skip,
           limit,
         }),
-      filters,
+      {...filters, paymentStatus: undefined},
     );
   }
 
@@ -5154,7 +5155,7 @@ export class OrderService {
    */
   private async searchOrderPage(
     where: object,
-    terms: {search?: string; invoiceNumber?: string},
+    terms: {search?: string; invoiceNumber?: string; paymentStatus?: string},
     limit: number,
     skip: number,
   ): Promise<[Order[], {count: number}]> {
@@ -5165,6 +5166,10 @@ export class OrderService {
     const base = connector.buildWhere(this.orderRepo.entityClass.modelName, where);
     const sqlConditions: string[] = [];
     const sqlParams: unknown[] = [];
+    const paymentFilter = terms.paymentStatus
+      ? orderPaymentFilterSql(terms.paymentStatus)
+      : {join: '', condition: ''};
+    if (paymentFilter.condition) sqlConditions.push(paymentFilter.condition);
 
     // Invoice number filter (Manage Ticket). Invoice numbers start with the
     // store code ("ST013/…"), so a partial value can match 50K+ invoices;
@@ -5193,17 +5198,50 @@ export class OrderService {
     const whereSql = `WHERE ${conditions.join(' AND ')}`;
     const whereParams = [...base.params, ...sqlParams];
 
+    // Payment-only counts must be exact, not capped at the search limit. Batch
+    // payment aggregation over the scoped set and calculate page + count in one
+    // statement, avoiding a per-order payment index lookup repeated by two queries.
+    if (terms.paymentStatus && !terms.search && !terms.invoiceNumber) {
+      const grouped = orderPaymentFilterSql(terms.paymentStatus, true);
+      const baseWhere = base.sql ? `WHERE ${base.sql.replace(/^WHERE /, '')}` : '';
+      const sums = grouped.join ? `, payment_sums AS (
+        SELECT pt.orderid, SUM(pt.amount) AS collected
+        FROM public.payment_transaction pt
+        JOIN scoped_orders scoped ON scoped.id = pt.orderid
+        WHERE pt.transactiontype IS DISTINCT FROM 'refund'
+        GROUP BY pt.orderid
+      )` : '';
+      const query = connector.parameterize({
+        sql: `WITH scoped_orders AS MATERIALIZED (
+          SELECT o.id, o.createdat, o.status, o.totalamount, o.allocatedpayment, o.parentorderid, o.hasbeensplit
+          FROM public.orders o ${baseWhere}
+        )${sums}, matching AS MATERIALIZED (
+          SELECT o.id, o.createdat FROM scoped_orders o ${grouped.join}
+          WHERE ${grouped.condition}
+        ) SELECT (SELECT count(*)::int FROM matching) AS count,
+          ARRAY(SELECT id FROM matching ORDER BY createdat DESC, id DESC LIMIT ? OFFSET ?) AS ids`,
+        params: [...base.params, limit, skip],
+      });
+      const result: {count: number; ids: string[]}[] = await this.dataSource.execute(query.sql, query.params);
+      const ids = result[0]?.ids ?? [];
+      const found = ids.length ? await this.orderRepo.find({where: {id: {inq: ids}}}) : [];
+      const byId = new Map(found.map(order => [order.id, order]));
+      return [ids.map(id => byId.get(id)).filter((order): order is Order => Boolean(order)),
+        {count: Number(result[0]?.count ?? 0)}];
+    }
+
     const page = connector.parameterize({
-      sql: `SELECT o.id FROM public.orders o ${whereSql} ORDER BY o.createdat DESC, o.id DESC LIMIT ? OFFSET ?`,
+      sql: `SELECT o.id FROM public.orders o ${paymentFilter.join} ${whereSql} ORDER BY o.createdat DESC, o.id DESC LIMIT ? OFFSET ?`,
       params: [...whereParams, limit, skip],
     });
     // Counting every match of a broad term means visiting every matching order
     // (1M+ for "m"), which held DB connections for 10s+ and starved the pool.
     // Count only up to SEARCH_COUNT_CAP; a specific search still gets its exact
     // count, a broad one reports the cap (pagination stops there).
+    const cappedSearch = Boolean(terms.search || terms.invoiceNumber);
     const count = connector.parameterize({
-      sql: `SELECT count(*)::int AS count FROM (SELECT 1 FROM public.orders o ${whereSql} LIMIT ?) matches`,
-      params: [...whereParams, SEARCH_COUNT_CAP],
+      sql: `SELECT count(*)::int AS count FROM (SELECT 1 FROM public.orders o ${paymentFilter.join} ${whereSql}${cappedSearch ? ' LIMIT ?' : ''}) matches`,
+      params: cappedSearch ? [...whereParams, SEARCH_COUNT_CAP] : whereParams,
     });
     const [pageRows, countRows]: [{id: string}[], {count: number}[]] = await Promise.all([
       this.dataSource.execute(page.sql, page.params),
@@ -5251,6 +5289,7 @@ export class OrderService {
   async listOrders(params: {
     search?: string;
     invoiceNumber?: string;
+    paymentStatus?: string;
     dateFrom?: string;
     dateTo?: string;
     orderType?: string;
@@ -5284,8 +5323,14 @@ export class OrderService {
   }): Promise<{rows: object[]; total: number}> {
     const limit = Math.min(Number(params.limit ?? 20), 100);
     const skip = Number(params.skip ?? 0);
+    const paymentStatus = params.paymentStatus?.trim().toLowerCase();
+    if (paymentStatus && paymentStatus !== 'all' &&
+      !(ORDER_PAYMENT_FILTERS as readonly string[]).includes(paymentStatus)) {
+      throw new HttpErrors.BadRequest('Unsupported payment status filter.');
+    }
 
     const baseConditions: object[] = [{isDeleted: false}];
+    if (paymentStatus === 'cancelled') baseConditions.push({status: OrderStatus.CANCELLED});
 
     if (Array.isArray(params.storeIds)) {
       baseConditions.push(
@@ -5344,8 +5389,9 @@ export class OrderService {
 
     const search = params.search?.trim();
     const invoiceNumber = params.invoiceNumber?.trim();
-    const [orders, countResult] = search || invoiceNumber
-      ? await this.searchOrderPage(where, {search, invoiceNumber}, limit, skip)
+    const paymentFilter = paymentStatus && !['all', 'cancelled'].includes(paymentStatus) ? paymentStatus : undefined;
+    const [orders, countResult] = search || invoiceNumber || paymentFilter
+      ? await this.searchOrderPage(where, {search, invoiceNumber, paymentStatus: paymentFilter}, limit, skip)
       : await Promise.all([
           this.orderRepo.find({
             where: where as any,
@@ -5356,7 +5402,7 @@ export class OrderService {
           this.orderRepo.count(where as any),
         ]);
 
-    if (!orders.length) return {rows: [], total: 0};
+    if (!orders.length) return {rows: [], total: countResult.count};
 
     const orderIds = orders.map(o => o.id);
     const stops = await this.deliveryOrderRepo.find({
