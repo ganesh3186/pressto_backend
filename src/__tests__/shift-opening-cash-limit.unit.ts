@@ -8,6 +8,10 @@ describe('shift opening Cash In Till limit', () => {
     const controller = Object.assign(Object.create(ShiftController.prototype), {
       resolveCallerStore: async () => ({storeId: 'store-a', storeCode: 'A', storeName: 'Store A', userId: 'user-a', userName: 'Cashier'}),
       resolveSupposedOpeningValues: async () => ({cashInTill: 2000, banking: 0, pettyCash: 0, prepaidVouchers: 0}),
+      dataSource: {
+        beginTransaction: async () => ({commit: async () => {}, rollback: async () => {}}),
+        execute: async () => [],
+      },
       shiftRepository: {
         findOne: async () => null,
         count: async () => ({count: 0}),

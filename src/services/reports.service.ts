@@ -1222,27 +1222,28 @@ export class ReportsService {
         } as object,
       }),
     );
-    const legacyReturns = legacyOrders.length
-      ? await this.salesReturnRepo.find({
-          where: {
-            orderId: {inq: legacyOrders.map(order => order.id)},
-            status: SalesReturnStatus.APPROVED,
-          } as object,
-          fields: {
-            orderId: true, creditAmount: true, returnedItems: true,
-            resolvedAt: true, updatedAt: true, createdAt: true,
-          } as object,
-        })
-      : [];
-    const legacyPayments = legacyOrders.length
-      ? await this.paymentTransactionRepo.find({
-          where: {
-            orderId: {inq: legacyOrders.map(order => order.id)},
-            transactionType: {neq: 'refund'},
-          } as object,
-          fields: {orderId: true, amount: true, paymentDate: true} as object,
-        })
-      : [];
+    const legacyOrderIds = legacyOrders.map(order => order.id);
+    const legacyReturns = await findInBatches(legacyOrderIds, batch =>
+      this.salesReturnRepo.find({
+        where: {
+          orderId: {inq: batch},
+          status: SalesReturnStatus.APPROVED,
+        } as object,
+        fields: {
+          orderId: true, creditAmount: true, returnedItems: true,
+          resolvedAt: true, updatedAt: true, createdAt: true,
+        } as object,
+      }),
+    );
+    const legacyPayments = await findInBatches(legacyOrderIds, batch =>
+      this.paymentTransactionRepo.find({
+        where: {
+          orderId: {inq: batch},
+          transactionType: {neq: 'refund'},
+        } as object,
+        fields: {orderId: true, amount: true, paymentDate: true} as object,
+      }),
+    );
     const legacyOrderById = new Map(legacyOrders.map(order => [String(order.id), order]));
     const legacyInvoiceById = new Map(invoices.map(invoice => [String(invoice.id), invoice]));
     const legacyReturnsByOrderId = new Map<string, typeof legacyReturns>();
@@ -1553,36 +1554,36 @@ export class ReportsService {
         })),
     ];
     const revenueOrderIds = [...new Set(invoiceOrders.map(link => link.orderId))];
-    const revenueOrders = revenueOrderIds.length
-      ? await this.orderRepo.find({
-          where: {
-            id: {inq: revenueOrderIds},
-            storeId: {inq: storeIds},
-            status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
-          } as object,
-          fields: {
-            id: true, storeId: true, orderType: true, status: true,
-            taxAmount: true, totalAmount: true,
-          } as object,
-        })
-      : [];
+    const revenueOrders = await findInBatches(revenueOrderIds, batch =>
+      this.orderRepo.find({
+        where: {
+          id: {inq: batch},
+          storeId: {inq: storeIds},
+          status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
+        } as object,
+        fields: {
+          id: true, storeId: true, orderType: true, status: true,
+          taxAmount: true, totalAmount: true,
+        } as object,
+      }),
+    );
     const revenueOrderById = new Map(revenueOrders.map(o => [o.id, o]));
-    const approvedReturns = revenueOrderIds.length
-      ? await this.salesReturnRepo.find({
-          where: {
-            orderId: {inq: revenueOrderIds},
-            status: SalesReturnStatus.APPROVED,
-          } as object,
-          fields: {
-            orderId: true,
-            creditAmount: true,
-            returnedItems: true,
-            resolvedAt: true,
-            updatedAt: true,
-            createdAt: true,
-          } as object,
-        })
-      : [];
+    const approvedReturns = await findInBatches(revenueOrderIds, batch =>
+      this.salesReturnRepo.find({
+        where: {
+          orderId: {inq: batch},
+          status: SalesReturnStatus.APPROVED,
+        } as object,
+        fields: {
+          orderId: true,
+          creditAmount: true,
+          returnedItems: true,
+          resolvedAt: true,
+          updatedAt: true,
+          createdAt: true,
+        } as object,
+      }),
+    );
     const returnsByOrderId = new Map<string, typeof approvedReturns>();
     for (const salesReturn of approvedReturns) {
       returnsByOrderId.set(
