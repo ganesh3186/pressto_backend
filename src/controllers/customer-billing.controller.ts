@@ -7,6 +7,7 @@ import {PresstoDataSource} from '../datasources';
 import {authorize} from '../authorization';
 import {PaymentService} from '../services/payment.service';
 import {OrderService} from '../services/order.service';
+import {StoreScopeService} from '../services/store-scope.service';
 import {PaymentTransaction} from '../models/payment-transaction.model';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
 import {Order} from '../models/order.model';
@@ -53,6 +54,7 @@ export class CustomerBillingController {
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
     @inject('services.payment') private paymentService: PaymentService,
     @inject('services.order') private orderService: OrderService,
+    @inject('services.store-scope') private storeScopeService: StoreScopeService,
   ) {}
 
   private async ordersWithPendingDamage(orderIds: string[]): Promise<Set<string>> {
@@ -487,6 +489,13 @@ export class CustomerBillingController {
     if (orders.length !== orderIds.length) {
       throw new HttpErrors.BadRequest('One or more orders were not found for this customer.');
     }
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (orders.some(order => !this.storeScopeService.allows(scope, order.storeId))) {
+      throw new HttpErrors.NotFound('One or more orders were not found for this customer.');
+    }
+    if (new Set(orders.map(order => order.storeId)).size > 1) {
+      throw new HttpErrors.BadRequest('A consolidated invoice can only contain orders from one store.');
+    }
     const notBillable = orders.filter(o => !isBillableOnAccountOrder(o));
     if (notBillable.length) {
       throw new HttpErrors.BadRequest(
@@ -522,10 +531,15 @@ export class CustomerBillingController {
       paidByOrder.set(oid, money((paidByOrder.get(oid) ?? 0) + amt));
     }
 
-    const orderTotals = orders.map(o => ({
-      orderId: o.id,
-      due: Math.max(0, money((o as any).totalAmount) - (paidByOrder.get(o.id) ?? 0)),
-    }));
+    const orderTotals = orders.map(o => {
+      const total = money(o.totalAmount);
+      return {
+        orderId: o.id,
+        total,
+        tax: money(o.taxAmount),
+        due: Math.max(0, total - (paidByOrder.get(o.id) ?? 0)),
+      };
+    });
     // Reject individually, not just as a batch total — an already-fully-paid
     // order slipped in alongside genuinely unpaid ones would otherwise still
     // get an invoice_order_link row and be marked "invoiced" for ₹0.
@@ -543,6 +557,11 @@ export class CustomerBillingController {
     if (combinedTotal <= 0) {
       throw new HttpErrors.BadRequest('Selected orders have no outstanding balance to invoice.');
     }
+    const combinedTax = money(orderTotals.reduce((sum, billed) => {
+      const billedFraction = billed.total > 0 ? billed.due / billed.total : 0;
+      return sum + billed.tax * billedFraction;
+    }, 0));
+    const combinedCgst = money(combinedTax / 2);
 
     const now = new Date();
     const invoiceSpanDays = await this.resolveInvoiceSpanDays(customer.invoiceSpanDays);
@@ -551,6 +570,18 @@ export class CustomerBillingController {
     const {v4} = await import('uuid');
     const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED'} as any);
     try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.orders WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE',
+        [orderIds],
+        {transaction: tx},
+      );
+      const [lockedInvoices, lockedLinks] = await Promise.all([
+        this.invoiceRepo.find({where: {orderId: {inq: orderIds}} as any}, {transaction: tx}),
+        this.invoiceOrderLinkRepo.find({where: {orderId: {inq: orderIds}} as any}, {transaction: tx}),
+      ]);
+      if (lockedInvoices.length || lockedLinks.length) {
+        throw new HttpErrors.BadRequest('One or more selected orders were already invoiced.');
+      }
       const invoiceNumber = await this.orderService.allocateInvoiceNumber(tx, orders[0].storeId);
       const invoice = await this.invoiceRepo.create(
         {
@@ -559,7 +590,10 @@ export class CustomerBillingController {
           invoiceNumber,
           generatedBy: currentUser[securityId],
           isConsolidated: true,
-          subtotal: combinedTotal,
+          subtotal: money(combinedTotal - combinedTax),
+          discount: 0,
+          cgst: combinedCgst,
+          sgst: money(combinedTax - combinedCgst),
           totalAmount: Math.round(combinedTotal),
           amountReceived: 0,
           balanceDue: Math.round(combinedTotal),
@@ -595,6 +629,7 @@ export class CustomerBillingController {
   @get('/invoices/{invoiceId}/consolidated-orders')
   @response(200, {description: 'Orders linked to a consolidated on-account invoice'})
   async consolidatedInvoiceOrders(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('invoiceId') invoiceId: string,
   ): Promise<object> {
     const invoice = await this.invoiceRepo.findById(invoiceId);
@@ -603,6 +638,11 @@ export class CustomerBillingController {
     const links = await this.invoiceOrderLinkRepo.find({where: {invoiceId} as any});
     const orderIds = links.length ? links.map(l => l.orderId) : [invoice.orderId];
     const orders = await this.orderRepo.find({where: {id: {inq: orderIds}} as any});
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (orders.length !== orderIds.length ||
+        orders.some(order => !this.storeScopeService.allows(scope, order.storeId))) {
+      throw new HttpErrors.NotFound('Invoice not found.');
+    }
 
     return {
       invoice,
@@ -619,11 +659,16 @@ export class CustomerBillingController {
   @authorize({roles: ['super_admin'], permissions: ['on_account:read']})
   @get('/customers/{customerId}/on-account/invoices')
   @response(200, {description: 'All consolidated on-account invoices for the customer, most recent first'})
-  async onAccountInvoiceHistory(@param.path.string('customerId') customerId: string): Promise<object> {
+  async onAccountInvoiceHistory(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('customerId') customerId: string,
+  ): Promise<object> {
     const customer = await this.customerRepo.findOne({where: {id: customerId, isDeleted: false}});
     if (!customer) throw new HttpErrors.NotFound('Customer not found.');
 
-    const orders = await this.orderRepo.find({where: {customerId, isDeleted: false} as any});
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const orders = (await this.orderRepo.find({where: {customerId, isDeleted: false} as any}))
+      .filter(order => this.storeScopeService.allows(scope, order.storeId));
     const orderIds = orders.map(o => o.id);
     if (!orderIds.length) return {invoices: []};
 
@@ -631,9 +676,34 @@ export class CustomerBillingController {
       where: {orderId: {inq: orderIds}, isConsolidated: true} as any,
       order: ['createdAt DESC'],
     });
+    const links = invoices.length
+      ? await this.invoiceOrderLinkRepo.find({
+          where: {invoiceId: {inq: invoices.map(invoice => invoice.id)}} as any,
+        })
+      : [];
+    const linkedOrders = links.length
+      ? await this.orderRepo.find({
+          where: {id: {inq: [...new Set(links.map(link => link.orderId))]}, isDeleted: false} as any,
+        })
+      : [];
+    const linkedOrderById = new Map(linkedOrders.map(order => [order.id, order]));
+    const linksByInvoiceId = new Map<string, typeof links>();
+    for (const link of links) {
+      linksByInvoiceId.set(
+        link.invoiceId,
+        [...(linksByInvoiceId.get(link.invoiceId) ?? []), link],
+      );
+    }
+    const visibleInvoices = invoices.filter(invoice => {
+      const invoiceLinks = linksByInvoiceId.get(invoice.id) ?? [];
+      return invoiceLinks.every(link => {
+        const order = linkedOrderById.get(link.orderId);
+        return order != null && this.storeScopeService.allows(scope, order.storeId);
+      });
+    });
 
     return {
-      invoices: invoices.map(inv => ({
+      invoices: visibleInvoices.map(inv => ({
         invoiceId: inv.id,
         invoiceNumber: inv.invoiceNumber,
         totalAmount: money(inv.totalAmount),

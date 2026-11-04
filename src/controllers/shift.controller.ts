@@ -472,6 +472,15 @@ export class ShiftController {
     if (!body.remarks?.trim()) {
       throw new HttpErrors.BadRequest('Remarks are required to open a shift.');
     }
+    const cashInTillActual = body.openingBalances?.cashInTill?.actual;
+    if (
+      typeof cashInTillActual !== 'number' ||
+      !Number.isFinite(cashInTillActual) ||
+      cashInTillActual < 0 ||
+      cashInTillActual > 4000
+    ) {
+      throw new HttpErrors.BadRequest('Cash In Till Actual must be between ₹0 and ₹4,000.');
+    }
 
     const caller = await this.resolveCallerStore(currentUser, body.storeId);
 
@@ -1119,15 +1128,16 @@ export class ShiftController {
         storeId,
         status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
       } as object,
-      fields: {id: true} as object,
+      fields: {id: true, taxAmount: true, totalAmount: true} as object,
     });
     if (!orders.length) return {pressto: cell};
-    const validOrderIds = new Set(orders.map(order => order.id));
+    const orderById = new Map(orders.map(order => [order.id, order]));
 
     const settledOrderIds: string[] = [];
     const settledInvoiceIds = new Set<string>();
     for (const link of invoiceOrders) {
-      if (!validOrderIds.has(link.orderId)) continue;
+      const order = orderById.get(link.orderId);
+      if (!order) continue;
       const invoice = invoiceById.get(link.invoiceId);
       if (!invoice) continue;
 
@@ -1136,9 +1146,11 @@ export class ShiftController {
       let discountContribution: number;
       let taxContribution: number;
       if (invoice.isConsolidated) {
-        revenueContribution = orderTotal;
+        taxContribution = Number(order.totalAmount)
+          ? Math.round(orderTotal * (Number(order.taxAmount) || 0) / Number(order.totalAmount) * 100) / 100
+          : 0;
+        revenueContribution = orderTotal - taxContribution;
         discountContribution = 0;
-        taxContribution = 0;
       } else {
         revenueContribution = Number(invoice.subtotal) || 0;
         discountContribution = Number(invoice.discount) || 0;

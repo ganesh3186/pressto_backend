@@ -44,12 +44,17 @@ describe('On Account billable orders', () => {
       orderRepo: {find: async () => [{id: 'on-account', orderNumber: 'OA-1', status: OrderStatus.READY, isOnAccount: true}]},
       invoiceRepo: {find: async () => {throw reachedInvoiceLookup;}},
       invoiceOrderLinkRepo: {find: async () => []},
+      storeScopeService: {resolve: async () => ({global: true}), allows: () => true},
       dataSource: {execute: async () => []},
     }) as CustomerBillingController;
 
     let error: unknown;
     try {
-      await controller.generateOnAccountInvoice({} as any, customerId, {orderIds: ['on-account']});
+      await controller.generateOnAccountInvoice(
+        {} as Parameters<CustomerBillingController['generateOnAccountInvoice']>[0],
+        customerId,
+        {orderIds: ['on-account']},
+      );
     } catch (caught) {
       error = caught;
     }
@@ -60,10 +65,15 @@ describe('On Account billable orders', () => {
     const controller = Object.assign(Object.create(CustomerBillingController.prototype), {
       customerRepo: {findOne: async () => ({id: customerId, isOnAccountEligible: true})},
       orderRepo: {find: async () => [{id: 'received', orderNumber: 'OA-0', status: OrderStatus.RECEIVED_AT_STORE, isOnAccount: true}]},
+      storeScopeService: {resolve: async () => ({global: true}), allows: () => true},
     }) as CustomerBillingController;
 
     try {
-      await controller.generateOnAccountInvoice({} as any, customerId, {orderIds: ['received']});
+      await controller.generateOnAccountInvoice(
+        {} as Parameters<CustomerBillingController['generateOnAccountInvoice']>[0],
+        customerId,
+        {orderIds: ['received']},
+      );
       throw new Error('Expected the unfinished ticket to be rejected');
     } catch (error) {
       expect((error as {statusCode?: number}).statusCode).to.equal(400);
@@ -74,6 +84,7 @@ describe('On Account billable orders', () => {
     const controller = Object.assign(Object.create(CustomerBillingController.prototype), {
       customerRepo: {findOne: async () => ({id: customerId, isOnAccountEligible: true})},
       orderRepo: {find: async () => [{id: 'pending-parent', orderNumber: 'OA-P', status: OrderStatus.READY, isOnAccount: true}]},
+      storeScopeService: {resolve: async () => ({global: true}), allows: () => true},
       dataSource: {execute: async () => [{orderid: 'pending-parent'}]},
     }) as CustomerBillingController;
 
@@ -83,5 +94,147 @@ describe('On Account billable orders', () => {
       {orderIds: ['pending-parent']},
     ))
       .to.be.rejectedWith(/Resolve pending damage approval before billing/);
+  });
+
+  it('rejects a consolidated invoice containing tickets from different stores', async () => {
+    const controller = Object.assign(Object.create(CustomerBillingController.prototype), {
+      customerRepo: {findOne: async () => ({id: customerId, isOnAccountEligible: true})},
+      orderRepo: {find: async () => [
+        {id: 'order-a', storeId: 'store-a', status: OrderStatus.READY, isOnAccount: true},
+        {id: 'order-b', storeId: 'store-b', status: OrderStatus.READY, isOnAccount: true},
+      ]},
+      storeScopeService: {resolve: async () => ({global: true}), allows: () => true},
+    }) as CustomerBillingController;
+
+    await expect(controller.generateOnAccountInvoice(
+      {} as Parameters<CustomerBillingController['generateOnAccountInvoice']>[0],
+      customerId,
+      {orderIds: ['order-a', 'order-b']},
+    )).to.be.rejectedWith(/only contain orders from one store/);
+  });
+
+  it('hides selected tickets outside the caller store scope', async () => {
+    const controller = Object.assign(Object.create(CustomerBillingController.prototype), {
+      customerRepo: {findOne: async () => ({id: customerId, isOnAccountEligible: true})},
+      orderRepo: {find: async () => [
+        {id: 'order-b', storeId: 'store-b', status: OrderStatus.READY, isOnAccount: true},
+      ]},
+      storeScopeService: {
+        resolve: async () => ({global: false, storeIds: ['store-a']}),
+        allows: (_scope: unknown, storeId: string) => storeId === 'store-a',
+      },
+    }) as CustomerBillingController;
+
+    await expect(controller.generateOnAccountInvoice(
+      {} as Parameters<CustomerBillingController['generateOnAccountInvoice']>[0],
+      customerId,
+      {orderIds: ['order-b']},
+    )).to.be.rejectedWith(/not found for this customer/);
+  });
+
+  it('rechecks existing invoices after locking selected tickets', async () => {
+    const tx = {commit: async () => undefined, rollback: async () => undefined};
+    let invoiceLookups = 0;
+    let locked = false;
+    const controller = Object.assign(Object.create(CustomerBillingController.prototype), {
+      customerRepo: {findOne: async () => ({id: customerId, isOnAccountEligible: true})},
+      orderRepo: {find: async () => [{
+        id: 'order-a', storeId: 'store-a', orderNumber: 'OA-1', status: OrderStatus.READY,
+        isOnAccount: true, totalAmount: 100, taxAmount: 10,
+      }]},
+      storeScopeService: {resolve: async () => ({global: true}), allows: () => true},
+      invoiceRepo: {find: async () => {
+        invoiceLookups += 1;
+        return invoiceLookups === 1 ? [] : [{orderId: 'order-a'}];
+      }},
+      invoiceOrderLinkRepo: {find: async () => []},
+      paymentRepo: {find: async () => []},
+      onAccountConfigRepo: {findOne: async () => ({defaultInvoiceSpanDays: 30})},
+      dataSource: {
+        execute: async (sql: string) => {
+          if (sql.includes('FOR UPDATE')) locked = true;
+          return [];
+        },
+        beginTransaction: async () => tx,
+      },
+    }) as CustomerBillingController;
+
+    await expect(controller.generateOnAccountInvoice(
+      {} as Parameters<CustomerBillingController['generateOnAccountInvoice']>[0],
+      customerId,
+      {orderIds: ['order-a']},
+    )).to.be.rejectedWith(/already invoiced/);
+    expect(locked).to.be.true();
+    expect(invoiceLookups).to.equal(2);
+  });
+
+  it('hides consolidated invoice details outside the caller store scope', async () => {
+    const controller = Object.assign(Object.create(CustomerBillingController.prototype), {
+      invoiceRepo: {findById: async () => ({id: 'invoice-b', orderId: 'order-b'})},
+      invoiceOrderLinkRepo: {find: async () => []},
+      orderRepo: {find: async () => [{id: 'order-b', storeId: 'store-b'}]},
+      storeScopeService: {
+        resolve: async () => ({global: false, storeIds: ['store-a']}),
+        allows: (_scope: unknown, storeId: string) => storeId === 'store-a',
+      },
+    }) as CustomerBillingController;
+
+    await expect(controller.consolidatedInvoiceOrders(
+      {} as Parameters<CustomerBillingController['consolidatedInvoiceOrders']>[0],
+      'invoice-b',
+    )).to.be.rejectedWith(/Invoice not found/);
+  });
+
+  it('returns on-account history only for orders in the caller store scope', async () => {
+    const controller = Object.assign(Object.create(CustomerBillingController.prototype), {
+      customerRepo: {findOne: async () => ({id: customerId})},
+      orderRepo: {find: async () => [
+        {id: 'order-a', storeId: 'store-a'},
+        {id: 'order-b', storeId: 'store-b'},
+      ]},
+      invoiceRepo: {find: async ({where}: {where: {orderId: {inq: string[]}}}) => {
+        expect(where.orderId.inq).to.eql(['order-a']);
+        return [{id: 'invoice-a', invoiceNumber: 'OA-1'}];
+      }},
+      invoiceOrderLinkRepo: {find: async () => []},
+      storeScopeService: {
+        resolve: async () => ({global: false, storeIds: ['store-a']}),
+        allows: (_scope: unknown, storeId: string) => storeId === 'store-a',
+      },
+    }) as CustomerBillingController;
+
+    const result = await controller.onAccountInvoiceHistory(
+      {} as Parameters<CustomerBillingController['onAccountInvoiceHistory']>[0],
+      customerId,
+    ) as {invoices: Array<{invoiceNumber: string}>};
+    expect(result.invoices.map(invoice => invoice.invoiceNumber)).to.eql(['OA-1']);
+  });
+
+  it('hides legacy invoice history when any linked order is outside the caller store scope', async () => {
+    let orderLookup = 0;
+    const controller = Object.assign(Object.create(CustomerBillingController.prototype), {
+      customerRepo: {findOne: async () => ({id: customerId})},
+      orderRepo: {find: async () => {
+        orderLookup += 1;
+        return orderLookup === 1
+          ? [{id: 'order-a', storeId: 'store-a'}]
+          : [{id: 'order-a', storeId: 'store-a'}, {id: 'order-b', storeId: 'store-b'}];
+      }},
+      invoiceRepo: {find: async () => [{id: 'legacy-invoice', invoiceNumber: 'OA-OLD'}]},
+      invoiceOrderLinkRepo: {find: async () => [
+        {invoiceId: 'legacy-invoice', orderId: 'order-a'},
+        {invoiceId: 'legacy-invoice', orderId: 'order-b'},
+      ]},
+      storeScopeService: {
+        resolve: async () => ({global: false, storeIds: ['store-a']}),
+        allows: (_scope: unknown, storeId: string) => storeId === 'store-a',
+      },
+    }) as CustomerBillingController;
+
+    const result = await controller.onAccountInvoiceHistory(
+      {} as Parameters<CustomerBillingController['onAccountInvoiceHistory']>[0],
+      customerId,
+    ) as {invoices: unknown[]};
+    expect(result.invoices).to.be.empty();
   });
 });
