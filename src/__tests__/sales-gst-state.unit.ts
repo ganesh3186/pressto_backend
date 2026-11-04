@@ -14,7 +14,10 @@ describe('sales GST state filter', () => {
       // Invoices in the window are fetched before orders — this one
       // references an order the state filter then has to narrow away.
       invoiceRepo: {
-        find: async () => [{id: 'invoice-x', orderId: 'order-x'}],
+        execute: async (_sql: string, params: unknown[]) => {
+          orderStoreIds = params[0] as string[];
+          return [{count:0, page:[],taxable:0,tax:0,total:0}];
+        },
       },
       orderRepo: {
         find: async ({where}: {where: {id: {inq: string[]}; storeId: {inq: string[]}}}) => {

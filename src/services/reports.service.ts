@@ -1,3 +1,5 @@
+import {PAYMENT_REPORT_SQL} from '../utils/payment-report-sql';
+import {PETTY_CASH_REPORT_SQL} from '../utils/petty-cash-report-sql';
 import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {findInBatches} from '../utils/batch-find';
@@ -6,7 +8,6 @@ import {OrderStatus} from '../models/order-status.enum';
 import {OrderType} from '../models/order-type.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {PaymentRequestStatus} from '../models/payment-request-status.enum';
-import {PettyCashStatus} from '../models/petty-cash-status.enum';
 import {ShiftStatus} from '../models/shift-status.enum';
 import {
   ClusterRepository,
@@ -393,6 +394,15 @@ export class ReportsService {
     };
     if (!storeIds.length) return empty;
 
+    const result = await this.paymentTransactionRepo.execute(PAYMENT_REPORT_SQL, [storeIds, from, to, limit, skip]);
+    const summary = result[0];
+    if (!Number(summary.count)) return empty;
+    const selected: {id: string; sourceid: string; kind: string; cashshiftid?: string}[] = summary.page;
+    const paymentIds = selected.filter(row => row.kind === 'payment').map(row => row.sourceid);
+    const walletIds = selected.filter(row => row.kind === 'wallet').map(row => row.sourceid);
+    const invoiceIds = selected.filter(row => row.kind === 'invoice').map(row => row.sourceid);
+    const cashShiftIds = selected.map(row => row.cashshiftid).filter(Boolean) as string[];
+    const selectedKeys = new Set(selected.map(row => row.id));
     // Payments reach a store through their order, except cash refunds with
     // a payout shift, and an old order can still be paid in this window —
     // so the order side can't be date-filtered directly. Rather than fetch
@@ -402,15 +412,15 @@ export class ReportsService {
     // then resolve only the specific orders they actually reference.
     const [candidatePayments, cashShifts, walletRows, onAccountInvoiceRows] = await Promise.all([
       this.paymentTransactionRepo.find({
-        where: {paymentDate: {between: [from, to]}} as object,
+        where: {id: {inq: paymentIds}} as object,
         order: ['paymentDate DESC'],
       }),
       this.shiftRepo.find({
-        where: {storeId: {inq: storeIds}} as object,
+        where: {storeId: {inq: storeIds}, id: {inq: cashShiftIds}} as object,
         fields: {id: true, storeId: true, storeCode: true, storeName: true, closureNo: true} as object,
       }),
-      this.buildWalletTopUpRows(storeIds, from, to),
-      this.buildOnAccountInvoiceRows(storeIds, from, to),
+      this.buildWalletTopUpRows(storeIds, from, to, walletIds),
+      this.buildOnAccountInvoiceRows(storeIds, from, to, invoiceIds),
     ]);
 
     const cashShiftById = new Map(cashShifts.map(shift => [shift.id, shift]));
@@ -455,7 +465,7 @@ export class ReportsService {
       payoutOrders.forEach(order => orderById.set(order.id, order));
     }
 
-    if (!payments.length && !walletRows.length && !onAccountInvoiceRows.length) return empty;
+
 
     // The three ledgers are paged as one list, so the whole merged set has
     // to be ordered in memory before slicing: a DB-side limit/skip on the
@@ -468,46 +478,21 @@ export class ReportsService {
 
     const entries: Entry[] = [
       ...payments.map(payment => ({date: payment.paymentDate ?? null, payment})),
-      ...walletRows.map(wallet => ({date: wallet.date, wallet})),
-      ...onAccountInvoiceRows.map(onAccountInvoice => ({date: onAccountInvoice.date, onAccountInvoice})),
+      ...walletRows.filter(row => selectedKeys.has(row.id)).map(wallet => ({date: wallet.date, wallet})),
+      ...onAccountInvoiceRows.filter(row => selectedKeys.has(row.id)).map(onAccountInvoice => ({date: onAccountInvoice.date, onAccountInvoice})),
     ].sort((a, b) => timeOf(b.date) - timeOf(a.date));
 
     // Count and totals come from the whole matching set, never just the
     // page — a footer that only summed the visible rows would restate the
     // very bug this endpoint replaces.
     const totalsByMode: Record<string, number> = {};
-    const totals = entries.reduce(
-      (acc, entry) => {
-        if (entry.wallet) {
-          acc.amount += entry.wallet.amount;
-          const label =
-            PAYMENT_MODE_LABELS[entry.wallet.paymentMode] ?? entry.wallet.paymentModeLabel;
-          totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + entry.wallet.amount);
-          return acc;
-        }
-        if (entry.onAccountInvoice) {
-          acc.amount += entry.onAccountInvoice.amount;
-          const label =
-            PAYMENT_MODE_LABELS[entry.onAccountInvoice.paymentMode] ??
-            entry.onAccountInvoice.paymentModeLabel;
-          totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + entry.onAccountInvoice.amount);
-          return acc;
-        }
-        const txn = entry.payment;
-        const value = Number(txn.amount) || 0;
-        const label = PAYMENT_MODE_LABELS[txn.paymentMode] ?? String(txn.paymentMode ?? '—');
-        if (txn.transactionType === 'refund') {
-          acc.reimbursement += value;
-        } else {
-          acc.amount += value;
-          totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + value);
-        }
-        return acc;
-      },
-      {amount: 0, reimbursement: 0},
-    );
+    for (const [mode, amount] of Object.entries(summary.modes)) {
+      const label = PAYMENT_MODE_LABELS[mode] ?? mode;
+      totalsByMode[label] = roundRupees((totalsByMode[label] ?? 0) + Number(amount));
+    }
+    const totals = {amount: Number(summary.amount), reimbursement: Number(summary.refund)};
 
-    const pageEntries = entries.slice(skip, skip + limit);
+    const pageEntries = entries;
     const pagePayments = pageEntries
       .map(entry => entry.payment)
       .filter(Boolean) as typeof payments;
@@ -573,7 +558,7 @@ export class ReportsService {
       };
     });
 
-    return {rows, totalCount: entries.length, totals, totalsByMode};
+    return {rows, totalCount: Number(summary.count), totals, totalsByMode};
   }
 
   /**
@@ -594,7 +579,9 @@ export class ReportsService {
     storeIds: string[],
     from: Date,
     to: Date,
+    selectedIds?: string[],
   ): Promise<ModeOfPaymentRow[]> {
+    if (selectedIds && !selectedIds.length) return [];
     // Requests by date first (bounded), then only the customers they
     // actually reference — not every customer who prefers this store,
     // which scales with the store's whole customer base rather than this
@@ -602,6 +589,7 @@ export class ReportsService {
     const [candidateRequests, stores] = await Promise.all([
       this.walletRechargeRequestRepo.find({
         where: {
+          ...(selectedIds ? {id: {inq: selectedIds}} : {}),
           status: PaymentRequestStatus.SUCCESS,
           createdAt: {between: [from, to]},
         } as object,
@@ -687,9 +675,12 @@ export class ReportsService {
     storeIds: string[],
     from: Date,
     to: Date,
+    selectedIds?: string[],
   ): Promise<ModeOfPaymentRow[]> {
+    if (selectedIds && !selectedIds.length) return [];
     const invoices = await this.invoiceRepo.find({
       where: {
+        ...(selectedIds ? {id: {inq: selectedIds}} : {}),
         status: InvoiceStatus.ISSUED,
         isConsolidated: true,
         createdAt: {between: [from, to]},
@@ -848,18 +839,12 @@ export class ReportsService {
     deliveryStatus: string;
     customerLabelId?: string;
   }): Promise<PagedReport<object>> {
-    const {storeIds, limit, skip} = params;
+    const {storeIds} = params;
     if (!storeIds.length) return emptyPaged();
 
-    const orders = await this.orderRepo.find({
-      where: {
-        ...this.orderScopeWhere(params),
-        status: {neq: OrderStatus.CANCELLED},
-      } as object,
-      order: ['createdAt DESC'],
-    });
-    if (!orders.length) return emptyPaged();
-
+    const resultPage = await this.orderReportPage(params, 'payments');
+    if (!resultPage.count) return emptyPaged();
+    const orders = resultPage.orders;
     const orderIds = orders.map(o => o.id);
     const [collected, deliveryStatuses, storeCtx, customerCtx] = await Promise.all([
       this.buildCollectedByOrder(orderIds),
@@ -878,25 +863,13 @@ export class ReportsService {
         const status = resolveOrderPaymentStatus(total, paid, order.status);
         return {order, balanceDue, status, delivery: deliveryStatuses.get(String(order.id)) ?? ''};
       })
-      .filter(({status, delivery}) => {
-        const wanted = params.paymentStatus;
-        if (wanted === 'pending' && status === 'paid') return false;
-        if (wanted !== 'all' && wanted !== 'pending' && status !== wanted) return false;
-        if (params.deliveryStatus !== 'all' && delivery.toLowerCase() !== params.deliveryStatus) {
-          return false;
-        }
-        return true;
-      })
-      .filter(({order}) => {
-        if (!params.customerLabelId) return true;
-        return customerCtx.get(String(order.customerId))?.groupId === params.customerLabelId;
-      });
+;
 
     const totals = {
-      balanceDue: enriched.reduce((sum, e) => sum + e.balanceDue, 0),
+      balanceDue: resultPage.balance,
     };
 
-    const rows = enriched.slice(skip, skip + limit).map(({order, balanceDue, status, delivery}) => {
+    const rows = enriched.map(({order, balanceDue, status, delivery}) => {
       const store = storeCtx.get(String(order.storeId));
       const customer = customerCtx.get(String(order.customerId));
       return {
@@ -915,23 +888,80 @@ export class ReportsService {
       };
     });
 
-    return {rows, totalCount: enriched.length, totals};
+    return {rows, totalCount: resultPage.count, totals};
+  }
+
+  /** Filter and aggregate the full result in SQL; hydrate/enrich only its page. */
+  private async orderReportPage(params: OrderReportParams & {
+    paymentStatus?: string; deliveryStatus?: string; customerName?: string; customerLabelId?: string;
+  }, kind: 'payments' | 'tickets' | 'onAccount') {
+    const extra = kind === 'tickets' ? {status: {nin: TICKET_TERMINAL_STATUSES}}
+      : {status: {neq: OrderStatus.CANCELLED}, ...(kind === 'onAccount' ? {isOnAccount: true} : {})};
+    const source = this.orderRepo.dataSource;
+    const connector = source.connector as unknown as {
+      buildWhere(model: string, where: object): {sql: string; params: unknown[]};
+      parameterize(query: {sql: string; params: unknown[]}): {sql: string; params: unknown[]};
+    };
+    const base = connector.buildWhere(this.orderRepo.entityClass.modelName, {...this.orderScopeWhere(params), ...extra});
+    const filters: string[] = [];
+    const values: unknown[] = [...base.params];
+    if (kind === 'tickets') filters.push("delivery <> 'delivered'");
+    else if (params.deliveryStatus && params.deliveryStatus !== 'all') {
+      filters.push('lower(delivery) = ?'); values.push(params.deliveryStatus);
+    }
+    if (params.paymentStatus && params.paymentStatus !== 'all') {
+      filters.push(params.paymentStatus === 'pending' && kind === 'payments' ? "paymentstatus <> 'paid'" : 'paymentstatus = ?');
+      if (!(params.paymentStatus === 'pending' && kind === 'payments')) values.push(params.paymentStatus);
+    }
+    if (params.customerName?.trim()) {
+      filters.push("position(? in lower(customername)) > 0"); values.push(params.customerName.trim().toLowerCase());
+    }
+    if (params.customerLabelId) {filters.push('labelid = ?::uuid'); values.push(params.customerLabelId);}
+    const query = connector.parameterize({sql: `WITH scoped AS MATERIALIZED (
+      SELECT * FROM public.orders ${base.sql}
+    ), metrics AS (
+      SELECT o.id, o.createdat, COALESCE(o.totalamount, 0) AS amount,
+        COALESCE(p.paid, 0) AS paid,
+        floor((COALESCE(o.totalamount,0) - COALESCE(p.paid,0))*100 + .5)/100 AS balance,
+        COALESCE(d.status, '') AS delivery,
+        COALESCE(items.quantity,0) AS quantity,
+        trim(COALESCE(c.firstname,'') || ' ' || COALESCE(c.lastname,'')) AS customername,
+        label.customerlabelid AS labelid,
+        CASE WHEN o.status = 'draft' AND COALESCE(p.paid,0) <= 0 THEN 'pending'
+          WHEN floor((COALESCE(o.totalamount,0) - COALESCE(p.paid,0))*100 + .5) <= 0 THEN 'paid'
+          WHEN COALESCE(p.paid,0) > 0 THEN 'partial' ELSE 'pending' END AS paymentstatus
+      FROM scoped o LEFT JOIN public.customer c ON c.id = o.customerid
+      LEFT JOIN (SELECT p.orderid, sum(p.amount) AS paid FROM public.payment_transaction p
+        JOIN scoped o ON o.id = p.orderid WHERE p.transactiontype <> 'refund' GROUP BY p.orderid) p ON p.orderid = o.id
+      LEFT JOIN LATERAL (SELECT d.status FROM public.delivery_order d WHERE d.orderid = o.id
+        ORDER BY d.createdat DESC, d.id DESC LIMIT 1) d ON true
+      LEFT JOIN LATERAL (SELECT sum(CASE WHEN quantity > 0 THEN quantity ELSE 0 END) AS quantity
+        FROM public.order_item WHERE orderid = o.id) items ON true
+      LEFT JOIN LATERAL (SELECT a.customerlabelid FROM public.customer_label_assignment a
+        JOIN public.customer_label l ON l.id = a.customerlabelid
+        WHERE a.customerid = o.customerid ORDER BY a.createdat ASC, a.id ASC LIMIT 1) label ON true
+    ), matching AS MATERIALIZED (SELECT * FROM metrics WHERE ${filters.join(' AND ') || 'TRUE'})
+    SELECT count(*)::int AS count, COALESCE(sum(amount),0) AS amount, COALESCE(sum(paid),0) AS paid,
+      COALESCE(sum(balance),0) AS balance, COALESCE(sum(quantity),0) AS quantity,
+      ARRAY(SELECT id FROM matching ORDER BY createdat DESC, id DESC LIMIT ? OFFSET ?) AS ids FROM matching`,
+      params: [...values, params.limit, params.skip]});
+    const result = await source.execute(query.sql, query.params);
+    const row = result[0];
+    const ids: string[] = row.ids ?? [];
+    const found = ids.length ? await this.orderRepo.find({where: {id: {inq: ids}}}) : [];
+    const byId = new Map(found.map(order => [order.id, order]));
+    return {orders: ids.map(id => byId.get(id)!).filter(Boolean), count: Number(row.count),
+      amount: Number(row.amount), paid: Number(row.paid), balance: Number(row.balance), quantity: Number(row.quantity)};
   }
 
   /** Pending Tickets — orders still in the plant, not yet delivered. */
   async buildPendingTickets(params: OrderReportParams): Promise<PagedReport<object>> {
-    const {storeIds, limit, skip} = params;
+    const {storeIds} = params;
     if (!storeIds.length) return emptyPaged();
 
-    const orders = await this.orderRepo.find({
-      where: {
-        ...this.orderScopeWhere(params),
-        status: {nin: TICKET_TERMINAL_STATUSES},
-      } as object,
-      order: ['createdAt DESC'],
-    });
-    if (!orders.length) return emptyPaged();
-
+    const resultPage = await this.orderReportPage(params, 'tickets');
+    if (!resultPage.count) return emptyPaged();
+    const orders = resultPage.orders;
     const orderIds = orders.map(o => o.id);
     const [orderItems, deliveryStatuses, storeCtx, customerCtx] = await Promise.all([
       this.orderItemRepo.find({
@@ -958,11 +988,11 @@ export class ReportsService {
     );
 
     const totals = {
-      amount: pending.reduce((sum, o) => sum + (Number(o.totalAmount) || 0), 0),
-      items: pending.reduce((sum, o) => sum + (itemCounts.get(String(o.id)) ?? 0), 0),
+      amount: resultPage.amount,
+      items: resultPage.quantity,
     };
 
-    const pageOrders = pending.slice(skip, skip + limit);
+    const pageOrders = pending;
     const pageOrderIds = new Set(pageOrders.map(o => String(o.id)));
     const pageItems = orderItems.filter(oi => pageOrderIds.has(String(oi.orderId)));
     const itemIds = [...new Set(pageItems.map(oi => oi.itemId))];
@@ -1007,7 +1037,7 @@ export class ReportsService {
       };
     });
 
-    return {rows, totalCount: pending.length, totals};
+    return {rows, totalCount: resultPage.count, totals};
   }
 
   /**
@@ -1025,19 +1055,12 @@ export class ReportsService {
     paymentStatus: string;
     customerName?: string;
   }): Promise<PagedReport<object>> {
-    const {storeIds, limit, skip} = params;
+    const {storeIds} = params;
     if (!storeIds.length) return emptyPaged();
 
-    const orders = await this.orderRepo.find({
-      where: {
-        ...this.orderScopeWhere(params),
-        isOnAccount: true,
-        status: {neq: OrderStatus.CANCELLED},
-      } as object,
-      order: ['createdAt DESC'],
-    });
-    if (!orders.length) return emptyPaged();
-
+    const resultPage = await this.orderReportPage(params, 'onAccount');
+    if (!resultPage.count) return emptyPaged();
+    const orders = resultPage.orders;
     const orderIds = orders.map(o => o.id);
     const [collected, deliveryStatuses, deliveredAt, itemCounts, storeCtx, customerCtx] =
       await Promise.all([
@@ -1049,7 +1072,6 @@ export class ReportsService {
         this.buildCustomerContext([...new Set(orders.map(o => String(o.customerId)))]),
       ]);
 
-    const needle = (params.customerName ?? '').trim().toLowerCase();
 
     const enriched = orders
       .map(order => {
@@ -1065,29 +1087,15 @@ export class ReportsService {
           delivery: deliveryStatuses.get(String(order.id)) ?? '',
         };
       })
-      .filter(({status, delivery, order}) => {
-        if (
-          params.paymentStatus !== 'all' &&
-          !(params.paymentStatus === 'pending' && status === 'unpaid') &&
-          status !== params.paymentStatus
-        ) return false;
-        if (params.deliveryStatus !== 'all' && delivery.toLowerCase() !== params.deliveryStatus) {
-          return false;
-        }
-        if (needle) {
-          const name = (customerCtx.get(String(order.customerId))?.name ?? '').toLowerCase();
-          if (!name.includes(needle)) return false;
-        }
-        return true;
-      });
+;
 
     const totals = {
-      totalAmount: enriched.reduce((sum, e) => sum + e.total, 0),
-      collected: enriched.reduce((sum, e) => sum + e.paid, 0),
-      balanceDue: enriched.reduce((sum, e) => sum + e.balanceDue, 0),
+      totalAmount: resultPage.amount,
+      collected: resultPage.paid,
+      balanceDue: resultPage.balance,
     };
 
-    const rows = enriched.slice(skip, skip + limit).map(e => {
+    const rows = enriched.map(e => {
       const store = storeCtx.get(String(e.order.storeId));
       const customer = customerCtx.get(String(e.order.customerId));
       return {
@@ -1115,7 +1123,7 @@ export class ReportsService {
       };
     });
 
-    return {rows, totalCount: enriched.length, totals};
+    return {rows, totalCount: resultPage.count, totals};
   }
 
   /**
@@ -1160,14 +1168,38 @@ export class ReportsService {
     // raised, which scales with the store's whole history rather than this
     // window and, selected across many/all stores, can approach the full
     // orders table.
-    const candidateInvoices = await this.invoiceRepo.find({
-      where: {
-        status: InvoiceStatus.ISSUED,
-        isConsolidated: false,
-        createdAt: {between: [from, to]},
-      } as object,
-    });
-    if (!candidateInvoices.length) return emptyPaged();
+    const summaryRows = await this.invoiceRepo.execute(`WITH lines AS MATERIALIZED (
+      SELECT i.id, i.createdat, line.ordinality AS lineindex,
+        CASE WHEN i.subtotal > 0 THEN (line.value->>'totalPrice')::double precision / i.subtotal::double precision ELSE 0 END AS fraction,
+        GREATEST(0, COALESCE(i.subtotal,0)::double precision - COALESCE(i.discount,0)::double precision) AS taxable,
+        COALESCE(i.cgst,0)::double precision AS cgst, COALESCE(i.sgst,0)::double precision AS sgst
+      FROM public.invoice i JOIN public.orders o ON o.id = i.orderid
+      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(i.items,'[]'::jsonb)) WITH ORDINALITY AS line(value,ordinality)
+      WHERE i.status = 'issued' AND i.isconsolidated = false AND o.storeid = ANY($1::uuid[])
+        AND i.createdat >= $2 AND i.createdat <= $3 AND COALESCE((line.value->>'totalPrice')::numeric,0) > 0
+    ), rounded AS (SELECT *, floor(taxable*fraction*100+.5)/100 AS tv,
+      floor(cgst*fraction*100+.5)/100 AS cg, floor(sgst*fraction*100+.5)/100 AS sg FROM lines),
+    amounts AS MATERIALIZED (SELECT *, floor((cg+sg)*100+.5)/100 AS tax FROM rounded)
+    SELECT count(*)::int AS count, floor(COALESCE(sum(tv),0)*100+.5)/100 AS taxable,
+      floor(COALESCE(sum(tax),0)*100+.5)/100 AS tax,
+      floor(COALESCE(sum(floor((tv+tax)*100+.5)/100),0)*100+.5)/100 AS total,
+      COALESCE((SELECT jsonb_agg(page) FROM (SELECT id, lineindex FROM amounts
+        ORDER BY createdat DESC,id DESC,lineindex LIMIT $4 OFFSET $5) page),'[]'::jsonb) AS page FROM amounts`,
+      [selectedStoreIds, from, to, limit, skip]);
+    const summary = summaryRows[0];
+    if (!Number(summary.count)) return emptyPaged();
+    const linePage: {id: string; lineindex: number}[] = summary.page;
+    const selection = new Map<string, Set<number>>();
+    for (const row of linePage) {
+      if (!selection.has(row.id)) selection.set(row.id, new Set());
+      selection.get(row.id)!.add(Number(row.lineindex));
+    }
+    const invoiceIds = [...selection.keys()];
+    const foundInvoices = invoiceIds.length ? await this.invoiceRepo.find({where: {id: {inq: invoiceIds}}}) : [];
+    const invoiceById = new Map(foundInvoices.map(invoice => [invoice.id, invoice]));
+    const candidateInvoices = invoiceIds.map(id => invoiceById.get(id)!).filter(Boolean);
+    const fullTotals = {taxableValue: Number(summary.taxable), totalTax: Number(summary.tax), ticketValue: Number(summary.total)};
+    if (!candidateInvoices.length) return {rows: [], totalCount: Number(summary.count), totals: fullTotals};
 
     const candidateOrderIds = [...new Set(candidateInvoices.map(inv => inv.orderId))];
     const orders = await findInBatches(candidateOrderIds, batch =>
@@ -1236,7 +1268,7 @@ export class ReportsService {
     const serviceNameById = new Map(services.map(s => [String(s.id), s.name]));
 
     const allRows: object[] = [];
-    let srNo = 0;
+    let srNo = skip;
     for (const invoice of invoices) {
       const order = orderById.get(invoice.orderId);
       if (!order) continue;
@@ -1250,7 +1282,7 @@ export class ReportsService {
           serviceId?: string;
           totalPrice?: number;
         }>
-      ).filter(line => (Number(line.totalPrice) || 0) > 0);
+      ).filter((line, index) => selection.get(invoice.id)?.has(index + 1) && (Number(line.totalPrice) || 0) > 0);
       if (!lineItems.length) continue;
 
       const invoiceSubtotal = Number(invoice.subtotal) || 0;
@@ -1312,21 +1344,11 @@ export class ReportsService {
       }
     }
 
-    const totals = {
-      taxableValue: roundRupees(
-        allRows.reduce((sum, row) => sum + ((row as {taxableValue: number}).taxableValue || 0), 0),
-      ),
-      totalTax: roundRupees(
-        allRows.reduce((sum, row) => sum + ((row as {totalTax: number}).totalTax || 0), 0),
-      ),
-      ticketValue: roundRupees(
-        allRows.reduce((sum, row) => sum + ((row as {ticketValue: number}).ticketValue || 0), 0),
-      ),
-    };
+    const totals = fullTotals;
 
     return {
-      rows: allRows.slice(skip, skip + limit),
-      totalCount: allRows.length,
+      rows: allRows,
+      totalCount: Number(summary.count),
       totals,
     };
   }
@@ -1438,11 +1460,13 @@ export class ReportsService {
       } as object,
     });
 
+    // A month across every store is tens of thousands of orders — chunk
+    // each id lookup (see findInBatches) rather than one oversized IN list.
     const orderIds = orders.map(o => o.id);
     const payments = orderIds.length
-      ? await this.paymentTransactionRepo.find({
+      ? await findInBatches(orderIds, ids => this.paymentTransactionRepo.find({
           where: {
-            orderId: {inq: orderIds},
+            orderId: {inq: ids},
             paymentDate: {between: [earliestOpen, latestClose]},
           } as object,
           fields: {
@@ -1453,7 +1477,7 @@ export class ReportsService {
             paymentDate: true,
             transactionReference: true,
           } as object,
-        })
+        }))
       : [];
     const orderById = new Map(orders.map(o => [o.id, o]));
 
@@ -1481,10 +1505,10 @@ export class ReportsService {
     });
     const revenueInvoiceById = new Map(revenueInvoices.map(invoice => [invoice.id, invoice]));
     const revenueLinks = revenueInvoices.length
-      ? await this.invoiceOrderLinkRepo.find({
-          where: {invoiceId: {inq: revenueInvoices.map(invoice => invoice.id)}} as object,
+      ? await findInBatches(revenueInvoices.map(invoice => invoice.id), ids => this.invoiceOrderLinkRepo.find({
+          where: {invoiceId: {inq: ids}} as object,
           fields: {invoiceId: true, orderId: true, orderTotal: true} as object,
-        })
+        }))
       : [];
     const linkedInvoiceIds = new Set(revenueLinks.map(link => link.invoiceId));
     const invoiceOrders = [
@@ -1499,14 +1523,14 @@ export class ReportsService {
     ];
     const revenueOrderIds = [...new Set(invoiceOrders.map(link => link.orderId))];
     const revenueOrders = revenueOrderIds.length
-      ? await this.orderRepo.find({
+      ? await findInBatches(revenueOrderIds, ids => this.orderRepo.find({
           where: {
-            id: {inq: revenueOrderIds},
+            id: {inq: ids},
             storeId: {inq: storeIds},
             status: {nin: [OrderStatus.DRAFT, OrderStatus.CANCELLED]},
           } as object,
           fields: {id: true, storeId: true, orderType: true, status: true} as object,
-        })
+        }))
       : [];
     const revenueOrderById = new Map(revenueOrders.map(o => [o.id, o]));
 
@@ -1757,292 +1781,11 @@ export class ReportsService {
     const {storeIds, from, to, limit, skip} = params;
     if (!storeIds.length) return {...emptyPaged(), totalsByDescription: {}};
 
-    const where = {
-      storeId: {inq: storeIds},
-      isDeleted: false,
-      expenseDate: {between: [from, to]},
-    } as object;
-
-    const [allEntries, shifts] = await Promise.all([
-      this.pettyCashRegisterRepo.find({where}),
-      this.shiftRepo.find({
-        where: {
-          storeId: {inq: storeIds},
-          openedAt: {lte: to},
-          or: [{closedAt: {gte: from}}, {status: ShiftStatus.OPEN}],
-        } as object,
-      }),
-    ]);
-
-    const descriptionTotals = new Map<string, number>();
-    allEntries.forEach(entry => {
-      if (entry.status === PettyCashStatus.REJECTED) return;
-      const description = entry.description ?? '—';
-      descriptionTotals.set(
-        description,
-        roundRupees(
-          (descriptionTotals.get(description) ?? 0) +
-            (entry.status === PettyCashStatus.APPROVED
-              ? Number(entry.approvedAmount) || 0
-              : Number(entry.amount) || 0),
-        ),
-      );
-    });
-
-    type PettyCashClosingCell = {
-      recvFromFinance?: number;
-      used?: number;
-      actualBalance?: number;
-      difference?: number;
-    };
-    type PettyCashOpeningCell = {actual?: number; supposed?: number};
-
-    // Matched by createdAt, not expenseDate: PettyCashService.
-    // computeWindowActivity (which produces closing.pettyCash.used/
-    // recvFromFinance in the first place) scopes entries by createdAt —
-    // expenseDate is user-editable/backdatable and can fall well outside
-    // the shift that actually accounted for the entry.
-    const findShiftFor = (storeId: string, createdAt: Date | undefined) => {
-      if (!createdAt) return undefined;
-      const t = new Date(createdAt).getTime();
-      return shifts.find(
-        s =>
-          s.storeId === storeId &&
-          s.openedAt &&
-          t >= s.openedAt.getTime() &&
-          (!s.closedAt || t <= s.closedAt.getTime()),
-      );
-    };
-
-    const reportFinanceEntries = shifts.length
-      ? await this.pettyCashFinanceRepo.find({
-          where: {
-            storeId: {inq: storeIds},
-            createdAt: {between: [from, to]},
-          } as object,
-        })
-      : [];
-    const visibleFinanceEntries = reportFinanceEntries.filter(entry =>
-      Boolean(findShiftFor(entry.storeId, entry.createdAt)),
-    );
-    const inRange = (date: Date | undefined) =>
-      Boolean(date && timeOf(date) >= from.getTime() && timeOf(date) <= to.getTime());
-
-    const shiftById = new Map<string, (typeof shifts)[number]>();
-    shifts.forEach(shift => {
-      if (inRange(shift.openedAt) || inRange(shift.closedAt))
-        shiftById.set(String(shift.id), shift);
-    });
-    allEntries.forEach(entry => {
-      const shift = findShiftFor(entry.storeId, entry.createdAt);
-      if (shift) shiftById.set(String(shift.id), shift);
-    });
-    visibleFinanceEntries.forEach(entry => {
-      const shift = findShiftFor(entry.storeId, entry.createdAt);
-      if (shift) shiftById.set(String(shift.id), shift);
-    });
-    const relevantShifts = [...shiftById.values()];
-    const balanceByEntryId = new Map<string, number>();
-    if (relevantShifts.length) {
-      const earliestOpen = new Date(
-        Math.min(...relevantShifts.map(shift => timeOf(shift.openedAt))),
-      );
-      const latestClose = new Date(
-        Math.max(...relevantShifts.map(shift => timeOf(shift.closedAt ?? to))),
-      );
-      const [shiftEntries, financeEntries] = await Promise.all([
-        this.pettyCashRegisterRepo.find({
-          where: {
-            storeId: {inq: storeIds},
-            isDeleted: false,
-            createdAt: {between: [earliestOpen, latestClose]},
-          } as object,
-        }),
-        this.pettyCashFinanceRepo.find({
-          where: {
-            storeId: {inq: storeIds},
-            createdAt: {between: [earliestOpen, latestClose]},
-          } as object,
-        }),
-      ]);
-
-      const entriesByShift = new Map<string, typeof shiftEntries>();
-      shiftEntries.forEach(entry => {
-        const shift = findShiftFor(entry.storeId, entry.createdAt);
-        if (!shift || !shiftById.has(String(shift.id))) return;
-        const key = String(shift.id);
-        const grouped = entriesByShift.get(key) ?? [];
-        grouped.push(entry);
-        entriesByShift.set(key, grouped);
-      });
-      const financeByShift = new Map<string, typeof financeEntries>();
-      financeEntries.forEach(entry => {
-        const shift = findShiftFor(entry.storeId, entry.createdAt);
-        if (!shift || !shiftById.has(String(shift.id))) return;
-        const key = String(shift.id);
-        const grouped = financeByShift.get(key) ?? [];
-        grouped.push(entry);
-        financeByShift.set(key, grouped);
-      });
-
-      relevantShifts.forEach(shift => {
-        const opening =
-          ((shift.opening ?? {}) as {pettyCash?: PettyCashOpeningCell})
-            .pettyCash ?? {};
-        let balance = Number(opening.actual) || 0;
-        const events = [
-          ...(financeByShift.get(String(shift.id)) ?? []).map(entry => ({
-            at: timeOf(entry.createdAt),
-            // Opening-time finance is already included in the opening count.
-            amount:
-              timeOf(entry.createdAt) === timeOf(shift.openedAt)
-                ? 0
-                : Number(entry.amount) || 0,
-            id: `0-finance:${entry.id}`,
-          })),
-          ...(entriesByShift.get(String(shift.id)) ?? []).map(entry => ({
-            at: timeOf(entry.createdAt),
-            // shortcut: current approvals apply to earlier claims; replay resolutions for point-in-time balances.
-            amount:
-              entry.status === PettyCashStatus.REJECTED
-                ? 0
-                : -(entry.status === PettyCashStatus.APPROVED
-                    ? Number(entry.approvedAmount) || 0
-                    : Number(entry.amount) || 0),
-            id: `1-expense:${entry.id}`,
-          })),
-        ].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
-        events.forEach(event => {
-          balance = roundRupees(balance + event.amount);
-          balanceByEntryId.set(event.id, balance);
-        });
-      });
-    }
-
-    const rows: Array<{
-      id: string;
-      expenseDate: Date | null;
-      shiftId?: string;
-      [key: string]: unknown;
-    }> = allEntries.map(entry => {
-      const shift = findShiftFor(entry.storeId, entry.createdAt);
-      const closing =
-        ((shift?.closing ?? {}) as {pettyCash?: PettyCashClosingCell})
-          .pettyCash ?? {};
-
-      return {
-        id: String(entry.id),
-        entryType: 'expense',
-        shiftId: shift ? String(shift.id) : undefined,
-        expenseDate: entry.expenseDate ?? null,
-        description: entry.description ?? '—',
-        remarks: entry.remarks ?? '—',
-        method: entry.method ?? '—',
-        recordedBy: entry.userName ?? '—',
-        storeName: entry.storeName ?? '—',
-        amount: Number(entry.amount) || 0,
-        // approvedAmount is only set once a manager resolves the entry;
-        // until then there is no approved figure, not a zero one.
-        approvedAmount:
-          entry.approvedAmount == null ? null : Number(entry.approvedAmount),
-        status: entry.status ?? 'pending',
-        shiftDisapprovedAmt: Number(entry.disapprovedAmt) || 0,
-        receivedAmount: shift ? Number(closing.recvFromFinance) || 0 : 0,
-        shiftTotalExpense: shift ? Number(closing.used) || 0 : 0,
-        balance: balanceByEntryId.get(`1-expense:${entry.id}`) ?? null,
-        closureNo: shift
-          ? shift.closureNo != null
-            ? String(shift.closureNo)
-            : String(shift.openingNo)
-          : '—',
-      };
-    });
-    visibleFinanceEntries.forEach(entry => {
-      const shift = findShiftFor(entry.storeId, entry.createdAt);
-      if (!shift) return;
-      rows.push({
-        id: `finance-${entry.id}`,
-        entryType: 'finance',
-        shiftId: String(shift.id),
-        expenseDate: entry.createdAt ?? null,
-        storeName: entry.storeName ?? shift.storeName ?? '—',
-        closureNo: String(shift.closureNo ?? shift.openingNo),
-        description:
-          timeOf(entry.createdAt) === timeOf(shift.openedAt)
-            ? 'Opening Finance Adjustment'
-            : 'Received from Finance',
-        remarks: entry.remarks ?? '—',
-        recordedBy: entry.createdByName ?? '—',
-        financeAmount: Number(entry.amount) || 0,
-        balance: balanceByEntryId.get(`0-finance:${entry.id}`) ?? null,
-      });
-    });
-    relevantShifts.forEach(shift => {
-      const opening =
-        ((shift.opening ?? {}) as {pettyCash?: PettyCashOpeningCell})
-          .pettyCash ?? {};
-      const closing =
-        ((shift.closing ?? {}) as {pettyCash?: PettyCashClosingCell})
-          .pettyCash ?? {};
-      const shiftId = String(shift.id);
-      const common = {
-        shiftId,
-        storeName: shift.storeName ?? '—',
-        closureNo: String(shift.closureNo ?? shift.openingNo),
-      };
-      if (inRange(shift.openedAt)) {
-        rows.push({
-          ...common,
-          id: `opening-${shiftId}`,
-          entryType: 'opening',
-          expenseDate: shift.openedAt,
-          description: 'Shift Opening',
-          openingAmount: Number(opening.actual) || 0,
-          shiftOpenDiff:
-            (Number(opening.actual) || 0) - (Number(opening.supposed) || 0),
-          balance: Number(opening.actual) || 0,
-        });
-      }
-      if (shift.closedAt && inRange(shift.closedAt)) {
-        rows.push({
-          ...common,
-          id: `closing-${shiftId}`,
-          entryType: 'closing',
-          expenseDate: shift.closedAt,
-          description: 'Shift Closing',
-          closingAmount: Number(closing.actualBalance) || 0,
-          shiftClosureDiff: Number(closing.difference) || 0,
-          balance: Number(closing.actualBalance) || 0,
-        });
-      }
-    });
-    const eventOrder = (row: (typeof rows)[number]) =>
-      row.entryType === 'opening'
-        ? 0
-        : row.entryType === 'finance'
-          ? 1
-          : row.entryType === 'closing'
-            ? 3
-            : 2;
-    rows.sort(
-      (a, b) =>
-        timeOf(a.expenseDate) - timeOf(b.expenseDate) ||
-        eventOrder(a) - eventOrder(b) ||
-        a.id.localeCompare(b.id),
-    );
-
-    return {
-      rows: rows.slice(skip, skip + limit),
-      totalCount: rows.length,
-      totals: {
-        claimed: allEntries.reduce((s, e) => s + (Number(e.amount) || 0), 0),
-        approved: allEntries.reduce(
-          (s, e) => s + (Number(e.approvedAmount) || 0),
-          0,
-        ),
-      },
-      totalsByDescription: Object.fromEntries(descriptionTotals),
-    };
+    const result = await this.pettyCashRegisterRepo.execute(PETTY_CASH_REPORT_SQL, [storeIds, from, to, limit, skip]);
+    const row = result[0];
+    return {rows: row.rows.map((entry: {expenseDate?: string}) => ({...entry,
+      expenseDate: entry.expenseDate ? new Date(entry.expenseDate) : null})),
+      totalCount: Number(row.count), totals: row.totals, totalsByDescription: row.descriptions};
   }
 
   /** Shared `where` for the order-backed reports: scope, window, P2D. */
@@ -2191,10 +1934,11 @@ export class ReportsService {
     const rows = await this.deliveryOrderRepo.find({
       where: {orderId: {inq: orderIds}} as object,
       fields: {orderId: true, status: true} as object,
+      order: ['createdAt DESC', 'id DESC'],
     });
     const byOrder = new Map<string, string>();
     for (const row of rows) {
-      if (row.orderId) byOrder.set(String(row.orderId), String(row.status ?? ''));
+      if (row.orderId && !byOrder.has(String(row.orderId))) byOrder.set(String(row.orderId), String(row.status ?? ''));
     }
     return byOrder;
   }

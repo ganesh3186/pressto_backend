@@ -1,3 +1,5 @@
+import {pageBounds} from '../utils/sql-page';
+import {literalContains} from '../utils/search-pattern';
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
@@ -298,7 +300,11 @@ export class WalletService {
       throw new HttpErrors.NotFound('Wallet not found for this customer.');
     }
 
-    const count = await this.rechargeRequestRepository.count({customerId});
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const options = {transaction: tx};
+    try {
+    await this.dataSource.execute('SELECT id FROM public.wallet WHERE id = $1 FOR UPDATE', [wallet.id], options);
+    const count = await this.rechargeRequestRepository.count({customerId}, options);
     const requestNumber = `WR${String(count.count + 1).padStart(6, '0')}`;
     const {v4} = await import('uuid');
 
@@ -314,7 +320,7 @@ export class WalletService {
       remarks,
       storeId,
       shiftId,
-    });
+    }, options);
 
     const transaction = await this.credit(
       wallet.id,
@@ -322,9 +328,11 @@ export class WalletService {
       ReferenceType.MANUAL,
       rechargeRequest.id,
       `Admin wallet recharge - ${requestNumber}`,
+      options,
     );
 
-    const updatedWallet = await this.walletRepository.findById(wallet.id);
+    const updatedWallet = await this.walletRepository.findById(wallet.id, undefined, options);
+    await tx.commit();
     dispatchWhatsApp(() => this.whatsAppService.notifyWalletRecharge({
       transactionId: transaction.id,
       customerId,
@@ -332,7 +340,7 @@ export class WalletService {
       balance: Number(updatedWallet.currentBalance),
       date: transaction.transactionDate,
     }));
-    return {rechargeRequest, walletBalance: updatedWallet.currentBalance!};
+    return {rechargeRequest, walletBalance: updatedWallet.currentBalance!};    } catch (error) { await tx.rollback(); throw error; }
   }
 
   // Admin manually removes money from a wallet — the correction counterpart
@@ -395,167 +403,40 @@ export class WalletService {
     limit?: number;
     skip?: number;
   }): Promise<{rows: WalletTransactionRow[]; total: number}> {
-    const limit = filters.limit && filters.limit > 0 ? filters.limit : 50;
-    const skip = filters.skip && filters.skip > 0 ? filters.skip : 0;
-
-    const customerIdFilter = await this.resolveCustomerIdFilter(filters.customerName, filters.mobile);
-    // A name/mobile filter was given but matched nobody — honest empty
-    // result rather than falling through to "no filter, show everyone".
-    if (customerIdFilter && customerIdFilter.length === 0) {
-      return {rows: [], total: 0};
-    }
-
-    const fetchCap = skip + limit;
-    const [credits, creditTotal] = filters.status === 'debit'
-      ? [[], 0]
-      : await this.fetchCreditRows(customerIdFilter, fetchCap);
-    const [debits, debitTotal] = filters.status === 'credit'
-      ? [[], 0]
-      : await this.fetchDebitRows(customerIdFilter, fetchCap);
-
-    const customerIds = [...new Set([...credits, ...debits].map(row => row.customerId))];
-    const customerById = await this.loadCustomerDisplayInfo(customerIds);
-
-    const merged = [...credits, ...debits]
-      .map(row => {
-        const customer = customerById.get(row.customerId);
-        return {
-          ...row,
-          customerName: customer?.name ?? '—',
-          customerMobile: customer?.mobile ?? '—',
-        };
-      })
-      .sort((a, b) => (new Date(b.date ?? 0).getTime()) - (new Date(a.date ?? 0).getTime()));
-
-    return {
-      rows: merged.slice(skip, skip + limit),
-      total: creditTotal + debitTotal,
-    };
-  }
-
-  /** Resolves a name/mobile filter to a customerId allowlist, or null (no filter). */
-  private async resolveCustomerIdFilter(
-    customerName?: string,
-    mobile?: string,
-  ): Promise<string[] | null> {
-    const name = customerName?.trim();
-    const digits = mobile?.replace(/\D/g, '').trim();
-    if (!name && !digits) return null;
-
-    const clauses: object[] = [];
-    if (name) {
-      clauses.push({firstName: {ilike: `%${name}%`}}, {lastName: {ilike: `%${name}%`}});
-    }
-    if (digits && digits.length >= 3) {
-      const [matchedUsers, matchedPhones] = await Promise.all([
-        this.usersRepository.find({where: {phone: {like: `%${digits}%`}}, fields: {id: true}}),
-        this.customerPhoneRepository.find({
-          where: {phone: {like: `%${digits}%`}, isDeleted: false} as object,
-          fields: {customerId: true} as object,
-        }),
-      ]);
-      if (matchedUsers.length) clauses.push({userId: {inq: matchedUsers.map(u => u.id)}});
-      if (matchedPhones.length) clauses.push({id: {inq: matchedPhones.map(p => p.customerId)}});
-    }
-    if (!clauses.length) return [];
-
-    const customers = await this.customerRepository.find({
-      where: {and: [{isDeleted: false}, {or: clauses}]} as object,
-      fields: {id: true} as object,
-    });
-    return customers.map(c => String(c.id));
-  }
-
-  private async fetchCreditRows(
-    customerIdFilter: string[] | null,
-    fetchCap: number,
-  ): Promise<[WalletTransactionRow[], number]> {
-    const where: object = {
-      status: PaymentRequestStatus.SUCCESS,
-      ...(customerIdFilter ? {customerId: {inq: customerIdFilter}} : {}),
-    };
-    const [requests, total] = await Promise.all([
-      this.rechargeRequestRepository.find({where, order: ['createdAt DESC'], limit: fetchCap}),
-      this.rechargeRequestRepository.count(where),
-    ]);
-
-    const rows: WalletTransactionRow[] = requests.map(request => ({
-      id: `recharge:${request.id}`,
-      date: request.createdAt ?? null,
-      transactionType: 'credit',
-      amount: Number(request.amount) || 0,
-      customerId: String(request.customerId),
-      customerName: '',
-      customerMobile: '',
-      storeId: request.storeId ?? null,
-      shiftId: request.shiftId ?? null,
-      reference: request.requestNumber,
-      remarks: request.remarks ?? '',
-      performedBy: request.performedBy ?? null,
-    }));
-    return [rows, total.count];
-  }
-
-  private async fetchDebitRows(
-    customerIdFilter: string[] | null,
-    fetchCap: number,
-  ): Promise<[WalletTransactionRow[], number]> {
-    let walletIdFilter: string[] | undefined;
-    if (customerIdFilter) {
-      const wallets = await this.walletRepository.find({
-        where: {customerId: {inq: customerIdFilter}} as object,
-        fields: {id: true, customerId: true} as object,
-      });
-      walletIdFilter = wallets.map(w => String(w.id));
-      if (!walletIdFilter.length) return [[], 0];
-    }
-
-    const where: object = {
-      transactionType: WalletTransactionType.DEBIT,
-      referenceType: ReferenceType.ORDER,
-      isDeleted: false,
-      ...(walletIdFilter ? {walletId: {inq: walletIdFilter}} : {}),
-    };
-    const [transactions, total] = await Promise.all([
-      this.walletTransactionRepository.find({where, order: ['transactionDate DESC'], limit: fetchCap}),
-      this.walletTransactionRepository.count(where),
-    ]);
-    if (!transactions.length) return [[], total.count];
-
-    const walletIds = [...new Set(transactions.map(t => String(t.walletId)))];
-    const wallets = await this.walletRepository.find({
-      where: {id: {inq: walletIds}} as object,
-      fields: {id: true, customerId: true} as object,
-    });
-    const customerIdByWalletId = new Map(wallets.map(w => [String(w.id), String(w.customerId)]));
-
-    const orderIds = [...new Set(transactions.map(t => t.referenceId).filter(Boolean))] as string[];
-    const orders = orderIds.length
-      ? await this.orderRepository.find({
-          where: {id: {inq: orderIds}} as object,
-          fields: {id: true, orderNumber: true, storeId: true, shiftId: true} as object,
-        })
-      : [];
-    const orderById = new Map(orders.map(o => [String(o.id), o]));
-
-    const rows: WalletTransactionRow[] = transactions.map(txn => {
-      const order = txn.referenceId ? orderById.get(String(txn.referenceId)) : undefined;
-      return {
-        id: `txn:${txn.id}`,
-        date: txn.transactionDate ?? null,
-        transactionType: 'debit',
-        amount: Number(txn.amount) || 0,
-        customerId: customerIdByWalletId.get(String(txn.walletId)) ?? '',
-        customerName: '',
-        customerMobile: '',
-        storeId: order?.storeId ?? null,
-        shiftId: order?.shiftId ?? null,
-        reference: order?.orderNumber ?? '—',
-        remarks: txn.remarks ?? '',
-        performedBy: null,
-      };
-    });
-    return [rows, total.count];
+    const {limit, skip} = pageBounds(filters.limit ?? 50, filters.skip);
+    const name = filters.customerName?.trim() ?? '';
+    const digits = filters.mobile?.replace(/\D/g, '') ?? '';
+    const hasFilter = Boolean(name || digits);
+    const rows = await this.dataSource.execute(`WITH matching_customer AS (
+      SELECT c.id FROM public.customer c WHERE c.isdeleted = false AND (
+        ($1 <> '' AND (c.firstname ILIKE $1 OR c.lastname ILIKE $1))
+        OR (length($2) >= 3 AND (EXISTS (SELECT 1 FROM public.users u WHERE u.id::text = c.userid AND position($2 in u.phone) > 0)
+          OR EXISTS (SELECT 1 FROM public.customer_phone p WHERE p.customerid = c.id::text AND p.isdeleted = false AND position($2 in p.phone) > 0))))
+    ), ledger AS NOT MATERIALIZED (
+      SELECT 'recharge:' || r.id::text AS id, r.createdat AS date, 'credit' AS type,
+        r.amount, r.customerid::text AS customerid, r.storeid, r.shiftid, r.requestnumber AS reference,
+        r.remarks, r.performedby FROM public.wallet_recharge_request r
+      WHERE r.status = 'success' AND $4 <> 'debit'
+        AND (NOT $3 OR r.customerid IN (SELECT id FROM matching_customer))
+      UNION ALL
+      SELECT 'txn:' || t.id::text, t.transactiondate, 'debit', t.amount, w.customerid,
+        o.storeid, o.shiftid, COALESCE(o.ordernumber,t.referenceid::text,''), t.remarks, null::uuid
+      FROM public.wallet_transaction t JOIN public.wallet w ON w.id::text = t.walletid
+      LEFT JOIN public.orders o ON o.id = t.referenceid
+      WHERE t.transactiontype = 'debit' AND t.referencetype = 'order' AND t.isdeleted = false AND $4 <> 'credit'
+        AND (NOT $3 OR w.customerid IN (SELECT id::text FROM matching_customer))
+    ) SELECT (SELECT count(*) FROM ledger) AS total,
+      COALESCE((SELECT jsonb_agg(page) FROM (SELECT * FROM ledger ORDER BY date DESC, id DESC LIMIT $5 OFFSET $6) page), '[]'::jsonb) AS rows`,
+      [name ? literalContains(name) : '', digits, hasFilter, filters.status ?? '', limit, skip]);
+    const page: {id: string; date: string | null; type: 'credit' | 'debit'; amount: number;
+      customerid: string; storeid: string | null; shiftid: string | null;
+      reference: string | null; remarks: string | null; performedby: string | null}[] = rows[0]?.rows ?? [];
+    const customers = await this.loadCustomerDisplayInfo([...new Set<string>(page.map((r: {customerid: string}) => r.customerid))]);
+    return {total: Number(rows[0]?.total ?? 0), rows: page.map(row => ({
+      id: row.id, date: row.date ? new Date(row.date) : null, transactionType: row.type, amount: Number(row.amount), customerId: row.customerid,
+      customerName: customers.get(row.customerid)?.name ?? '—', customerMobile: customers.get(row.customerid)?.mobile ?? '—',
+      storeId: row.storeid, shiftId: row.shiftid, reference: row.reference ?? '', remarks: row.remarks ?? '', performedBy: row.performedby,
+    }))};
   }
 
   private async loadCustomerDisplayInfo(

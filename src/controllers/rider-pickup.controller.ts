@@ -1,3 +1,5 @@
+import {literalContains} from '../utils/search-pattern';
+import {sqlPage} from '../utils/sql-page';
 import {PickupRequestService} from '../services/pickup-request.service';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
@@ -8,6 +10,7 @@ import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {
   ColourBleedingChoice,
+  Customer,
   CustomerAddress,
   CustomerPreference,
   CustomerWithRelations,
@@ -285,28 +288,23 @@ export class RiderPickupController {
     if (!search?.trim()) return [];
     const term = search.trim();
 
-    // Phone lives on Users, not Customer — resolve matching users first,
-    // same two-step pattern OrderService.listOrders() already uses for
-    // name-or-phone search, then OR their customerIds into the main query.
-    const phoneMatchedUsers = await this.usersRepository.find({
-      where: {phone: {ilike: `%${term}%`}, isDeleted: false} as object,
-      fields: {id: true} as object,
-    });
-    const phoneMatchedUserIds = phoneMatchedUsers.map(u => u.id);
-
-    return this.customerRepository.find({
-      where: {
-        isDeleted: false,
-        or: [
-          {firstName: {ilike: `%${term}%`}},
-          {lastName: {ilike: `%${term}%`}},
-          {email: {ilike: `%${term}%`}},
-          ...(phoneMatchedUserIds.length ? [{userId: {inq: phoneMatchedUserIds}}] : []),
-        ],
-      } as object,
+    // Phone lives on Users, not Customer. Match it with EXISTS in the same
+    // query: resolving matching users first turned a short phone search into
+    // an IN list of every user whose number contains it.
+    const pattern = literalContains(term);
+    const page = await sqlPage<Customer>(this.customerRepository, 'customer', {isDeleted: false}, 20, 0,
+      `(firstname ILIKE ? OR lastname ILIKE ? OR email ILIKE ? OR EXISTS (
+        SELECT 1 FROM public.users u
+         WHERE u.id = CASE WHEN customer.userid ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN customer.userid::uuid END
+           AND u.isdeleted = false AND u.phone ILIKE ?))`,
+      [pattern, pattern, pattern, pattern]);
+    if (!page.rows.length) return [];
+    const found = await this.customerRepository.find({
+      where: {id: {inq: page.rows.map(row => row.id)}} as object,
       include: [{relation: 'user', scope: {fields: {id: true, phone: true, countryCode: true}}}],
-      limit: 20,
     });
+    const byId = new Map(found.map(customer => [customer.id, customer]));
+    return page.rows.map(row => byId.get(row.id)).filter((customer): customer is NonNullable<typeof customer> => Boolean(customer));
   }
 
   // ─── Customer addresses ─────────────────────────────────────────────────────

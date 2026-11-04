@@ -369,22 +369,25 @@ export class OrderController {
       },
     })
     body: CreateOrderInput,
+    @param.header.string('Idempotency-Key') idempotencyKey?: string,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     if (!this.storeScopeService.allows(scope, body.storeId)) {
       throw new HttpErrors.NotFound('Store not found.');
     }
     const createdBy = currentUser[securityId];
-    const result = (await this.orderService.createOrder(body, createdBy)) as {
+    const result = (await this.orderService.createOrder(body, createdBy, idempotencyKey)) as {
       order: {id: string};
+      idempotencyReplay?: boolean;
+      approvalRequests?: object[];
       pendingApprovalPayments: Array<{
         amount: number;
         paymentMode: PaymentMode;
         transactionReference?: string;
       }>;
     };
-    const approvalRequests = [];
-    for (const leg of result.pendingApprovalPayments ?? []) {
+    const approvalRequests = result.approvalRequests ?? [];
+    for (const leg of result.approvalRequests ? [] : result.pendingApprovalPayments ?? []) {
       approvalRequests.push(
         await this._createPendingPaymentApprovalRequest(
           result.order.id,
@@ -394,7 +397,7 @@ export class OrderController {
       );
     }
 
-    if (result?.order?.id && this.systemNotificationService) {
+    if (!result.idempotencyReplay && result?.order?.id && this.systemNotificationService) {
       this.orderRepository
         .findById(result.order.id)
         .then(async savedOrder => {

@@ -1,3 +1,4 @@
+import {literalContains} from '../utils/search-pattern';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
@@ -655,11 +656,11 @@ export class ShiftController {
     const term = search?.trim();
     if (term) {
       const orClauses: object[] = [
-        {storeCode: {ilike: `%${term}%`}},
-        {storeName: {ilike: `%${term}%`}},
-        {openingUserName: {ilike: `%${term}%`}},
-        {userName: {ilike: `%${term}%`}},
-        {closingUserName: {ilike: `%${term}%`}},
+        {storeCode: {ilike: literalContains(term)}},
+        {storeName: {ilike: literalContains(term)}},
+        {openingUserName: {ilike: literalContains(term)}},
+        {userName: {ilike: literalContains(term)}},
+        {closingUserName: {ilike: literalContains(term)}},
       ];
       // Shift numbers are stored as integers — ilike doesn't apply, so a
       // purely numeric search matches either number exactly instead.
@@ -1458,14 +1459,15 @@ export class ShiftController {
       this.resolveOrderSummary(shift.storeId, shift.openedAt, now),
     ]);
 
-    await this.shiftRepository.updateById(id, {
+    const closed = await this.shiftRepository.updateAll({
       status: ShiftStatus.CLOSED,
       closedAt: now,
       closureNo: shift.openingNo,
       closingUserId: userId,
       closingUserName,
       closing: {...closing, revenue, salesReturn, orderSummary},
-    });
+    }, {id, status: ShiftStatus.OPEN});
+    if (!closed.count) throw new HttpErrors.Conflict('This shift was already closed. Refresh and retry.');
 
     const updated = await this.shiftRepository.findById(id);
     return {message: `Shift ${shift.openingNo} closed.`, shift: updated};

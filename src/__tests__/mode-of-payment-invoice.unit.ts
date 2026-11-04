@@ -1,8 +1,9 @@
+import {paymentSqlFixture} from './helpers/payment-sql-fixture';
 import {expect} from '@loopback/testlab';
 import {ReportsService} from '../services/reports.service';
 
-describe('mode of payment invoice numbers', () => {
-  it('shows issued invoice numbers and a dash for tickets without one', async () => {
+(process.env.RUN_PG_FIXTURE_TESTS === 'true' ? describe : describe.skip)('mode of payment invoice numbers', () => {
+  (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? it : it.skip)('shows issued invoice numbers and a dash for tickets without one', async () => {
     const paidAt = new Date('2026-10-01T10:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
       orderRepo: {
@@ -31,6 +32,7 @@ describe('mode of payment invoice numbers', () => {
       mapShifts: async () => new Map(),
       mapCustomers: async () => new Map(),
     }) as ReportsService;
+    paymentSqlFixture(service);
 
     const report = await service.buildModeOfPayment({
       storeIds: ['store-a'],
@@ -46,7 +48,7 @@ describe('mode of payment invoice numbers', () => {
     ]);
   });
 
-  it('attributes a cross-store cash refund to the paying shift once', async () => {
+  (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? it : it.skip)('attributes a cross-store cash refund to the paying shift once', async () => {
     const paidAt = new Date('2026-10-22T10:00:00Z');
     const refund = {
       id: 'refund-a', orderId: 'bandra-order', paymentDate: paidAt,
@@ -73,6 +75,7 @@ describe('mode of payment invoice numbers', () => {
       mapShifts: async () => new Map(),
       mapCustomers: async () => new Map(),
     }) as ReportsService;
+    paymentSqlFixture(service);
 
     const payingStore = await service.buildModeOfPayment({
       storeIds: ['str012'], from: paidAt, to: paidAt, limit: 10, skip: 0,

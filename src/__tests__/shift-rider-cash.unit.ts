@@ -1,3 +1,4 @@
+import {batchedStubs} from './helpers/batched-stubs';
 import {expect} from '@loopback/testlab';
 import {UserProfile} from '@loopback/security';
 import {ShiftController} from '../controllers/shift.controller';
@@ -92,6 +93,7 @@ describe('shift collections from riders', () => {
         },
       }),
     }) as ShiftController;
+    batchedStubs(controller);
 
     const result = (await controller.collected(
       {} as UserProfile,
@@ -164,6 +166,7 @@ describe('shift revenue after sales returns', () => {
       orderRepository: {find: async () => [{id: 'order-a'}]},
       orderItemRepository: {find: async () => []},
     }) as ShiftController;
+    batchedStubs(controller);
     const revenue = await (
       controller as unknown as {
         resolveRevenue: (
@@ -235,6 +238,7 @@ describe('shift revenue after sales returns', () => {
         findOne: async () => ({cgstPercentage: 9, sgstPercentage: 9}),
       },
     }) as ShiftController;
+    batchedStubs(controller);
     const resolve = () =>
       (
         controller as unknown as {
@@ -313,6 +317,7 @@ describe('shift revenue after sales returns', () => {
       invoiceRepository: {find: async () => [invoice]},
       gstConfigRepository: {findOne: async () => null},
     }) as ShiftController;
+    batchedStubs(controller);
 
     const result = await (
       controller as unknown as {
@@ -410,6 +415,7 @@ describe('shift revenue after sales returns', () => {
       }),
       resolveOrderSummary: async () => ({}),
     }) as ShiftController;
+    batchedStubs(controller);
 
     const result = (await controller.collected(
       {} as UserProfile,
@@ -460,6 +466,7 @@ describe('shift revenue after sales returns', () => {
       }),
       resolveOrderSummary: async () => ({}),
     }) as ShiftController;
+    batchedStubs(controller);
 
     await controller.close({} as UserProfile, 'shift-a', {
       remarks: 'done',
@@ -504,6 +511,7 @@ describe('shift order summary', () => {
         ],
       },
     }) as ShiftController;
+    batchedStubs(controller);
 
     const summary = () =>
       (

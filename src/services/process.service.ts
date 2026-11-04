@@ -146,17 +146,10 @@ export class ProcessService {
       );
     }
 
-    const created: object[] = [];
-    for (const row of rows) {
-      const log = await this.processLogRepo.create({
-        id: v4(),
-        garmentId,
-        orderItemId: garment.orderItemId,
-        ...row,
-        status: ProcessLogStatus.PENDING,
-      });
-      created.push(log);
-    }
+    const created = await this.processLogRepo.createAll(rows.map(row => ({
+      id: v4(), garmentId, orderItemId: garment.orderItemId,
+      ...row, status: ProcessLogStatus.PENDING,
+    })));
 
     return {
       message: `Process initialised with ${created.length} step(s).`,
@@ -411,20 +404,10 @@ export class ProcessService {
           }
         }
 
-        allLogs = [];
-        for (const row of rows) {
-          const log = await this.processLogRepo.create(
-            {
-              id: v4(),
-              garmentId,
-              orderItemId: garment.orderItemId,
-              ...row,
-              status: ProcessLogStatus.PENDING,
-            },
-            {transaction: tx},
-          );
-          allLogs.push(log);
-        }
+        allLogs = await this.processLogRepo.createAll(rows.map(row => ({
+          id: v4(), garmentId, orderItemId: garment.orderItemId,
+          ...row, status: ProcessLogStatus.PENDING,
+        })), {transaction: tx});
       }
 
       const remaining = allLogs.filter(
@@ -438,20 +421,16 @@ export class ProcessService {
         );
       }
 
-      for (const log of remaining) {
-        await this.processLogRepo.updateById(
-          log.id,
-          {
+      for (const started of [false, true]) {
+        const ids = remaining.filter(log => Boolean(log.startedAt) === started).map(log => log.id);
+        for (let offset = 0; offset < ids.length; offset += 500) {
+          await this.processLogRepo.updateAll({
             status: ProcessLogStatus.COMPLETED,
-            // A step closed straight from pending was never started — stamp it
-            // now so the log still reads as a complete record.
-            ...(log.startedAt ? {} : {startedAt: now, startedBy: performedBy}),
-            completedAt: now,
-            completedBy: performedBy,
+            ...(started ? {} : {startedAt: now, startedBy: performedBy}),
+            completedAt: now, completedBy: performedBy,
             qrScanned: this.qrScanRequired || !!qrCode,
-          },
-          {transaction: tx},
-        );
+          }, {id: {inq: ids.slice(offset, offset + 500)}}, {transaction: tx});
+        }
       }
 
       await this.garmentRepo.updateById(

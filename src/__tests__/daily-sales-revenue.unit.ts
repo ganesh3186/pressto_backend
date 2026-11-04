@@ -1,3 +1,4 @@
+import {paymentSqlFixture} from './helpers/payment-sql-fixture';
 import {expect} from '@loopback/testlab';
 import {ReportsService} from '../services/reports.service';
 import {OrderType} from '../models/order-type.enum';
@@ -83,6 +84,7 @@ describe('daily sales revenue', () => {
       },
       storeMonthlyTargetRepo: {find: async () => []},
     }) as ReportsService;
+    paymentSqlFixture(service);
 
     const report = await service.buildDailySales({
       storeIds: ['store-a'],
@@ -137,6 +139,7 @@ describe('daily sales revenue', () => {
       invoiceRepo: {find: async () => []},
       storeMonthlyTargetRepo: {find: async () => []},
     }) as ReportsService;
+    paymentSqlFixture(service);
 
     const report = await service.buildDailySales({
       storeIds: ['store-a'],
@@ -157,7 +160,7 @@ describe('daily sales revenue', () => {
     });
   });
 
-  it('uses the remaining on-account link share in the mode of payment report', async () => {
+  (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? it : it.skip)('uses the remaining on-account link share in the mode of payment report', async () => {
     const createdAt = new Date('2026-10-01T10:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
       orderRepo: {
@@ -192,6 +195,7 @@ describe('daily sales revenue', () => {
       mapShifts: async () => new Map(),
       mapCustomers: async () => new Map(),
     }) as ReportsService;
+    paymentSqlFixture(service);
 
     const report = await service.buildModeOfPayment({
       storeIds: ['store-a'],

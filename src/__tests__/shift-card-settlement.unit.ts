@@ -1,3 +1,4 @@
+import {batchedStubs} from './helpers/batched-stubs';
 import {expect} from '@loopback/testlab';
 import {UserProfile} from '@loopback/security';
 import {ShiftController} from '../controllers/shift.controller';
@@ -22,6 +23,7 @@ function setupClose(actualSettlement: number) {
     resolveNetRevenue: async () => ({revenue: {}, salesReturn: {}}),
     resolveOrderSummary: async () => ({}),
   }) as ShiftController;
+    batchedStubs(controller);
   const closing = {
     remarks: 'done',
     collections: {cash: 0, card: 0, upi: 0, cheque: 0, pgLink: 0, ppVoucher: 0, wallet: 0},

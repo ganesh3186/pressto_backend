@@ -30,6 +30,7 @@
     "docker:run": "docker run -p 3000:3000 -d Pressto-backend",
     "premigrate": "npm run build",
     "migrate": "node ./dist/migrate",
+    "migrate:order-idempotency": "node scripts/add-order-creation-requests.cjs",
     "migrate:customer-persona": "node scripts/add-customer-persona-column.cjs",
     "migrate:coupon-order-fields": "node scripts/add-coupon-order-fields.cjs",
     "migrate:invoice-number-sequences": "node scripts/add-invoice-number-sequences.cjs",

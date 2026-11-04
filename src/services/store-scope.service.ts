@@ -326,26 +326,18 @@ export class StoreScopeService {
   async transferGrantedOrderIds(storeIds: string[]): Promise<string[]> {
     if (!storeIds.length) return [];
 
-    const transfers = await this.transferRepo.find({
-      where: {toStoreId: {inq: storeIds}} as object,
-      fields: {id: true} as object,
-    });
-    if (!transfers.length) return [];
-
-    const garments = await this.garmentRepo.find({
-      where: {
-        activeTransferId: {inq: transfers.map(t => t.id)},
-        isDeleted: false,
-      } as object,
-      fields: {orderItemId: true} as object,
-    });
-    if (!garments.length) return [];
-
-    const orderItems = await this.orderItemRepo.find({
-      where: {id: {inq: [...new Set(garments.map(g => g.orderItemId))]}} as object,
-      fields: {orderId: true} as object,
-    });
-    return [...new Set(orderItems.map(oi => oi.orderId))];
+    // One join instead of fetching every transfer the store has ever
+    // received: only garments still on an active transfer carry
+    // activetransferid, so the result stays small as history grows.
+    const rows = (await this.orderRepo.execute(
+      `SELECT DISTINCT oi.orderid AS "orderId"
+         FROM public.garment g
+         JOIN public.transfer t ON t.id = g.activetransferid
+         JOIN public.order_item oi ON oi.id = g.orderitemid
+        WHERE t.tostoreid = ANY($1::uuid[]) AND g.isdeleted = false`,
+      [storeIds],
+    )) as {orderId: string}[];
+    return rows.map(row => String(row.orderId));
   }
 
   /**

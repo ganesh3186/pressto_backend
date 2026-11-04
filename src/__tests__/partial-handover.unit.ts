@@ -1,3 +1,4 @@
+import {batchedStubs} from './helpers/batched-stubs';
 /* eslint-disable @typescript-eslint/no-explicit-any -- Transactional repository doubles. */
 import {expect} from '@loopback/testlab';
 import {OrderService} from '../services/order.service';
@@ -76,6 +77,7 @@ function setup(rider = false) {
     },
     notifyStatusChange: (...args: unknown[]) => notifications.push(args),
   }) as OrderService;
+    batchedStubs(service);
   const params = {orderId: 'order', collectorType: HandoverCollectorType.OTHER,
     collectorName: 'New Collector', collectorPhone: '2222222222', handedOverBy: 'current-staff', remarks: 'Remaining items collected'};
   const collect = () => rider ? service.recordDeliveryHandover({...params, deliveryId: 'run'}) : service.handoverInStore(params);

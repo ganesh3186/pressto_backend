@@ -64,19 +64,22 @@ export class GeocodingService {
   }>}> {
   /* eslint-enable @typescript-eslint/naming-convention */
     return new Promise((resolve, reject) => {
-      https
+      const timer = setTimeout(() => request.destroy(new Error('Geocoding deadline exceeded')), 8000);
+      const request = https
         .get(url, res => {
           let data = '';
           res.on('data', chunk => (data += chunk));
           res.on('end', () => {
             try {
+              clearTimeout(timer);
               resolve(JSON.parse(data));
             } catch (error) {
+              clearTimeout(timer);
               reject(error);
             }
           });
         })
-        .on('error', reject);
+        .on('error', error => {clearTimeout(timer); reject(error);});
     });
   }
 
