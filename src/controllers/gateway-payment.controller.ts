@@ -208,36 +208,56 @@ export class GatewayPaymentController {
       throw new HttpErrors.BadRequest('Invalid webhook signature.');
     }
 
-    const payload = JSON.parse(rawBody);
-    if (payload?.event === 'payment.captured') {
-      const paymentEntity = payload?.payload?.payment?.entity;
-      if (paymentEntity?.order_id && paymentEntity?.id) {
-        await this.razorpayService.handlePaymentCaptured({
-          razorpayOrderId: paymentEntity.order_id,
-          razorpayPaymentId: paymentEntity.id,
-          rawPayload: payload,
-        });
+    let payload: {event?: string; payload?: Record<string, {entity?: Record<string, string | undefined>}>};
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      this.logUnprocessedWebhook(undefined, 'Webhook body is not valid JSON.');
+      return {received: true};
+    }
+    try {
+      if (payload?.event === 'payment.captured') {
+        const paymentEntity = payload?.payload?.payment?.entity;
+        if (paymentEntity?.order_id && paymentEntity?.id) {
+          await this.razorpayService.handlePaymentCaptured({
+            razorpayOrderId: paymentEntity.order_id,
+            razorpayPaymentId: paymentEntity.id,
+            rawPayload: payload,
+          });
+        }
+      } else if (payload?.event === 'payment_link.paid') {
+        // Payment Link webhooks nest both entities under their own keys —
+        // the link itself (payload.payment_link.entity) and the payment
+        // that paid it (payload.payment.entity), siblings of each other,
+        // not nested the way payment.captured nests payment under payload.
+        const linkEntity = payload?.payload?.payment_link?.entity;
+        const paymentEntity = payload?.payload?.payment?.entity;
+        if (linkEntity?.id && paymentEntity?.id) {
+          await this.razorpayService.handlePaymentLinkPaid({
+            razorpayPaymentLinkId: linkEntity.id,
+            razorpayPaymentId: paymentEntity.id,
+            rawPayload: payload,
+          });
+        }
       }
-    } else if (payload?.event === 'payment_link.paid') {
-      // Payment Link webhooks nest both entities under their own keys —
-      // the link itself (payload.payment_link.entity) and the payment
-      // that paid it (payload.payment.entity), siblings of each other,
-      // not nested the way payment.captured nests payment under payload.
-      const linkEntity = payload?.payload?.payment_link?.entity;
-      const paymentEntity = payload?.payload?.payment?.entity;
-      if (linkEntity?.id && paymentEntity?.id) {
-        await this.razorpayService.handlePaymentLinkPaid({
-          razorpayPaymentLinkId: linkEntity.id,
-          razorpayPaymentId: paymentEntity.id,
-          rawPayload: payload,
-        });
-      }
+    } catch (err) {
+      // A signed payload that doesn't match our link (amount, status,
+      // currency, reference) fails the same way on every redelivery, so
+      // acknowledge it and log it for reconciliation instead of letting
+      // Razorpay retry it until it disables the webhook. Server faults
+      // (5xx, e.g. the database being down) still fail, so those retry.
+      const status = (err as {statusCode?: number}).statusCode;
+      if (!status || status >= 500) throw err;
+      this.logUnprocessedWebhook(payload?.event, (err as Error).message);
     }
 
-    // Always 200 once the signature checks out — Razorpay retries on
-    // anything else, and a genuine application failure is already
-    // recorded on the link itself (see handlePaymentCaptured) rather than
-    // something a retry would fix.
+    // Always 200 once the signature checks out and the payload is handled
+    // or known to be unprocessable — a genuine application failure is
+    // already recorded on the link itself (see markPaidAndApply).
     return {received: true};
+  }
+
+  private logUnprocessedWebhook(event: string | undefined, reason: string) {
+    console.error(JSON.stringify({event: 'razorpay_webhook_unprocessed', webhookEvent: event, reason}));
   }
 }

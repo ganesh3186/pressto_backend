@@ -30,9 +30,9 @@ export class MyUserService implements UserService<Users, Credentials> {
       throw new HttpErrors.BadRequest('Password not set for this account');
     }
 
-    // if (!user.isActive) {
-    //   throw new HttpErrors.Forbidden('User is not active');
-    // }
+    if (!user.isActive) {
+      throw new HttpErrors.Forbidden('User is not active');
+    }
 
     const isPasswordValid = await this.hasher.comparePassword(
       credentials.password,

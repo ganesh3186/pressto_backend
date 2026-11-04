@@ -77,19 +77,21 @@ export class GarmentActionsController {
       throw new HttpErrors.BadRequest(`Garment is already ${garment.status}.`);
     }
 
-    await this._guardNoPendingRequest(id, ApprovalRequestType.RETURN_ITEM);
+    const {request, returnCalculation} = await this._withGarmentActionLock(id, async () => {
+      await this._guardNoPendingRequest(id, ApprovalRequestType.RETURN_ITEM);
 
-    const returnCalculation =
-      await this.approvalService.calculateGarmentReturnAmount(id);
+      const calculation = await this.approvalService.calculateGarmentReturnAmount(id);
 
-    const request = await this.approvalService.createRequest({
-      type: ApprovalRequestType.RETURN_ITEM,
-      entityType: 'garment',
-      entityId: id,
-      requestedBy: currentUser[securityId],
-      requestReason: body.reason,
-      mediaIds: body.mediaIds,
-      metadata: {remarks: body.remarks},
+      const created = await this.approvalService.createRequest({
+        type: ApprovalRequestType.RETURN_ITEM,
+        entityType: 'garment',
+        entityId: id,
+        requestedBy: currentUser[securityId],
+        requestReason: body.reason,
+        mediaIds: body.mediaIds,
+        metadata: {remarks: body.remarks},
+      });
+      return {request: created, returnCalculation: calculation};
     });
 
     return {
@@ -210,27 +212,29 @@ export class GarmentActionsController {
       }
     }
 
-    await this._guardNoPendingRequest(id, ApprovalRequestType.UPGRADE_SERVICE);
+    const request = await this._withGarmentActionLock(id, async () => {
+      await this._guardNoPendingRequest(id, ApprovalRequestType.UPGRADE_SERVICE);
 
-    const request = await this.approvalService.createRequest({
-      type: ApprovalRequestType.UPGRADE_SERVICE,
-      entityType: 'garment',
-      entityId: id,
-      requestedBy: currentUser[securityId],
-      requestReason: body.remarks,
-      mediaIds: body.mediaIds,
-      metadata: {
-        fromServiceId: orderItem.serviceId,
-        fromResolvedPrice: orderItem.resolvedPrice,
-        fromUnitPrice: orderItem.unitPrice,
-        ...(toService ? {toServiceId: toService.id, toServiceName: (toService as any).name} : {}),
-        ...(newAddlIds.length
-          ? {
-              additionalServiceIds: newAddlIds,
-              additionalServiceNames: newAddlIds.map(sid => addlServiceNames.get(sid)),
-            }
-          : {}),
-      },
+      return this.approvalService.createRequest({
+        type: ApprovalRequestType.UPGRADE_SERVICE,
+        entityType: 'garment',
+        entityId: id,
+        requestedBy: currentUser[securityId],
+        requestReason: body.remarks,
+        mediaIds: body.mediaIds,
+        metadata: {
+          fromServiceId: orderItem.serviceId,
+          fromResolvedPrice: orderItem.resolvedPrice,
+          fromUnitPrice: orderItem.unitPrice,
+          ...(toService ? {toServiceId: toService.id, toServiceName: (toService as any).name} : {}),
+          ...(newAddlIds.length
+            ? {
+                additionalServiceIds: newAddlIds,
+                additionalServiceNames: newAddlIds.map(sid => addlServiceNames.get(sid)),
+              }
+            : {}),
+        },
+      });
     });
 
     const messageParts: string[] = [];
@@ -281,15 +285,17 @@ export class GarmentActionsController {
       throw new HttpErrors.BadRequest('Explain the risk before raising this request.');
     }
 
-    await this._guardNoPendingRequest(id, ApprovalRequestType.PROCESS_AT_RISK);
+    const request = await this._withGarmentActionLock(id, async () => {
+      await this._guardNoPendingRequest(id, ApprovalRequestType.PROCESS_AT_RISK);
 
-    const request = await this.approvalService.createRequest({
-      type: ApprovalRequestType.PROCESS_AT_RISK,
-      entityType: 'garment',
-      entityId: id,
-      requestedBy: currentUser[securityId],
-      requestReason: body.reason,
-      mediaIds: body.mediaIds,
+      return this.approvalService.createRequest({
+        type: ApprovalRequestType.PROCESS_AT_RISK,
+        entityType: 'garment',
+        entityId: id,
+        requestedBy: currentUser[securityId],
+        requestReason: body.reason,
+        mediaIds: body.mediaIds,
+      });
     });
 
     return {
@@ -334,15 +340,17 @@ export class GarmentActionsController {
       throw new HttpErrors.BadRequest(`Garment is already ${garment.status}.`);
     }
 
-    await this._guardNoPendingRequest(id, ApprovalRequestType.ITEM_DAMAGED);
+    const request = await this._withGarmentActionLock(id, async () => {
+      await this._guardNoPendingRequest(id, ApprovalRequestType.ITEM_DAMAGED);
 
-    const request = await this.approvalService.createRequest({
-      type: ApprovalRequestType.ITEM_DAMAGED,
-      entityType: 'garment',
-      entityId: id,
-      requestedBy: currentUser[securityId],
-      requestReason: body.remarks,
-      mediaIds: body.mediaIds,
+      return this.approvalService.createRequest({
+        type: ApprovalRequestType.ITEM_DAMAGED,
+        entityType: 'garment',
+        entityId: id,
+        requestedBy: currentUser[securityId],
+        requestReason: body.remarks,
+        mediaIds: body.mediaIds,
+      });
     });
 
     return {message: 'Damaged report raised. Awaiting store exec action.', request};
@@ -490,7 +498,36 @@ export class GarmentActionsController {
     };
   }
 
-  // ─── Guard helper ─────────────────────────────────────────────────────────
+  // ─── Guard helpers ────────────────────────────────────────────────────────
+
+  // The pending-request check and the create are separate statements, so two
+  // staff acting on the same garment at once could both pass the check. A
+  // per-garment advisory lock, held on its own transaction until the action
+  // finishes, serialises them; createRequest keeps writing on its usual
+  // connections. A try-lock, so a duplicate click fails fast instead of
+  // waiting on (and holding) a pool connection.
+  private async _withGarmentActionLock<T>(garmentId: string, action: () => Promise<T>): Promise<T> {
+    const tx = await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
+    try {
+      const [row] = await this.dataSource.execute(
+        'SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS locked',
+        ['garment-action:' + garmentId],
+        {transaction: tx},
+      );
+      if (!row?.locked) {
+        throw new HttpErrors.Conflict('Another action on this garment is in progress. Try again in a moment.');
+      }
+      return await action();
+    } finally {
+      // Nothing is written on this transaction; ending it releases the lock.
+      try {
+        await tx.rollback();
+      } catch {
+        // A failed rollback must not mask the action's own result or error.
+      }
+    }
+  }
+
 
   private async _guardNoPendingRequest(garmentId: string, type: ApprovalRequestType): Promise<void> {
     const existing = await this.approvalRequestRepo.findOne({

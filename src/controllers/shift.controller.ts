@@ -52,6 +52,13 @@ interface OpeningBalancesInput {
   prepaidVouchers: ReconciliationRowInput;
 }
 
+// A path id that is not a UUID (e.g. GET /shifts/collected falling into
+// /shifts/{id}) would otherwise reach Postgres and fail as a 500.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function assertShiftId(id: string): void {
+  if (!UUID.test(id)) throw new HttpErrors.NotFound('Shift not found.');
+}
+
 const OPENING_CATEGORY_KEYS = [
   'cashInTill',
   'banking',
@@ -703,6 +710,7 @@ export class ShiftController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<Shift> {
+    assertShiftId(id);
     const shift = await this.shiftRepository.findById(id);
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
 
@@ -762,6 +770,7 @@ export class ShiftController {
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
+    assertShiftId(id);
     const shift = await this.shiftRepository.findById(id);
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
     const caller = await this.resolveCallerStore(currentUser, shift.storeId);
@@ -1408,6 +1417,7 @@ export class ShiftController {
     body: ClosingFormInput,
   ): Promise<object> {
     const userId = currentUser[securityId];
+    assertShiftId(id);
     const shift = await this.shiftRepository.findById(id);
     if (!shift) throw new HttpErrors.NotFound('Shift not found.');
     if (shift.status !== ShiftStatus.OPEN) {

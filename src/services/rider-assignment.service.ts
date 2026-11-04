@@ -22,6 +22,8 @@ const ROSTER_TYPE_LABEL: Record<string, string> = {
   [RiderRosterType.PERMISSION]: 'on permission',
 };
 
+const SLOT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Shared guards for handing a rider new work — used by both
  * order.controller.ts (delivery assignment) and pickup-request.controller.ts
@@ -66,7 +68,9 @@ export class RiderAssignmentService {
     slotId?: string,
     fallbackInstant?: number,
   ): Promise<{start: number; end: number}> {
-    if (slotId) {
+    // Admin screens send `fallback:<label>` when no slot master exists; only a
+    // real slot id can be looked up, anything else falls through to the date.
+    if (slotId && SLOT_ID.test(slotId)) {
       const slot: PickupDeliverySlot | null = await this.pickupDeliverySlotRepository.findOne({
         where: {id: slotId, isDeleted: false} as object,
       });

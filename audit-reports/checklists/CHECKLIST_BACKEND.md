@@ -52,15 +52,15 @@ The agreed 22 technical changes are detailed in [the implementation report](../B
 - [ ] **Compare wallet balances with their ledgers,** read-only first. The `ARC-008` fix stops new errors but doesn't correct existing ones. Added after the audit.
 - [x] **Fix the Manage Invoices "date to" filter.** With both dates set, `_buildInvoiceFilter` sends `createdAt: {gte, lte}`, and the connector reads only the first operator, so `dateTo` is ignored in the list and its total. Split it into two `and` clauses. Other routes may build ranges the same way, so check them too. Added after the audit.
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
-we 
+
 ## P2
 
 - [x] **Put `adminRecharge` and `adminTopup` request creation and credit in one transaction.** A failed credit can leave a success request with no money added. Added after the audit.
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
 - [x] **Update the unit tests broken by the Nov 1 SQL changes.** The 2 shift tests (`72bdeed`) and the 2 Manage Ticket invoice filter tests (`priority-points`) are fixed on `main`.
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
-- [ ] **Fix the `GET /shifts/collected` 500.** It falls into the `/shifts/{id}` route and fails with `invalid input syntax for type uuid: "collected"`. Seen in live logs after Nov 1 05:43. `SERVER_INCIDENT_AUDIT.md`
-- [ ] **Fix the 5xx on `GET /riders/availability-for-slot`** with a `fallback:` slot ID. Seen in the same logs.
+- [x] **Fix the `GET /shifts/collected` 500.** It falls into the `/shifts/{id}` route and fails with `invalid input syntax for type uuid: "collected"`. Seen in live logs after Nov 1 05:43. `SERVER_INCIDENT_AUDIT.md` **Implemented locally on 4 Nov; not deployed.** Shift routes now return 404 for an id that is not a UUID, before any query.
+- [x] **Fix the 5xx on `GET /riders/availability-for-slot`** with a `fallback:` slot ID. Seen in the same logs. **Implemented locally on 4 Nov; not deployed.** `resolveSlotWindow` only looks up UUID slot ids; `fallback:<label>` uses the whole day. Covers Pickup, Dispatch and the Order Delivery dialog, plus pickup/order assignment.
 - [ ] **Let the Manage Ticket payment filter cover all dates across stores.** It is limited to 90 days because it adds up payments for every order in scope (about 9 s for all stores on 2M orders). A stored paid total on orders would remove the limit. Added after the audit.
 - [ ] **Read the DSR tax rate from the GST configuration.** It is fixed at 18% in `reports.service.ts`, while Sales GST reads the configured rate. Added after the audit.
 - [x] **Add an idempotency key to order creation.** `ARC-026b`
@@ -69,7 +69,7 @@ we
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
 - [x] **Add a transaction to `DeliveryController.cancel`.** `ARC-006`
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
-- [ ] **Fix the webhook's payload-mismatch path** to meet its "always 200" intent. `ARC-014`
+- [x] **Fix the webhook's payload-mismatch path** to meet its "always 200" intent. `ARC-014` **Implemented locally on 4 Nov; not deployed.** A signed payload that fails validation (4xx) or is not JSON is logged as `razorpay_webhook_unprocessed` and acknowledged with 200. Server faults (5xx) still fail so Razorpay retries.
 - [ ] **Add a durable retry (outbox table) for WhatsApp and notifications.** `ARC-015`, `INF-012`
 - [x] **Add a model-level `hidden` setting on `Users` secrets.** `ARC-019`
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
@@ -86,9 +86,9 @@ we
 - [ ] **Bag endpoints:** missing store filter and permission gate? `ARC-025`
 - [ ] **Rider endpoints:** store and ownership scoping. `ARC-026`
 - [ ] **Store scope coverage** across the remaining controllers. Do this sooner: `ARC-023` found 5 more unprotected routes than the audit listed. Include customer-billing routes. **Status: `generateOnAccountInvoice` and the consolidated invoice routes now check store scope on `main` (`f2c3c8d`), not deployed.** `ARC-004`
-- [ ] **`GarmentActionsController`:** read-then-act without a lock. `ARC-007`
+- [x] **`GarmentActionsController`:** read-then-act without a lock. `ARC-007` **Implemented locally on 4 Nov; not deployed.** Confirmed: return, upgrade, risk and damaged checked then created without a lock (reprocess already locked). They now take a per-garment `pg_try_advisory_xact_lock`; a simultaneous second action gets 409. Lock behaviour checked on two real connections.
 - [ ] **WhatsApp dedup cache:** it is per-process, and production now runs 2 workers. `ARC-013`
-- [ ] **Razorpay client timeout.** `BE-016`
+- [x] **Razorpay client timeout.** `BE-016` **Implemented locally on 4 Nov; not deployed.** Confirmed: SDK 2.9.8 has no timeout option and its axios client defaults to none. Its client now has a 15s timeout.
 
 ## P3
 
@@ -98,8 +98,8 @@ we
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
 - [x] **Batch `ProcessService` log updates.** `BE-010`
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
-- [ ] **Remove the commented-out `isActive` check** or restore it. `ARC-022`
-- [ ] **Remove or fix `generateShortToken`.** `ARC-003`
+- [x] **Remove the commented-out `isActive` check** or restore it. `ARC-022` **Implemented locally on 4 Nov; not deployed.** Restored (not removed): `verifyCredentials` is required by LoopBack's `UserService` interface. It has no callers; `/auth/login` already checks `isActive`.
+- [x] **Remove or fix `generateShortToken`.** `ARC-003` **Implemented locally on 4 Nov; not deployed.** Removed; it had no callers.
 - [ ] **Remove `api-live.out` and `api-live.err` from the repo** and ignore them. They were committed to `main` in `1497c21`. Added after the audit.
 - [ ] **Remove the unused `buildOnAccountInvoiceRows`** from `reports.service.ts`. Mode of Payment no longer calls it. Added after the audit.
 - [x] **Fix the `Auto-escaping invalid RegExp` warning** on search values such as `%Pune (REG001%`.

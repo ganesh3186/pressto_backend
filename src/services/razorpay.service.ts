@@ -20,6 +20,9 @@ import {WhatsAppService} from './whatsapp.service';
 import {PresstoDataSource} from '../datasources/pressto.datasource';
 
 const PAYMENT_LINK_VALIDITY_MS = 24 * 60 * 60 * 1000;
+// The SDK (2.9.x) takes no timeout option and its axios client defaults to
+// none, so a stalled Razorpay call would hold the request open forever.
+const RAZORPAY_TIMEOUT_MS = 15000;
 
 export interface CreateGatewayOrderInput {
   amount: number;
@@ -79,7 +82,8 @@ export class RazorpayService {
     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
       throw new HttpErrors.ServiceUnavailable('Razorpay is not configured.');
     }
-    return (this.razorpayClient ??= new Razorpay({
+    if (this.razorpayClient) return this.razorpayClient;
+    const client = new Razorpay({
       // Razorpay's own SDK field names — snake_case is their API's shape,
       // not this codebase's convention (mirrors the same suppress-comment
       // pattern already used in email.service.ts for a third-party shape).
@@ -87,7 +91,10 @@ export class RazorpayService {
       key_id: process.env.RAZORPAY_KEY_ID,
       key_secret: process.env.RAZORPAY_KEY_SECRET,
       /* eslint-enable @typescript-eslint/naming-convention */
-    }));
+    });
+    const http = (client.api as unknown as {rq?: {defaults: {timeout?: number}}}).rq;
+    if (http) http.defaults.timeout = RAZORPAY_TIMEOUT_MS;
+    return (this.razorpayClient = client);
   }
 
   async createOrder(

@@ -16,7 +16,7 @@ describe('shift collections from riders', () => {
     let summaryFilter: Record<string, unknown> | undefined;
     const controller = Object.assign(Object.create(ShiftController.prototype), {
       shiftRepository: {
-        findById: async () => ({id: 'shift-a', storeId: 'store-a', openedAt, closedAt}),
+        findById: async () => ({id: '5a1f0c3e-0000-4000-8000-00000000000a', storeId: 'store-a', openedAt, closedAt}),
       },
       resolveCallerStore: async () => ({storeId: 'store-a'}),
       orderRepository: {
@@ -97,7 +97,7 @@ describe('shift collections from riders', () => {
 
     const result = (await controller.collected(
       {} as UserProfile,
-      'shift-a',
+      '5a1f0c3e-0000-4000-8000-00000000000a',
     )) as {
       collections: {cash: number};
       walletCollections: {cash: number; card: number; upi: number; netBanking: number; ppVoucher: number};
@@ -420,7 +420,7 @@ describe('shift revenue after sales returns', () => {
 
     const result = (await controller.collected(
       {} as UserProfile,
-      'shift-a',
+      '5a1f0c3e-0000-4000-8000-00000000000a',
     )) as {
       revenue: {
         pressto: {
@@ -469,7 +469,7 @@ describe('shift revenue after sales returns', () => {
     }) as ShiftController;
     batchedStubs(controller);
 
-    await controller.close({} as UserProfile, 'shift-a', {
+    await controller.close({} as UserProfile, '5a1f0c3e-0000-4000-8000-00000000000a', {
       remarks: 'done',
       cardPgSettlement: {actualSettlement: 0},
       revenue: {pressto: {revenue: 0}},
