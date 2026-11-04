@@ -47,6 +47,7 @@
 - [ ] **Fix the `GET /shifts/collected` 500.** It falls into the `/shifts/{id}` route and fails with `invalid input syntax for type uuid: "collected"`. Seen in live logs after Nov 1 05:43. `SERVER_INCIDENT_AUDIT.md`
 - [ ] **Fix the 5xx on `GET /riders/availability-for-slot`** with a `fallback:` slot ID. Seen in the same logs.
 - [ ] **Let the Manage Ticket payment filter cover all dates across stores.** It is limited to 90 days because it adds up payments for every order in scope (about 9 s for all stores on 2M orders). A stored paid total on orders would remove the limit. Added after the audit.
+- [ ] **Read the DSR tax rate from the GST configuration.** It is fixed at 18% in `reports.service.ts`, while Sales GST reads the configured rate. Added after the audit.
 - [ ] **Add an idempotency key to order creation.** `ARC-026b`
 - [ ] **Add transactions to order status changes.** `ARC-005`
 - [ ] **Add a transaction to `DeliveryController.cancel`.** `ARC-006`
@@ -62,7 +63,7 @@
 
 - [ ] **Bag endpoints:** missing store filter and permission gate? `ARC-025`
 - [ ] **Rider endpoints:** store and ownership scoping. `ARC-026`
-- [ ] **Store scope coverage** across the remaining controllers. Do this sooner: `ARC-023` found 5 more unprotected routes than the audit listed. Include customer-billing routes such as `generateOnAccountInvoice`. `ARC-004`
+- [ ] **Store scope coverage** across the remaining controllers. Do this sooner: `ARC-023` found 5 more unprotected routes than the audit listed. Include customer-billing routes. **Status: `generateOnAccountInvoice` and the consolidated invoice routes now check store scope on `main` (`f2c3c8d`), not deployed.** `ARC-004`
 - [ ] **`GarmentActionsController`:** read-then-act without a lock. `ARC-007`
 - [ ] **WhatsApp dedup cache:** it is per-process, and production now runs 2 workers. `ARC-013`
 - [ ] **Razorpay client timeout.** `BE-016`
@@ -75,6 +76,7 @@
 - [ ] **Remove the commented-out `isActive` check** or restore it. `ARC-022`
 - [ ] **Remove or fix `generateShortToken`.** `ARC-003`
 - [ ] **Remove `api-live.out` and `api-live.err` from the repo** and ignore them. They were committed to `main` in `1497c21`. Added after the audit.
+- [ ] **Remove the unused `buildOnAccountInvoiceRows`** from `reports.service.ts`. Mode of Payment no longer calls it. Added after the audit.
 - [ ] **Fix the `Auto-escaping invalid RegExp` warning** on search values such as `%Pune (REG001%`.
 
 ## No action needed
