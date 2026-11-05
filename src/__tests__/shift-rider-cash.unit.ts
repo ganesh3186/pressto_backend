@@ -223,6 +223,7 @@ describe('shift revenue after sales returns', () => {
       },
       orderItemRepository: {find: async () => []},
       salesReturnRepository: {
+        execute: async () => [{id: 'sales-return'}],
         find: async () => [
           {
             orderId: 'order-b',
@@ -289,6 +290,7 @@ describe('shift revenue after sales returns', () => {
     const invoice = {id: 'invoice-a', isConsolidated: true};
     const controller = Object.assign(Object.create(ShiftController.prototype), {
       salesReturnRepository: {
+        execute: async () => [{id: 'sales-return'}],
         find: async () =>
           ['order-a', 'order-b'].map(orderId => ({
             orderId,
@@ -379,6 +381,7 @@ describe('shift revenue after sales returns', () => {
       },
       invoiceOrderLinkRepository: {find: async () => []},
       salesReturnRepository: {
+        execute: async () => [{id: 'sales-return'}],
         find: async () => [
           {
             orderId: 'old-order',
