@@ -116,7 +116,7 @@ describe('invoice discount sync', () => {
     expect(savedPatch).not.to.have.property('subtotal');
   });
 
-  it('saves the corrected invoice when a challan refresh changes the order discount', async () => {
+  it('saves the corrected draft invoice when a challan refresh changes the order discount', async () => {
     let savedInvoice: Record<string, number> | undefined;
     const order = {
       id: 'order-1',
@@ -182,6 +182,7 @@ describe('invoice discount sync', () => {
       invoiceRepo: {
         findOne: async () => ({
           id: 'invoice-1',
+          status: 'draft',
           subtotal: 192,
           discount: 0,
           cgst: 17.28,
@@ -257,10 +258,11 @@ describe('invoice discount sync', () => {
     }
   });
 
-  it('updates an existing invoice after a payment changes the order discount', async () => {
+  it('updates a draft invoice after a payment changes the order discount', async () => {
     let savedInvoice: Record<string, number> | undefined;
     const invoice = {
       id: 'invoice-1',
+      status: 'draft',
       subtotal: 192,
       discount: 0,
       cgst: 17.28,
@@ -308,7 +310,7 @@ describe('invoice discount sync', () => {
     });
   });
 
-  it('repairs an older invoice without item snapshots on a direct invoice read', async () => {
+  it('repairs a draft invoice without item snapshots on a direct invoice read', async () => {
     const order = {
       id: 'order-1',
       subtotal: 192,
@@ -318,6 +320,7 @@ describe('invoice discount sync', () => {
     };
     const invoice = {
       id: 'invoice-1',
+      status: 'draft',
       subtotal: 192,
       discount: 0,
       cgst: 17.28,

@@ -34,6 +34,7 @@ import {OrderItem} from '../models/order-item.model';
 import {Customer} from '../models/customer.model';
 import {Challan, ChallanStatus} from '../models/challan.model';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
+import {invoiceAmountsLocked} from '../utils/invoice-lock';
 import {PaymentMode} from '../models/payment-mode.enum';
 import {ReferenceType} from '../models/reference-type.enum';
 import {
@@ -1311,7 +1312,7 @@ export class OrderService {
   async syncInvoiceTotalsForOrder(order: Order, tx?: unknown): Promise<Invoice | null> {
     const txOpt = tx ? {transaction: tx} : undefined;
     const invoice = await this.invoiceRepo.findOne({where: {orderId: order.id}}, txOpt);
-    if (!invoice || invoice.isConsolidated) return invoice;
+    if (!invoice || invoice.isConsolidated || invoiceAmountsLocked(invoice)) return invoice;
     const totals = orderInvoiceTotals(order, invoice);
     if (!totals) return invoice;
     if (Object.entries(totals).some(
@@ -4213,22 +4214,18 @@ export class OrderService {
       totalAmount,
     }, options);
 
-    // Keep an already-generated invoice/challan in sync with the same
-    // recompute — otherwise a tax invoice generated before this edit (e.g.
-    // a delivery-tier change) keeps showing its stale snapshot forever,
-    // even though the order's own totals just changed here. A consolidated
-    // (On Account) invoice's totals are the sum across every order it
+    // Keep a draft invoice and the challan in sync with the same recompute. An
+    // issued invoice keeps its amounts and only its balance follows the order. A
+    // consolidated (On Account) invoice's totals are the sum across every order it
     // covers, not this order alone, so it's deliberately left untouched.
     const cgst = parseFloat((taxAmount / 2).toFixed(2));
     const sgst = parseFloat((taxAmount - cgst).toFixed(2));
     const invoice = await this.invoiceRepo.findOne({where: {orderId} as object}, options);
     if (invoice && !invoice.isConsolidated) {
       await this.invoiceRepo.updateById(invoice.id, {
-        subtotal,
-        discount: discountAmount,
-        cgst,
-        sgst,
-        totalAmount,
+        ...(invoiceAmountsLocked(invoice)
+          ? {}
+          : {subtotal, discount: discountAmount, cgst, sgst, totalAmount}),
         balanceDue: rupeeBalance(totalAmount, collected),
         updatedAt: new Date(),
       } as object, options);
@@ -7546,7 +7543,11 @@ export class OrderService {
             await this.invoiceRepo.updateById(
               invoice.id,
               totals
-                ? {...totals, amountReceived: alreadyPaid, balanceDue: due}
+                ? {
+                    ...(invoiceAmountsLocked(invoice) ? {} : totals),
+                    amountReceived: alreadyPaid,
+                    balanceDue: due,
+                  }
                 : {amountReceived: alreadyPaid,
                   balanceDue: rupeeBalance(invoice.totalAmount, alreadyPaid)},
               options,

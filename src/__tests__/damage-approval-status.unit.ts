@@ -142,7 +142,7 @@ describe('damage approval status', () => {
     expect(garments[0].status).to.equal(GarmentStatus.DAMAGED);
     expect(items[0].quantity).to.equal(0);
     expect(order.totalAmount).to.equal(118);
-    expect(invoice.totalAmount).to.equal(118);
+    expect(invoice.totalAmount).to.equal(236);
     expect(challan.totalAmount).to.equal(118);
     expect(refundAmount).to.equal(118);
   });

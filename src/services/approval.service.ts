@@ -57,6 +57,7 @@ import {AuditService} from './audit.service';
 import {OrderService} from './order.service';
 import {PresstoDataSource} from '../datasources/pressto.datasource';
 import {dispatchWhatsApp, WhatsAppService} from './whatsapp.service';
+import {invoiceAmountsLocked} from '../utils/invoice-lock';
 
 // What status to set on the garment immediately when a request is CREATED.
 // Requests that need a decision park the garment on ON_HOLD, so work does not
@@ -1466,11 +1467,15 @@ export class ApprovalService {
     } as any);
     if (invoice) {
       await this.invoiceRepo.updateById(invoice.id, {
-        subtotal: newSubtotal,
-        discount: newDiscount,
-        cgst: money(newTaxAmount / 2),
-        sgst: money(newTaxAmount - money(newTaxAmount / 2)),
-        totalAmount: newOrderTotal,
+        ...(invoiceAmountsLocked(invoice)
+          ? {}
+          : {
+              subtotal: newSubtotal,
+              discount: newDiscount,
+              cgst: money(newTaxAmount / 2),
+              sgst: money(newTaxAmount - money(newTaxAmount / 2)),
+              totalAmount: newOrderTotal,
+            }),
         balanceDue: newBalanceDue,
         updatedAt: new Date(),
       } as any);
@@ -2406,18 +2411,22 @@ export class ApprovalService {
           }
         }
         await this.invoiceRepo.updateById(invoice.id, {
-          subtotal: money(money(invoice.subtotal) + priceDiff),
-          // Mirrors the order's own freshly-recomputed total directly,
-          // rather than independently diffing invoice.totalAmount — keeps
-          // the two from ever drifting apart from separate rounding.
-          totalAmount: newOrderTotal,
+          ...(invoiceAmountsLocked(invoice)
+            ? {}
+            : {
+                subtotal: money(money(invoice.subtotal) + priceDiff),
+                // Mirrors the order's own freshly-recomputed total directly,
+                // rather than independently diffing invoice.totalAmount — keeps
+                // the two from ever drifting apart from separate rounding.
+                totalAmount: newOrderTotal,
+                items,
+              }),
           // An upgrade raises the bill, so the balance rises with it. Never let
           // it go negative if a downgrade ever produces a negative diff.
           balanceDue: Math.max(
             0,
             Math.round(money(invoice.balanceDue) + totalDiff),
           ),
-          items,
           updatedAt: new Date(),
         } as any);
       }

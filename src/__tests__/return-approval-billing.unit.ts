@@ -28,7 +28,7 @@ describe('return approval billing', () => {
       {orderItemId: returningItem.id, quantity: 1, totalPrice: 100},
       {orderItemId: remainingItem.id, quantity: 1, totalPrice: 100},
     ];
-    const invoice = {id: 'invoice-1', orderId: order.id, subtotal: 200, totalAmount: 236,
+    const invoice = {id: 'invoice-1', status: 'draft', orderId: order.id, subtotal: 200, totalAmount: 236,
       balanceDue: 0, items: [...documentItems]};
     const challan = {id: 'challan-1', orderId: order.id, subtotal: 200, totalAmount: 236,
       items: [...documentItems]};
