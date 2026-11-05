@@ -14,6 +14,10 @@ import {OrderSummaryPdfService} from './services/order-summary-pdf.service';
 import path from 'path';
 import { JWTStrategy } from './authentication-strategy/jwt-strategy';
 import { EmailManagerBindings, FILE_UPLOAD_SERVICE, STORAGE_DIRECTORY } from './keys';
+import {
+  createRateLimitMiddleware,
+  rateLimitConfigFromEnv,
+} from './middleware/rate-limit.middleware';
 import { MySequence } from './sequence';
 import { EmailService } from './services/email.service';
 import { BcryptHasher } from './services/hash.password.bcrypt';
@@ -61,6 +65,9 @@ export class presstoBackendApplication extends BootMixin(
 
     // Set up the custom sequence
     this.sequence(MySequence);
+    this.middleware(
+      createRateLimitMiddleware(options.rateLimit ?? rateLimitConfigFromEnv()),
+    );
     this.setUpBinding();
 
     // Set up default home page
