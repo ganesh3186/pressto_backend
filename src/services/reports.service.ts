@@ -184,6 +184,7 @@ type DailySalesRow = {
   // ₹1,000/day. null when no target is set for that store+month.
   targetRevenue: number | null;
   discount: number;
+  discountedRevenue: number;
   taxes: number;
   totalSales: number;
   noOfTickets: number;
@@ -253,6 +254,9 @@ type ShiftClosingSnapshot = {
 
 /** Order types booked as a walk-in/counter sale — the "PSB" revenue bucket. */
 const PSB_ORDER_TYPES = [OrderType.STORE_DROPOFF, OrderType.STORE_DROPOFF_HOME_DELIVERY];
+
+/** Preserve the legacy PSB/P2D split for reports before the agreed cutover. */
+const ITPV_PZ_SPLIT_EFFECTIVE_DATE = '2026-10-01';
 
 /**
  * Payment modes that land in the Daily Sales Report's "Other Payment Mode"
@@ -1101,6 +1105,7 @@ export class ReportsService {
         actDeliveryDate: deliveredAt.get(String(e.order.id)) ?? null,
         orderDate: e.order.createdAt ?? null,
         deliveryStatus: e.delivery || '—',
+        paymentMode: PAYMENT_MODE_LABELS[PaymentMode.ON_ACCOUNT],
         paymentStatus: e.status,
         amount: e.total,
         totalAmount: e.total,
@@ -1197,6 +1202,45 @@ export class ReportsService {
 
     const invoices = scopedCandidateInvoices.filter(invoice => orderById.has(String(invoice.orderId)));
     if (!invoices.length) return emptyPaged();
+
+    const invoiceIdSet = new Set(invoices.map(invoice => String(invoice.id)));
+    const consolidatedOrderIds = [...new Set(consolidatedLinks
+      .filter(link => invoiceIdSet.has(String(link.invoiceId)))
+      .map(link => link.orderId))];
+    const consolidatedOrderItems = await findInBatches(consolidatedOrderIds, batch =>
+      this.orderItemRepo.find({
+        where: {orderId: {inq: batch}} as object,
+        fields: {orderId: true, itemId: true, totalPrice: true} as object,
+      }),
+    );
+    const invoiceItemIds = invoices.flatMap(invoice =>
+      (invoice.items ?? []).map(item => String((item as {itemId?: string}).itemId ?? '')).filter(Boolean),
+    );
+    const itemIds = [...new Set([
+      ...invoiceItemIds,
+      ...consolidatedOrderItems.map(item => String(item.itemId)),
+    ])];
+    const catalogItems = await findInBatches(itemIds, batch =>
+      this.itemRepo.find({
+        where: {id: {inq: batch}} as object,
+        fields: {id: true, name: true} as object,
+      }),
+    );
+    const itemNameById = new Map(catalogItems.map(item => [String(item.id), item.name]));
+    const itemLinesByOrder = new Map<string, {itemId: string; totalPrice: number}[]>();
+    const orderIdsByInvoice = new Map<string, string[]>();
+    for (const link of consolidatedLinks) {
+      orderIdsByInvoice.set(String(link.invoiceId), [
+        ...(orderIdsByInvoice.get(String(link.invoiceId)) ?? []),
+        String(link.orderId),
+      ]);
+    }
+    for (const item of consolidatedOrderItems) {
+      itemLinesByOrder.set(String(item.orderId), [
+        ...(itemLinesByOrder.get(String(item.orderId)) ?? []),
+        {itemId: String(item.itemId), totalPrice: Number(item.totalPrice) || 0},
+      ]);
+    }
 
     const customerIds = [...new Set(orders.map(o => String(o.customerId)))];
     const addressIds = [...new Set(orders.map(o => o.deliveryAddressId).filter(Boolean))] as string[];
@@ -1338,17 +1382,31 @@ export class ReportsService {
       const storedSgst = Number(invoice.sgst) || 0;
       const invoiceCgst = legacyGst ? roundRupees(legacyGst.tax / 2) : storedCgst;
       const invoiceSgst = legacyGst ? roundRupees(legacyGst.tax - invoiceCgst) : storedSgst;
-      const totalTax = roundRupees(invoiceCgst + invoiceSgst);
-
       const address =
         (order.deliveryAddressId ? addressById.get(order.deliveryAddressId) : undefined) ??
         defaultAddressByCustomer.get(String(order.customerId));
       const customerName = customer?.companyName ??
         [customer?.firstName, customer?.lastName].filter(Boolean).join(' ');
+      const linkedOrderIds = invoice.isConsolidated
+        ? orderIdsByInvoice.get(String(invoice.id)) ?? []
+        : [];
+      const itemLines = invoice.isConsolidated
+        ? linkedOrderIds.flatMap(orderId => itemLinesByOrder.get(orderId) ?? [])
+        : (invoice.items ?? [])
+          .map(item => ({
+            itemId: String((item as {itemId?: string}).itemId ?? ''),
+            totalPrice: Number((item as {totalPrice?: number}).totalPrice) || 0,
+          }))
+          .filter(item => item.itemId);
+      const reportItemLines = itemLines.length ? itemLines : [{itemId: '', totalPrice: 0}];
 
-      srNo += 1;
-      allRows.push({
-          id: String(invoice.id),
+      reportItemLines.forEach((itemLine, index) => {
+        const isFirstItem = index === 0;
+        const itemName = itemNameById.get(itemLine.itemId) ?? '—';
+        srNo += 1;
+        allRows.push({
+          id: `${invoice.id}-${index}`,
+          isFirstItem,
           srNo,
           bu: BUSINESS_UNIT,
           region: store?.regionName ?? '—',
@@ -1359,15 +1417,16 @@ export class ReportsService {
           customerName: customerName || '—',
           invoiceNo: invoice.invoiceNumber ?? '—',
           invoiceDate: invoice.createdAt ?? null,
-          invoiceValue: roundRupees(Number(invoice.totalAmount) || 0),
-          description: 'Laundry services',
+          invoiceValue: isFirstItem ? roundRupees(Number(invoice.totalAmount) || 0) : 0,
+          itemName,
+          description: itemName,
           sacHsn: SALES_GST_SAC_CODE,
-          taxableValue: roundRupees(taxableSubtotal),
-          totalTax,
+          taxableValue: isFirstItem ? roundRupees(taxableSubtotal) : 0,
+          totalTax: isFirstItem ? roundRupees(invoiceCgst + invoiceSgst) : 0,
           cgstRate: cgstRatePct,
-          cgstAmount: roundRupees(invoiceCgst),
+          cgstAmount: isFirstItem ? roundRupees(invoiceCgst) : 0,
           sgstRate: sgstRatePct,
-          sgstAmount: roundRupees(invoiceSgst),
+          sgstAmount: isFirstItem ? roundRupees(invoiceSgst) : 0,
           sellerGstin: SALES_GST_SELLER.gstin,
           sellerLegalName: SALES_GST_SELLER.legalName,
           sellerAddr1: SALES_GST_SELLER.addr1,
@@ -1381,6 +1440,7 @@ export class ReportsService {
           buyerPincode: address?.pincode ?? '—',
           buyerStateCode: resolveBuyerStateCode(customer?.gstNumber, address?.state),
         });
+      });
     }
 
     const totals = {
@@ -1422,8 +1482,9 @@ export class ReportsService {
    * Revenue/discount/tickets/items/services and the sales-return figures
    * come straight off Shift.closing (already computed by
    * ShiftController.close() at closure time via resolveRevenue()/
-   * resolveSalesReturn()). DSR tax is 18% of revenue less discount; total
-   * sales is that value plus tax, rounded to the nearest rupee.
+   * resolveSalesReturn()). DSR tax is revenue less discount multiplied by
+   * the active CGST + SGST rate; total sales is that value plus tax, rounded
+   * to the nearest rupee.
    *
    * PSB vs P2D is split by invoice generation date and linked order type.
    * The total Revenue column comes from the saved closure snapshot, which
@@ -1443,7 +1504,7 @@ export class ReportsService {
     const {storeIds, from, to} = params;
     if (!storeIds.length) return emptyPaged();
 
-    const [shifts, storeCtx, monthlyTargets] = await Promise.all([
+    const [shifts, storeCtx, monthlyTargets, gstConfig] = await Promise.all([
       this.shiftRepo.find({
         where: {
           storeId: {inq: storeIds},
@@ -1460,8 +1521,14 @@ export class ReportsService {
           isDeleted: false,
         } as object,
       }),
+      this.gstTaxConfigurationRepo?.findOne({
+        where: {isActive: true, isDeleted: false} as object,
+      }),
     ]);
     if (!shifts.length) return emptyPaged();
+    const gstRate = gstConfig
+      ? (Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)) / 100
+      : 0.18;
 
     // Per-day target = that month's revenueTarget / days in that month
     // (e.g. a ₹31,000 January target -> ₹1,000/day). Keyed by storeId so
@@ -1610,7 +1677,6 @@ export class ReportsService {
     }
 
     const grouped = new Map<string, DailySalesRow>();
-    const taxableAmounts = new Map<string, number>();
     // closureNo/remarks are joined across every shift in a (store, day)
     // group; cumulative-diff figures are running totals, so only the
     // LAST shift closed that day carries the up-to-date number.
@@ -1632,13 +1698,15 @@ export class ReportsService {
       const windowEnd = shift.closedAt.getTime();
 
       const isMigratedItpvShift = closing.itpv?.zReport != null;
+      const usesStoredItpvSplit =
+        isMigratedItpvShift && day >= ITPV_PZ_SPLIT_EFFECTIVE_DATE;
       let psbRevenue = isMigratedItpvShift
         ? Number(closing.itpv?.zReport?.revenue?.revenue) || 0
         : 0;
       let pmuRevenue = 0;
-      let p2dRevenue = 0;
-      let shiftTaxableAmount = 0;
-      let hasInvoiceDetails = false;
+      let p2dRevenue = usesStoredItpvSplit
+        ? Number(closing.itpv?.pReport?.revenue?.revenue) || 0
+        : 0;
       for (const link of invoiceOrders) {
         const order = revenueOrderById.get(link.orderId);
         if (!order || order.storeId !== shift.storeId) continue;
@@ -1650,6 +1718,7 @@ export class ReportsService {
         // specific shift's window it lands in, same as the store check above.
         const invoiceCreatedAt = invoice.createdAt ? new Date(invoice.createdAt).getTime() : null;
         if (invoiceCreatedAt == null || invoiceCreatedAt < windowStart || invoiceCreatedAt > windowEnd) continue;
+        if (usesStoredItpvSplit) continue;
 
         const orderTotal = Number(link.orderTotal) || 0;
         const laterReturns = (returnsByOrderId.get(link.orderId) ?? []).filter(salesReturn => {
@@ -1693,21 +1762,10 @@ export class ReportsService {
           if ((Number(returnCell.revenue) || 0) > 0 && order.status === OrderStatus.RETURNED) {
             continue;
           }
-          if (order.orderType === OrderType.HOME_PICKUP) {
-            pmuRevenue += value;
-          } else if (order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY) {
-            p2dRevenue += value;
-          }
-        } else {
-          hasInvoiceDetails = true;
-          if (tax !== 0) {
-            shiftTaxableAmount += invoice.isConsolidated
-              ? value
-              : Math.max(0, value - (Number(invoice.discount) || 0));
-          }
-          if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
-          else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
-        }
+          if (order.orderType === OrderType.HOME_PICKUP) pmuRevenue += value;
+          else if (order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY) p2dRevenue += value;
+        } else if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
+        else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
       }
 
       let otherPaymentMode = 0;
@@ -1747,6 +1805,7 @@ export class ReportsService {
           revenue: 0,
           targetRevenue: resolveTargetRevenue(String(shift.storeId), new Date(shift.closedAt)),
           discount: 0,
+          discountedRevenue: 0,
           taxes: 0,
           totalSales: 0,
           noOfTickets: 0,
@@ -1780,15 +1839,6 @@ export class ReportsService {
       const discount = Number(revenueCell.discount) || 0;
       row.revenue += revenue;
       row.discount += discount;
-      if (isMigratedItpvShift) {
-        const zReportTax = Number(closing.itpv?.zReport?.revenue?.taxes) || 0;
-        shiftTaxableAmount = zReportTax !== 0 ? revenue - discount : 0;
-      } else if (!hasInvoiceDetails && (Number(revenueCell.taxes) || 0) !== 0) {
-        // shortcut: legacy closures without invoice snapshots use their saved tax as the taxable marker.
-        shiftTaxableAmount = revenue - discount;
-      }
-      shiftTaxableAmount -= (Number(returnCell.taxes) || 0) / 0.18;
-      taxableAmounts.set(key, (taxableAmounts.get(key) ?? 0) + shiftTaxableAmount);
       row.noOfTickets += Number(revenueCell.tickets) || 0;
       row.noOfItems += Number(revenueCell.items) || 0;
       row.noOfServices += Number(revenueCell.services) || 0;
@@ -1852,8 +1902,8 @@ export class ReportsService {
     }
 
     for (const [key, row] of grouped) {
-      const taxableAmount = taxableAmounts.get(key) ?? 0;
-      row.taxes = Math.round(taxableAmount * 0.18 * 100) / 100;
+      row.discountedRevenue = Math.round((row.revenue - row.discount) * 100) / 100;
+      row.taxes = Math.round(row.discountedRevenue * gstRate * 100) / 100;
       row.totalSales = Math.round(row.revenue - row.discount + row.taxes);
       row.closureNo = (closureNumbers.get(key) ?? []).join(', ');
       row.shiftOpenRemark = (openRemarks.get(key) ?? []).join(', ') || '—';
@@ -1876,6 +1926,7 @@ export class ReportsService {
         revenue: sum(r => r.revenue),
         targetRevenue: sum(r => r.targetRevenue ?? 0),
         discount: sum(r => r.discount),
+        discountedRevenue: sum(r => r.discountedRevenue),
         taxes: sum(r => r.taxes),
         totalSales: sum(r => r.totalSales),
         noOfTickets: sum(r => r.noOfTickets),

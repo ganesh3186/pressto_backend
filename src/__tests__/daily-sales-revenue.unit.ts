@@ -119,8 +119,8 @@ describe('daily sales revenue', () => {
       psbRevenue: 42.58,
       p2dRevenue: 50.25,
       revenue: 100.5,
-      taxes: 7.66,
-      totalSales: 108,
+      taxes: 18.09,
+      totalSales: 119,
       salesReturnSaleAmount: 12,
       noOfSalesReturnServices: 1,
     });
@@ -128,8 +128,8 @@ describe('daily sales revenue', () => {
       psbRevenue: 42.58,
       p2dRevenue: 50.25,
       revenue: 100.5,
-      taxes: 7.66,
-      totalSales: 108,
+      taxes: 18.09,
+      totalSales: 119,
       salesReturnSaleAmount: 12,
     });
   });
@@ -170,8 +170,8 @@ describe('daily sales revenue', () => {
 
     expect(report.rows[0]).to.containEql({
       revenue: -30,
-      taxes: 0,
-      totalSales: -30,
+      taxes: -5.4,
+      totalSales: -35,
       salesReturnSaleAmount: 30,
       noOfSalesReturnServices: 1,
       psbRevenue: 0,
@@ -179,8 +179,8 @@ describe('daily sales revenue', () => {
     });
     expect(report.totals).to.containEql({
       revenue: -30,
-      taxes: 0,
-      totalSales: -30,
+      taxes: -5.4,
+      totalSales: -35,
       salesReturnSaleAmount: 30,
     });
   });
@@ -215,6 +215,9 @@ describe('daily sales revenue', () => {
       invoiceOrderLinkRepo: {find: async () => []},
       salesReturnRepo: {find: async () => []},
       storeMonthlyTargetRepo: {find: async () => []},
+      gstTaxConfigurationRepo: {
+        findOne: async () => ({cgstPercentage: 9, sgstPercentage: 9}),
+      },
     }) as ReportsService;
 
     const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
@@ -222,7 +225,33 @@ describe('daily sales revenue', () => {
     expect(report.rows[0]).to.containEql({revenue: 100.5, taxes: 18.09, totalSales: 119});
   });
 
-  it('keeps migrated z-report tax when invoice detail is unavailable', async () => {
+  it('preserves an active zero-percent GST configuration', async () => {
+    const openedAt = new Date('2026-10-03T09:00:00Z');
+    const closedAt = new Date('2026-10-03T17:00:00Z');
+    const service = Object.assign(Object.create(ReportsService.prototype), {
+      shiftRepo: {find: async () => [{
+        id: 'zero-gst', storeId: 'store-a', status: ShiftStatus.CLOSED,
+        openedAt, closedAt, openingNo: 'S-zero',
+        closing: {revenue: {pressto: {revenue: 100, discount: 10}}},
+      }]},
+      buildStoreContext: async () => new Map(),
+      orderRepo: {find: async () => []},
+      paymentTransactionRepo: {find: async () => []},
+      invoiceRepo: {find: async () => []},
+      invoiceOrderLinkRepo: {find: async () => []},
+      salesReturnRepo: {find: async () => []},
+      storeMonthlyTargetRepo: {find: async () => []},
+      gstTaxConfigurationRepo: {
+        findOne: async () => ({cgstPercentage: 0, sgstPercentage: 0}),
+      },
+    }) as ReportsService;
+
+    const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
+
+    expect(report.rows[0]).to.containEql({discountedRevenue: 90, taxes: 0, totalSales: 90});
+  });
+
+  it('uses migrated P/Z report revenue for the P2D/PSB split', async () => {
     const openedAt = new Date('2026-10-04T09:00:00Z');
     const closedAt = new Date('2026-10-04T17:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
@@ -231,7 +260,10 @@ describe('daily sales revenue', () => {
         openedAt, closedAt, openingNo: 'S-4',
         closing: {
           revenue: {pressto: {revenue: 100, taxes: 18, totalSales: 118}},
-          itpv: {zReport: {revenue: {revenue: 100, taxes: 18, totalSales: 118}}},
+          itpv: {
+            pReport: {revenue: {revenue: 82, taxes: 14.76, totalSales: 96.76}},
+            zReport: {revenue: {revenue: 18, taxes: 3.24, totalSales: 21.24}},
+          },
         },
       }]},
       buildStoreContext: async () => new Map(),
@@ -245,10 +277,44 @@ describe('daily sales revenue', () => {
 
     const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
 
-    expect(report.rows[0]).to.containEql({psbRevenue: 100, revenue: 100, taxes: 18});
+    expect(report.rows[0]).to.containEql({
+      psbRevenue: 18,
+      p2dRevenue: 82,
+      revenue: 100,
+      taxes: 18,
+    });
   });
 
-  it('preserves zero tax when the shift has no taxable sales', async () => {
+  it('preserves the legacy migrated split before 1 October 2026', async () => {
+    const openedAt = new Date('2026-09-30T09:00:00Z');
+    const closedAt = new Date('2026-09-30T17:00:00Z');
+    const service = Object.assign(Object.create(ReportsService.prototype), {
+      shiftRepo: {find: async () => [{
+        id: 'shift-legacy', storeId: 'store-a', status: ShiftStatus.CLOSED,
+        openedAt, closedAt, openingNo: 'S-legacy',
+        closing: {
+          revenue: {pressto: {revenue: 100, taxes: 18, totalSales: 118}},
+          itpv: {
+            pReport: {revenue: {revenue: 82}},
+            zReport: {revenue: {revenue: 18}},
+          },
+        },
+      }]},
+      buildStoreContext: async () => new Map(),
+      orderRepo: {find: async () => []},
+      paymentTransactionRepo: {find: async () => []},
+      invoiceRepo: {find: async () => []},
+      invoiceOrderLinkRepo: {find: async () => []},
+      salesReturnRepo: {find: async () => []},
+      storeMonthlyTargetRepo: {find: async () => []},
+    }) as ReportsService;
+
+    const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
+
+    expect(report.rows[0]).to.containEql({psbRevenue: 18, p2dRevenue: 0, revenue: 100});
+  });
+
+  it('calculates tax from net revenue even when invoice tax was zero', async () => {
     const openedAt = new Date('2026-10-05T09:00:00Z');
     const closedAt = new Date('2026-10-05T17:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
@@ -287,12 +353,12 @@ describe('daily sales revenue', () => {
     expect(report.rows[0]).to.containEql({
       psbRevenue: 101,
       revenue: 101,
-      taxes: 0,
-      totalSales: 101,
+      taxes: 18.18,
+      totalSales: 119,
     });
   });
 
-  it('taxes only the taxable invoices in a mixed shift', async () => {
+  it('calculates tax from the full net revenue in a mixed shift', async () => {
     const openedAt = new Date('2026-10-06T09:00:00Z');
     const closedAt = new Date('2026-10-06T17:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
@@ -329,7 +395,7 @@ describe('daily sales revenue', () => {
 
     const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
 
-    expect(report.rows[0]).to.containEql({revenue: 200, taxes: 18, totalSales: 218});
+    expect(report.rows[0]).to.containEql({revenue: 200, taxes: 36, totalSales: 236});
   });
 
   it('matches the reported Prabhadevi tax example', async () => {
@@ -359,6 +425,7 @@ describe('daily sales revenue', () => {
     expect(report.rows[0]).to.containEql({
       revenue: 138809.28,
       discount: 13196.8,
+      discountedRevenue: 125612.48,
       taxes: 22610.25,
       totalSales: 148223,
     });

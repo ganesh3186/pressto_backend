@@ -55,14 +55,15 @@ not a bug in the report.
 |---|---|---|
 | **Revenue** | Pre-tax, post-discount value of everything invoiced this shift | Sum of `Invoice.subtotal` for every invoice **generated** (`createdAt`) within the shift's `[openedAt, closedAt]` window, for orders at this store |
 | **Discount** | Discount applied on those same invoices | Sum of `Invoice.discount` for the same invoice set |
-| **Taxes** | GST on those same invoices | Sum of `Invoice.cgst + Invoice.sgst` for the same invoice set |
+| **Discounted Revenue** | Revenue after discount | `Revenue - Discount` |
+| **Taxes** | GST on net revenue | `(Revenue - Discount) × (active CGST% + SGST%)` |
 | **Total Sales** | Final invoiced total (Revenue + Taxes, net of Discount) | Sum of each order's `orderTotal` share of its invoice (see *consolidated invoices*, below) |
 | **No Of Tickets** | How many distinct orders got invoiced this shift | Count of distinct orders whose invoice falls in this window |
 | **No Of Items** | Garment count across those invoiced orders | Sum of `quantity` across every `OrderItem` row on those orders |
 | **No Of Services** | Service-applications across those invoiced orders | Per item: `quantity × (1 + number of additional services on it)` — e.g. 2 shirts with one extra service each = 4, not 2 |
-| **PSB Revenue** | Revenue from walk-in/counter orders (store drop-off) | Same invoice set as Revenue, filtered to orders whose `orderType` is `store_dropoff` or `store_dropoff_home_delivery`, recomputed live (see note below) |
+| **PSB Revenue** | Revenue from walk-in/counter orders (store drop-off) | Migrated shifts use `itpv.zReport.revenue`; newer shifts classify invoice revenue by `store_dropoff` / `store_dropoff_home_delivery` |
 | **PMU Revenue** | — | Always `0`. Nothing in the schema records a "PMU" sales channel — this column exists in the report layout but has no data source |
-| **P2D Revenue** | Revenue from home-pickup orders | Same as PSB Revenue, filtered to `home_pickup` / `home_pickup_home_delivery` orderType |
+| **P2D Revenue** | Revenue from home-pickup orders | From 1 Oct 2026, migrated shifts use `itpv.pReport.revenue`; older reports retain the legacy invoice-based split. Newer shifts classify invoice revenue by `home_pickup` / `home_pickup_home_delivery` |
 
 **Consolidated (On Account) invoices**: one invoice can cover several
 orders at once. Its `subtotal`/`discount`/`cgst`/`sgst` are the **sum**

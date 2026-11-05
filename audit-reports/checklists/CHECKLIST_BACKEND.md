@@ -17,10 +17,10 @@ The agreed 22 technical changes are detailed in [the implementation report](../B
 
 ## P0: Money and data correctness
 
-- [ ] **Make wallet credit/debit atomic** with a row lock or conditional update. **Status: on `main` (`bec4c20`), not deployed. Covers recharges, admin debits and a double-credit race in `confirmRecharge`. SQL validated against the real tables on migration and production (read-only plan, no writes). Next: test on migration before any deploy.** `ARC-008`
-- [ ] **Move the checkout wallet balance read inside the transaction.** **Status: on `main` (`1ff822c`), not deployed. Order creation, `addPayment` and approval refunds now use the same atomic update as `ARC-008`. Next: test wallet payments and refunds on migration before any deploy.** `ARC-009`
-- [ ] **Make security deposit add/deduct atomic.** **Status: on `main` (`8c6c275`), not deployed. Also fixes a double-credit race in `confirmTopup`. `deductAmount` has no callers today, so the live risk is lost or doubled top-ups. SQL validated against the real tables on migration and production (read-only plan, no writes). Next: test top-ups on migration before any deploy.** `ARC-010`
-- [ ] **Close the shift-open race.** **Status: on `main` (`b8ba4f9`), not deployed. Uses a per-store advisory lock in `open()`, so no schema change. No store has duplicate open shifts on production or migration (checked Nov 3). Next: test opening a shift on migration before any deploy.** `ARC-011`
+- [x] **Make wallet credit/debit atomic** with a row lock or conditional update. **Status: Live on all 3 servers since Nov 4 (`bec4c20`). Covers recharges, admin debits and a double-credit race in `confirmRecharge`. SQL validated against the real tables on migration and production (read-only plan, no writes). Still to verify: recharges and admin debits with a real login.** `ARC-008`
+- [x] **Move the checkout wallet balance read inside the transaction.** **Status: Live on all 3 servers since Nov 4 (`1ff822c`). Order creation, `addPayment` and approval refunds now use the same atomic update as `ARC-008`. Still to verify: wallet payments and refunds with a real login.** `ARC-009`
+- [x] **Make security deposit add/deduct atomic.** **Status: Live on all 3 servers since Nov 4 (`8c6c275`). Also fixes a double-credit race in `confirmTopup`. `deductAmount` has no callers today, so the live risk is lost or doubled top-ups. SQL validated against the real tables on migration and production (read-only plan, no writes). Still to verify: top-ups with a real login.** `ARC-010`
+- [x] **Close the shift-open race.** **Status: Live on all 3 servers since Nov 4 (`b8ba4f9`). Uses a per-store advisory lock in `open()`, so no schema change. No store has duplicate open shifts on production or migration (checked Nov 3). Still to verify: opening a shift with a real login.** `ARC-011`
 
 ## P0: Performance under staff load
 
@@ -46,7 +46,7 @@ The agreed 22 technical changes are detailed in [the implementation report](../B
 - [x] **Add a timeout to `GeocodingService`'s `https.get`.** `BE-014`, `ARC-016`
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
 - [ ] **Add brute-force protection and rate limits on login and OTP.** `ARC-002`, `ARC-017`
-- [ ] **Stop returning the login OTP in the response** when `WHATSAPP_ENABLED=false`. `ARC-021`
+- [x] **Stop returning the login OTP in the response** when `WHATSAPP_ENABLED=false`. **Status: Live on all 3 servers since Nov 5 (`71a8385`). Login codes now always go out on WhatsApp, and the flag stops notifications only. Still to verify: request a login code with a real phone.** `ARC-021`
 - [ ] **Add a permission and store check to `GET /payments/gateway-links/{id}`.** `ARC-024`
 - [ ] **Fast-forward `client-server` to `main`.** It was 19 commits behind before the Nov 2 merge. Deploying from it would remove the security fixes. Added after the audit.
 - [ ] **Compare wallet balances with their ledgers,** read-only first. The `ARC-008` fix stops new errors but doesn't correct existing ones. Added after the audit.
@@ -62,7 +62,9 @@ The agreed 22 technical changes are detailed in [the implementation report](../B
 - [x] **Fix the `GET /shifts/collected` 500.** It falls into the `/shifts/{id}` route and fails with `invalid input syntax for type uuid: "collected"`. Seen in live logs after Nov 1 05:43. `SERVER_INCIDENT_AUDIT.md` **Implemented locally on 4 Nov; not deployed.** Shift routes now return 404 for an id that is not a UUID, before any query.
 - [x] **Fix the 5xx on `GET /riders/availability-for-slot`** with a `fallback:` slot ID. Seen in the same logs. **Implemented locally on 4 Nov; not deployed.** `resolveSlotWindow` only looks up UUID slot ids; `fallback:<label>` uses the whole day. Covers Pickup, Dispatch and the Order Delivery dialog, plus pickup/order assignment.
 - [ ] **Let the Manage Ticket payment filter cover all dates across stores.** It is limited to 90 days because it adds up payments for every order in scope (about 9 s for all stores on 2M orders). A stored paid total on orders would remove the limit. Added after the audit.
-- [ ] **Read the DSR tax rate from the GST configuration.** It is fixed at 18% in `reports.service.ts`, while Sales GST reads the configured rate. Added after the audit.
+- [x] **Fix the `invalid input syntax for type uuid` 500s seen on production.** `GET /riders/availability-for-slot` fails when `slotId` is a `fallback:` value, and `GET /shifts/collected` fails the same way. Both were in the logs before the Nov 4 deploy. Added after the audit. **Implemented locally on 4 Nov; not deployed. Both are covered by the two items above.**
+- [ ] **Return 401 instead of 500 when a login account has no stored password.** `POST /auth/login` passes a null password to bcrypt, which throws `Illegal arguments: string, object`. Added after the audit.
+- [x] **Read the DSR tax rate from the GST configuration.** It was fixed at 18% in `reports.service.ts`, while Sales GST reads the configured rate. **Status: Live on all 3 servers since Nov 5 (`bf61199`). Still to verify: check the DSR against known figures.** Added after the audit.
 - [x] **Add an idempotency key to order creation.** `ARC-026b`
  **Implemented locally on Nov 3; staging validation/deployment pending. See implementation report.**
 - [x] **Add transactions to order status changes.** `ARC-005`
@@ -85,7 +87,7 @@ The agreed 22 technical changes are detailed in [the implementation report](../B
 
 - [ ] **Bag endpoints:** missing store filter and permission gate? `ARC-025`
 - [ ] **Rider endpoints:** store and ownership scoping. `ARC-026`
-- [ ] **Store scope coverage** across the remaining controllers. Do this sooner: `ARC-023` found 5 more unprotected routes than the audit listed. Include customer-billing routes. **Status: `generateOnAccountInvoice` and the consolidated invoice routes now check store scope on `main` (`f2c3c8d`), not deployed.** `ARC-004`
+- [ ] **Store scope coverage** across the remaining controllers. Do this sooner: `ARC-023` found 5 more unprotected routes than the audit listed. Include customer-billing routes. **Status: `generateOnAccountInvoice` and the consolidated invoice routes now check store scope, live on all 3 servers since Nov 4 (`f2c3c8d`).** `ARC-004`
 - [x] **`GarmentActionsController`:** read-then-act without a lock. `ARC-007` **Implemented locally on 4 Nov; not deployed.** Confirmed: return, upgrade, risk and damaged checked then created without a lock (reprocess already locked). They now take a per-garment `pg_try_advisory_xact_lock`; a simultaneous second action gets 409. Lock behaviour checked on two real connections.
 - [ ] **WhatsApp dedup cache:** it is per-process, and production now runs 2 workers. `ARC-013`
 - [x] **Razorpay client timeout.** `BE-016` **Implemented locally on 4 Nov; not deployed.** Confirmed: SDK 2.9.8 has no timeout option and its axios client defaults to none. Its client now has a 15s timeout.
