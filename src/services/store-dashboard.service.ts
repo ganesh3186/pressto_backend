@@ -2,6 +2,7 @@ import {BindingScope, inject, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {PresstoDataSource} from '../datasources';
+import {InvoiceStatus} from '../models/invoice.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum';
@@ -332,6 +333,7 @@ export class StoreDashboardService {
       scoped &&
       (access.collected ||
         access.tickets ||
+        access.invoices ||
         access.deliveries ||
         access.handover)
         ? this.windowAggregates(storeIds, window, cashFrom, access)
@@ -351,7 +353,12 @@ export class StoreDashboardService {
         : {}),
       kpis: {
         ...(access.collected ? {collected: num(totals.collected)} : {}),
-        ...(access.tickets ? {tickets: num(totals.tickets)} : {}),
+        ...(access.tickets
+          ? {tickets: num(totals.tickets), ticketAmount: num(totals.ticketamount)}
+          : {}),
+        ...(access.invoices
+          ? {invoices: num(totals.invoices), invoiceAmount: num(totals.invoiceamount)}
+          : {}),
       },
       counts: {
         ...(access.tickets ? {pending: num(totals.pending)} : {}),
@@ -507,11 +514,7 @@ export class StoreDashboardService {
              AND pt.transactiontype <> 'refund'
              AND pt.paymentmode = ANY(${q.add(COLLECTED_PAYMENT_MODES)}::text[])
              AND pt.paymentdate BETWEEN ${q.add(cashFrom)} AND ${to}) AS collected,
-         (SELECT COUNT(*)
-            FROM orders o
-           WHERE ${access.tickets ? 'TRUE' : 'FALSE'} AND o.storeid = ANY(${stores}::uuid[])
-             AND o.status <> ${q.add(OrderStatus.CANCELLED)}
-             AND o.createdat BETWEEN ${from} AND ${to})::int AS tickets,
+         t.tickets, t.ticketamount, inv.invoices, inv.invoiceamount,
          (SELECT COUNT(*)
             FROM orders o
            WHERE ${access.tickets ? 'TRUE' : 'FALSE'} AND ${ticketScopeSql(q, storeIds)}
@@ -529,7 +532,24 @@ export class StoreDashboardService {
            WHERE ${access.handover ? 'TRUE' : 'FALSE'} AND h.handovertostoreid = ANY(${stores}::uuid[])
              AND h.status = ${q.add(RiderCashHandoverStatus.CONFIRMED)}
              AND h.isdeleted IS NOT TRUE
-             AND h.confirmedat BETWEEN ${from} AND ${to}) AS accepted`,
+             AND h.confirmedat BETWEEN ${from} AND ${to}) AS accepted
+       FROM
+         -- Tickets raised in the window: cancelled and draft tickets are not sales.
+         (SELECT COUNT(*)::int AS tickets, COALESCE(SUM(o.totalamount), 0) AS ticketamount
+            FROM orders o
+           WHERE ${access.tickets ? 'TRUE' : 'FALSE'} AND o.storeid = ANY(${stores}::uuid[])
+             AND o.isdeleted IS NOT TRUE
+             AND o.status <> ALL(${q.add([OrderStatus.CANCELLED, OrderStatus.DRAFT])}::text[])
+             AND o.createdat BETWEEN ${from} AND ${to}) t,
+         -- Invoices issued in the window, including consolidated (On Account)
+         -- invoices: each counts once at its full total, under the store of
+         -- the order it is raised on. Its tickets have no invoice of their own.
+         (SELECT COUNT(*)::int AS invoices, COALESCE(SUM(i.totalamount), 0) AS invoiceamount
+            FROM invoice i
+            JOIN orders o ON o.id = i.orderid
+           WHERE ${access.invoices ? 'TRUE' : 'FALSE'} AND o.storeid = ANY(${stores}::uuid[])
+             AND i.status = ${q.add(InvoiceStatus.ISSUED)}
+             AND i.createdat BETWEEN ${from} AND ${to}) inv`,
       q.values,
     );
     return rows[0] ?? {};

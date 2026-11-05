@@ -4465,9 +4465,12 @@ export class OrderService {
       let idx = PATH.indexOf(garment.status as GarmentStatus);
       if (idx < 0 || idx >= targetIdx) continue; // already there or past it
       movedIds.push(garment.id);
-      while (idx < targetIdx) {
+      // One millisecond apart, so "latest status" stays unambiguous for the
+      // timeline and for restoring a garment after a hold.
+      for (let hop = 0; idx < targetIdx; hop++) {
         idx++;
-        history.push({id: v4(), garmentId: garment.id, status: PATH[idx], changedAt: now, changedBy, remarks});
+        const changedAt = new Date(now.getTime() + hop);
+        history.push({id: v4(), garmentId: garment.id, status: PATH[idx], changedAt, changedBy, remarks});
       }
     }
 
@@ -5260,7 +5263,7 @@ export class OrderService {
   /** One page of listOrders() for a free-text search or payment filter. */
   private async searchOrderPage(
     where: object,
-    terms: {search?: string; invoiceNumber?: string; paymentStatus?: string},
+    terms: {search?: string; orderNumber?: string; invoiceNumber?: string; paymentStatus?: string},
     limit: number,
     skip: number,
   ): Promise<[Order[], {count: number}]> {
@@ -5282,7 +5285,7 @@ export class OrderService {
    */
   private async searchOrderIds(
     where: object,
-    terms: {search?: string; invoiceNumber?: string; paymentStatus?: string},
+    terms: {search?: string; orderNumber?: string; invoiceNumber?: string; paymentStatus?: string},
     limit: number,
     skip: number,
   ): Promise<{ids: string[]; count: number}> {
@@ -5312,6 +5315,11 @@ export class OrderService {
       sqlParams.push(invoiceLike, invoiceLike);
     }
 
+    if (terms.orderNumber) {
+      sqlConditions.push('o.ordernumber ILIKE ?');
+      sqlParams.push(`%${terms.orderNumber}%`);
+    }
+
     if (terms.search) {
       const [searchSql, searchParams] = await this.orderSearchCondition(terms.search);
       sqlConditions.push(searchSql);
@@ -5328,7 +5336,7 @@ export class OrderService {
     // Payment-only counts must be exact, not capped at the search limit. Batch
     // payment aggregation over the scoped set and calculate page + count in one
     // statement, avoiding a per-order payment index lookup repeated by two queries.
-    if (terms.paymentStatus && !terms.search && !terms.invoiceNumber) {
+    if (terms.paymentStatus && !terms.search && !terms.orderNumber && !terms.invoiceNumber) {
       const grouped = orderPaymentFilterSql(terms.paymentStatus, true);
       const baseWhere = base.sql ? `WHERE ${base.sql.replace(/^WHERE /, '')}` : '';
       const sums = grouped.join ? `, payment_sums AS (
@@ -5364,7 +5372,7 @@ export class OrderService {
     // (1M+ for "m"), which held DB connections for 10s+ and starved the pool.
     // Count only up to SEARCH_COUNT_CAP; a specific search still gets its exact
     // count, a broad one reports the cap (pagination stops there).
-    const cappedSearch = Boolean(terms.search || terms.invoiceNumber);
+    const cappedSearch = Boolean(terms.search || terms.orderNumber || terms.invoiceNumber);
     const count = connector.parameterize({
       sql: `SELECT count(*)::int AS count FROM (SELECT 1 FROM public.orders o ${paymentFilter.join} ${whereSql}${cappedSearch ? ' LIMIT ?' : ''}) matches`,
       params: cappedSearch ? [...whereParams, SEARCH_COUNT_CAP] : whereParams,
@@ -5383,6 +5391,13 @@ export class OrderService {
   /** SQL condition (with `?` placeholders) for listOrders' free-text search. */
   private async orderSearchCondition(q: string): Promise<[string, unknown[]]> {
     const like = `%${q}%`;
+    // A full name ("ganesh verma") spans firstname and lastname, so neither
+    // column contains it whole. Each word must match one of the two.
+    const words = q.split(/\s+/).filter(Boolean);
+    const wordLikes = words.length > 1 ? words.map(word => `%${word}%`) : [];
+    const fullName = (alias: string, first: number) => wordLikes.length
+      ? ' OR (' + wordLikes.map((_, i) => `(${alias}.firstname ILIKE $${first + i} OR ${alias}.lastname ILIKE $${first + i})`).join(' AND ') + ')'
+      : '';
     // Specific terms (a name, a phone, an order number) match few customers:
     // resolve them through the trigram indexes and pass them as ONE array
     // parameter so orders are found via their customerid index. Broad terms
@@ -5390,12 +5405,12 @@ export class OrderService {
     // which stops as soon as the page is filled because matches are dense.
     const customerRows: {id: string}[] = await this.dataSource.execute(
       `SELECT c.id FROM public.customer c
-        WHERE c.isdeleted = false AND (c.firstname ILIKE $1 OR c.lastname ILIKE $1)
+        WHERE c.isdeleted = false AND (c.firstname ILIKE $1 OR c.lastname ILIKE $1${fullName('c', 2)})
        UNION
        SELECT c.id FROM public.users u JOIN public.customer c ON c.userid = u.id::text
         WHERE u.isdeleted = false AND c.isdeleted = false AND u.phone ILIKE $1
        LIMIT ${SEARCH_CUSTOMER_LIST_CAP + 1}`,
-      [like],
+      [like, ...wordLikes],
     );
     const fewCustomers = customerRows.length <= SEARCH_CUSTOMER_LIST_CAP;
     const searchSql = fewCustomers
@@ -5403,14 +5418,18 @@ export class OrderService {
       : '(o.ordernumber ILIKE ? OR EXISTS (SELECT 1 FROM public.customer c' +
         ' LEFT JOIN public.users u ON u.id = c.userid::uuid AND u.isdeleted = false' +
         ' WHERE c.id = o.customerid AND c.isdeleted = false' +
-        ' AND (c.firstname ILIKE ? OR c.lastname ILIKE ? OR u.phone ILIKE ?)))';
+        ' AND (c.firstname ILIKE ? OR c.lastname ILIKE ? OR u.phone ILIKE ?' +
+        (wordLikes.length ? ' OR (' + wordLikes.map(() => '(c.firstname ILIKE ? OR c.lastname ILIKE ?)').join(' AND ') + ')' : '') +
+        ')))';
     return fewCustomers
       ? [searchSql, [like, customerRows.map(row => row.id)]]
-      : [searchSql, [like, like, like, like]];
+      : [searchSql, [like, like, like, like, ...wordLikes.flatMap(word => [word, word])]];
   }
 
   async listOrders(params: {
     search?: string;
+    /** Partial ticket number only (Manage Ticket's Ticket ID box). */
+    orderNumber?: string;
     invoiceNumber?: string;
     paymentStatus?: string;
     dateFrom?: string;
@@ -5533,6 +5552,7 @@ export class OrderService {
       baseConditions.length === 1 ? baseConditions[0] : {and: baseConditions};
 
     const search = params.search?.trim();
+    const orderNumber = params.orderNumber?.trim();
     const invoiceNumber = params.invoiceNumber?.trim();
     if (params.matchingIdsOnly) {
       const {ids} = await this.searchOrderIds(
@@ -5545,8 +5565,8 @@ export class OrderService {
     }
     const limitedFrom =
       dateFrom !== params.dateFrom ? {paymentFilterFrom: dateFrom} : {};
-    const [orders, countResult] = search || invoiceNumber || paymentFilter
-      ? await this.searchOrderPage(where, {search, invoiceNumber, paymentStatus: paymentFilter}, limit, skip)
+    const [orders, countResult] = search || orderNumber || invoiceNumber || paymentFilter
+      ? await this.searchOrderPage(where, {search, orderNumber, invoiceNumber, paymentStatus: paymentFilter}, limit, skip)
       : await Promise.all([
           this.orderRepo.find({
             where: where as any,
@@ -6106,6 +6126,8 @@ export class OrderService {
 
     let pickupRiderName: string | null = null;
     let pickupRiderPhone: string | null = null;
+    // Booking remark first, then what the rider noted per service at the door.
+    const pickupRemarks: Array<{source: 'booking' | 'rider'; serviceName?: string; remarks: string}> = [];
 
     if (isHomePickup) {
       const pickupRequest = await this.pickupRequestRepo.findOne({
@@ -6116,6 +6138,14 @@ export class OrderService {
       });
 
       if (pickupRequest) {
+        if (pickupRequest.remarks?.trim()) {
+          pickupRemarks.push({source: 'booking', remarks: pickupRequest.remarks.trim()});
+        }
+        for (const line of pickupRequest.actualItemsByService ?? []) {
+          if (line.remarks?.trim()) {
+            pickupRemarks.push({source: 'rider', serviceName: line.serviceName, remarks: line.remarks.trim()});
+          }
+        }
         pickupRiderName = pickupRequest.assignedRiderName ?? null;
         const rider = (pickupRequest as any).assignedRider;
         if (rider) {
@@ -6136,6 +6166,16 @@ export class OrderService {
         }
       }
     }
+
+    // ── Failed delivery attempts (rider or admin), newest first ──────────────
+    const failedStops = await this.deliveryOrderRepo.find({
+      where: {orderId, failureRemarks: {neq: null}} as object,
+      fields: {failureRemarks: true, updatedAt: true} as object,
+      order: ['updatedAt DESC'],
+    });
+    const deliveryAttemptRemarks = failedStops
+      .filter(stop => stop.failureRemarks?.trim())
+      .map(stop => ({remarks: stop.failureRemarks!.trim(), at: stop.updatedAt ?? null}));
 
     // ── Garment stage histories ───────────────────────────────────────────────
     const garmentIds = garments.map(g => g.id);
@@ -6521,8 +6561,10 @@ export class OrderService {
           ? {
               pickupRiderName,
               pickupRiderPhone,
+              pickupRemarks,
             }
           : {}),
+        deliveryAttemptRemarks,
       },
       items: enrichedItems,
       orderCharges: namedOrderCharges,

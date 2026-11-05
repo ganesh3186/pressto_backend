@@ -24,6 +24,10 @@ describe('batched counter inspection (BE-011)',()=>{
     expect(inserts).to.have.length(1);
     expect(inserts[0].map((row:any)=>row.garmentId+':'+row.status)).to.deepEqual([
       'a:'+GarmentStatus.IN_INSPECTION,'a:'+GarmentStatus.IN_PROCESS,'b:'+GarmentStatus.IN_PROCESS]);
+    // Hops of one garment must not share a timestamp: resuming after a hold
+    // restores the latest status by changedAt.
+    const [first,second]=inserts[0].filter((row:any)=>row.garmentId==='a').map((row:any)=>row.changedAt.getTime());
+    expect(second).to.be.greaterThan(first);
   });
 
   it('writes nothing when no garment needs to move',async()=>{

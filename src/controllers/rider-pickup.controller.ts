@@ -288,16 +288,22 @@ export class RiderPickupController {
     if (!search?.trim()) return [];
     const term = search.trim();
 
-    // Phone lives on Users, not Customer. Match it with EXISTS in the same
+    // Phone lives on Users, not Customer. Match it with a subquery in the same
     // query: resolving matching users first turned a short phone search into
     // an IN list of every user whose number contains it.
     const pattern = literalContains(term);
+    const parts = ['firstname ILIKE ?', 'lastname ILIKE ?', 'email ILIKE ?',
+      'customer.userid IN (SELECT u.id::text FROM public.users u WHERE u.isdeleted = false AND u.phone ILIKE ?)'];
+    const values: unknown[] = [pattern, pattern, pattern, pattern];
+    // A full name ("ganesh verma") spans firstName and lastName, so neither
+    // column contains it whole. Each word must match one of the two.
+    const words = term.split(/\s+/);
+    if (words.length > 1) {
+      parts.push('(' + words.map(() => '(firstname ILIKE ? OR lastname ILIKE ?)').join(' AND ') + ')');
+      words.forEach(word => values.push(literalContains(word), literalContains(word)));
+    }
     const page = await sqlPage<Customer>(this.customerRepository, 'customer', {isDeleted: false}, 20, 0,
-      `(firstname ILIKE ? OR lastname ILIKE ? OR email ILIKE ? OR EXISTS (
-        SELECT 1 FROM public.users u
-         WHERE u.id = CASE WHEN customer.userid ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN customer.userid::uuid END
-           AND u.isdeleted = false AND u.phone ILIKE ?))`,
-      [pattern, pattern, pattern, pattern]);
+      '(' + parts.join(' OR ') + ')', values);
     if (!page.rows.length) return [];
     const found = await this.customerRepository.find({
       where: {id: {inq: page.rows.map(row => row.id)}} as object,

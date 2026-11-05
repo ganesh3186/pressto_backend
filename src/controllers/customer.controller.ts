@@ -539,8 +539,10 @@ export class CustomerController {
       }
       const digits = q.replace(/\D/g, '');
       if (digits.length >= 3) {
-        parts.push("EXISTS (SELECT 1 FROM public.users u WHERE u.id = CASE WHEN customer.userid ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN customer.userid::uuid END AND u.phone LIKE ?)",
-          'EXISTS (SELECT 1 FROM public.customer_phone p WHERE p.customerid = customer.id::text AND p.isdeleted = false AND p.phone LIKE ?)');
+        // IN (subquery), not a correlated EXISTS: Postgres starts from the
+        // phone trigram indexes instead of probing every customer row.
+        parts.push('customer.userid IN (SELECT u.id::text FROM public.users u WHERE u.phone LIKE ?)',
+          "customer.id IN (SELECT CASE WHEN p.customerid ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN p.customerid::uuid END FROM public.customer_phone p WHERE p.isdeleted = false AND p.phone LIKE ?)");
         values.push(literalContains(digits), literalContains(digits));
       }
       predicates.push('(' + parts.join(' OR ') + ')');

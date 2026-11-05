@@ -465,6 +465,10 @@ export class OrderController {
     @param.query.boolean('homeStoreOnly') homeStoreOnly?: boolean,
     @param.query.string('invoiceNumber') invoiceNumber?: string,
     @param.query.string('paymentStatus') paymentStatus?: string,
+    // Manage Ticket's Ticket ID box: a partial ticket number only. Sending it
+    // as `search` also matched customer phones, so the page and its total
+    // disagreed with what the screen kept.
+    @param.query.string('orderNumber') orderNumber?: string,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
@@ -481,6 +485,7 @@ export class OrderController {
         : undefined;
     return this.orderService.listOrders({
       search,
+      orderNumber,
       invoiceNumber,
       paymentStatus,
       dateFrom,

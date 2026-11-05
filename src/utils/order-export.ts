@@ -77,9 +77,12 @@ export function matchesOrderExportFilters(
         part => part && !['null', 'undefined'].includes(part.toLowerCase()),
       )
       .join(' ') || 'Customer';
+  // Every word must appear in the name, so a full name ("ganesh verma") or
+  // a reordered one matches the same tickets the Manage Ticket list shows.
+  const nameWords = (filters.customerName ?? '').split(/\s+/).filter(Boolean);
   if (
     filters.customerName &&
-    !matchesText(name, filters.customerName) &&
+    !nameWords.every(word => matchesText(name, word)) &&
     !matchesText(customer?.phone, filters.customerName)
   )
     return false;
