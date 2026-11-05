@@ -33,9 +33,6 @@ export class OtpService {
       loginOtp: hashedOtp,
       loginOtpExpires: expiry,
     });
-    if (process.env.WHATSAPP_ENABLED === 'false') {
-      return {message: 'OTP sent', otp};
-    }
     const accepted = await this.whatsAppService.sendTemplateMessage({
       to: user.countryCode + user.phone,
       templateId: 'pulse_login_otp_221026',
