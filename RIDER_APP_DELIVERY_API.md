@@ -204,16 +204,17 @@ naming the current status otherwise — call §4 first).
 - **On-account orders (`isOnAccount: true`)** skip payment entirely — send
   the body without payment fields, or omit the body. Deferred billing, same
   posture as order creation elsewhere in the system.
-- **Every other order must arrive paid in full** — no partial handover.
-  `amount + walletAmount` must cover the live `balanceDue` from §3
-  (`400` — `"Full payment of ₹X is required at delivery for this order."` —
-  if short). `paymentMode` defaults to `cash` when omitted but `amount` is
-  sent.
+- **Payment at delivery is optional** — the rider may deliver an order
+  without collecting payment. If the customer pays only part of the balance,
+  send the collected `amount` and/or `walletAmount`; the remaining balance
+  stays due on the order. The server validates any supplied payment against
+  the live balance and rejects amounts that exceed it. `paymentMode` defaults
+  to `cash` when omitted but a positive `amount` is sent.
 - `walletAmount` is a separate deduction from the customer's Pressto wallet,
   on top of whatever `paymentMode` amount is collected in person — send both
   if the customer is paying with a mix.
-- If `due <= 0` already (nothing owed), sending no payment fields at all is
-  fine — the order still moves to `delivered`.
+- Sending no payment fields is fine whether the balance is zero or still
+  due — the order still moves to `delivered`.
 
 **Response `200`**
 ```json
@@ -230,7 +231,7 @@ order on the manifest until every stop is `delivered` or `return_to_store`.
 | `404` | Delivery not found, or this order isn't on this delivery's manifest |
 | `403` | This delivery is not assigned to the calling rider |
 | `400` | Order isn't `out_for_delivery` yet |
-| `400` | Payment short of the live balance due (non-on-account order) |
+| `400` | Supplied payment exceeds the live balance due |
 
 ---
 
