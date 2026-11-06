@@ -6076,7 +6076,7 @@ export class OrderService {
         : Promise.resolve([]),
       garmentIds.length
         ? this.garmentAdditionalServiceRepo.find({
-            where: {garmentId: {inq: garmentIds}, isDeleted: false} as any,
+            where: {garmentId: {inq: garmentIds}} as any,
           })
         : Promise.resolve([]),
       garmentIds.length
@@ -6182,17 +6182,47 @@ export class OrderService {
     const servicesByGarment = new Map<
       string,
       Array<{
+        id: string;
         serviceId: string;
         name: string | null;
         amount: number;
+        returned: boolean;
       }>
     >();
+    const returnedServiceKeys = new Set(
+      creditNotes.flatMap(note => (note.returnedItems ?? []).map(raw => {
+        const line = raw as {garmentId?: string; serviceId?: string; serviceType?: string};
+        return line.garmentId && line.serviceId
+          ? `${line.garmentId}:${line.serviceType}:${line.serviceId}`
+          : '';
+      })).filter(Boolean),
+    );
+    const returnedAdditionalServiceIds = new Set(
+      creditNotes.flatMap(note => (note.returnedItems ?? []).map(raw =>
+        (raw as {garmentAdditionalServiceId?: string}).garmentAdditionalServiceId ?? '',
+      )).filter(Boolean),
+    );
+    const returnedLegacyServiceKeys = new Set(
+      creditNotes.flatMap(note => (note.returnedItems ?? []).map(raw => {
+        const line = raw as {garmentId?: string; serviceId?: string; serviceType?: string;
+          garmentAdditionalServiceId?: string};
+        return !line.garmentAdditionalServiceId && line.garmentId && line.serviceId
+          ? `${line.garmentId}:${line.serviceType}:${line.serviceId}` : '';
+      })).filter(Boolean),
+    );
     for (const service of garmentAdditionalServices) {
+      const returned = returnedAdditionalServiceIds.has(service.id) ||
+        Boolean(service.isDeleted) && returnedLegacyServiceKeys.has(
+          `${service.garmentId}:additional:${service.serviceId}`,
+        );
+      if (service.isDeleted && !returned) continue;
       const list = servicesByGarment.get(service.garmentId) ?? [];
       list.push({
+        id: service.id,
         serviceId: service.serviceId,
         name: serviceMap.get(service.serviceId)?.name ?? null,
         amount: Number(service.amount),
+        returned,
       });
       servicesByGarment.set(service.garmentId, list);
     }
@@ -6306,6 +6336,9 @@ export class OrderService {
         garmentId: g.id,
         garmentTagNumber: g.garmentTagNumber,
         additionalServices: servicesByGarment.get(g.id) ?? [],
+        mainServiceReturned: returnedServiceKeys.has(
+          `${g.id}:main:${oi.serviceId}`,
+        ),
         additionalCharges: chargesByGarment.get(g.id) ?? [],
       })),
       garments: (garmentsByItem.get(oi.id) ?? []).map(g => ({
@@ -6323,6 +6356,9 @@ export class OrderService {
         customerRemarks: g.customerRemarks,
         inspectionRemarks: g.inspectionRemarks,
         additionalServices: servicesByGarment.get(g.id) ?? [],
+        mainServiceReturned: returnedServiceKeys.has(
+          `${g.id}:main:${oi.serviceId}`,
+        ),
         additionalCharges: chargesByGarment.get(g.id) ?? [],
         isTagPrinted: g.isTagPrinted ?? false,
         unprocessedHandlingMode: g.unprocessedHandlingMode ?? null,
@@ -7589,7 +7625,11 @@ export class OrderService {
             {where: {orderId}},
             options,
           );
+          const printableItems = new Map(((await this.getOrderDetails(orderId)) as {
+            items?: Array<{id: string}>;
+          }).items?.map(item => [item.id, item]) ?? []);
           const items = rows.map(row => ({
+            ...printableItems.get(row.id),
             orderItemId: row.id,
             serviceId: row.serviceId,
             itemId: row.itemId,
