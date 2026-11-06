@@ -11,6 +11,7 @@ import {
   response,
 } from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
+import QRCode from 'qrcode';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {BagStatus} from '../models/bag-status.enum';
@@ -21,6 +22,7 @@ import {DeliveryStatus} from '../models/delivery-status.enum';
 import {DeliveryHandoverStatus} from '../models/delivery-handover-status.enum';
 import {Delivery} from '../models/delivery.model';
 import {DeliveryOrder} from '../models/delivery-order.model';
+import {GatewayPaymentReferenceType} from '../models/gateway-payment-reference-type.enum';
 import {RiderType} from '../models/rider-type.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderStatus} from '../models/order-status.enum';
@@ -48,6 +50,7 @@ import {
   StoreRepository,
 } from '../repositories';
 import {OrderService} from '../services/order.service';
+import {RazorpayService} from '../services/razorpay.service';
 
 /**
  * Rider-facing delivery APIs — the counterpart to rider-pickup.controller.ts
@@ -85,6 +88,7 @@ export class RiderDeliveryController {
     private riderCashHandoverItemRepository: RiderCashHandoverItemRepository,
     @repository(StoreRepository) private storeRepository: StoreRepository,
     @inject('services.order') private orderService: OrderService,
+    @inject('services.razorpay') private razorpayService: RazorpayService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
@@ -651,6 +655,110 @@ export class RiderDeliveryController {
       await tx.rollback();
       throw error;
     }
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/deliveries/{id}/orders/{orderId}/payment-qr')
+  @response(200, {
+    description: 'Razorpay payment link and QR code for the order balance',
+  })
+  async createOrderPaymentQr(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+    @param.path.string('orderId') orderId: string,
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const delivery = await this.deliveryRepository.findOne({
+      where: {id, isDeleted: false},
+    });
+    if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
+    if (delivery.riderId !== rider.id) {
+      throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
+    }
+    if (delivery.status !== DeliveryStatus.OUT_FOR_DELIVERY) {
+      throw new HttpErrors.BadRequest(
+        'Start the delivery run before requesting a payment QR.',
+      );
+    }
+
+    const deliveryOrder = await this.deliveryOrderRepository.findOne({
+      where: {deliveryId: id, orderId} as object,
+    });
+    if (
+      !deliveryOrder ||
+      !(await this.currentStopIds([deliveryOrder])).has(deliveryOrder.id)
+    ) {
+      throw new HttpErrors.NotFound(
+        'This order is no longer on this delivery.',
+      );
+    }
+    if (
+      deliveryOrder.status === DeliveryOrderStatus.DELIVERED ||
+      deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE
+    ) {
+      throw new HttpErrors.BadRequest('This delivery stop is already closed.');
+    }
+    if (deliveryOrder.status === DeliveryOrderStatus.HANDOVER_PENDING) {
+      throw new HttpErrors.Conflict(
+        'This order is pending handover to another rider.',
+      );
+    }
+
+    const order = await this.orderRepository.findOne({
+      where: {id: orderId, isDeleted: false},
+    });
+    if (!order) throw new HttpErrors.NotFound('Order not found.');
+    if (order.status !== OrderStatus.OUT_FOR_DELIVERY) {
+      throw new HttpErrors.BadRequest(
+        `Cannot request payment for an order that is ${order.status}, not out_for_delivery.`,
+      );
+    }
+    if (order.isOnAccount) {
+      throw new HttpErrors.BadRequest(
+        'Payment collection is not available for on-account orders.',
+      );
+    }
+
+    const {due} = await this.orderService.computeBalanceDue(order);
+    if (due <= 0) {
+      throw new HttpErrors.Conflict('Nothing is due on this order.');
+    }
+
+    const link = await this.razorpayService.createPaymentLink({
+      referenceType: GatewayPaymentReferenceType.ORDER_PAYMENT,
+      referenceId: order.id,
+      amount: due,
+      description: `Delivery payment for order ${order.orderNumber}`,
+      customer: {
+        name: deliveryOrder.customerName,
+        contact: deliveryOrder.customerMobile,
+      },
+      createdBy: rider.userId,
+    });
+    if (!link.shortUrl) {
+      throw new HttpErrors.ServiceUnavailable(
+        'Razorpay did not return a payment URL.',
+      );
+    }
+
+    const qrCodeDataUrl = await QRCode.toDataURL(link.shortUrl, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 320,
+    });
+    return {
+      gatewayPaymentLinkId: link.id,
+      deliveryId: id,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      amount: Number(link.amount),
+      currency: 'INR',
+      status: link.status,
+      paymentUrl: link.shortUrl,
+      qrCodeDataUrl,
+      expiresAt: link.expiresAt,
+    };
   }
 
   // ─── Deliver an order + collect payment ──────────────────────────────────
