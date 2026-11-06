@@ -51,6 +51,7 @@ export * from './admin-family-group.controller';
 export * from './order.controller';
 export * from './garment.controller';
 export * from './service-item-prices.controller';
+export * from './master-data-version.controller';
 export * from './dashboard.controller';
 export * from './reports.controller';
 export * from './warehouse.controller';

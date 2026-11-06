@@ -110,20 +110,8 @@ export class ServiceItemPricesController {
     // override, same as a customer with no matching labels would.
     @param.query.string('customerId') customerId?: string,
   ): Promise<ServiceItemPrice[]> {
-    if (!storeId) {
-      throw new HttpErrors.BadRequest('storeId is required');
-    }
-
     // 1. Resolve store → cluster → region chain
-    const store = await this.storeRepository.findById(storeId);
-    if (!store || store.isDeleted) {
-      throw new HttpErrors.NotFound('Store not found');
-    }
-
-    const cluster = await this.clusterRepository.findById(store.clusterId);
-    if (!cluster || cluster.isDeleted) {
-      throw new HttpErrors.UnprocessableEntity('Store has no valid cluster assigned');
-    }
+    const {store, cluster} = await this.resolveStoreScope(storeId);
 
     // 2. Walk the price waterfall (stop at first match). Additional services get
     // the SAME percentage as the primary service — additionalServicePercentage
@@ -243,6 +231,74 @@ export class ServiceItemPricesController {
         additionalServices,
       };
     });
+  }
+
+  /**
+   * Only the prices that differ for this customer from GET /service-item-prices
+   * called without a customerId: price-override coupons gated by customer label.
+   * Lets the admin panel cache the full (~10 MB) store price list once and merge
+   * a customer's few overrides on top, instead of re-downloading the whole list
+   * every time a customer is selected.
+   *
+   * Apply each row by (serviceId, itemId) to both a mapping's own price and any
+   * additional service priced for that item: resolvedPrice replaces the price,
+   * priceSource becomes 'coupon' and appliedPercentage null — exactly what the
+   * full endpoint returns for that customer.
+   */
+  @authenticate('jwt')
+  @get('/service-item-prices/customer-overrides')
+  @response(200, {
+    description: 'Prices that differ for this customer from the store price list',
+    content: {
+      'application/json': {
+        schema: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              serviceId: {type: 'string'},
+              itemId: {type: 'string'},
+              resolvedPrice: {type: 'number'},
+            },
+          },
+        },
+      },
+    },
+  })
+  async getCustomerPriceOverrides(
+    @param.query.string('storeId') storeId: string,
+    @param.query.string('customerId') customerId: string,
+  ): Promise<{serviceId: string; itemId: string; resolvedPrice: number}[]> {
+    if (!customerId) {
+      throw new HttpErrors.BadRequest('customerId is required');
+    }
+    const {store, cluster} = await this.resolveStoreScope(storeId);
+    const [withCustomer, withoutCustomer] = await Promise.all([
+      this.buildCouponOverrideMap(storeId, store.clusterId, cluster.regionId, customerId),
+      this.buildCouponOverrideMap(storeId, store.clusterId, cluster.regionId),
+    ]);
+    const rows: {serviceId: string; itemId: string; resolvedPrice: number}[] = [];
+    for (const [pairKey, price] of withCustomer) {
+      if (withoutCustomer.get(pairKey) === price) continue;
+      const [serviceId, itemId] = pairKey.split(':');
+      rows.push({serviceId, itemId, resolvedPrice: price});
+    }
+    return rows;
+  }
+
+  private async resolveStoreScope(storeId: string) {
+    if (!storeId) {
+      throw new HttpErrors.BadRequest('storeId is required');
+    }
+    const store = await this.storeRepository.findById(storeId);
+    if (!store || store.isDeleted) {
+      throw new HttpErrors.NotFound('Store not found');
+    }
+    const cluster = await this.clusterRepository.findById(store.clusterId);
+    if (!cluster || cluster.isDeleted) {
+      throw new HttpErrors.UnprocessableEntity('Store has no valid cluster assigned');
+    }
+    return {store, cluster};
   }
 
   // Mirrors OrderService.resolveCouponOverridePrice(), but built once for
