@@ -1,3 +1,4 @@
+import {batchedStubs} from './helpers/batched-stubs';
 /* eslint-disable @typescript-eslint/no-explicit-any -- Repository stubs use partial LoopBack records. */
 import {expect} from '@loopback/testlab';
 import {GarmentStatus} from '../models/garment-status.enum';
@@ -41,6 +42,7 @@ describe('order delivery garment status', () => {
       },
       notifyStatusChange: () => undefined,
     });
+    batchedStubs(service);
 
     await service.changeStatus('order-1', OrderStatus.DELIVERED, 'user-1');
 
@@ -75,6 +77,7 @@ describe('order delivery garment status', () => {
         updateById: async () => { throw new Error('Garment write failed'); },
       },
     });
+    batchedStubs(service);
 
     await expect(service.changeStatus('order-1', OrderStatus.DELIVERED, 'user-1'))
       .to.be.rejectedWith('Garment write failed');
@@ -105,6 +108,7 @@ describe('order delivery garment status', () => {
         },
       },
     });
+    batchedStubs(service);
 
     const count = await service._cascadeGarmentsToDelivered('order-1', 'user-1', () => 'history-1');
 

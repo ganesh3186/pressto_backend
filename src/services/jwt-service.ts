@@ -52,15 +52,6 @@ export class JWTService implements TokenService {
     );
   }
 
-  async generateShortToken(userProfile: UserProfile): Promise<string> {
-    if (!userProfile) {
-      throw new HttpErrors.NotFound('User profile is null');
-    }
-
-    return this.signJwt('10m', '10m' as jwt.SignOptions['expiresIn']);
-  }
-
-
   async verifyToken(token: string): Promise<UserProfile> {
     if (!token) {
       throw new HttpErrors.Unauthorized('Token is null');

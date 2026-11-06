@@ -27,9 +27,9 @@ describe('employee email search', () => {
     const expected = {and: [
       {isDeleted: false},
       {or: [
-        {firstName: {ilike: '%Abida@Example.com%'}},
-        {lastName: {ilike: '%Abida@Example.com%'}},
-        {employeeCode: {ilike: '%Abida@Example.com%'}},
+        {firstName: {ilike: '%Abida@Example\\.com%'}},
+        {lastName: {ilike: '%Abida@Example\\.com%'}},
+        {employeeCode: {ilike: '%Abida@Example\\.com%'}},
         {userId: {inq: ['user-1']}},
       ]},
     ]};

@@ -12,8 +12,9 @@ export class MediaService {
   async updateMediaUsedStatus(mediaIds: string[], usedStatus: boolean) {
     if (!mediaIds?.length) return;
 
-    for (const id of mediaIds) {
-      await this.mediaRepository.updateById(id, {isUsed: usedStatus});
+    const ids = [...new Set(mediaIds)];
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      await this.mediaRepository.updateAll({isUsed: usedStatus}, {id: {inq: ids.slice(offset, offset + 500)}});
     }
   }
 }

@@ -4,6 +4,7 @@ import {repository} from '@loopback/repository';
 import {get, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {PresstoDataSource} from '../datasources';
+import {findInBatches} from '../utils/batch-find';
 import {authorize} from '../authorization';
 import {PaymentService} from '../services/payment.service';
 import {OrderService} from '../services/order.service';
@@ -146,14 +147,16 @@ export class CustomerBillingController {
     const customer = await this.customerRepo.findOne({where: {id: customerId, isDeleted: false}});
     if (!customer) throw new HttpErrors.NotFound('Customer not found.');
 
-    const orders = await this.orderRepo.find({where: {customerId, isDeleted: false} as any});
+    // Lifetime per-customer lists: on-account customers raise thousands of
+    // tickets, so every id lookup below is chunked (see findInBatches).
+    const orders = await this.orderRepo.find({where: {customerId, isDeleted: false} as any, fields: {id: true, orderNumber: true} as object});
     const orderIds = orders.map(o => o.id);
 
     if (!orderIds.length) return {pendingInvoices: [], totalDue: 0};
 
-    const invoices = await this.invoiceRepo.find({
-      where: {orderId: {inq: orderIds}} as any,
-    });
+    const invoices = await findInBatches(orderIds, ids => this.invoiceRepo.find({
+      where: {orderId: {inq: ids}} as any,
+    }));
 
     const pending = invoices.filter(inv => (inv.balanceDue ?? 0) > 0);
 
@@ -395,8 +398,8 @@ export class CustomerBillingController {
 
     const orderIds = orders.map(o => o.id);
     const [individualInvoices, links] = await Promise.all([
-      this.invoiceRepo.find({where: {orderId: {inq: orderIds}} as any}),
-      this.invoiceOrderLinkRepo.find({where: {orderId: {inq: orderIds}} as any}),
+      findInBatches(orderIds, ids => this.invoiceRepo.find({where: {orderId: {inq: ids}} as any})),
+      findInBatches(orderIds, ids => this.invoiceOrderLinkRepo.find({where: {orderId: {inq: ids}} as any})),
     ]);
     const invoicedOrderIds = new Set([
       ...individualInvoices.map(i => i.orderId),
@@ -412,9 +415,9 @@ export class CustomerBillingController {
     const billable = candidates.filter(o => !blocked.has(o.id));
     if (!billable.length) return {billableOrders: [], totalDue: 0};
 
-    const payments = await this.paymentRepo.find({
-      where: {orderId: {inq: billable.map(o => o.id)}} as any,
-    });
+    const payments = await findInBatches(billable.map(o => o.id), ids => this.paymentRepo.find({
+      where: {orderId: {inq: ids}} as any,
+    }));
     const paidByOrder = new Map<string, number>();
     for (const p of payments) {
       const amt = (p as any).transactionType === 'refund' ? 0 : money((p as any).amount);
@@ -667,25 +670,23 @@ export class CustomerBillingController {
     if (!customer) throw new HttpErrors.NotFound('Customer not found.');
 
     const scope = await this.storeScopeService.resolve(currentUser);
-    const orders = (await this.orderRepo.find({where: {customerId, isDeleted: false} as any}))
-      .filter(order => this.storeScopeService.allows(scope, order.storeId));
+    const orders = (await this.orderRepo.find({
+      where: {customerId, isDeleted: false} as any,
+      fields: {id: true, storeId: true} as object,
+    })).filter(order => this.storeScopeService.allows(scope, order.storeId));
     const orderIds = orders.map(o => o.id);
     if (!orderIds.length) return {invoices: []};
 
-    const invoices = await this.invoiceRepo.find({
-      where: {orderId: {inq: orderIds}, isConsolidated: true} as any,
-      order: ['createdAt DESC'],
-    });
-    const links = invoices.length
-      ? await this.invoiceOrderLinkRepo.find({
-          where: {invoiceId: {inq: invoices.map(invoice => invoice.id)}} as any,
-        })
-      : [];
-    const linkedOrders = links.length
-      ? await this.orderRepo.find({
-          where: {id: {inq: [...new Set(links.map(link => link.orderId))]}, isDeleted: false} as any,
-        })
-      : [];
+    const invoices = (await findInBatches(orderIds, ids => this.invoiceRepo.find({
+      where: {orderId: {inq: ids}, isConsolidated: true} as any,
+    }))).sort((a, b) => new Date(b.createdAt as Date).getTime() - new Date(a.createdAt as Date).getTime());
+    const links = await findInBatches(invoices.map(invoice => invoice.id), ids => this.invoiceOrderLinkRepo.find({
+      where: {invoiceId: {inq: ids}} as any,
+    }));
+    const linkedOrders = await findInBatches([...new Set(links.map(link => link.orderId))], ids => this.orderRepo.find({
+      where: {id: {inq: ids}, isDeleted: false} as any,
+      fields: {id: true, storeId: true} as object,
+    }));
     const linkedOrderById = new Map(linkedOrders.map(order => [order.id, order]));
     const linksByInvoiceId = new Map<string, typeof links>();
     for (const link of links) {
@@ -735,14 +736,15 @@ export class CustomerBillingController {
     });
 
     // Pending balance across all orders
-    const allOrders = await this.orderRepo.find({where: {customerId, isDeleted: false} as any});
+    const allOrders = await this.orderRepo.find({where: {customerId, isDeleted: false} as any, fields: {id: true} as object});
     const allOrderIds = allOrders.map(o => o.id);
     let totalPendingBalance = 0;
 
     if (allOrderIds.length) {
-      const allInvoices = await this.invoiceRepo.find({
-        where: {orderId: {inq: allOrderIds}} as any,
-      });
+      const allInvoices = await findInBatches(allOrderIds, ids => this.invoiceRepo.find({
+        where: {orderId: {inq: ids}} as any,
+        fields: {id: true, balanceDue: true} as object,
+      }));
       totalPendingBalance = allInvoices.reduce((s, inv) => s + money(inv.balanceDue), 0);
     }
 

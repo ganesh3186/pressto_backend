@@ -31,6 +31,7 @@ describe('staff wallet recharge amount', () => {
           return request;
         },
       },
+      dataSource: {beginTransaction: async () => ({commit: async () => {}, rollback: async () => {}}), execute: async () => []},
       credit: async (_walletId: string, amount: number) => {
         creditedAmounts.push(amount);
         return {id: 'transaction', transactionDate: new Date()};

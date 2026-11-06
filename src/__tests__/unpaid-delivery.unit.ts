@@ -1,3 +1,4 @@
+import {batchedStubs} from './helpers/batched-stubs';
 /* eslint-disable @typescript-eslint/no-explicit-any -- Partial repository and service doubles. */
 import {expect} from '@loopback/testlab';
 import {securityId, UserProfile} from '@loopback/security';
@@ -53,6 +54,7 @@ function counter(paid = 0) {
       notifyStatusChange: () => undefined,
     },
   );
+    batchedStubs(service);
   const deliver = () =>
     service.handoverInStore({
       orderId: 'order',

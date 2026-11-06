@@ -220,7 +220,11 @@ export class SecurityDepositService {
       throw new HttpErrors.BadRequest('Security deposit account is not active.');
     }
 
-    const count = await this.topupRequestRepository.count({customerId});
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const options = {transaction: tx};
+    try {
+    await this.dataSource.execute('SELECT id FROM public.customer_security_deposit WHERE id = $1 FOR UPDATE', [deposit.id], options);
+    const count = await this.topupRequestRepository.count({customerId}, options);
     const requestNumber = `SDT${String(count.count + 1).padStart(6, '0')}`;
     const {v4} = await import('uuid');
 
@@ -234,7 +238,7 @@ export class SecurityDepositService {
       status: PaymentRequestStatus.SUCCESS,
       performedBy,
       remarks,
-    });
+    }, options);
 
     await this.addAmount(
       deposit.id,
@@ -242,9 +246,11 @@ export class SecurityDepositService {
       ReferenceType.MANUAL,
       topupRequest.id,
       `Admin security deposit top-up - ${requestNumber}`,
+      options,
     );
 
-    const updatedDeposit = await this.depositRepository.findById(deposit.id);
-    return {topupRequest, availableBalance: updatedDeposit.availableBalance!};
+    const updatedDeposit = await this.depositRepository.findById(deposit.id, undefined, options);
+    await tx.commit();
+    return {topupRequest, availableBalance: updatedDeposit.availableBalance!};    } catch (error) { await tx.rollback(); throw error; }
   }
 }

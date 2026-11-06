@@ -16,6 +16,11 @@ describe('pending tickets report items', () => {
     ];
     const catalogQueries: string[][] = [];
     const service = Object.assign(Object.create(ReportsService.prototype), {
+      orderReportPage: async (params: {skip: number}) => ({
+        orders: [{id: 'order-1',storeId:'store-a',customerId:'customer-a',totalAmount:100},
+          {id:'order-2',storeId:'store-a',customerId:'customer-a',totalAmount:50}].slice(params.skip, params.skip+1),
+        count:2, amount:150, quantity:5,
+      }),
       orderRepo: {
         find: async () => [
           {id: 'order-1', storeId: 'store-a', customerId: 'customer-a', totalAmount: 100},

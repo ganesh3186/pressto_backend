@@ -1,3 +1,4 @@
+import {sqlPage, sqlCount} from '../utils/sql-page';
 import { authenticate } from '@loopback/authentication';
 import { inject } from '@loopback/core';
 import { Filter, IsolationLevel, repository } from '@loopback/repository';
@@ -57,33 +58,15 @@ export class RiderController {
     private hasher: BcryptHasher,
   ) { }
 
-  private async riderSearchWhere(search?: string): Promise<object | undefined> {
-    const query = String(search ?? '').trim();
-    if (!query) return undefined;
-
+  private riderSearchWhere(search?: string) {
+    const query = search?.trim().toLowerCase();
+    if (!query) return {sql: '', params: []};
     const digits = query.replace(/\D/g, '');
-    const phoneQuery = digits.length >= 10 ? digits.slice(-10) : query;
-    // Match phones only among riders' own login accounts, inside the DB. Searching
-    // all users first pulled every customer whose phone contained the term (200K+
-    // ids for a one-digit search) into one IN list, which pinned the event loop
-    // and stalled every other request, login included.
-    const matchingUsers: {userId: string}[] = await this.dataSource.execute(
-      `SELECT r.userid AS "userId"
-         FROM public.rider r
-         JOIN public.users u ON u.id::text = r.userid
-        WHERE u.phone ILIKE $1`,
-      [`%${phoneQuery}%`],
-    );
-
-    return {
-      or: [
-        {riderCode: {ilike: `%${query}%`}},
-        {firstName: {ilike: `%${query}%`}},
-        {lastName: {ilike: `%${query}%`}},
-        {alternateNumber: {ilike: `%${phoneQuery}%`}},
-        ...(matchingUsers.length ? [{userId: {inq: matchingUsers.map(row => row.userId)}}] : []),
-      ],
-    };
+    const phone = digits.length >= 10 ? digits.slice(-10) : query;
+    return {sql: `(position(? in lower(ridercode)) > 0 OR position(? in lower(firstname)) > 0
+      OR position(? in lower(lastname)) > 0 OR position(? in lower(alternatenumber)) > 0
+      OR EXISTS (SELECT 1 FROM public.users u WHERE u.id = CASE WHEN rider.userid ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN rider.userid::uuid END AND position(? in lower(u.phone)) > 0))`,
+      params: [query, query, query, phone, phone]};
   }
 
   private combineRiderWhere(where?: object, searchWhere?: object): object {
@@ -375,10 +358,18 @@ export class RiderController {
   ): Promise<Rider[]> {
     // Soft-deleted riders are never listed; the login account is included so the
     // UI has phone/email/name without a second call.
-    const searchWhere = await this.riderSearchWhere(search);
+    const searchWhere = this.riderSearchWhere(search);
+    if (!searchWhere.sql) return this.riderRepository.find({
+      ...filter, where: this.combineRiderWhere(filter?.where as object | undefined),
+      include: [{relation: 'user', scope: {fields: RIDER_USER_FIELDS}}],
+    });
+    const page = await sqlPage<Rider>(this.riderRepository, 'rider', this.combineRiderWhere(filter?.where as object | undefined),
+      filter?.limit ?? 100, filter?.skip ?? 0, searchWhere.sql, searchWhere.params, filter?.order);
+    if (!page.rows.length) return [];
     return this.riderRepository.find({
       ...filter,
-      where: this.combineRiderWhere(filter?.where as object | undefined, searchWhere),
+      where: {id: {inq: page.rows.map(row => row.id)}},
+      limit: page.rows.length, skip: 0,
       include: [{ relation: 'user', scope: { fields: RIDER_USER_FIELDS } }],
     });
   }
@@ -392,10 +383,12 @@ export class RiderController {
     @param.query.string('search') search?: string,
   ): Promise<object[]> {
     // Reuse the listing filters/search, but deliberately exclude pagination and projection.
-    const riders = await this.find({
-      where: filter?.where,
-      order: filter?.order ?? ['createdAt DESC', 'id DESC'],
-    }, search);
+    const riders: Rider[] = [];
+    for (let skip = 0; ; skip += 500) {
+      const page = await this.find({where: filter?.where, order: filter?.order ?? ['createdAt DESC', 'id DESC'], limit: 500, skip}, search);
+      riders.push(...page);
+      if (page.length < 500) break;
+    }
     return riders.map(rider => {
       const user = (rider as RiderWithRelations).user;
       return {
@@ -424,8 +417,9 @@ export class RiderController {
     @param.query.object('where') where?: object,
     @param.query.string('search') search?: string,
   ): Promise<{ count: number }> {
-    const searchWhere = await this.riderSearchWhere(search);
-    return this.riderRepository.count(this.combineRiderWhere(where, searchWhere));
+    const searchWhere = this.riderSearchWhere(search);
+    if (!searchWhere.sql) return this.riderRepository.count(this.combineRiderWhere(where));
+    return sqlCount(this.riderRepository, 'rider', this.combineRiderWhere(where), searchWhere.sql, searchWhere.params);
   }
 
   @authenticate('jwt')
