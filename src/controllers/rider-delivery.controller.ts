@@ -1,7 +1,15 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
-import {get, HttpErrors, param, patch, post, requestBody, response} from '@loopback/rest';
+import {
+  get,
+  HttpErrors,
+  param,
+  patch,
+  post,
+  requestBody,
+  response,
+} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
@@ -10,8 +18,10 @@ import {DeliveryCustodyEventType} from '../models/delivery-custody-event-type.en
 import {DeliveryFailureReason} from '../models/delivery-failure-reason.enum';
 import {DeliveryOrderStatus} from '../models/delivery-order-status.enum';
 import {DeliveryStatus} from '../models/delivery-status.enum';
+import {DeliveryHandoverStatus} from '../models/delivery-handover-status.enum';
 import {Delivery} from '../models/delivery.model';
 import {DeliveryOrder} from '../models/delivery-order.model';
+import {RiderType} from '../models/rider-type.enum';
 import {HandoverCollectorType} from '../models/order-handover.model';
 import {OrderStatus} from '../models/order-status.enum';
 import {PaymentMode} from '../models/payment-mode.enum';
@@ -23,6 +33,8 @@ import {
   BagRepository,
   CustomerRepository,
   DeliveryCustodyEventRepository,
+  DeliveryHandoverItemRepository,
+  DeliveryHandoverRepository,
   DeliveryOrderRepository,
   DeliveryRepository,
   OrderItemRepository,
@@ -45,18 +57,26 @@ import {OrderService} from '../services/order.service';
 export class RiderDeliveryController {
   constructor(
     @repository(RiderRepository) private riderRepository: RiderRepository,
-    @repository(DeliveryRepository) private deliveryRepository: DeliveryRepository,
+    @repository(DeliveryRepository)
+    private deliveryRepository: DeliveryRepository,
     @repository(PickupDeliverySlotRepository)
     private pickupDeliverySlotRepository: PickupDeliverySlotRepository,
-    @repository(DeliveryOrderRepository) private deliveryOrderRepository: DeliveryOrderRepository,
+    @repository(DeliveryOrderRepository)
+    private deliveryOrderRepository: DeliveryOrderRepository,
+    @repository(DeliveryHandoverRepository)
+    private deliveryHandoverRepository: DeliveryHandoverRepository,
+    @repository(DeliveryHandoverItemRepository)
+    private deliveryHandoverItemRepository: DeliveryHandoverItemRepository,
     @repository(DeliveryCustodyEventRepository)
     private custodyEventRepository: DeliveryCustodyEventRepository,
     @repository(BagRepository) private bagRepository: BagRepository,
     @repository(OrderRepository) private orderRepository: OrderRepository,
     @repository(OrderStatusHistoryRepository)
     private orderStatusHistoryRepository: OrderStatusHistoryRepository,
-    @repository(OrderItemRepository) private orderItemRepository: OrderItemRepository,
-    @repository(CustomerRepository) private customerRepository: CustomerRepository,
+    @repository(OrderItemRepository)
+    private orderItemRepository: OrderItemRepository,
+    @repository(CustomerRepository)
+    private customerRepository: CustomerRepository,
     @repository(PaymentTransactionRepository)
     private paymentTransactionRepository: PaymentTransactionRepository,
     @repository(RiderCashHandoverRepository)
@@ -74,17 +94,65 @@ export class RiderDeliveryController {
     const rider = await this.riderRepository.findOne({
       where: {userId: currentUser[securityId], isDeleted: false},
     });
-    if (!rider) throw new HttpErrors.Forbidden('This account is not registered as a rider.');
-    if (!rider.isActive) throw new HttpErrors.Forbidden('This rider account is inactive.');
+    if (!rider)
+      throw new HttpErrors.Forbidden(
+        'This account is not registered as a rider.',
+      );
+    if (!rider.isActive)
+      throw new HttpErrors.Forbidden('This rider account is inactive.');
     return rider;
   }
 
+  private async findCashHandoverEligibleOrders(orderIds: string[]) {
+    if (!orderIds.length) return [];
+    const orders = await this.orderRepository.find({
+      where: {
+        id: {inq: orderIds},
+        isDeleted: false,
+        status: {inq: [OrderStatus.DELIVERED, OrderStatus.RETURNED]},
+      } as object,
+    });
+    const returnedOrderIds = orders
+      .filter(order => order.status === OrderStatus.RETURNED)
+      .map(order => order.id);
+    const deliveredHistory = returnedOrderIds.length
+      ? await this.orderStatusHistoryRepository.find({
+          where: {
+            orderId: {inq: returnedOrderIds},
+            status: OrderStatus.DELIVERED,
+          } as object,
+        })
+      : [];
+    const historicallyDeliveredIds = new Set(
+      deliveredHistory.map(history => history.orderId),
+    );
+    return orders.filter(
+      order =>
+        order.status === OrderStatus.DELIVERED ||
+        historicallyDeliveredIds.has(order.id),
+    );
+  }
+
   private async enrichDeliveries(deliveries: Delivery[]) {
-    const slotIds = [...new Set(deliveries.map(d => d.deliverySlotId).filter((id): id is string => !!id))];
-    const bagIds = [...new Set(deliveries.map(d => d.bagId).filter((id): id is string => !!id))];
+    const slotIds = [
+      ...new Set(
+        deliveries
+          .map(d => d.deliverySlotId)
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    const bagIds = [
+      ...new Set(
+        deliveries.map(d => d.bagId).filter((id): id is string => !!id),
+      ),
+    ];
     const [slots, bags] = await Promise.all([
-      slotIds.length ? this.pickupDeliverySlotRepository.find({where: {id: {inq: slotIds}}}) : [],
-      bagIds.length ? this.bagRepository.find({where: {id: {inq: bagIds}}}) : [],
+      slotIds.length
+        ? this.pickupDeliverySlotRepository.find({where: {id: {inq: slotIds}}})
+        : [],
+      bagIds.length
+        ? this.bagRepository.find({where: {id: {inq: bagIds}}})
+        : [],
     ]);
     const slotById = new Map(slots.map(slot => [slot.id, slot]));
     const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
@@ -97,8 +165,12 @@ export class RiderDeliveryController {
       const {bagId, ...publicDelivery} = delivery;
       return {
         ...publicDelivery,
-        ...(slot ? {deliverySlot: `${formatTime(slot.startTime)} - ${formatTime(slot.endTime)}`} : {}),
-        bagNumber: bagId ? bagNumberById.get(bagId) ?? null : null,
+        ...(slot
+          ? {
+              deliverySlot: `${formatTime(slot.startTime)} - ${formatTime(slot.endTime)}`,
+            }
+          : {}),
+        bagNumber: bagId ? (bagNumberById.get(bagId) ?? null) : null,
       };
     });
   }
@@ -112,13 +184,26 @@ export class RiderDeliveryController {
     const [runs, orders] = await Promise.all([
       this.deliveryRepository.find({
         // Completed newer attempts also supersede older assigned duplicates.
-        where: {id: {inq: [...new Set(allStops.map(stop => stop.deliveryId))]},
-          status: {inq: [DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY, DeliveryStatus.COMPLETED]},
-          isDeleted: false} as object,
+        where: {
+          id: {inq: [...new Set(allStops.map(stop => stop.deliveryId))]},
+          status: {
+            inq: [
+              DeliveryStatus.ASSIGNED,
+              DeliveryStatus.OUT_FOR_DELIVERY,
+              DeliveryStatus.COMPLETED,
+            ],
+          },
+          isDeleted: false,
+        } as object,
         order: ['assignedAt DESC'],
       }),
-      this.orderRepository.find({where: {id: {inq: orderIds}, isDeleted: false,
-        status: {nin: [OrderStatus.CANCELLED, OrderStatus.RETURNED]}} as object}),
+      this.orderRepository.find({
+        where: {
+          id: {inq: orderIds},
+          isDeleted: false,
+          status: {nin: [OrderStatus.CANCELLED, OrderStatus.RETURNED]},
+        } as object,
+      }),
     ]);
     const stopsByRun = new Map<string, DeliveryOrder[]>();
     for (const stop of allStops) {
@@ -131,7 +216,10 @@ export class RiderDeliveryController {
     for (const run of runs) {
       for (const stop of stopsByRun.get(run.id) ?? []) {
         const order = orderById.get(stop.orderId);
-        if (order?.assignedRiderId === run.riderId && !chosen.has(stop.orderId)) {
+        if (
+          order?.assignedRiderId === run.riderId &&
+          !chosen.has(stop.orderId)
+        ) {
           chosen.set(stop.orderId, stop.id);
         }
       }
@@ -145,11 +233,16 @@ export class RiderDeliveryController {
     for (let attempt = 0; attempt < 10; attempt++) {
       const code = String(Math.floor(100000 + Math.random() * 900000));
       const existing = await this.riderCashHandoverRepository.findOne({
-        where: {handoverCode: code, status: RiderCashHandoverStatus.PENDING} as object,
+        where: {
+          handoverCode: code,
+          status: RiderCashHandoverStatus.PENDING,
+        } as object,
       });
       if (!existing) return code;
     }
-    throw new HttpErrors.InternalServerError('Could not generate a unique handover code.');
+    throw new HttpErrors.InternalServerError(
+      'Could not generate a unique handover code.',
+    );
   }
 
   // ─── The rider's own assigned deliveries ─────────────────────────────────
@@ -177,27 +270,43 @@ export class RiderDeliveryController {
         isDeleted: false,
         ...(status
           ? {status}
-          : {status: {inq: [DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY]}}),
-        ...(date ? {deliveryDate: {between: [date, `${date}T23:59:59.999Z`]}} : {}),
+          : {
+              status: {
+                inq: [DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY],
+              },
+            }),
+        ...(date
+          ? {deliveryDate: {between: [date, `${date}T23:59:59.999Z`]}}
+          : {}),
       } as object,
       order: ['assignedAt DESC'],
     });
-    const active = deliveries.filter(d =>
-      d.status === DeliveryStatus.ASSIGNED || d.status === DeliveryStatus.OUT_FOR_DELIVERY,
+    const active = deliveries.filter(
+      d =>
+        d.status === DeliveryStatus.ASSIGNED ||
+        d.status === DeliveryStatus.OUT_FOR_DELIVERY,
     );
-    const stops = active.length ? await this.deliveryOrderRepository.find({
-      where: {deliveryId: {inq: active.map(d => d.id)}} as object,
-    }) : [];
+    const stops = active.length
+      ? await this.deliveryOrderRepository.find({
+          where: {deliveryId: {inq: active.map(d => d.id)}} as object,
+        })
+      : [];
     const currentIds = await this.currentStopIds(stops);
     const currentCountByRun = new Map<string, number>();
     for (const stop of stops) {
       if (!currentIds.has(stop.id)) continue;
-      currentCountByRun.set(stop.deliveryId, (currentCountByRun.get(stop.deliveryId) ?? 0) + 1);
+      currentCountByRun.set(
+        stop.deliveryId,
+        (currentCountByRun.get(stop.deliveryId) ?? 0) + 1,
+      );
     }
-    const visible = deliveries.filter(d =>
-      (!active.includes(d) || currentCountByRun.has(d.id)),
-    ).map(d => currentCountByRun.has(d.id)
-      ? Object.assign(d, {orderCount: currentCountByRun.get(d.id)}) : d);
+    const visible = deliveries
+      .filter(d => !active.includes(d) || currentCountByRun.has(d.id))
+      .map(d =>
+        currentCountByRun.has(d.id)
+          ? Object.assign(d, {orderCount: currentCountByRun.get(d.id)})
+          : d,
+      );
     return {deliveries: await this.enrichDeliveries(visible)};
   }
 
@@ -212,22 +321,31 @@ export class RiderDeliveryController {
     @param.path.string('id') id: string,
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
-    const delivery = await this.deliveryRepository.findOne({where: {id, isDeleted: false}});
+    const delivery = await this.deliveryRepository.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
     if (delivery.riderId !== rider.id) {
       throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
     }
 
-    const allDeliveryOrders = await this.deliveryOrderRepository.find({where: {deliveryId: id} as object});
-    const currentIds = delivery.status === DeliveryStatus.ASSIGNED ||
+    const allDeliveryOrders = await this.deliveryOrderRepository.find({
+      where: {deliveryId: id} as object,
+    });
+    const currentIds =
+      delivery.status === DeliveryStatus.ASSIGNED ||
       delivery.status === DeliveryStatus.OUT_FOR_DELIVERY
-      ? await this.currentStopIds(allDeliveryOrders) : null;
+        ? await this.currentStopIds(allDeliveryOrders)
+        : null;
     const deliveryOrders = currentIds
-      ? allDeliveryOrders.filter(stop => currentIds.has(stop.id)) : allDeliveryOrders;
+      ? allDeliveryOrders.filter(stop => currentIds.has(stop.id))
+      : allDeliveryOrders;
     if (currentIds) delivery.orderCount = deliveryOrders.length;
     const orderIds = deliveryOrders.map(o => o.orderId);
     const orders = orderIds.length
-      ? await this.orderRepository.find({where: {id: {inq: orderIds}} as object})
+      ? await this.orderRepository.find({
+          where: {id: {inq: orderIds}} as object,
+        })
       : [];
     const orderById = new Map(orders.map(o => [o.id, o]));
 
@@ -239,7 +357,10 @@ export class RiderDeliveryController {
       : [];
     const itemCountByOrder = new Map<string, number>();
     for (const oi of orderItems) {
-      itemCountByOrder.set(oi.orderId, (itemCountByOrder.get(oi.orderId) ?? 0) + (Number(oi.quantity) || 0));
+      itemCountByOrder.set(
+        oi.orderId,
+        (itemCountByOrder.get(oi.orderId) ?? 0) + (Number(oi.quantity) || 0),
+      );
     }
 
     const enrichedOrders = await Promise.all(
@@ -260,7 +381,10 @@ export class RiderDeliveryController {
       }),
     );
 
-    return {delivery: (await this.enrichDeliveries([delivery]))[0], orders: enrichedOrders};
+    return {
+      delivery: (await this.enrichDeliveries([delivery]))[0],
+      orders: enrichedOrders,
+    };
   }
 
   // ─── Start a delivery run ─────────────────────────────────────────────────
@@ -268,7 +392,9 @@ export class RiderDeliveryController {
   @authenticate('jwt')
   @authorize({roles: ['rider']})
   @patch('/rider/deliveries/{id}/status')
-  @response(200, {description: 'Delivery started — linked orders moved to out_for_delivery'})
+  @response(200, {
+    description: 'Delivery started — linked orders moved to out_for_delivery',
+  })
   async startDelivery(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -278,7 +404,9 @@ export class RiderDeliveryController {
           schema: {
             type: 'object',
             required: ['status'],
-            properties: {status: {type: 'string', enum: [DeliveryStatus.OUT_FOR_DELIVERY]}},
+            properties: {
+              status: {type: 'string', enum: [DeliveryStatus.OUT_FOR_DELIVERY]},
+            },
           },
         },
       },
@@ -287,74 +415,130 @@ export class RiderDeliveryController {
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
     if (body.status !== DeliveryStatus.OUT_FOR_DELIVERY) {
-      throw new HttpErrors.BadRequest(`Riders can only set status to ${DeliveryStatus.OUT_FOR_DELIVERY}.`);
+      throw new HttpErrors.BadRequest(
+        `Riders can only set status to ${DeliveryStatus.OUT_FOR_DELIVERY}.`,
+      );
     }
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
       const initialStops = await this.deliveryOrderRepository.find(
-        {where: {deliveryId: id} as object}, {transaction: tx},
+        {where: {deliveryId: id} as object},
+        {transaction: tx},
       );
-      for (const orderId of [...new Set(initialStops.map(stop => stop.orderId))].sort()) {
+      for (const orderId of [
+        ...new Set(initialStops.map(stop => stop.orderId)),
+      ].sort()) {
         await this.dataSource.execute(
           'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
-          [orderId], {transaction: tx},
+          [orderId],
+          {transaction: tx},
         );
       }
       const delivery = await this.deliveryRepository.findOne(
-        {where: {id, isDeleted: false}}, {transaction: tx},
+        {where: {id, isDeleted: false}},
+        {transaction: tx},
       );
       if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
       if (delivery.riderId !== rider.id) {
         throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
       }
       if (delivery.status !== DeliveryStatus.ASSIGNED) {
-        throw new HttpErrors.BadRequest(`Cannot start a delivery that is ${delivery.status}, not assigned.`);
+        throw new HttpErrors.BadRequest(
+          `Cannot start a delivery that is ${delivery.status}, not assigned.`,
+        );
       }
       const runStops = await this.deliveryOrderRepository.find(
-        {where: {deliveryId: id} as object}, {transaction: tx},
+        {where: {deliveryId: id} as object},
+        {transaction: tx},
       );
       const currentIds = await this.currentStopIds(runStops);
       const deliveryOrders = runStops.filter(stop => currentIds.has(stop.id));
+      if (
+        deliveryOrders.some(
+          stop => stop.status === DeliveryOrderStatus.HANDOVER_PENDING,
+        )
+      ) {
+        throw new HttpErrors.Conflict(
+          'Accept or cancel pending order handovers before starting this delivery.',
+        );
+      }
       if (!deliveryOrders.length) {
         throw new HttpErrors.Conflict('This delivery has no current orders.');
       }
-      const orders = await this.orderRepository.find({
-        where: {id: {inq: deliveryOrders.map(stop => stop.orderId)}, isDeleted: false} as object,
-      }, {transaction: tx});
+      const orders = await this.orderRepository.find(
+        {
+          where: {
+            id: {inq: deliveryOrders.map(stop => stop.orderId)},
+            isDeleted: false,
+          } as object,
+        },
+        {transaction: tx},
+      );
       if (orders.length !== deliveryOrders.length) {
-        throw new HttpErrors.Conflict('Delivery orders changed. Refresh and retry.');
+        throw new HttpErrors.Conflict(
+          'Delivery orders changed. Refresh and retry.',
+        );
       }
       const {v4} = await import('uuid');
       for (const order of orders) {
-        if (order.status === OrderStatus.READY || order.status === OrderStatus.PARTIALLY_DISPATCHED) {
-          await this.orderRepository.updateById(order.id, {
-            status: OrderStatus.OUT_FOR_DELIVERY,
-          }, {transaction: tx});
-          await this.orderStatusHistoryRepository.create({
-            id: v4(), orderId: order.id, status: OrderStatus.OUT_FOR_DELIVERY,
-            changedAt: new Date(), changedBy: rider.userId,
-          }, {transaction: tx});
+        if (
+          order.status === OrderStatus.READY ||
+          order.status === OrderStatus.PARTIALLY_DISPATCHED
+        ) {
+          await this.orderRepository.updateById(
+            order.id,
+            {
+              status: OrderStatus.OUT_FOR_DELIVERY,
+            },
+            {transaction: tx},
+          );
+          await this.orderStatusHistoryRepository.create(
+            {
+              id: v4(),
+              orderId: order.id,
+              status: OrderStatus.OUT_FOR_DELIVERY,
+              changedAt: new Date(),
+              changedBy: rider.userId,
+            },
+            {transaction: tx},
+          );
         } else if (order.status !== OrderStatus.OUT_FOR_DELIVERY) {
-          throw new HttpErrors.Conflict('Delivery order status changed. Refresh and retry.');
+          throw new HttpErrors.Conflict(
+            'Delivery order status changed. Refresh and retry.',
+          );
         }
       }
-      await this.deliveryRepository.updateById(id, {
-        status: DeliveryStatus.OUT_FOR_DELIVERY,
-        startedAt: new Date(),
-        startedBy: currentUser[securityId],
-      }, {transaction: tx});
+      await this.deliveryRepository.updateById(
+        id,
+        {
+          status: DeliveryStatus.OUT_FOR_DELIVERY,
+          startedAt: new Date(),
+          startedBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
       for (const stop of deliveryOrders) {
         if (!stop.status || stop.status === DeliveryOrderStatus.PENDING) {
-          await this.deliveryOrderRepository.updateById(stop.id, {
-            status: DeliveryOrderStatus.OUT_FOR_DELIVERY,
-          }, {transaction: tx});
+          await this.deliveryOrderRepository.updateById(
+            stop.id,
+            {
+              status: DeliveryOrderStatus.OUT_FOR_DELIVERY,
+            },
+            {transaction: tx},
+          );
         }
       }
-      await this.custodyEventRepository.create({
-        id: v4(), deliveryId: id,
-        eventType: DeliveryCustodyEventType.OUT_FOR_DELIVERY,
-        performedBy: currentUser[securityId],
-      }, {transaction: tx});
+      await this.custodyEventRepository.create(
+        {
+          id: v4(),
+          deliveryId: id,
+          eventType: DeliveryCustodyEventType.OUT_FOR_DELIVERY,
+          performedBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
       await tx.commit();
       return {message: 'Delivery started.'};
     } catch (error) {
@@ -382,7 +566,9 @@ export class RiderDeliveryController {
           schema: {
             type: 'object',
             required: ['status'],
-            properties: {status: {type: 'string', enum: [DeliveryOrderStatus.ARRIVED]}},
+            properties: {
+              status: {type: 'string', enum: [DeliveryOrderStatus.ARRIVED]},
+            },
           },
         },
       },
@@ -391,45 +577,74 @@ export class RiderDeliveryController {
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
     if (body.status !== DeliveryOrderStatus.ARRIVED) {
-      throw new HttpErrors.BadRequest(`Riders can only set status to ${DeliveryOrderStatus.ARRIVED}.`);
+      throw new HttpErrors.BadRequest(
+        `Riders can only set status to ${DeliveryOrderStatus.ARRIVED}.`,
+      );
     }
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
       const initialDelivery = await this.deliveryRepository.findOne(
-        {where: {id, isDeleted: false}}, {transaction: tx},
+        {where: {id, isDeleted: false}},
+        {transaction: tx},
       );
-      if (!initialDelivery) throw new HttpErrors.NotFound('Delivery not found.');
+      if (!initialDelivery)
+        throw new HttpErrors.NotFound('Delivery not found.');
       if (initialDelivery.riderId !== rider.id) {
         throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
       }
       const initialStop = await this.deliveryOrderRepository.findOne(
-        {where: {deliveryId: id, orderId} as object}, {transaction: tx},
+        {where: {deliveryId: id, orderId} as object},
+        {transaction: tx},
       );
-      if (!initialStop) throw new HttpErrors.NotFound('This order is not on this delivery.');
+      if (!initialStop)
+        throw new HttpErrors.NotFound('This order is not on this delivery.');
       await this.dataSource.execute(
         'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
-        [orderId], {transaction: tx},
+        [orderId],
+        {transaction: tx},
       );
       const delivery = await this.deliveryRepository.findOne(
-        {where: {id, isDeleted: false}}, {transaction: tx},
+        {where: {id, isDeleted: false}},
+        {transaction: tx},
       );
       if (!delivery || delivery.riderId !== rider.id) {
         throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
       }
       const deliveryOrder = await this.deliveryOrderRepository.findOne(
-        {where: {deliveryId: id, orderId} as object}, {transaction: tx},
+        {where: {deliveryId: id, orderId} as object},
+        {transaction: tx},
       );
-      if (!deliveryOrder || !(await this.currentStopIds([deliveryOrder])).has(deliveryOrder.id)) {
-        throw new HttpErrors.NotFound('This order is no longer on this delivery.');
+      if (
+        !deliveryOrder ||
+        !(await this.currentStopIds([deliveryOrder])).has(deliveryOrder.id)
+      ) {
+        throw new HttpErrors.NotFound(
+          'This order is no longer on this delivery.',
+        );
       }
-      if (deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE ||
-          deliveryOrder.status === DeliveryOrderStatus.DELIVERED) {
-        throw new HttpErrors.BadRequest('This delivery stop is already closed.');
+      if (
+        deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE ||
+        deliveryOrder.status === DeliveryOrderStatus.DELIVERED
+      ) {
+        throw new HttpErrors.BadRequest(
+          'This delivery stop is already closed.',
+        );
       }
-      await this.deliveryOrderRepository.updateById(deliveryOrder.id, {
-        status: DeliveryOrderStatus.ARRIVED,
-        arrivedAt: new Date(),
-      }, {transaction: tx});
+      if (deliveryOrder.status === DeliveryOrderStatus.HANDOVER_PENDING) {
+        throw new HttpErrors.Conflict(
+          'This order is pending handover to another rider.',
+        );
+      }
+      await this.deliveryOrderRepository.updateById(
+        deliveryOrder.id,
+        {
+          status: DeliveryOrderStatus.ARRIVED,
+          arrivedAt: new Date(),
+        },
+        {transaction: tx},
+      );
       await tx.commit();
       return {message: 'Marked as reached.'};
     } catch (error) {
@@ -444,7 +659,9 @@ export class RiderDeliveryController {
   @authenticate('jwt')
   @authorize({roles: ['rider']})
   @post('/rider/deliveries/{id}/orders/{orderId}/deliver')
-  @response(200, {description: 'Order marked delivered, payment recorded if required'})
+  @response(200, {
+    description: 'Order marked delivered, payment recorded if required',
+  })
   async deliver(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -455,22 +672,47 @@ export class RiderDeliveryController {
           schema: {
             type: 'object',
             properties: {
-              paymentMode: {type: 'string', enum: [PaymentMode.CASH, PaymentMode.WALLET]},
+              paymentMode: {
+                type: 'string',
+                enum: [PaymentMode.CASH, PaymentMode.WALLET],
+              },
               amount: {type: 'number', minimum: 0},
               walletAmount: {type: 'number', minimum: 0},
               transactionReference: {type: 'string'},
               remarks: {type: 'string'},
               deliverTo: {
                 type: 'object',
-                description: 'Who physically received the order — omit to skip recording this (not required).',
+                description:
+                  'Who physically received the order — omit to skip recording this (not required).',
                 required: ['collectorType'],
                 properties: {
-                  collectorType: {type: 'string', enum: Object.values(HandoverCollectorType)},
-                  customerContactId: {type: 'string', format: 'uuid', description: 'Required when collectorType is "contact" (household).'},
-                  familyGroupMemberId: {type: 'string', format: 'uuid', description: 'Required when collectorType is "family_member".'},
-                  collectorName: {type: 'string', description: 'Required when collectorType is "other" (e.g. a neighbour).'},
+                  collectorType: {
+                    type: 'string',
+                    enum: Object.values(HandoverCollectorType),
+                  },
+                  customerContactId: {
+                    type: 'string',
+                    format: 'uuid',
+                    description:
+                      'Required when collectorType is "contact" (household).',
+                  },
+                  familyGroupMemberId: {
+                    type: 'string',
+                    format: 'uuid',
+                    description:
+                      'Required when collectorType is "family_member".',
+                  },
+                  collectorName: {
+                    type: 'string',
+                    description:
+                      'Required when collectorType is "other" (e.g. a neighbour).',
+                  },
                   collectorPhone: {type: 'string'},
-                  photoMediaId: {type: 'string', description: 'Required when collectorType is "guard" or "at_door".'},
+                  photoMediaId: {
+                    type: 'string',
+                    description:
+                      'Required when collectorType is "guard" or "at_door".',
+                  },
                 },
               },
             },
@@ -495,7 +737,9 @@ export class RiderDeliveryController {
     },
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
-    const delivery = await this.deliveryRepository.findOne({where: {id, isDeleted: false}});
+    const delivery = await this.deliveryRepository.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
     if (delivery.riderId !== rider.id) {
       throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
@@ -503,14 +747,27 @@ export class RiderDeliveryController {
     const deliveryOrder = await this.deliveryOrderRepository.findOne({
       where: {deliveryId: id, orderId} as object,
     });
-    if (!deliveryOrder) throw new HttpErrors.NotFound('This order is not on this delivery.');
+    if (!deliveryOrder)
+      throw new HttpErrors.NotFound('This order is not on this delivery.');
     if (!(await this.currentStopIds([deliveryOrder])).has(deliveryOrder.id)) {
-      throw new HttpErrors.NotFound('This order is no longer on this delivery.');
+      throw new HttpErrors.NotFound(
+        'This order is no longer on this delivery.',
+      );
     }
 
-    const order = await this.orderRepository.findOne({where: {id: orderId, isDeleted: false}});
-    if (deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE || deliveryOrder.status === DeliveryOrderStatus.DELIVERED) {
+    const order = await this.orderRepository.findOne({
+      where: {id: orderId, isDeleted: false},
+    });
+    if (
+      deliveryOrder.status === DeliveryOrderStatus.RETURN_TO_STORE ||
+      deliveryOrder.status === DeliveryOrderStatus.DELIVERED
+    ) {
       throw new HttpErrors.BadRequest('This delivery stop is already closed.');
+    }
+    if (deliveryOrder.status === DeliveryOrderStatus.HANDOVER_PENDING) {
+      throw new HttpErrors.Conflict(
+        'This order is pending handover to another rider.',
+      );
     }
     if (!order) throw new HttpErrors.NotFound('Order not found.');
     if (order.status !== OrderStatus.OUT_FOR_DELIVERY) {
@@ -531,7 +788,8 @@ export class RiderDeliveryController {
     // over", since the handover record from the failed first attempt was
     // already committed with nothing to undo it.
     if (!order.isOnAccount) {
-      const thisTotal = Number(body.amount ?? 0) + Number(body.walletAmount ?? 0);
+      const thisTotal =
+        Number(body.amount ?? 0) + Number(body.walletAmount ?? 0);
       if (thisTotal > 0) {
         await this.orderService.addPayment(
           orderId,
@@ -559,11 +817,18 @@ export class RiderDeliveryController {
         handedOverBy: rider.userId,
       });
     } else {
-      await this.orderService.changeStatus(orderId, OrderStatus.DELIVERED, rider.userId, body.remarks);
+      await this.orderService.changeStatus(
+        orderId,
+        OrderStatus.DELIVERED,
+        rider.userId,
+        body.remarks,
+      );
     }
 
     const {v4} = await import('uuid');
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
       await this.custodyEventRepository.create(
         {
@@ -581,11 +846,12 @@ export class RiderDeliveryController {
         where: {deliveryId: id} as object,
       });
       const currentIds = await this.currentStopIds(allDeliveryOrders);
-      const remaining = allDeliveryOrders.filter(o =>
-        currentIds.has(o.id) &&
-        o.orderId !== orderId &&
-        o.status !== DeliveryOrderStatus.DELIVERED &&
-        o.status !== DeliveryOrderStatus.RETURN_TO_STORE,
+      const remaining = allDeliveryOrders.filter(
+        o =>
+          currentIds.has(o.id) &&
+          o.orderId !== orderId &&
+          o.status !== DeliveryOrderStatus.DELIVERED &&
+          o.status !== DeliveryOrderStatus.RETURN_TO_STORE,
       );
 
       let completed = false;
@@ -593,22 +859,39 @@ export class RiderDeliveryController {
         completed = true;
         await this.deliveryRepository.updateById(
           id,
-          {status: DeliveryStatus.COMPLETED, completedAt: new Date(), completedBy: currentUser[securityId]},
+          {
+            status: DeliveryStatus.COMPLETED,
+            completedAt: new Date(),
+            completedBy: currentUser[securityId],
+          },
           {transaction: tx},
         );
         if (delivery.bagId) {
           await this.bagRepository.updateById(
             delivery.bagId,
-            {status: BagStatus.AVAILABLE, currentDeliveryId: null as unknown as string},
+            {
+              status: BagStatus.AVAILABLE,
+              currentDeliveryId: null as unknown as string,
+            },
             {transaction: tx},
           );
           await this.custodyEventRepository.create(
-            {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.BAG_RELEASED, performedBy: currentUser[securityId]},
+            {
+              id: v4(),
+              deliveryId: id,
+              eventType: DeliveryCustodyEventType.BAG_RELEASED,
+              performedBy: currentUser[securityId],
+            },
             {transaction: tx},
           );
         }
         await this.custodyEventRepository.create(
-          {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.COMPLETED, performedBy: currentUser[securityId]},
+          {
+            id: v4(),
+            deliveryId: id,
+            eventType: DeliveryCustodyEventType.COMPLETED,
+            performedBy: currentUser[securityId],
+          },
           {transaction: tx},
         );
       }
@@ -633,7 +916,9 @@ export class RiderDeliveryController {
   @authenticate('jwt')
   @authorize({roles: ['rider']})
   @post('/rider/deliveries/{id}/orders/{orderId}/delivery-unsuccessful')
-  @response(200, {description: 'Delivery attempt failed — order returned to store'})
+  @response(200, {
+    description: 'Delivery attempt failed — order returned to store',
+  })
   async deliveryUnsuccessful(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -645,18 +930,34 @@ export class RiderDeliveryController {
             type: 'object',
             required: ['reasons'],
             properties: {
-              reasons: {type: 'array', minItems: 1, items: {type: 'string', enum: Object.values(DeliveryFailureReason)}},
-              otherReason: {type: 'string', description: 'Required when reasons includes "other".'},
+              reasons: {
+                type: 'array',
+                minItems: 1,
+                items: {
+                  type: 'string',
+                  enum: Object.values(DeliveryFailureReason),
+                },
+              },
+              otherReason: {
+                type: 'string',
+                description: 'Required when reasons includes "other".',
+              },
               remarks: {type: 'string'},
             },
           },
         },
       },
     })
-    body: {reasons: DeliveryFailureReason[]; otherReason?: string; remarks?: string},
+    body: {
+      reasons: DeliveryFailureReason[];
+      otherReason?: string;
+      remarks?: string;
+    },
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
-    const delivery = await this.deliveryRepository.findOne({where: {id, isDeleted: false}});
+    const delivery = await this.deliveryRepository.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
     if (delivery.riderId !== rider.id) {
       throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
@@ -664,31 +965,46 @@ export class RiderDeliveryController {
     const deliveryOrder = await this.deliveryOrderRepository.findOne({
       where: {deliveryId: id, orderId} as object,
     });
-    if (!deliveryOrder) throw new HttpErrors.NotFound('This order is not on this delivery.');
+    if (!deliveryOrder)
+      throw new HttpErrors.NotFound('This order is not on this delivery.');
     if (!(await this.currentStopIds([deliveryOrder])).has(deliveryOrder.id)) {
-      throw new HttpErrors.NotFound('This order is no longer on this delivery.');
+      throw new HttpErrors.NotFound(
+        'This order is no longer on this delivery.',
+      );
+    }
+    if (deliveryOrder.status === DeliveryOrderStatus.HANDOVER_PENDING) {
+      throw new HttpErrors.Conflict(
+        'This order is pending handover to another rider.',
+      );
     }
 
     const trimmedRemarks = body.remarks?.trim();
     await this.orderService.returnDeliveryToStore({
       orderId,
       deliveryId: id,
-      remarks: trimmedRemarks?.length ? trimmedRemarks : body.reasons.join(', '),
+      remarks: trimmedRemarks?.length
+        ? trimmedRemarks
+        : body.reasons.join(', '),
       reasons: body.reasons,
       otherReason: body.otherReason,
       changedBy: rider.userId,
     });
 
     const {v4} = await import('uuid');
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
-      const allDeliveryOrders = await this.deliveryOrderRepository.find({where: {deliveryId: id} as object});
+      const allDeliveryOrders = await this.deliveryOrderRepository.find({
+        where: {deliveryId: id} as object,
+      });
       const currentIds = await this.currentStopIds(allDeliveryOrders);
-      const remaining = allDeliveryOrders.filter(o =>
-        currentIds.has(o.id) &&
-        o.orderId !== orderId &&
-        o.status !== DeliveryOrderStatus.DELIVERED &&
-        o.status !== DeliveryOrderStatus.RETURN_TO_STORE,
+      const remaining = allDeliveryOrders.filter(
+        o =>
+          currentIds.has(o.id) &&
+          o.orderId !== orderId &&
+          o.status !== DeliveryOrderStatus.DELIVERED &&
+          o.status !== DeliveryOrderStatus.RETURN_TO_STORE,
       );
 
       let completed = false;
@@ -696,28 +1012,826 @@ export class RiderDeliveryController {
         completed = true;
         await this.deliveryRepository.updateById(
           id,
-          {status: DeliveryStatus.COMPLETED, completedAt: new Date(), completedBy: currentUser[securityId]},
+          {
+            status: DeliveryStatus.COMPLETED,
+            completedAt: new Date(),
+            completedBy: currentUser[securityId],
+          },
           {transaction: tx},
         );
         if (delivery.bagId) {
           await this.bagRepository.updateById(
             delivery.bagId,
-            {status: BagStatus.AVAILABLE, currentDeliveryId: null as unknown as string},
+            {
+              status: BagStatus.AVAILABLE,
+              currentDeliveryId: null as unknown as string,
+            },
             {transaction: tx},
           );
           await this.custodyEventRepository.create(
-            {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.BAG_RELEASED, performedBy: currentUser[securityId]},
+            {
+              id: v4(),
+              deliveryId: id,
+              eventType: DeliveryCustodyEventType.BAG_RELEASED,
+              performedBy: currentUser[securityId],
+            },
             {transaction: tx},
           );
         }
         await this.custodyEventRepository.create(
-          {id: v4(), deliveryId: id, eventType: DeliveryCustodyEventType.COMPLETED, performedBy: currentUser[securityId]},
+          {
+            id: v4(),
+            deliveryId: id,
+            eventType: DeliveryCustodyEventType.COMPLETED,
+            performedBy: currentUser[securityId],
+          },
           {transaction: tx},
         );
       }
 
       await tx.commit();
-      return {message: 'Delivery marked unsuccessful — order returned to store.', deliveryCompleted: completed};
+      return {
+        message: 'Delivery marked unsuccessful — order returned to store.',
+        deliveryCompleted: completed,
+      };
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
+  // ─── Rider-to-rider order handover ────────────────────────────────────────
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/handover-riders')
+  @response(200, {
+    description: 'Active riders eligible to receive a rider handover',
+  })
+  async handoverRiders(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('type') type?: RiderType,
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    if (type !== undefined && !Object.values(RiderType).includes(type)) {
+      throw new HttpErrors.BadRequest('type must be rider or van-rider.');
+    }
+    const riders = await this.riderRepository.find({
+      where: {
+        id: {neq: rider.id},
+        isActive: true,
+        isDeleted: false,
+        ...(type ? {riderType: type} : {}),
+      } as object,
+      order: ['firstName ASC', 'lastName ASC'],
+    });
+    return {
+      riders: riders.map(target => ({
+        id: target.id,
+        riderCode: target.riderCode,
+        name: `${target.firstName} ${target.lastName}`.trim(),
+        riderType: target.riderType,
+      })),
+    };
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/delivery-handover-eligible')
+  @response(200, {
+    description: "The rider's undelivered stops eligible for handover",
+  })
+  async deliveryHandoverEligible(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('deliveryId') deliveryId: string,
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    if (!deliveryId?.trim()) {
+      throw new HttpErrors.BadRequest('Query param "deliveryId" is required.');
+    }
+    const delivery = await this.deliveryRepository.findOne({
+      where: {id: deliveryId, isDeleted: false},
+    });
+    if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
+    if (delivery.riderId !== rider.id) {
+      throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
+    }
+    if (
+      ![DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY].includes(
+        delivery.status as DeliveryStatus,
+      )
+    ) {
+      throw new HttpErrors.BadRequest(
+        'Only active deliveries can be handed over.',
+      );
+    }
+
+    const stops = await this.deliveryOrderRepository.find({
+      where: {deliveryId: delivery.id} as object,
+    });
+    const currentIds = await this.currentStopIds(stops);
+    const eligibleStops = stops.filter(
+      stop =>
+        currentIds.has(stop.id) &&
+        (!stop.status ||
+          stop.status === DeliveryOrderStatus.PENDING ||
+          stop.status === DeliveryOrderStatus.OUT_FOR_DELIVERY),
+    );
+    const orders = eligibleStops.length
+      ? await this.orderRepository.find({
+          where: {
+            id: {inq: eligibleStops.map(stop => stop.orderId)},
+            isDeleted: false,
+          } as object,
+        })
+      : [];
+    const orderById = new Map(orders.map(order => [order.id, order]));
+    const eligibleOrders = eligibleStops
+      .filter(stop => {
+        const order = orderById.get(stop.orderId);
+        return delivery.status === DeliveryStatus.ASSIGNED
+          ? order?.status === OrderStatus.READY ||
+              order?.status === OrderStatus.PARTIALLY_DISPATCHED
+          : order?.status === OrderStatus.OUT_FOR_DELIVERY;
+      })
+      .map(stop => ({
+        id: stop.orderId,
+        deliveryOrderId: stop.id,
+        orderNumber: stop.orderNumber,
+        customerName: stop.customerName,
+        status: orderById.get(stop.orderId)?.status,
+      }));
+    return {delivery, orders: eligibleOrders};
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/delivery-handovers')
+  @response(200, {
+    description: 'Selected delivery orders submitted for recipient acceptance',
+  })
+  async submitDeliveryHandover(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @requestBody({
+      content: {
+        'application/json': {
+          schema: {
+            type: 'object',
+            required: ['deliveryId', 'orderIds', 'handoverToRiderId'],
+            properties: {
+              deliveryId: {type: 'string', format: 'uuid'},
+              orderIds: {
+                type: 'array',
+                minItems: 1,
+                items: {type: 'string', format: 'uuid'},
+              },
+              handoverToRiderId: {type: 'string', format: 'uuid'},
+              remarks: {type: 'string'},
+            },
+          },
+        },
+      },
+    })
+    body: {
+      deliveryId: string;
+      orderIds: string[];
+      handoverToRiderId: string;
+      remarks?: string;
+    },
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const orderIds = [...new Set(body.orderIds ?? [])];
+    if (!orderIds.length || orderIds.length !== body.orderIds.length) {
+      throw new HttpErrors.BadRequest(
+        'Provide a non-empty list of unique orderIds.',
+      );
+    }
+    if (body.handoverToRiderId === rider.id) {
+      throw new HttpErrors.BadRequest('Cannot hand orders over to yourself.');
+    }
+    const recipient = await this.riderRepository.findOne({
+      where: {
+        id: body.handoverToRiderId,
+        isActive: true,
+        isDeleted: false,
+      } as object,
+    });
+    if (!recipient)
+      throw new HttpErrors.NotFound('Target rider not found or inactive.');
+
+    const {v4} = await import('uuid');
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
+    try {
+      for (const orderId of [...orderIds].sort()) {
+        await this.dataSource.execute(
+          'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+          [orderId],
+          {transaction: tx},
+        );
+      }
+      const delivery = await this.deliveryRepository.findOne(
+        {where: {id: body.deliveryId, isDeleted: false}},
+        {transaction: tx},
+      );
+      if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
+      if (delivery.riderId !== rider.id) {
+        throw new HttpErrors.Forbidden('This delivery is not assigned to you.');
+      }
+      if (
+        ![DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY].includes(
+          delivery.status as DeliveryStatus,
+        )
+      ) {
+        throw new HttpErrors.BadRequest(
+          'Only active deliveries can be handed over.',
+        );
+      }
+
+      const runStops = await this.deliveryOrderRepository.find(
+        {where: {deliveryId: delivery.id} as object},
+        {transaction: tx},
+      );
+      const currentIds = await this.currentStopIds(runStops);
+      const stopsByOrderId = new Map(
+        runStops
+          .filter(stop => currentIds.has(stop.id))
+          .map(stop => [stop.orderId, stop]),
+      );
+      if (orderIds.some(orderId => !stopsByOrderId.has(orderId))) {
+        throw new HttpErrors.BadRequest(
+          'One or more orders are not current stops on this delivery.',
+        );
+      }
+      const selectedStops = orderIds.map(
+        orderId => stopsByOrderId.get(orderId)!,
+      );
+      if (
+        selectedStops.some(
+          stop =>
+            stop.status === DeliveryOrderStatus.HANDOVER_PENDING ||
+            stop.status === DeliveryOrderStatus.ARRIVED ||
+            stop.status === DeliveryOrderStatus.DELIVERED ||
+            stop.status === DeliveryOrderStatus.RETURN_TO_STORE,
+        )
+      ) {
+        throw new HttpErrors.BadRequest(
+          'Only pending, unreached orders can be handed over.',
+        );
+      }
+      const orders = await this.orderRepository.find(
+        {where: {id: {inq: orderIds}, isDeleted: false} as object},
+        {transaction: tx},
+      );
+      if (orders.length !== orderIds.length) {
+        throw new HttpErrors.NotFound('One or more orders were not found.');
+      }
+      const validOrderStatuses =
+        delivery.status === DeliveryStatus.ASSIGNED
+          ? [OrderStatus.READY, OrderStatus.PARTIALLY_DISPATCHED]
+          : [OrderStatus.OUT_FOR_DELIVERY];
+      if (
+        orders.some(
+          order => !validOrderStatuses.includes(order.status as OrderStatus),
+        )
+      ) {
+        throw new HttpErrors.Conflict(
+          'One or more orders are no longer eligible for handover.',
+        );
+      }
+      if (delivery.bagId) {
+        const openStops = runStops.filter(
+          stop =>
+            currentIds.has(stop.id) &&
+            stop.status !== DeliveryOrderStatus.DELIVERED &&
+            stop.status !== DeliveryOrderStatus.RETURN_TO_STORE,
+        );
+        if (openStops.some(stop => !orderIds.includes(stop.orderId))) {
+          throw new HttpErrors.BadRequest(
+            'Orders in a bagged delivery can only be handed over as a full run.',
+          );
+        }
+      }
+
+      const id = v4();
+      const handover = await this.deliveryHandoverRepository.create(
+        {
+          id,
+          deliveryId: delivery.id,
+          riderId: rider.id,
+          riderName: `${rider.firstName} ${rider.lastName}`.trim(),
+          handoverToRiderId: recipient.id,
+          handoverToName: `${recipient.firstName} ${recipient.lastName}`.trim(),
+          itemCount: selectedStops.length,
+          status: DeliveryHandoverStatus.PENDING,
+          submittedAt: new Date(),
+          submittedBy: currentUser[securityId],
+          ...(body.remarks?.trim() ? {remarks: body.remarks.trim()} : {}),
+        },
+        {transaction: tx},
+      );
+      const orderById = new Map(orders.map(order => [order.id, order]));
+      for (const stop of selectedStops) {
+        const order = orderById.get(stop.orderId)!;
+        await this.deliveryHandoverItemRepository.create(
+          {
+            id: v4(),
+            deliveryHandoverId: handover.id,
+            deliveryOrderId: stop.id,
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            customerName: stop.customerName,
+            previousStopStatus: stop.status ?? DeliveryOrderStatus.PENDING,
+          },
+          {transaction: tx},
+        );
+        await this.deliveryOrderRepository.updateById(
+          stop.id,
+          {status: DeliveryOrderStatus.HANDOVER_PENDING},
+          {transaction: tx},
+        );
+      }
+      await tx.commit();
+      return {
+        message: 'Order handover submitted for recipient acceptance.',
+        handover,
+      };
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/delivery-handovers')
+  @response(200, {
+    description: "The calling rider's outgoing delivery handovers",
+  })
+  async myDeliveryHandovers(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('tab') tab?: 'pending' | 'completed',
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    if (tab !== undefined && tab !== 'pending' && tab !== 'completed') {
+      throw new HttpErrors.BadRequest('tab must be pending or completed.');
+    }
+    const handovers = await this.deliveryHandoverRepository.find({
+      where: {
+        riderId: rider.id,
+        isDeleted: false,
+        status:
+          tab === 'completed'
+            ? {
+                inq: [
+                  DeliveryHandoverStatus.CONFIRMED,
+                  DeliveryHandoverStatus.CANCELLED,
+                ],
+              }
+            : DeliveryHandoverStatus.PENDING,
+      } as object,
+      order: ['submittedAt DESC'],
+    });
+    const handoverIds = handovers.map(handover => handover.id);
+    const items = handoverIds.length
+      ? await this.deliveryHandoverItemRepository.find({
+          where: {deliveryHandoverId: {inq: handoverIds}} as object,
+        })
+      : [];
+    const itemsByHandover = new Map<string, typeof items>();
+    for (const item of items) {
+      const rows = itemsByHandover.get(item.deliveryHandoverId) ?? [];
+      rows.push(item);
+      itemsByHandover.set(item.deliveryHandoverId, rows);
+    }
+    return {
+      handovers: handovers.map(handover => ({
+        ...handover,
+        items: itemsByHandover.get(handover.id) ?? [],
+      })),
+    };
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/delivery-handovers/incoming')
+  @response(200, {
+    description: 'Delivery order handovers addressed to the calling rider',
+  })
+  async incomingDeliveryHandovers(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('tab') tab?: 'pending' | 'completed',
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    if (tab !== undefined && tab !== 'pending' && tab !== 'completed') {
+      throw new HttpErrors.BadRequest('tab must be pending or completed.');
+    }
+    const handovers = await this.deliveryHandoverRepository.find({
+      where: {
+        handoverToRiderId: rider.id,
+        isDeleted: false,
+        status:
+          tab === 'completed'
+            ? DeliveryHandoverStatus.CONFIRMED
+            : DeliveryHandoverStatus.PENDING,
+      } as object,
+      order: ['submittedAt DESC'],
+    });
+    const handoverIds = handovers.map(handover => handover.id);
+    const items = handoverIds.length
+      ? await this.deliveryHandoverItemRepository.find({
+          where: {deliveryHandoverId: {inq: handoverIds}} as object,
+        })
+      : [];
+    const itemsByHandover = new Map<string, typeof items>();
+    for (const item of items) {
+      const rows = itemsByHandover.get(item.deliveryHandoverId) ?? [];
+      rows.push(item);
+      itemsByHandover.set(item.deliveryHandoverId, rows);
+    }
+    return {
+      handovers: handovers.map(handover => ({
+        ...handover,
+        items: itemsByHandover.get(handover.id) ?? [],
+      })),
+    };
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/delivery-handovers/{id}/cancel')
+  @response(200, {description: 'Sender cancelled a pending delivery handover'})
+  async cancelDeliveryHandover(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
+    try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.delivery_handover WHERE id = $1 FOR UPDATE',
+        [id],
+        {transaction: tx},
+      );
+      const handover = await this.deliveryHandoverRepository.findOne(
+        {where: {id, isDeleted: false}},
+        {transaction: tx},
+      );
+      if (!handover)
+        throw new HttpErrors.NotFound('Delivery handover not found.');
+      if (handover.riderId !== rider.id) {
+        throw new HttpErrors.Forbidden(
+          'Only the sending rider can cancel this handover.',
+        );
+      }
+      if (handover.status !== DeliveryHandoverStatus.PENDING) {
+        throw new HttpErrors.BadRequest(
+          `This handover is already ${handover.status}.`,
+        );
+      }
+      const items = await this.deliveryHandoverItemRepository.find(
+        {where: {deliveryHandoverId: id} as object},
+        {transaction: tx},
+      );
+      for (const item of items) {
+        await this.dataSource.execute(
+          'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+          [item.orderId],
+          {transaction: tx},
+        );
+        const stop = await this.deliveryOrderRepository.findById(
+          item.deliveryOrderId,
+          undefined,
+          {transaction: tx},
+        );
+        if (stop.status === DeliveryOrderStatus.HANDOVER_PENDING) {
+          await this.deliveryOrderRepository.updateById(
+            stop.id,
+            {status: item.previousStopStatus as DeliveryOrderStatus},
+            {transaction: tx},
+          );
+        }
+      }
+      await this.deliveryHandoverRepository.updateById(
+        id,
+        {
+          status: DeliveryHandoverStatus.CANCELLED,
+          cancelledAt: new Date(),
+          cancelledBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
+      await tx.commit();
+      return {message: 'Delivery handover cancelled.'};
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @post('/rider/delivery-handovers/{id}/confirm')
+  @response(200, {
+    description: 'Recipient accepted delivery orders from another rider',
+  })
+  async confirmDeliveryHandover(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const {v4} = await import('uuid');
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
+    try {
+      await this.dataSource.execute(
+        'SELECT id FROM public.delivery_handover WHERE id = $1 FOR UPDATE',
+        [id],
+        {transaction: tx},
+      );
+      const handover = await this.deliveryHandoverRepository.findOne(
+        {where: {id, isDeleted: false}},
+        {transaction: tx},
+      );
+      if (!handover)
+        throw new HttpErrors.NotFound('Delivery handover not found.');
+      if (handover.handoverToRiderId !== rider.id) {
+        throw new HttpErrors.Forbidden(
+          'This handover was not directed to you.',
+        );
+      }
+      if (handover.status !== DeliveryHandoverStatus.PENDING) {
+        throw new HttpErrors.BadRequest(
+          `This handover is already ${handover.status}.`,
+        );
+      }
+      const source = await this.deliveryRepository.findOne(
+        {where: {id: handover.deliveryId, isDeleted: false}},
+        {transaction: tx},
+      );
+      if (
+        !source ||
+        source.riderId !== handover.riderId ||
+        ![DeliveryStatus.ASSIGNED, DeliveryStatus.OUT_FOR_DELIVERY].includes(
+          source.status as DeliveryStatus,
+        )
+      ) {
+        throw new HttpErrors.Conflict(
+          'The sending delivery is no longer active.',
+        );
+      }
+      const items = await this.deliveryHandoverItemRepository.find(
+        {where: {deliveryHandoverId: handover.id} as object},
+        {transaction: tx},
+      );
+      if (!items.length)
+        throw new HttpErrors.Conflict('This handover has no orders.');
+      for (const orderId of items.map(item => item.orderId).sort()) {
+        await this.dataSource.execute(
+          'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+          [orderId],
+          {transaction: tx},
+        );
+      }
+      const orders = await this.orderRepository.find(
+        {
+          where: {
+            id: {inq: items.map(item => item.orderId)},
+            isDeleted: false,
+          } as object,
+        },
+        {transaction: tx},
+      );
+      const orderById = new Map(orders.map(order => [order.id, order]));
+      const stops = await Promise.all(
+        items.map(item =>
+          this.deliveryOrderRepository.findById(
+            item.deliveryOrderId,
+            undefined,
+            {transaction: tx},
+          ),
+        ),
+      );
+      if (
+        orders.length !== items.length ||
+        stops.some(
+          (stop, index) =>
+            stop.deliveryId !== source.id ||
+            stop.status !== DeliveryOrderStatus.HANDOVER_PENDING ||
+            orderById.get(items[index].orderId)?.assignedRiderId !==
+              source.riderId,
+        )
+      ) {
+        throw new HttpErrors.Conflict(
+          'One or more orders changed after this handover was submitted.',
+        );
+      }
+      const validOrderStatuses =
+        source.status === DeliveryStatus.ASSIGNED
+          ? [OrderStatus.READY, OrderStatus.PARTIALLY_DISPATCHED]
+          : [OrderStatus.OUT_FOR_DELIVERY];
+      if (
+        orders.some(
+          order => !validOrderStatuses.includes(order.status as OrderStatus),
+        )
+      ) {
+        throw new HttpErrors.Conflict(
+          'One or more orders are no longer eligible for handover.',
+        );
+      }
+      const allSourceStops = await this.deliveryOrderRepository.find(
+        {where: {deliveryId: source.id} as object},
+        {transaction: tx},
+      );
+      const currentSourceIds = await this.currentStopIds(allSourceStops);
+      const openSourceStops = allSourceStops.filter(
+        stop =>
+          currentSourceIds.has(stop.id) &&
+          stop.status !== DeliveryOrderStatus.DELIVERED &&
+          stop.status !== DeliveryOrderStatus.RETURN_TO_STORE,
+      );
+      const selectedOrderIds = new Set(items.map(item => item.orderId));
+      const remainingSourceStops = openSourceStops.filter(
+        stop => !selectedOrderIds.has(stop.orderId),
+      );
+      if (source.bagId && remainingSourceStops.length) {
+        throw new HttpErrors.Conflict(
+          'A bagged delivery can only be transferred when all remaining orders are included.',
+        );
+      }
+
+      const recipient = await this.riderRepository.findOne(
+        {where: {id: rider.id, isActive: true, isDeleted: false} as object},
+        {transaction: tx},
+      );
+      if (!recipient)
+        throw new HttpErrors.Forbidden('This rider account is inactive.');
+      const store = await this.storeRepository.findOne(
+        {where: {id: source.storeId} as object},
+        {transaction: tx},
+      );
+      const now = new Date();
+      const ddMM = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const newDeliveryId = v4();
+      const deliveryNumber = `DL-${store?.code ?? 'ST'}-${ddMM}-H${handover.id.slice(0, 8)}`;
+      await this.deliveryRepository.create(
+        {
+          id: newDeliveryId,
+          deliveryNumber,
+          status: source.status,
+          storeId: source.storeId,
+          riderId: rider.id,
+          riderName: `${rider.firstName} ${rider.lastName}`.trim(),
+          ...(source.bagId && remainingSourceStops.length === 0
+            ? {bagId: source.bagId}
+            : {}),
+          deliverySlot: source.deliverySlot,
+          deliverySlotId: source.deliverySlotId,
+          deliveryDate: source.deliveryDate,
+          orderCount: items.length,
+          assignedAt: now,
+          assignedBy: currentUser[securityId],
+          ...(source.status === DeliveryStatus.OUT_FOR_DELIVERY
+            ? {startedAt: now, startedBy: currentUser[securityId]}
+            : {}),
+          remarks: handover.remarks,
+        },
+        {transaction: tx},
+      );
+      const newStopStatus =
+        source.status === DeliveryStatus.OUT_FOR_DELIVERY
+          ? DeliveryOrderStatus.OUT_FOR_DELIVERY
+          : DeliveryOrderStatus.PENDING;
+      for (const item of items) {
+        const order = orderById.get(item.orderId)!;
+        await this.deliveryOrderRepository.updateById(
+          item.deliveryOrderId,
+          {
+            deliveryId: newDeliveryId,
+            status: newStopStatus,
+          },
+          {transaction: tx},
+        );
+        await this.orderRepository.updateById(
+          order.id,
+          {
+            assignedRiderId: rider.id,
+            assignedRiderName: `${rider.firstName} ${rider.lastName}`.trim(),
+          },
+          {transaction: tx},
+        );
+        await this.custodyEventRepository.create(
+          {
+            id: v4(),
+            deliveryId: source.id,
+            orderId: order.id,
+            eventType: DeliveryCustodyEventType.ORDER_HANDED_OVER,
+            remarks: handover.remarks,
+            performedBy: handover.submittedBy,
+          },
+          {transaction: tx},
+        );
+        await this.custodyEventRepository.create(
+          {
+            id: v4(),
+            deliveryId: newDeliveryId,
+            orderId: order.id,
+            eventType: DeliveryCustodyEventType.ORDER_RECEIVED,
+            remarks: handover.remarks,
+            performedBy: currentUser[securityId],
+          },
+          {transaction: tx},
+        );
+      }
+      const completedSource = remainingSourceStops.length === 0;
+      await this.deliveryRepository.updateById(
+        source.id,
+        {
+          orderCount: remainingSourceStops.length,
+          ...(completedSource
+            ? {
+                status: DeliveryStatus.COMPLETED,
+                completedAt: now,
+                completedBy: currentUser[securityId],
+                ...(source.bagId ? {bagId: null as unknown as string} : {}),
+              }
+            : {}),
+        },
+        {transaction: tx},
+      );
+      if (source.bagId && completedSource) {
+        await this.bagRepository.updateById(
+          source.bagId,
+          {currentDeliveryId: newDeliveryId},
+          {transaction: tx},
+        );
+        await this.custodyEventRepository.create(
+          {
+            id: v4(),
+            deliveryId: source.id,
+            eventType: DeliveryCustodyEventType.BAG_TRANSFERRED,
+            remarks: handover.remarks,
+            performedBy: currentUser[securityId],
+          },
+          {transaction: tx},
+        );
+        await this.custodyEventRepository.create(
+          {
+            id: v4(),
+            deliveryId: newDeliveryId,
+            eventType: DeliveryCustodyEventType.BAG_TRANSFERRED,
+            remarks: handover.remarks,
+            performedBy: currentUser[securityId],
+          },
+          {transaction: tx},
+        );
+      }
+      if (completedSource) {
+        await this.custodyEventRepository.create(
+          {
+            id: v4(),
+            deliveryId: source.id,
+            eventType: DeliveryCustodyEventType.COMPLETED,
+            remarks: 'All remaining orders were handed over to another rider.',
+            performedBy: currentUser[securityId],
+          },
+          {transaction: tx},
+        );
+      }
+      await this.custodyEventRepository.create(
+        {
+          id: v4(),
+          deliveryId: newDeliveryId,
+          eventType:
+            source.status === DeliveryStatus.OUT_FOR_DELIVERY
+              ? DeliveryCustodyEventType.OUT_FOR_DELIVERY
+              : DeliveryCustodyEventType.ASSIGNED,
+          remarks: handover.remarks,
+          performedBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
+      await this.deliveryHandoverRepository.updateById(
+        handover.id,
+        {
+          status: DeliveryHandoverStatus.CONFIRMED,
+          confirmedAt: now,
+          confirmedBy: currentUser[securityId],
+        },
+        {transaction: tx},
+      );
+      await tx.commit();
+      return {
+        message: 'Delivery order handover accepted.',
+        deliveryId: newDeliveryId,
+        deliveryNumber,
+        orderIds: items.map(item => item.orderId),
+        sourceDeliveryCompleted: completedSource,
+      };
     } catch (error) {
       await tx.rollback();
       throw error;
@@ -729,7 +1843,10 @@ export class RiderDeliveryController {
   @authenticate('jwt')
   @authorize({roles: ['rider']})
   @get('/rider/cash-handovers/pending-items')
-  @response(200, {description: "The rider's own cash collections not yet submitted for handover"})
+  @response(200, {
+    description:
+      "The rider's unsubmitted cash collections for delivered orders",
+  })
   async pendingCashItems(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
@@ -739,44 +1856,51 @@ export class RiderDeliveryController {
       order: ['paymentDate DESC'],
     });
     const orderIds = [...new Set(transactions.map(t => t.orderId))];
-    const orders = orderIds.length
-      ? await this.orderRepository.find({where: {id: {inq: orderIds}} as object})
-      : [];
+    const orders = await this.findCashHandoverEligibleOrders(orderIds);
     const orderById = new Map(orders.map(o => [o.id, o]));
 
     // The store this cash is owed to — the order's own store, not
     // necessarily wherever the rider happens to be right now.
     const storeIds = [
-      ...new Set(orders.map(o => (o as {storeId?: string}).storeId).filter((id): id is string => Boolean(id))),
+      ...new Set(
+        orders
+          .map(o => (o as {storeId?: string}).storeId)
+          .filter((id): id is string => Boolean(id)),
+      ),
     ];
     const stores = storeIds.length
-      ? await this.storeRepository.find({where: {id: {inq: storeIds}} as object})
+      ? await this.storeRepository.find({
+          where: {id: {inq: storeIds}} as object,
+        })
       : [];
     const storeById = new Map(stores.map(s => [s.id, s]));
 
     return {
-      items: transactions.map(t => {
+      items: transactions.flatMap(t => {
         const order = orderById.get(t.orderId);
+        if (!order) return [];
         const store = order?.storeId ? storeById.get(order.storeId) : undefined;
-        return {
-          id: t.id,
-          orderId: t.orderId,
-          orderNumber: order?.orderNumber ?? null,
-          amount: t.amount,
-          paymentDate: t.paymentDate,
-          store: store
-            ? {
-                id: store.id,
-                name: store.name,
-                code: store.code,
-                address: store.address,
-                city: store.city,
-                state: store.state,
-                pincode: store.pincode,
-                phone: store.phone ?? null,
-              }
-            : null,
-        };
+        return [
+          {
+            id: t.id,
+            orderId: t.orderId,
+            orderNumber: order?.orderNumber ?? null,
+            amount: t.amount,
+            paymentDate: t.paymentDate,
+            store: store
+              ? {
+                  id: store.id,
+                  name: store.name,
+                  code: store.code,
+                  address: store.address,
+                  city: store.city,
+                  state: store.state,
+                  pincode: store.pincode,
+                  phone: store.phone ?? null,
+                }
+              : null,
+          },
+        ];
       }),
     };
   }
@@ -786,7 +1910,9 @@ export class RiderDeliveryController {
   @authenticate('jwt')
   @authorize({roles: ['rider']})
   @post('/rider/cash-handovers')
-  @response(200, {description: 'Cash handover batch submitted, awaiting store confirmation'})
+  @response(200, {
+    description: 'Cash handover submitted, awaiting recipient confirmation',
+  })
   async submitHandover(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @requestBody({
@@ -796,17 +1922,26 @@ export class RiderDeliveryController {
             type: 'object',
             required: ['paymentTransactionIds', 'handoverToType'],
             properties: {
-              paymentTransactionIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
-              handoverToType: {type: 'string', enum: Object.values(RiderCashHandoverTargetType)},
+              paymentTransactionIds: {
+                type: 'array',
+                minItems: 1,
+                items: {type: 'string', format: 'uuid'},
+              },
+              handoverToType: {
+                type: 'string',
+                enum: Object.values(RiderCashHandoverTargetType),
+              },
               handoverToStoreId: {
                 type: 'string',
                 format: 'uuid',
-                description: 'Required when handoverToType is "store" — covers both "Washing Facility" and "Nearby Store" in the app UI, same picker either way.',
+                description:
+                  'Required when handoverToType is "store" — covers both "Washing Facility" and "Nearby Store" in the app UI, same picker either way.',
               },
               handoverToRiderId: {
                 type: 'string',
                 format: 'uuid',
-                description: 'Required when handoverToType is "rider" — covers both "Van" and "Rider" in the app UI, filtered by that rider\'s own riderType.',
+                description:
+                  'Required when handoverToType is "rider" — covers both "Van" and "Rider" in the app UI, filtered by that rider\'s own riderType.',
               },
               remarks: {type: 'string'},
             },
@@ -827,49 +1962,74 @@ export class RiderDeliveryController {
       where: {id: {inq: body.paymentTransactionIds}} as object,
     });
     if (transactions.length !== body.paymentTransactionIds.length) {
-      throw new HttpErrors.NotFound('One or more payment transactions were not found.');
+      throw new HttpErrors.NotFound(
+        'One or more payment transactions were not found.',
+      );
     }
     const invalid = transactions.filter(
-      t => (t as unknown as {riderId?: string}).riderId !== rider.id ||
-        (t as unknown as {riderHandoverStatus?: string}).riderHandoverStatus !== 'with_rider',
+      t =>
+        (t as unknown as {riderId?: string}).riderId !== rider.id ||
+        (t as unknown as {riderHandoverStatus?: string}).riderHandoverStatus !==
+          'with_rider',
     );
     if (invalid.length) {
-      throw new HttpErrors.BadRequest('One or more transactions are not yours to hand over, or already submitted.');
+      throw new HttpErrors.BadRequest(
+        'One or more transactions are not yours to hand over, or already submitted.',
+      );
     }
 
     // ── Resolve who this is going to ──
     let handoverToName: string;
     if (body.handoverToType === RiderCashHandoverTargetType.STORE) {
       if (!body.handoverToStoreId) {
-        throw new HttpErrors.BadRequest('handoverToStoreId is required when handoverToType is "store".');
+        throw new HttpErrors.BadRequest(
+          'handoverToStoreId is required when handoverToType is "store".',
+        );
       }
       const targetStore = await this.storeRepository.findOne({
         where: {id: body.handoverToStoreId, isDeleted: false} as object,
       });
-      if (!targetStore) throw new HttpErrors.NotFound('Target store not found.');
+      if (!targetStore)
+        throw new HttpErrors.NotFound('Target store not found.');
       handoverToName = targetStore.name;
     } else if (body.handoverToType === RiderCashHandoverTargetType.RIDER) {
       if (!body.handoverToRiderId) {
-        throw new HttpErrors.BadRequest('handoverToRiderId is required when handoverToType is "rider".');
+        throw new HttpErrors.BadRequest(
+          'handoverToRiderId is required when handoverToType is "rider".',
+        );
       }
       if (body.handoverToRiderId === rider.id) {
         throw new HttpErrors.BadRequest('Cannot hand cash over to yourself.');
       }
       const targetRider = await this.riderRepository.findOne({
-        where: {id: body.handoverToRiderId, isActive: true, isDeleted: false} as object,
+        where: {
+          id: body.handoverToRiderId,
+          isActive: true,
+          isDeleted: false,
+        } as object,
       });
-      if (!targetRider) throw new HttpErrors.NotFound('Target rider not found or inactive.');
+      if (!targetRider)
+        throw new HttpErrors.NotFound('Target rider not found or inactive.');
       handoverToName = `${targetRider.firstName} ${targetRider.lastName}`;
     } else {
-      throw new HttpErrors.BadRequest(`Unknown handoverToType: ${body.handoverToType}.`);
+      throw new HttpErrors.BadRequest(
+        `Unknown handoverToType: ${body.handoverToType}.`,
+      );
     }
 
     const orderIds = [...new Set(transactions.map(t => t.orderId))];
-    const orders = await this.orderRepository.find({where: {id: {inq: orderIds}} as object});
+    const orders = await this.findCashHandoverEligibleOrders(orderIds);
+    if (orders.length !== orderIds.length) {
+      throw new HttpErrors.Conflict(
+        'Cash can only be handed over for delivered orders.',
+      );
+    }
     const orderById = new Map(orders.map(o => [o.id, o]));
     const customerIds = [...new Set(orders.map(o => o.customerId))];
     const customers = customerIds.length
-      ? await this.customerRepository.find({where: {id: {inq: customerIds}} as object})
+      ? await this.customerRepository.find({
+          where: {id: {inq: customerIds}} as object,
+        })
       : [];
     const customerById = new Map(customers.map(c => [c.id, c]));
     const totalAmount = transactions.reduce((s, t) => s + Number(t.amount), 0);
@@ -881,7 +2041,9 @@ export class RiderDeliveryController {
     const handoverNumber = `CH-${rider.riderCode}-${ddMM}-${seq}`;
     const handoverCode = await this.generateCashHandoverCode();
 
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
       const handover = await this.riderCashHandoverRepository.create(
         {
@@ -915,7 +2077,9 @@ export class RiderDeliveryController {
             paymentTransactionId: t.id,
             orderId: t.orderId,
             orderNumber: order?.orderNumber ?? '',
-            customerName: customer ? `${customer.firstName} ${customer.lastName}` : 'Customer',
+            customerName: customer
+              ? `${customer.firstName} ${customer.lastName}`
+              : 'Customer',
             amount: t.amount,
           },
           {transaction: tx},
@@ -947,49 +2111,10 @@ export class RiderDeliveryController {
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
     const handovers = await this.riderCashHandoverRepository.find({
-      where: {riderId: rider.id, isDeleted: false, ...(status ? {status} : {})} as object,
-      order: ['submittedAt DESC'],
-    });
-    const handoverIds = handovers.map(h => h.id);
-    const items = handoverIds.length
-      ? await this.riderCashHandoverItemRepository.find({
-          where: {riderCashHandoverId: {inq: handoverIds}} as object,
-        })
-      : [];
-    const itemsByHandover = new Map<string, typeof items>();
-    for (const item of items) {
-      const list = itemsByHandover.get(item.riderCashHandoverId) ?? [];
-      list.push(item);
-      itemsByHandover.set(item.riderCashHandoverId, list);
-    }
-
-    return {
-      handovers: handovers.map(h => ({...h, items: itemsByHandover.get(h.id) ?? []})),
-    };
-  }
-
-  // ─── Cash handed to ME by another rider ────────────────────────────────────
-  // Only ever non-empty for a handoverToType:'rider' batch — a store-
-  // targeted one is confirmed by store staff on the admin panel instead
-  // (RiderCashHandoverController.confirm), never appears here.
-
-  @authenticate('jwt')
-  @authorize({roles: ['rider']})
-  @get('/rider/cash-handovers/incoming')
-  @response(200, {description: 'Cash handover batches directed to the calling rider by another rider'})
-  async incomingHandovers(
-    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
-    // Pending: awaiting my confirmation. Completed: I've already confirmed
-    // it. Same tab shape as GET /rider/pickup-requests?tab=.
-    @param.query.string('tab') tab?: 'pending' | 'completed',
-  ): Promise<object> {
-    const rider = await this.resolveActiveRider(currentUser);
-    const handovers = await this.riderCashHandoverRepository.find({
       where: {
-        handoverToType: RiderCashHandoverTargetType.RIDER,
-        handoverToRiderId: rider.id,
+        riderId: rider.id,
         isDeleted: false,
-        status: tab === 'completed' ? RiderCashHandoverStatus.CONFIRMED : RiderCashHandoverStatus.PENDING,
+        ...(status ? {status} : {}),
       } as object,
       order: ['submittedAt DESC'],
     });
@@ -1007,7 +2132,62 @@ export class RiderDeliveryController {
     }
 
     return {
-      handovers: handovers.map(h => ({...h, items: itemsByHandover.get(h.id) ?? []})),
+      handovers: handovers.map(h => ({
+        ...h,
+        items: itemsByHandover.get(h.id) ?? [],
+      })),
+    };
+  }
+
+  // ─── Cash handed to ME by another rider ────────────────────────────────────
+  // Only ever non-empty for a handoverToType:'rider' batch — a store-
+  // targeted one is confirmed by store staff on the admin panel instead
+  // (RiderCashHandoverController.confirm), never appears here.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/cash-handovers/incoming')
+  @response(200, {
+    description:
+      'Cash handover batches directed to the calling rider by another rider',
+  })
+  async incomingHandovers(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    // Pending: awaiting my confirmation. Completed: I've already confirmed
+    // it. Same tab shape as GET /rider/pickup-requests?tab=.
+    @param.query.string('tab') tab?: 'pending' | 'completed',
+  ): Promise<object> {
+    const rider = await this.resolveActiveRider(currentUser);
+    const handovers = await this.riderCashHandoverRepository.find({
+      where: {
+        handoverToType: RiderCashHandoverTargetType.RIDER,
+        handoverToRiderId: rider.id,
+        isDeleted: false,
+        status:
+          tab === 'completed'
+            ? RiderCashHandoverStatus.CONFIRMED
+            : RiderCashHandoverStatus.PENDING,
+      } as object,
+      order: ['submittedAt DESC'],
+    });
+    const handoverIds = handovers.map(h => h.id);
+    const items = handoverIds.length
+      ? await this.riderCashHandoverItemRepository.find({
+          where: {riderCashHandoverId: {inq: handoverIds}} as object,
+        })
+      : [];
+    const itemsByHandover = new Map<string, typeof items>();
+    for (const item of items) {
+      const list = itemsByHandover.get(item.riderCashHandoverId) ?? [];
+      list.push(item);
+      itemsByHandover.set(item.riderCashHandoverId, list);
+    }
+
+    return {
+      handovers: handovers.map(h => ({
+        ...h,
+        items: itemsByHandover.get(h.id) ?? [],
+      })),
     };
   }
 
@@ -1031,7 +2211,9 @@ export class RiderDeliveryController {
     @param.path.string('id') id: string,
   ): Promise<object> {
     const rider = await this.resolveActiveRider(currentUser);
-    const handover = await this.riderCashHandoverRepository.findOne({where: {id, isDeleted: false}});
+    const handover = await this.riderCashHandoverRepository.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!handover) throw new HttpErrors.NotFound('Handover not found.');
     return this.doConfirmIncomingHandover(handover, rider, currentUser);
   }
@@ -1052,7 +2234,11 @@ export class RiderDeliveryController {
     @requestBody({
       content: {
         'application/json': {
-          schema: {type: 'object', required: ['code'], properties: {code: {type: 'string'}}},
+          schema: {
+            type: 'object',
+            required: ['code'],
+            properties: {code: {type: 'string'}},
+          },
         },
       },
     })
@@ -1062,7 +2248,8 @@ export class RiderDeliveryController {
     const handover = await this.riderCashHandoverRepository.findOne({
       where: {handoverCode: body.code, isDeleted: false} as object,
     });
-    if (!handover) throw new HttpErrors.NotFound('No handover found for this code.');
+    if (!handover)
+      throw new HttpErrors.NotFound('No handover found for this code.');
     return this.doConfirmIncomingHandover(handover, rider, currentUser);
   }
 
@@ -1071,11 +2258,16 @@ export class RiderDeliveryController {
     rider: Rider,
     currentUser: UserProfile,
   ): Promise<object> {
-    if (handover.handoverToType !== RiderCashHandoverTargetType.RIDER || handover.handoverToRiderId !== rider.id) {
+    if (
+      handover.handoverToType !== RiderCashHandoverTargetType.RIDER ||
+      handover.handoverToRiderId !== rider.id
+    ) {
       throw new HttpErrors.Forbidden('This handover was not directed to you.');
     }
     if (handover.status !== RiderCashHandoverStatus.PENDING) {
-      throw new HttpErrors.BadRequest(`This handover is already ${handover.status}.`);
+      throw new HttpErrors.BadRequest(
+        `This handover is already ${handover.status}.`,
+      );
     }
 
     const items = await this.riderCashHandoverItemRepository.find({

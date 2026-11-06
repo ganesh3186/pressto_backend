@@ -23,6 +23,8 @@ export * from './transfer-item.repository';
 export * from './transfer-custody-event.repository';
 export * from './delivery.repository';
 export * from './delivery-order.repository';
+export * from './delivery-handover.repository';
+export * from './delivery-handover-item.repository';
 export * from './delivery-custody-event.repository';
 export * from './rider-cash-handover.repository';
 export * from './rider-cash-handover-item.repository';

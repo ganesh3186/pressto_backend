@@ -4570,7 +4570,8 @@ export class OrderService {
         where: {orderId: order.id}, order: ['createdAt DESC'], limit: 1,
       }, options))[0] : undefined;
       if (channel === 'rider' && ((!stop && params.deliveryId) ||
-        (stop && (stop.status === DeliveryOrderStatus.RETURN_TO_STORE || stop.status === DeliveryOrderStatus.DELIVERED ||
+        (stop && (stop.status === DeliveryOrderStatus.HANDOVER_PENDING ||
+          stop.status === DeliveryOrderStatus.RETURN_TO_STORE || stop.status === DeliveryOrderStatus.DELIVERED ||
           (params.deliveryId && stop.deliveryId !== params.deliveryId))))) {
         throw new HttpErrors.Conflict('This delivery stop is no longer available for handover.');
       }

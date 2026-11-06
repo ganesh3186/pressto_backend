@@ -274,6 +274,14 @@ Full detail, including the "Handover To" picker and receiving cash from
 another rider, has moved to its own doc:
 **`RIDER_APP_CASH_HANDOVER_API.md`**.
 
+## 7. Hand selected orders to another rider
+
+The sender can submit pending, unreached orders from an active delivery to
+another rider or Van Rider. The recipient must accept the request before
+assignment changes. See **`RIDER_APP_ORDER_HANDOVER_API.md`** for the target
+picker, eligibility, acceptance, and cancellation endpoints. This is separate
+from both the customer-at-door delivery action (§5) and cash handover (§6).
+
 ---
 
 ## Typical flow, end to end

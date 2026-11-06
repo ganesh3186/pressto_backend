@@ -115,6 +115,15 @@ describe('completion after a partial handover', () => {
     expect(test.state().audits).to.have.length(0);
   });
 
+  it('rejects rider delivery completion when the stop is pending handover', async () => {
+    const test = setup(true);
+    test.state().stops[0].status = 'handover_pending';
+    const previous = copy(test.state());
+    await expect(test.collect()).to.be.rejectedWith(/delivery stop is no longer available/);
+    expect(test.state()).to.eql(previous);
+    expect(test.notifications).to.have.length(0);
+  });
+
   it('does not soft-delete records or conflict with an already archived handover', async () => {
     const test = setup();
     test.state().handovers.push({...copy(test.state().handovers[0]), id: 'archived', isDeleted: true});

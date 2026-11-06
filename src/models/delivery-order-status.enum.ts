@@ -3,6 +3,7 @@ export enum DeliveryOrderStatus {
   PENDING = 'pending',
   OUT_FOR_DELIVERY = 'out_for_delivery',
   ARRIVED = 'arrived',
+  HANDOVER_PENDING = 'handover_pending',
   DELIVERED = 'delivered',
   RETURN_TO_STORE = 'return_to_store',
 }
