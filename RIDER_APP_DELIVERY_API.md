@@ -204,16 +204,17 @@ naming the current status otherwise — call §4 first).
 - **On-account orders (`isOnAccount: true`)** skip payment entirely — send
   the body without payment fields, or omit the body. Deferred billing, same
   posture as order creation elsewhere in the system.
-- **Every other order must arrive paid in full** — no partial handover.
-  `amount + walletAmount` must cover the live `balanceDue` from §3
-  (`400` — `"Full payment of ₹X is required at delivery for this order."` —
-  if short). `paymentMode` defaults to `cash` when omitted but `amount` is
-  sent.
+- **Payment at delivery is optional** — the rider may deliver an order
+  without collecting payment. If the customer pays only part of the balance,
+  send the collected `amount` and/or `walletAmount`; the remaining balance
+  stays due on the order. The server validates any supplied payment against
+  the live balance and rejects amounts that exceed it. `paymentMode` defaults
+  to `cash` when omitted but a positive `amount` is sent.
 - `walletAmount` is a separate deduction from the customer's Pressto wallet,
   on top of whatever `paymentMode` amount is collected in person — send both
   if the customer is paying with a mix.
-- If `due <= 0` already (nothing owed), sending no payment fields at all is
-  fine — the order still moves to `delivered`.
+- Sending no payment fields is fine whether the balance is zero or still
+  due — the order still moves to `delivered`.
 
 **Response `200`**
 ```json
@@ -230,11 +231,61 @@ order on the manifest until every stop is `delivered` or `return_to_store`.
 | `404` | Delivery not found, or this order isn't on this delivery's manifest |
 | `403` | This delivery is not assigned to the calling rider |
 | `400` | Order isn't `out_for_delivery` yet |
-| `400` | Payment short of the live balance due (non-on-account order) |
+| `400` | Supplied payment exceeds the live balance due |
 
 ---
 
-## 5a. Drop Unsuccessful
+## 5a. Request a payment QR
+
+```
+POST /rider/deliveries/{id}/orders/{orderId}/payment-qr
+```
+No request body. The rider must own the active delivery and the order must
+still be on that delivery and `out_for_delivery`. On-account orders and
+orders with no remaining balance cannot create a QR.
+
+The API calculates the live amount due; the app must not send an amount.
+It creates or reuses the order's Razorpay payment link, then returns a PNG
+QR data URL encoding that payment URL.
+
+**Response `200`**
+```json
+{
+  "gatewayPaymentLinkId": "uuid",
+  "deliveryId": "uuid",
+  "orderId": "uuid",
+  "orderNumber": "ORD-00001234",
+  "amount": 450,
+  "currency": "INR",
+  "status": "created",
+  "paymentUrl": "https://rzp.io/i/example",
+  "qrCodeDataUrl": "data:image/png;base64,...",
+  "expiresAt": "2026-11-07T10:00:00.000Z"
+}
+```
+Display `qrCodeDataUrl` for the customer to scan, or share `paymentUrl`
+directly. The link expires after 24 hours. Repeated requests for the same
+unpaid amount reuse the active link.
+
+After Razorpay confirms payment, the existing `/webhooks/razorpay`
+`payment_link.paid` handler records a `gateway` payment against the order.
+The rider app can poll `GET /payments/gateway-links/{gatewayPaymentLinkId}`
+for confirmation. Since the payment is stored as a normal order payment
+transaction, the admin order/payment status updates through the existing
+payment-status flow; no manual admin refresh action is needed beyond the
+panel's normal data refresh.
+
+**Error cases:**
+| Status | Cause |
+|---|---|
+| `403` | Delivery is assigned to another rider |
+| `404` | Delivery or order is not found on the rider's current delivery |
+| `400` | Run/order is not active for delivery, or the order is on-account |
+| `409` | Order has no balance due, or is pending handover |
+
+---
+
+## 5b. Drop Unsuccessful
 
 ```
 POST /rider/deliveries/{id}/orders/{orderId}/delivery-unsuccessful
@@ -274,6 +325,14 @@ Full detail, including the "Handover To" picker and receiving cash from
 another rider, has moved to its own doc:
 **`RIDER_APP_CASH_HANDOVER_API.md`**.
 
+## 7. Hand selected orders to another rider
+
+The sender can submit pending, unreached orders from an active delivery to
+another rider or Van Rider. The recipient must accept the request before
+assignment changes. See **`RIDER_APP_ORDER_HANDOVER_API.md`** for the target
+picker, eligibility, acceptance, and cancellation endpoints. This is separate
+from both the customer-at-door delivery action (§5) and cash handover (§6).
+
 ---
 
 ## Typical flow, end to end
@@ -281,7 +340,7 @@ another rider, has moved to its own doc:
 1. `GET /rider/deliveries` → see today's assigned runs.
 2. `GET /rider/deliveries/{id}` → see the orders on this run, addresses, and live balance due for each.
 3. `PATCH .../{id}/status {status: "out_for_delivery"}` → start the run; linked orders flip to `out_for_delivery` automatically.
-4. At each stop (optional): `PATCH .../{id}/orders/{orderId}/status {status: "arrived"}` (§4a) the moment the rider reaches the address, then either `POST .../{id}/orders/{orderId}/deliver` with payment + `deliverTo` (skip payment fields for on-account orders) → order marked `delivered`, or — if nobody could receive it — `POST .../{id}/orders/{orderId}/delivery-unsuccessful` (§5a) with `reasons` → order returned to store instead.
+4. At each stop (optional): `PATCH .../{id}/orders/{orderId}/status {status: "arrived"}` (§4a) the moment the rider reaches the address. For an unpaid non-on-account order, call `POST .../{id}/orders/{orderId}/payment-qr` (§5a) and display its QR while the customer pays. Then either call `POST .../{id}/orders/{orderId}/deliver` with payment + `deliverTo` (skip payment fields for on-account orders) → order marked `delivered`, or — if nobody could receive it — `POST .../{id}/orders/{orderId}/delivery-unsuccessful` (§5b) with `reasons` → order returned to store instead.
 5. When the last order's `deliver`/`delivery-unsuccessful` call reports `deliveryCompleted: true`, the run and bag are already closed out — nothing further to call.
 6. Periodically (or at shift end): submit collected cash for handover — see `RIDER_APP_CASH_HANDOVER_API.md`.
 

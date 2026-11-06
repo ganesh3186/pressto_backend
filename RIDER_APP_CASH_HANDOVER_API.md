@@ -1,5 +1,8 @@
 # Rider App — Cash Handover Integration Guide
 
+For the combined cash and order handover guide, see
+[`RIDER_APP_HANDOVER_API.md`](./RIDER_APP_HANDOVER_API.md).
+
 For the rider app team. Covers the "Handover Cash" screen end to end — all
 in `rider-delivery.controller.ts` (submission + own history) and
 `rider-cash-handover.controller.ts` (store-side confirm, admin panel only,
@@ -18,9 +21,9 @@ store-only version of this flow before the "Handover To" picker existed.
 
 ## 1. Where the cash comes from
 
-Cash/UPI collected at the door piles up "with the rider" until submitted as
-a batch. Wallet payments never appear here — only `paymentMode: cash` (and
-similar in-person modes) collected via `POST
+Cash collected at the door stays "with the rider" until submitted as a batch.
+Wallet and non-cash payments never appear here — only `paymentMode: cash`
+collected via `POST
 /rider/deliveries/{id}/orders/{orderId}/deliver` (see
 `RIDER_APP_DELIVERY_API.md` §5) create a handover-eligible
 `PaymentTransaction`, tagged `riderHandoverStatus: 'with_rider'`.
@@ -28,7 +31,10 @@ similar in-person modes) collected via `POST
 ```
 GET /rider/cash-handovers/pending-items
 ```
-Everything the calling rider currently holds and hasn't yet submitted.
+Cash the calling rider currently holds for **delivered orders** and hasn't yet
+submitted. A later full return does not make it ineligible. A payment remains
+ineligible if its order was never delivered. The submission endpoint applies
+the same rule.
 
 **Response `200`**
 ```json
@@ -62,11 +68,33 @@ underlying target types:
 | Van | `rider` | `handoverToRiderId` | `Rider` where `riderType: 'van-rider'` |
 | Rider | `rider` | `handoverToRiderId` | `Rider` where `riderType: 'rider'` |
 
-**Known gap:** there is currently no rider-app-facing endpoint to list
-candidate riders/vans for the "Rider"/"Van" picker (only `GET /rider/stores`
-exists for the store side). Until one exists, the Van/Rider option can't be
-wired up to a real dropdown — flag to backend if/when the app team is ready
-to build that screen.
+Use the shared rider target endpoint to populate either rider picker:
+
+```
+GET /rider/handover-riders?type=rider|van-rider
+```
+
+Omit `type` to return both types. The calling rider is excluded; inactive and
+deleted riders are never returned.
+
+**Response `200`**
+
+```json
+{
+  "riders": [
+    {
+      "id": "uuid",
+      "riderCode": "RID002",
+      "name": "Ravi Kumar",
+      "riderType": "rider"
+    }
+  ]
+}
+```
+
+Use the selected rider's `id` as `handoverToRiderId` when submitting cash or
+an order handover. `type` accepts only `rider` or `van-rider`; another value
+returns `400`.
 
 Sending `handoverToType: 'store'` without `handoverToStoreId` (or `'rider'`
 without `handoverToRiderId`) is a `400`. Sending your own rider id as
@@ -97,7 +125,9 @@ or, for a rider/van target:
 }
 ```
 Bundles the listed pending items into one batch. `400` if any id isn't the
-calling rider's own, or was already submitted.
+calling rider's own, or was already submitted. The API only accepts cash for
+orders currently marked delivered or whose history shows they were delivered
+before a later full return.
 
 **Response `200`**
 ```json
