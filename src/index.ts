@@ -5,6 +5,19 @@ dotenv.config();
 import {ApplicationConfig, presstoBackendApplication} from './application';
 export * from './application';
 
+// Which proxy may report the real client IP (Express "trust proxy"). Default
+// `loopback` fits nginx on the same server. Behind an AWS load balancer set
+// TRUST_PROXY=1, otherwise every client shares the balancer's IP and the
+// per-IP rate limits apply to all users together.
+export function trustProxySetting(
+  value = process.env.TRUST_PROXY,
+): boolean | number | string {
+  if (!value) return 'loopback';
+  if (value === 'true' || value === 'false') return value === 'true';
+  const hops = Number(value);
+  return Number.isInteger(hops) && hops >= 0 ? hops : value;
+}
+
 export async function main(options: ApplicationConfig = {}) {
   const app = new presstoBackendApplication(options);
   await app.boot();
@@ -33,9 +46,9 @@ if (require.main === module || process.env.NODE_APP_INSTANCE !== undefined) {
       // correct .env, if HOST ever went unset. Still fully overridable via
       // .env's HOST for a server that genuinely wants loopback-only.
       host: process.env.HOST ?? '0.0.0.0',
-      // nginx runs on this server, so only a loopback peer may say who the real
-      // client is. A client reaching a Node port directly can't fake its IP.
-      expressSettings: {'trust proxy': 'loopback'},
+      // Only a trusted proxy may say who the real client is, so a client
+      // reaching a Node port directly can't fake its IP. See trustProxySetting.
+      expressSettings: {'trust proxy': trustProxySetting()},
       // The `gracePeriodForClose` provides a graceful close for http/https
       // servers with keep-alive clients. The default value is `Infinity`
       // (don't force-close). If you want to immediately destroy all sockets
