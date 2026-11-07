@@ -33,6 +33,9 @@ if (require.main === module || process.env.NODE_APP_INSTANCE !== undefined) {
       // correct .env, if HOST ever went unset. Still fully overridable via
       // .env's HOST for a server that genuinely wants loopback-only.
       host: process.env.HOST ?? '0.0.0.0',
+      // nginx runs on this server, so only a loopback peer may say who the real
+      // client is. A client reaching a Node port directly can't fake its IP.
+      expressSettings: {'trust proxy': 'loopback'},
       // The `gracePeriodForClose` provides a graceful close for http/https
       // servers with keep-alive clients. The default value is `Infinity`
       // (don't force-close). If you want to immediately destroy all sockets

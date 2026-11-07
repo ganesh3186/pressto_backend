@@ -1,6 +1,7 @@
 import {createHash} from 'crypto';
 import {findInBatches} from '../utils/batch-find';
 import {formatInvoiceNumber, invoiceNumberPeriod} from '../utils/invoice-number';
+import {ShortLivedCache} from '../utils/short-lived-cache';
 import {ticketNumberPeriod} from '../utils/ticket-number';
 import {dispatchWhatsApp, WalletWhatsAppNotification, WhatsAppService} from './whatsapp.service';
 import {PaymentService} from './payment.service';
@@ -142,6 +143,13 @@ import {
   RIDER_NOTIFICATION_TYPES,
 } from './notification.service';
 
+/**
+ * Manage Ticket polls the order list, and with no date filter its count covers
+ * every order in the caller's scope. The pager can be a minute behind; counting
+ * on every poll isn't worth it. The key is the full `where`, which includes the
+ * caller's store scope, so callers with different scopes never share an entry.
+ */
+export const orderListCountCache = new ShortLivedCache<{count: number}>(60000, 500);
 /** Most matches an order list search will count (see searchOrderPage). */
 const SEARCH_COUNT_CAP = 1000;
 /** Above this many matching customers a search is "broad" (see searchOrderPage). */
@@ -1250,16 +1258,25 @@ export class OrderService {
       !order.hasBeenSplit &&
       order.discountType !== 'wallet_full_payment'
     ) {
-      const customer = await this.customerRepo.findById(order.customerId);
+      // Every read in here stays on the transaction's connection. A read that
+      // takes a second one from the pool while this holds the first can stall
+      // the whole pool when enough of these run at once.
+      const customer = await this.customerRepo.findById(
+        order.customerId,
+        undefined,
+        txOpt,
+      );
       const recalculated = await this.resolveCustomerAutoDiscount(
         subtotal,
         customer,
+        txOpt,
       );
       discount = recalculated.discountAmount;
 
-      const gstConfig = await this.gstConfigRepo.findOne({
-        where: {isActive: true, isDeleted: false},
-      });
+      const gstConfig = await this.gstConfigRepo.findOne(
+        {where: {isActive: true, isDeleted: false}},
+        txOpt,
+      );
       const gstRate = gstConfig
         ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
         : 0;
@@ -1308,9 +1325,10 @@ export class OrderService {
         order.parentOrderId ||
         order.hasBeenSplit)
     ) {
-      const gstConfig = await this.gstConfigRepo.findOne({
-        where: {isActive: true, isDeleted: false},
-      });
+      const gstConfig = await this.gstConfigRepo.findOne(
+        {where: {isActive: true, isDeleted: false}},
+        txOpt,
+      );
       const gstRate = gstConfig
         ? Number(gstConfig.cgstPercentage) + Number(gstConfig.sgstPercentage)
         : 0;
@@ -1428,6 +1446,7 @@ export class OrderService {
   private async resolveCustomerAutoDiscount(
     subtotal: number,
     customer: Customer,
+    options?: Options,
   ): Promise<{discountAmount: number; discountType: string}> {
     const direct = this.applyCustomerDiscount(
       subtotal,
@@ -1438,13 +1457,16 @@ export class OrderService {
 
     if (!customer.customerGroupId)
       return {discountAmount: 0, discountType: 'none'};
-    const group = await this.customerDiscountGroupRepo.findOne({
-      where: {
-        id: customer.customerGroupId,
-        isActive: true,
-        isDeleted: false,
-      } as object,
-    });
+    const group = await this.customerDiscountGroupRepo.findOne(
+      {
+        where: {
+          id: customer.customerGroupId,
+          isActive: true,
+          isDeleted: false,
+        } as object,
+      },
+      options,
+    );
     if (!group?.discountPercentage)
       return {discountAmount: 0, discountType: 'none'};
 
@@ -5575,7 +5597,9 @@ export class OrderService {
             limit,
             skip,
           }),
-          this.orderRepo.count(where as any),
+          orderListCountCache.get(JSON.stringify(where), () =>
+            this.orderRepo.count(where as any),
+          ),
         ]);
 
     if (!orders.length) return {rows: [], total: countResult.count, ...limitedFrom};

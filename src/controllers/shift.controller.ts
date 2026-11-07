@@ -1212,42 +1212,30 @@ export class ShiftController {
       services: 0,
     };
 
-    const approvedReturns = await this.salesReturnRepository.find({
-      where: {status: SalesReturnStatus.APPROVED} as object,
-    });
-    const returns = approvedReturns.filter(salesReturn => {
-      const resolvedAt =
-        salesReturn.resolvedAt ??
-        salesReturn.updatedAt ??
-        salesReturn.createdAt;
-      if (!resolvedAt) return false;
-      const resolvedTime = new Date(resolvedAt).getTime();
-      return (
-        Number.isFinite(resolvedTime) &&
-        resolvedTime >= from.getTime() &&
-        resolvedTime <= to.getTime()
-      );
-    });
     const revenueAdjustment = {
       revenue: 0,
       discount: 0,
       taxes: 0,
       totalSales: 0,
     };
-    if (!returns.length) return {pressto: emptyCell, revenueAdjustment};
 
-    // SalesReturn carries no storeId of its own — resolve it via the
-    // order it belongs to and filter down to this shift's store.
-    const orderIds = [...new Set(returns.map(r => r.orderId))];
-    const orders = await this.orderRepository.find({
-      where: {id: {inq: orderIds}} as object,
-      fields: {id: true, storeId: true} as object,
+    // SalesReturn carries no storeId of its own, so the store comes from its
+    // order. This runs on every poll of an open refund or return dialog, so the
+    // window and store filters stay in SQL rather than loading every approved
+    // return ever made.
+    const matchedRows = (await this.salesReturnRepository.execute(
+      `SELECT sr.id
+         FROM public.sales_return sr
+         JOIN public.orders o ON o.id = sr.orderid
+        WHERE sr.status = $1 AND o.storeid = $2
+          AND COALESCE(sr.resolvedat, sr.updatedat, sr.createdat) BETWEEN $3 AND $4`,
+      [SalesReturnStatus.APPROVED, storeId, from, to],
+    )) as {id: string}[];
+    if (!matchedRows.length) return {pressto: emptyCell, revenueAdjustment};
+
+    const matched = await this.salesReturnRepository.find({
+      where: {id: {inq: matchedRows.map(row => row.id)}} as object,
     });
-    const storeIdByOrderId = new Map(orders.map(o => [o.id, o.storeId]));
-    const matched = returns.filter(
-      r => storeIdByOrderId.get(r.orderId) === storeId,
-    );
-    if (!matched.length) return {pressto: emptyCell, revenueAdjustment};
 
     const invoiceLinks = await this.invoiceOrderLinkRepository.find({
       where: {

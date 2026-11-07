@@ -7,6 +7,11 @@ import {Users} from './users.model';
       table: 'system_notification',
       schema: 'public',
     },
+    indexes: {
+      systemNotificationUserCreatedAt: {
+        keys: ['userId', 'isDeleted', 'createdAt'],
+      },
+    },
   },
 })
 export class SystemNotification extends Entity {

@@ -1,7 +1,9 @@
 import {expect} from '@loopback/testlab';
-import {OrderService} from '../services/order.service';
+import {orderListCountCache, OrderService} from '../services/order.service';
 
 describe('Manage Ticket invoice filter', () => {
+  beforeEach(() => orderListCountCache.clear());
+
   it('matches invoice numbers and consolidated links before pagination, within store scope', async () => {
     let scopedWhere: object | undefined;
     const queries: {sql: string; params: unknown[]}[] = [];
