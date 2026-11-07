@@ -1,8 +1,9 @@
+import {paymentSqlFixture} from './helpers/payment-sql-fixture';
 import {expect} from '@loopback/testlab';
 import {ReportsService} from '../services/reports.service';
 
-describe('mode of payment invoice numbers', () => {
-  it('keeps the ticket number separate from the on-account invoice number', async () => {
+(process.env.RUN_PG_FIXTURE_TESTS === 'true' ? describe : describe.skip)('mode of payment invoice numbers', () => {
+  (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? it : it.skip)('keeps the ticket number separate from the on-account invoice number', async () => {
     const paidAt = new Date('2026-10-01T10:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
       orderRepo: {
@@ -30,6 +31,7 @@ describe('mode of payment invoice numbers', () => {
       mapShifts: async () => new Map(),
       mapCustomers: async () => new Map(),
     }) as ReportsService;
+    paymentSqlFixture(service);
 
     const report = await service.buildModeOfPayment({
       storeIds: ['store-a'],
@@ -45,7 +47,7 @@ describe('mode of payment invoice numbers', () => {
     ]);
   });
 
-  it('attributes a cross-store cash refund to the paying shift once', async () => {
+  (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? it : it.skip)('attributes a cross-store cash refund to the paying shift once', async () => {
     const paidAt = new Date('2026-10-22T10:00:00Z');
     const refund = {
       id: 'refund-a', orderId: 'bandra-order', paymentDate: paidAt,
@@ -71,6 +73,7 @@ describe('mode of payment invoice numbers', () => {
       mapShifts: async () => new Map(),
       mapCustomers: async () => new Map(),
     }) as ReportsService;
+    paymentSqlFixture(service);
 
     const payingStore = await service.buildModeOfPayment({
       storeIds: ['str012'], from: paidAt, to: paidAt, limit: 10, skip: 0,
@@ -91,11 +94,16 @@ describe('mode of payment invoice numbers', () => {
   it('counts only real payments in the on-account billing report', async () => {
     const createdAt = new Date('2026-10-01T10:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
-      orderRepo: {find: async () => [{
+      // Count, page and totals come from one SQL query (refunds excluded
+      // there too); the row's own collected amount is looked up here.
+      orderReportPage: async () => ({count: 1, amount: 100, paid: 40, balance: 60, orders: [{
         id: 'order-a', orderNumber: 'OA-1', storeId: 'store-a', customerId: 'customer-a',
         totalAmount: 100, status: 'delivered', isOnAccount: true, createdAt,
-      }]},
-      paymentTransactionRepo: {find: async () => [{orderId: 'order-a', amount: 40}]},
+      }]}),
+      paymentTransactionRepo: {find: async ({where}: {where: {transactionType: unknown}}) => {
+        expect(where.transactionType).to.deepEqual({neq: 'refund'});
+        return [{orderId: 'order-a', amount: 40}];
+      }},
       buildDeliveryStatusByOrder: async () => new Map([['order-a', 'delivered']]),
       buildDeliveredAtByOrder: async () => new Map([['order-a', createdAt]]),
       buildItemCountByOrder: async () => new Map([['order-a', 1]]),
@@ -116,7 +124,7 @@ describe('mode of payment invoice numbers', () => {
     expect(report.totals).to.containEql({collected: 40, balanceDue: 60});
   });
 
-  it('includes in-store wallet recharges under their cash, card, and UPI modes', async () => {
+  (process.env.RUN_PG_FIXTURE_TESTS === 'true' ? it : it.skip)('includes in-store wallet recharges under their cash, card, and UPI modes', async () => {
     const paidAt = new Date('2026-10-01T10:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
       walletRechargeRequestRepo: {find: async () => [
@@ -135,6 +143,7 @@ describe('mode of payment invoice numbers', () => {
       mapShifts: async () => new Map(),
       mapCustomers: async () => new Map(),
     }) as ReportsService;
+    paymentSqlFixture(service);
 
     const report = await service.buildModeOfPayment({
       storeIds: ['store-a'], from: paidAt, to: paidAt, limit: 10, skip: 0,

@@ -1,3 +1,4 @@
+import {batchedStubs} from './helpers/batched-stubs';
 import {expect} from '@loopback/testlab';
 import {UserProfile} from '@loopback/security';
 import {ShiftController} from '../controllers/shift.controller';
@@ -15,7 +16,7 @@ describe('shift collections from riders', () => {
     let summaryFilter: Record<string, unknown> | undefined;
     const controller = Object.assign(Object.create(ShiftController.prototype), {
       shiftRepository: {
-        findById: async () => ({id: 'shift-a', storeId: 'store-a', openedAt, closedAt}),
+        findById: async () => ({id: '5a1f0c3e-0000-4000-8000-00000000000a', storeId: 'store-a', openedAt, closedAt}),
       },
       resolveCallerStore: async () => ({storeId: 'store-a'}),
       orderRepository: {
@@ -92,10 +93,11 @@ describe('shift collections from riders', () => {
         },
       }),
     }) as ShiftController;
+    batchedStubs(controller);
 
     const result = (await controller.collected(
       {} as UserProfile,
-      'shift-a',
+      '5a1f0c3e-0000-4000-8000-00000000000a',
     )) as {
       collections: {cash: number};
       walletCollections: {cash: number; card: number; upi: number; netBanking: number; ppVoucher: number};
@@ -164,6 +166,7 @@ describe('shift revenue after sales returns', () => {
       orderRepository: {find: async () => [{id: 'order-a', taxAmount: 9, totalAmount: 59}]},
       orderItemRepository: {find: async () => []},
     }) as ShiftController;
+    batchedStubs(controller);
     const revenue = await (
       controller as unknown as {
         resolveRevenue: (
@@ -237,6 +240,7 @@ describe('shift revenue after sales returns', () => {
         findOne: async () => ({cgstPercentage: 9, sgstPercentage: 9}),
       },
     }) as ShiftController;
+    batchedStubs(controller);
     const resolve = () =>
       (
         controller as unknown as {
@@ -316,6 +320,7 @@ describe('shift revenue after sales returns', () => {
       invoiceRepository: {find: async () => [invoice]},
       gstConfigRepository: {findOne: async () => null},
     }) as ShiftController;
+    batchedStubs(controller);
 
     const result = await (
       controller as unknown as {
@@ -414,10 +419,11 @@ describe('shift revenue after sales returns', () => {
       }),
       resolveOrderSummary: async () => ({}),
     }) as ShiftController;
+    batchedStubs(controller);
 
     const result = (await controller.collected(
       {} as UserProfile,
-      'shift-a',
+      '5a1f0c3e-0000-4000-8000-00000000000a',
     )) as {
       revenue: {
         pressto: {
@@ -464,8 +470,9 @@ describe('shift revenue after sales returns', () => {
       }),
       resolveOrderSummary: async () => ({}),
     }) as ShiftController;
+    batchedStubs(controller);
 
-    await controller.close({} as UserProfile, 'shift-a', {
+    await controller.close({} as UserProfile, '5a1f0c3e-0000-4000-8000-00000000000a', {
       remarks: 'done',
       cardPgSettlement: {actualSettlement: 0},
       revenue: {pressto: {revenue: 0}},
@@ -508,6 +515,7 @@ describe('shift order summary', () => {
         ],
       },
     }) as ShiftController;
+    batchedStubs(controller);
 
     const summary = () =>
       (

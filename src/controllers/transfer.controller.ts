@@ -1,3 +1,5 @@
+import {pageBounds, sqlPage} from '../utils/sql-page';
+import {findInBatches} from '../utils/batch-find';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
@@ -170,29 +172,27 @@ export class TransferController {
   private async enrichTransfers(transfers: Transfer[]): Promise<object[]> {
     if (!transfers.length) return [];
     const storeIds = [...new Set(transfers.flatMap(t => [t.fromStoreId, t.toStoreId]))];
-    const transferById = new Map(transfers.map(t => [t.id, t]));
 
     const [stores, items] = await Promise.all([
       this.storeRepo.find({where: {id: {inq: storeIds}} as object}),
-      this.transferItemRepo.find({
-        where: {transferId: {inq: transfers.map(t => t.id)}} as object,
-        fields: {transferId: true, bagId: true} as object,
-      }),
+      this.dataSource.execute(`SELECT ti.transferid AS "transferId", COALESCE(ti.bagid,t.bagid) AS "bagId",
+        count(*)::int AS "itemCount" FROM public.transfer_item ti JOIN public.transfer t ON t.id = ti.transferid
+        WHERE ti.transferid = ANY($1::uuid[]) GROUP BY ti.transferid,COALESCE(ti.bagid,t.bagid)`, [transfers.map(t => t.id)]),
     ]);
     const storeById = new Map(stores.map(s => [s.id, s]));
 
     const bagCountByTransfer = new Map<string, Map<string, number>>();
     for (const item of items) {
-      const bagId = item.bagId ?? transferById.get(item.transferId)?.bagId;
+      const bagId = item.bagId;
       if (!bagId) continue;
       const perTransfer = bagCountByTransfer.get(item.transferId) ?? new Map<string, number>();
-      perTransfer.set(bagId, (perTransfer.get(bagId) ?? 0) + 1);
+      perTransfer.set(bagId, Number(item.itemCount));
       bagCountByTransfer.set(item.transferId, perTransfer);
     }
 
     const allBagIds = [...new Set([...bagCountByTransfer.values()].flatMap(m => [...m.keys()]))];
     const bags = allBagIds.length
-      ? await this.bagRepo.find({where: {id: {inq: allBagIds}} as object})
+      ? await findInBatches(allBagIds, ids => this.bagRepo.find({where: {id: {inq: ids}} as object}))
       : [];
     const bagById = new Map(bags.map(b => [b.id, b]));
 
@@ -394,19 +394,15 @@ export class TransferController {
     // rights" rule store-scope.service.ts's assertGarmentEditable already
     // applies to editing a garment, applied here to outbound eligibility:
     // whoever currently holds a garment can send it onward.
-    const inboundTransfers = await this.transferRepo.find({
-      where: {
-        toStoreId: storeId,
-        status: {inq: [TransferStatus.RECEIVED, TransferStatus.RESOLVED]},
-        isDeleted: false,
-      } as object,
-      fields: {id: true} as object,
-    });
-    const visitingGarments = inboundTransfers.length
-      ? await this.garmentRepo.find({
-          where: {activeTransferId: {inq: inboundTransfers.map(t => t.id)}, isDeleted: false} as object,
-        })
-      : [];
+    // Joined in SQL: received/resolved transfers accumulate forever, but only
+    // garments still visiting carry activetransferid.
+    const visitingGarmentRows: {id: string}[] = await this.dataSource.execute(
+      `SELECT g.id FROM public.garment g JOIN public.transfer t ON t.id = g.activetransferid
+        WHERE t.tostoreid = $1 AND t.status = ANY($2::text[]) AND t.isdeleted = false AND g.isdeleted = false`,
+      [storeId, [TransferStatus.RECEIVED, TransferStatus.RESOLVED]],
+    );
+    const visitingGarments = await findInBatches(visitingGarmentRows.map(row => row.id), ids =>
+      this.garmentRepo.find({where: {id: {inq: ids}} as object}));
 
     let visitingOrders: Order[] = [];
     if (visitingGarments.length) {
@@ -906,6 +902,9 @@ export class TransferController {
     @param.query.string('storeId') storeId?: string,
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+    @param.query.number('page') page?: number,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
@@ -913,15 +912,8 @@ export class TransferController {
     const and: object[] = [{isDeleted: false}];
     if (status) and.push({status});
     if (riderId) and.push({riderId});
-    if (dateFrom ?? dateTo) {
-      and.push({
-        createdAt: {
-          ...(dateFrom ? {gte: new Date(dateFrom)} : {}),
-          ...(dateTo ? {lte: new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo)
-            ? dateTo + 'T23:59:59.999Z' : dateTo)} : {}),
-        },
-      });
-    }
+    if (dateFrom) and.push({createdAt: {gte: new Date(dateFrom)}});
+    if (dateTo) and.push({createdAt: {lte: new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo) ? dateTo + 'T23:59:59.999Z' : dateTo)}});
     if (narrowedStoreIds) {
       if (direction === 'outgoing') and.push({fromStoreId: {inq: narrowedStoreIds}});
       else if (direction === 'incoming') and.push({toStoreId: {inq: narrowedStoreIds}});
@@ -932,8 +924,13 @@ export class TransferController {
       }
     }
 
-    const transfers = await this.transferRepo.find({where: {and} as object, order: ['createdAt DESC']});
-    return {transfers: await this.enrichTransfers(transfers)};
+    const bounds = pageBounds(limit, skip, page);
+    const where = {and} as object;
+    const [transfers, count] = await Promise.all([
+      this.transferRepo.find({where, order: ['createdAt DESC', 'id DESC'], ...bounds}),
+      this.transferRepo.count(where),
+    ]);
+    return {transfers: await this.enrichTransfers(transfers), total: count.count, ...bounds};
   }
 
   // ─── Summary Stats ──────────────────────────────────────────────────────────
@@ -942,6 +939,29 @@ export class TransferController {
   // broader business decision, not specific to Transfer). Scoped the same
   // way as find(): store-scoped callers see only transfers touching their
   // stores.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
+  @get('/transfers/lookup')
+  @response(200, {description: 'Exact scoped transit or bag lookup, independent of table pagination'})
+  async lookup(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('scan') scan: string,
+    @param.query.string('status') status?: TransferStatus,
+  ): Promise<object> {
+    const value = String(scan ?? '').trim().toLowerCase();
+    if (!value || value.length > 200) throw new HttpErrors.BadRequest('Enter a valid transit or bag code.');
+    const scope = await this.storeScopeService.resolve(currentUser);
+    const and: object[] = [{isDeleted: false}, ...(status ? [{status}] : [])];
+    if (!scope.global) and.push({or: [{fromStoreId: {inq: scope.storeIds}}, {toStoreId: {inq: scope.storeIds}}]});
+    const bag = value.replace(/^bag[-:\s]*/, '').replace(/^0+(?=\d)/, '');
+    const match = `(lower(transitid) = ? OR transfer.id::text = ? OR EXISTS (
+      SELECT 1 FROM public.bag b WHERE (b.id = transfer.bagid OR EXISTS (
+        SELECT 1 FROM public.transfer_item ti WHERE ti.transferid = transfer.id AND ti.bagid = b.id))
+      AND (b.id::text = ? OR b.bagnumber::text = ?)))`;
+    const result = await sqlPage<Transfer>(this.transferRepo, 'transfer', {and}, 10, 0, match, [value, value, value, bag]);
+    return {transfers: await this.enrichTransfers(result.rows), total: result.total};
+  }
 
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
@@ -956,7 +976,13 @@ export class TransferController {
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<object> {
     // Reuse the unpaginated listing query so filters, enrichment, and access stay identical.
-    return this.find(currentUser, direction, status, storeId, dateFrom, dateTo);
+    const transfers: object[] = [];
+    for (let skip = 0; ; skip += 500) {
+      const page = await this.find(currentUser, direction, status, undefined, storeId, dateFrom, dateTo, 500, skip) as {transfers: object[]; total: number};
+      transfers.push(...page.transfers);
+      if (!page.transfers.length || transfers.length >= page.total) break;
+    }
+    return {transfers};
   }
 
   @authenticate('jwt')
@@ -1458,76 +1484,56 @@ export class TransferController {
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<object> {
-    let transferIds: string[] | null = transferId ? [transferId] : null;
-
+    // Every filter is a predicate on the event's transfer, applied in SQL —
+    // a store's (or a scope's) lifetime transfer ids would otherwise become
+    // ever-growing IN lists.
+    const conditions: string[] = [];
+    const values: unknown[] = [];
+    const bind = (value: unknown) => {values.push(value); return `$${values.length}`;};
+    if (transferId) conditions.push(`t.id = ${bind(transferId)}::uuid`);
     // Tag search must pull in transfer-level events (sent_out/received/
     // bag_released) for that tag's transfer too, not just item-level ones —
     // otherwise the trail view would miss the events that matter most.
-    if (garmentTag) {
-      const items = await this.transferItemRepo.find({
-        where: {garmentTagNumber: garmentTag} as object,
-      });
-      const tagTransferIds = [...new Set(items.map(i => i.transferId))];
-      transferIds = transferIds ? transferIds.filter(id => tagTransferIds.includes(id)) : tagTransferIds;
-    }
-
-    if (storeId ?? dateFrom ?? dateTo) {
-      const and: object[] = [];
-      if (storeId) and.push({or: [{fromStoreId: storeId}, {toStoreId: storeId}]});
-      if (dateFrom ?? dateTo) {
-        and.push({
-          createdAt: {
-            ...(dateFrom ? {gte: new Date(dateFrom)} : {}),
-            ...(dateTo ? {lte: new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo)
-            ? dateTo + 'T23:59:59.999Z' : dateTo)} : {}),
-          },
-        });
-      }
-      const matching = await this.transferRepo.find({
-        where: {and} as object,
-        fields: {id: true} as object,
-      });
-      const matchingIds = matching.map(t => t.id);
-      transferIds = transferIds ? transferIds.filter(id => matchingIds.includes(id)) : matchingIds;
-    }
-
+    if (garmentTag) conditions.push(`EXISTS (SELECT 1 FROM public.transfer_item ti
+      WHERE ti.transferid = t.id AND ti.garmenttagnumber = ${bind(garmentTag)})`);
+    if (storeId) conditions.push(`(t.fromstoreid = ${bind(storeId)}::uuid OR t.tostoreid = $${values.length}::uuid)`);
+    if (dateFrom) conditions.push(`t.createdat >= ${bind(new Date(dateFrom))}`);
+    if (dateTo) conditions.push(`t.createdat <= ${bind(new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo)
+      ? dateTo + 'T23:59:59.999Z' : dateTo))}`);
     const scope = await this.storeScopeService.resolve(currentUser);
     if (!scope.global) {
-      const scoped = await this.transferRepo.find({
-        where: {
-          or: [{fromStoreId: {inq: scope.storeIds}}, {toStoreId: {inq: scope.storeIds}}],
-        } as object,
-        fields: {id: true} as object,
-      });
-      const scopedIds = scoped.map(t => t.id);
-      transferIds = transferIds ? transferIds.filter(id => scopedIds.includes(id)) : scopedIds;
+      conditions.push(`(t.fromstoreid = ANY(${bind(scope.storeIds)}::uuid[]) OR t.tostoreid = ANY($${values.length}::uuid[]))`);
     }
 
-    if (transferIds !== null && !transferIds.length) return {events: []};
-
-    const events = await this.custodyEventRepo.find({
-      where: (transferIds ? {transferId: {inq: transferIds}} : {}) as object,
-      order: ['performedAt DESC'],
-    });
-    if (!events.length) return {events: []};
+    const matched: {id: string}[] = await this.dataSource.execute(
+      `SELECT e.id FROM public.transfer_custody_event e${conditions.length
+        ? ` WHERE EXISTS (SELECT 1 FROM public.transfer t WHERE t.id = e.transferid AND ${conditions.join(' AND ')})`
+        : ''} ORDER BY e.performedat DESC, e.id DESC`,
+      values,
+    );
+    if (!matched.length) return {events: []};
+    const found = await findInBatches(matched.map(row => row.id), ids =>
+      this.custodyEventRepo.find({where: {id: {inq: ids}} as object}));
+    const eventById = new Map(found.map(event => [event.id, event]));
+    const events = matched.map(row => eventById.get(row.id)).filter((event): event is NonNullable<typeof event> => Boolean(event));
 
     // Raw events only carry transferId/performedBy uuids — resolve both to
     // display values (transitId, performer name) the same way
     // enrichTransfers() already does for list/detail, rather than making
     // the admin panel show raw ids.
     const [transfers, users, bags] = await Promise.all([
-      this.transferRepo.find({
-        where: {id: {inq: [...new Set(events.map(e => e.transferId))]}} as object,
+      findInBatches([...new Set(events.map(e => e.transferId))], ids => this.transferRepo.find({
+        where: {id: {inq: ids}} as object,
         fields: {id: true, transitId: true} as object,
-      }),
-      this.usersRepo.find({
-        where: {id: {inq: [...new Set(events.map(e => e.performedBy).filter(Boolean))]}} as object,
+      })),
+      findInBatches([...new Set(events.map(e => e.performedBy).filter(Boolean))], ids => this.usersRepo.find({
+        where: {id: {inq: ids}} as object,
         fields: {id: true, fullName: true} as object,
-      }),
-      this.bagRepo.find({
-        where: {id: {inq: [...new Set(events.map(e => e.bagId).filter(Boolean))]}} as object,
+      })),
+      findInBatches([...new Set(events.map(e => e.bagId).filter(Boolean))], ids => this.bagRepo.find({
+        where: {id: {inq: ids}} as object,
         fields: {id: true, bagNumber: true} as object,
-      }),
+      })),
     ]);
     const transitIdByTransferId = new Map(transfers.map(t => [t.id, t.transitId]));
     const nameByUserId = new Map(users.map(u => [u.id, u.fullName]));

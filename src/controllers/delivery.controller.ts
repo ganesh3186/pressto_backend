@@ -1,3 +1,5 @@
+import {PresstoDataSource} from '../datasources';
+import {pageBounds} from '../utils/sql-page';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {repository} from '@loopback/repository';
@@ -37,6 +39,7 @@ export class DeliveryController {
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @inject('services.store-scope') private storeScopeService: StoreScopeService,
     @inject('services.notification') private notificationService: NotificationService,
+    @inject('datasources.pressto') private dataSource: PresstoDataSource,
   ) {}
 
   private async enrichDeliveries(deliveries: Delivery[]): Promise<object[]> {
@@ -71,6 +74,9 @@ export class DeliveryController {
     @param.query.string('storeId') storeId?: string,
     @param.query.string('dateFrom') dateFrom?: string,
     @param.query.string('dateTo') dateTo?: string,
+    @param.query.number('limit') limit?: number,
+    @param.query.number('skip') skip?: number,
+    @param.query.number('page') page?: number,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
@@ -78,18 +84,17 @@ export class DeliveryController {
     const and: object[] = [{isDeleted: false}];
     if (status) and.push({status});
     if (riderId) and.push({riderId});
-    if (dateFrom ?? dateTo) {
-      and.push({
-        createdAt: {
-          ...(dateFrom ? {gte: new Date(dateFrom)} : {}),
-          ...(dateTo ? {lte: new Date(dateTo)} : {}),
-        },
-      });
-    }
+    if (dateFrom) and.push({createdAt: {gte: new Date(dateFrom)}});
+    if (dateTo) and.push({createdAt: {lte: new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo) ? dateTo + 'T23:59:59.999Z' : dateTo)}});
     if (narrowedStoreIds) and.push({storeId: {inq: narrowedStoreIds}});
 
-    const deliveries = await this.deliveryRepo.find({where: {and} as object, order: ['createdAt DESC']});
-    return {deliveries: await this.enrichDeliveries(deliveries)};
+    const bounds = pageBounds(limit, skip, page);
+    const where = {and} as object;
+    const [deliveries, count] = await Promise.all([
+      this.deliveryRepo.find({where, order: ['createdAt DESC', 'id DESC'], ...bounds}),
+      this.deliveryRepo.count(where),
+    ]);
+    return {deliveries: await this.enrichDeliveries(deliveries), total: count.count, ...bounds};
   }
 
   // ─── Summary Stats ──────────────────────────────────────────────────────
@@ -180,8 +185,14 @@ export class DeliveryController {
     @param.path.string('id') id: string,
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
-    const delivery = await this.deliveryRepo.findOne({where: {id, isDeleted: false}});
-    if (!delivery) throw new HttpErrors.NotFound('Delivery not found.');
+    const tx = await this.dataSource.beginTransaction({isolationLevel: 'READ COMMITTED'});
+    const options = {transaction: tx};
+    let delivery: Delivery;
+    try {
+    await this.dataSource.execute('SELECT id FROM public.delivery WHERE id = $1 FOR UPDATE', [id], options);
+    const foundDelivery = await this.deliveryRepo.findOne({where: {id, isDeleted: false}}, options);
+    if (!foundDelivery) throw new HttpErrors.NotFound('Delivery not found.');
+    delivery = foundDelivery;
     if (delivery.status !== DeliveryStatus.ASSIGNED) {
       throw new HttpErrors.BadRequest(
         `Cannot cancel a delivery that is ${delivery.status}, not assigned.`,
@@ -189,10 +200,12 @@ export class DeliveryController {
     }
 
     const {v4} = await import('uuid');
-    const deliveryOrders = await this.deliveryOrderRepo.find({where: {deliveryId: id} as object});
+    const deliveryOrders = await this.deliveryOrderRepo.find({where: {deliveryId: id} as object}, options);
     const orderIds = deliveryOrders.map(o => o.orderId);
+    if (orderIds.length) await this.dataSource.execute(
+      'SELECT id FROM public.orders WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE', [orderIds], options);
     const orders = orderIds.length
-      ? await this.orderRepo.find({where: {id: {inq: orderIds}} as object})
+      ? await this.orderRepo.find({where: {id: {inq: orderIds}} as object}, options)
       : [];
 
     for (const order of orders) {
@@ -205,20 +218,20 @@ export class DeliveryController {
         deliveryMethod: null as unknown as OrderDeliveryMethod,
         deliverySlot: null as unknown as string,
         deliverySlotId: null as unknown as string,
-      });
+      }, options);
     }
 
     await this.deliveryRepo.updateById(id, {
       status: DeliveryStatus.CANCELLED,
       cancelledAt: new Date(),
       cancelledBy: currentUser[securityId],
-    });
+    }, options);
 
     if (delivery.bagId) {
       await this.bagRepo.updateById(delivery.bagId, {
         status: BagStatus.AVAILABLE,
         currentDeliveryId: null as unknown as string,
-      });
+      }, options);
     }
 
     await this.custodyEventRepo.create({
@@ -226,7 +239,10 @@ export class DeliveryController {
       deliveryId: id,
       eventType: DeliveryCustodyEventType.CANCELLED,
       performedBy: currentUser[securityId],
-    });
+    }, options);
+
+    await tx.commit();
+    } catch (error) { await tx.rollback(); throw error; }
 
     // Not awaited — a slow/unreachable FCM call must never delay this
     // response (NotificationService already swallows its own errors).

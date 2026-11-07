@@ -30,6 +30,7 @@
     "docker:run": "docker run -p 3000:3000 -d Pressto-backend",
     "premigrate": "npm run build",
     "migrate": "node ./dist/migrate",
+    "migrate:order-idempotency": "node scripts/add-order-creation-requests.cjs",
     "migrate:customer-persona": "node scripts/add-customer-persona-column.cjs",
     "migrate:coupon-order-fields": "node scripts/add-coupon-order-fields.cjs",
     "migrate:invoice-number-sequences": "node scripts/add-invoice-number-sequences.cjs",
@@ -121,6 +122,7 @@
     "multer": "^2.0.2",
     "nodemailer": "^7.0.10",
     "pdfkit": "^0.20.2",
+    "qrcode": "^1.5.4",
     "razorpay": "^2.9.8",
     "tslib": "^2.0.0",
     "uuid": "^13.0.0"
@@ -136,6 +138,7 @@
     "@types/node": "^16.18.126",
     "@types/nodemailer": "^7.0.4",
     "@types/pdfkit": "^0.17.6",
+    "@types/qrcode": "^1.5.6",
     "@types/uuid": "^10.0.0",
     "eslint": "^8.57.1",
     "source-map-support": "^0.5.21",

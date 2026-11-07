@@ -13,6 +13,7 @@ export function dashboardAccess(user: UserProfile) {
     deliveries: enabled && has('delivery:read'),
     riders: enabled && has('rider:read'),
     collected: enabled && has('invoice:read'),
+    invoices: enabled && has('invoice:read'),
     handover: enabled && has('rider_cash_handover:read'),
   };
 }

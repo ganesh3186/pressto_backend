@@ -6,6 +6,7 @@ describe('cash refund availability', () => {
   it('pays a different order store from the selected open shift and records that shift', async () => {
     const created: Array<{cashShiftId?: string}> = [];
     const service = Object.assign(Object.create(ApprovalService.prototype), {
+      dataSource: {execute: async () => [{id: 'store-payment'}]},
       orderRepo: {
         findById: async () => ({id: 'order-a', storeId: 'store-a'}),
         find: async () => [{id: 'order-b'}],
@@ -34,6 +35,7 @@ describe('cash refund availability', () => {
   it('uses cash collected this shift without opening till cash and blocks larger payouts', async () => {
     const created: object[] = [];
     const service = Object.assign(Object.create(ApprovalService.prototype), {
+      dataSource: {execute: async () => [{id: 'store-payment'}]},
       orderRepo: {
         findById: async () => ({id: 'order-a', storeId: 'store-a'}),
         find: async () => [{id: 'order-a'}],
@@ -82,6 +84,7 @@ describe('cash refund availability', () => {
   it('uses the next open shift at the selected store when approval happens after closure', async () => {
     const created: Array<{cashShiftId?: string}> = [];
     const service = Object.assign(Object.create(ApprovalService.prototype), {
+      dataSource: {execute: async () => [{id: 'store-payment'}]},
       orderRepo: {
         findById: async () => ({id: 'order-a', storeId: 'ticket-store'}),
         find: async () => [{id: 'store-order'}],

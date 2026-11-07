@@ -1,3 +1,5 @@
+import {sqlPage, sqlCount} from '../utils/sql-page';
+import {literalContains} from '../utils/search-pattern';
 import {authenticate} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {
@@ -413,18 +415,20 @@ export class CustomerController {
     @param.query.string('type') type?: string,
     @param.query.string('labelId') labelId?: string,
   ): Promise<Customer[]> {
-    const where = await this._buildCustomerWhere({
+    const {where, sql, params} = await this._buildCustomerWhere({
       search,
       status,
       type,
       labelId,
       extraWhere: filter?.where,
     });
+    const page = sql ? await sqlPage<Customer>(this.customerRepository, 'customer', where,
+      limit ?? filter?.limit ?? 100, skip ?? filter?.skip ?? 0, sql, params) : undefined;
+    if (page && !page.rows.length) return [];
     return this.customerRepository.find({
       ...filter,
-      where,
-      ...(limit !== undefined ? {limit} : {}),
-      ...(skip !== undefined ? {skip} : {}),
+      where: page ? {id: {inq: page.rows.map(row => row.id)}} : where,
+      ...(page ? {limit: page.rows.length, skip: 0} : {limit: limit ?? filter?.limit, skip: skip ?? filter?.skip}),
       order: ['createdAt DESC'],
       include: [
         {
@@ -487,13 +491,13 @@ export class CustomerController {
     @param.query.string('type') type?: string,
     @param.query.string('labelId') labelId?: string,
   ): Promise<Count> {
-    const where = await this._buildCustomerWhere({
+    const {where, sql, params} = await this._buildCustomerWhere({
       search,
       status,
       type,
       labelId,
     });
-    return this.customerRepository.count(where);
+    return sql ? sqlCount(this.customerRepository, 'customer', where, sql, params) : this.customerRepository.count(where);
   }
 
   /**
@@ -507,7 +511,7 @@ export class CustomerController {
     type?: string;
     labelId?: string;
     extraWhere?: Where<Customer>;
-  }): Promise<Where<Customer>> {
+  }): Promise<{where: Where<Customer>; sql: string; params: unknown[]}> {
     const clauses: object[] = [{isDeleted: false}];
     if (params.extraWhere) clauses.push(params.extraWhere);
 
@@ -517,60 +521,33 @@ export class CustomerController {
     if (params.type) {
       clauses.push({customerEntityType: params.type});
     }
+    const predicates: string[] = [];
+    const values: unknown[] = [];
     if (params.labelId) {
-      const assignments = await this.customerLabelAssignmentRepository.find({
-        where: {customerLabelId: params.labelId},
-        fields: {customerId: true},
-      });
-      // Empty on no match — correctly yields zero rows rather than
-      // accidentally matching everything by omitting the clause.
-      clauses.push({id: {inq: assignments.map(a => a.customerId)}});
+      predicates.push('EXISTS (SELECT 1 FROM public.customer_label_assignment a WHERE a.customerid = customer.id AND a.customerlabelid = ?::uuid)');
+      values.push(params.labelId);
     }
     if (params.search?.trim()) {
-      const q = params.search.trim();
-      const digits = q.replace(/\D/g, '');
-      const orClauses: object[] = [
-        {firstName: {ilike: `%${q}%`}},
-        {lastName: {ilike: `%${q}%`}},
-        {customerCode: {ilike: `%${q}%`}},
-        {email: {ilike: `%${q}%`}},
-      ];
-      // A full name ("arun dh") spans firstName and lastName, so neither
-      // column contains it whole. Each word must match one of the two.
+      const q = params.search.trim().toLowerCase();
+      const parts = ['firstname ILIKE ?', 'lastname ILIKE ?', 'customercode ILIKE ?', 'email ILIKE ?'];
+      const pattern = literalContains(q);
+      values.push(pattern, pattern, pattern, pattern);
       const words = q.split(/\s+/);
       if (words.length > 1) {
-        orClauses.push({
-          and: words.map(w => ({
-            or: [{firstName: {ilike: `%${w}%`}}, {lastName: {ilike: `%${w}%`}}],
-          })),
-        });
+        parts.push('(' + words.map(() => '(firstname ILIKE ? OR lastname ILIKE ?)').join(' AND ') + ')');
+        words.forEach(word => values.push(literalContains(word), literalContains(word)));
       }
-      // Phone lives on Users, not Customer — resolve matching Users rows
-      // first, then fold their ids into the same OR as an additional
-      // matchable condition. Require a few digits so a 1-2 digit search
-      // doesn't turn into an accidental "match every phone number" scan.
+      const digits = q.replace(/\D/g, '');
       if (digits.length >= 3) {
-        const matchedUsers = await this.usersRepository.find({
-          where: {phone: {like: `%${digits}%`}},
-          fields: {id: true},
-        });
-        if (matchedUsers.length) {
-          orClauses.push({userId: {inq: matchedUsers.map(u => u.id)}});
-        }
-        // Same resolve-then-fold pattern for alternate/secondary numbers,
-        // which live in CustomerPhone (customerId FK), not on Users.
-        const matchedPhones = await this.customerPhoneRepository.find({
-          where: {phone: {like: `%${digits}%`}, isDeleted: false} as object,
-          fields: {customerId: true},
-        });
-        if (matchedPhones.length) {
-          orClauses.push({id: {inq: matchedPhones.map(p => p.customerId)}});
-        }
+        // IN (subquery), not a correlated EXISTS: Postgres starts from the
+        // phone trigram indexes instead of probing every customer row.
+        parts.push('customer.userid IN (SELECT u.id::text FROM public.users u WHERE u.phone LIKE ?)',
+          "customer.id IN (SELECT CASE WHEN p.customerid ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' THEN p.customerid::uuid END FROM public.customer_phone p WHERE p.isdeleted = false AND p.phone LIKE ?)");
+        values.push(literalContains(digits), literalContains(digits));
       }
-      clauses.push({or: orClauses});
+      predicates.push('(' + parts.join(' OR ') + ')');
     }
-
-    return {and: clauses} as Where<Customer>;
+    return {where: {and: clauses} as Where<Customer>, sql: predicates.join(' AND '), params: values};
   }
 
   @authenticate('jwt')

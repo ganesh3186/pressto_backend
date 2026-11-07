@@ -744,6 +744,13 @@ export class CustomerProfileController {
         nearbyStores = resolved.nearbyBeyondRadius;
       }
     }
+    if (!storeId && address.pincode) {
+      const pincodeStore = await this.storeAssignmentService.resolveForPincode(
+        address.pincode,
+      );
+      storeId = pincodeStore?.id;
+      if (storeId) nearbyStores = [];
+    }
     const status = storeId ? undefined : PickupRequestStatus.NOT_SERVICEABLE;
 
     const { v4 } = await import('uuid');

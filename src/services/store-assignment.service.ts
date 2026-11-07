@@ -1,6 +1,7 @@
 import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
-import {StoreRepository} from '../repositories';
+import {Store} from '../models';
+import {StorePincodeCoverageRepository, StoreRepository} from '../repositories';
 
 const EARTH_RADIUS_KM = 6371;
 const DEFAULT_RADIUS_KM = 15;
@@ -43,6 +44,8 @@ export type NearbyStore = {
 export class StoreAssignmentService {
   constructor(
     @repository(StoreRepository) private storeRepo: StoreRepository,
+    @repository(StorePincodeCoverageRepository)
+    private coverageRepo: StorePincodeCoverageRepository,
   ) {}
 
   static radiusKm(): number {
@@ -96,5 +99,33 @@ export class StoreAssignmentService {
       nearestWithinRadius: within[0] ?? null,
       nearbyBeyondRadius: beyond,
     };
+  }
+
+  /** Nearest active store explicitly covering a pincode. */
+  async resolveForPincode(pincode: string): Promise<Store | null> {
+    const normalized = String(pincode ?? '').trim();
+    if (!/^\d{6}$/.test(normalized)) return null;
+
+    const coverage = await this.coverageRepo.find({
+      where: {pincode: normalized, isActive: true, isDeleted: false} as object,
+    });
+    if (!coverage.length) return null;
+
+    coverage.sort((a, b) => {
+      const aDistance = Number(a.centroidDistanceKm);
+      const bDistance = Number(b.centroidDistanceKm);
+      return (Number.isFinite(aDistance) ? aDistance : Infinity) -
+        (Number.isFinite(bDistance) ? bDistance : Infinity);
+    });
+
+    const stores = await this.storeRepo.find({
+      where: {
+        id: {inq: coverage.map(row => row.storeId)},
+        isActive: true,
+        isDeleted: false,
+      } as object,
+    });
+    const byId = new Map(stores.map(store => [store.id, store]));
+    return coverage.map(row => byId.get(row.storeId)).find(Boolean) ?? null;
   }
 }

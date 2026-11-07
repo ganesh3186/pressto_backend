@@ -1,0 +1,11 @@
+Cannot start the application. Error: listen EADDRINUSE: address already in use 127.0.0.1:3036
+    at Server.setupListenHandle [as _listen2] (node:net:1908:16)
+    at listenInCluster (node:net:1965:12)
+    at doListen (node:net:2139:7)
+    at processTicksAndRejections (node:internal/process/task_queues:83:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '127.0.0.1',
+  port: 3036
+}

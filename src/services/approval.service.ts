@@ -1,6 +1,7 @@
 import {BindingScope, inject, injectable} from '@loopback/core';
 import {IsolationLevel, Options, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
+import {findInBatches} from '../utils/batch-find';
 import {ApprovalActionRepository} from '../repositories/approval-action.repository';
 import {ApprovalAuditLogRepository} from '../repositories/approval-audit-log.repository';
 import {ApprovalRequestRepository} from '../repositories/approval-request.repository';
@@ -1774,22 +1775,17 @@ export class ApprovalService {
     const shift = await this.cashPayoutShift(orderId, cashShiftId);
     if (!shift) return null;
 
-    const orders = await this.orderRepo.find({
-      where: {storeId: shift.storeId},
-      fields: {id: true},
-    });
     const now = new Date();
+    // Join to the store's orders in SQL: this store's lifetime order ids would
+    // otherwise become one ever-growing IN list on every refund payout check.
+    const storePaymentIds: {id: string}[] = await this.dataSource.execute(
+      `SELECT p.id FROM public.payment_transaction p JOIN public.orders o ON o.id = p.orderid
+        WHERE o.storeid = $1 AND p.paymentmode = $2 AND p.riderid IS NULL
+          AND p.paymentdate BETWEEN $3 AND $4`,
+      [shift.storeId, PaymentMode.CASH, shift.openedAt, now]);
     const [payments, crossStoreRefunds, handovers, recharges] = await Promise.all([
-      orders.length
-        ? this.paymentRepo.find({
-            where: {
-              orderId: {inq: orders.map(row => row.id)},
-              paymentMode: PaymentMode.CASH,
-              riderId: null,
-              paymentDate: {between: [shift.openedAt, now]},
-            } as object,
-          })
-        : [],
+      findInBatches(storePaymentIds.map(row => row.id), ids =>
+        this.paymentRepo.find({where: {id: {inq: ids}} as object})),
       this.paymentRepo.find({
         where: {
           cashShiftId: shift.id,
@@ -1818,7 +1814,11 @@ export class ApprovalService {
         } as object,
       }),
     ]);
-    const sourceOrderIds = new Set(orders.map(row => row.id));
+    const refundOrderIds = [...new Set(crossStoreRefunds.map(refund => refund.orderId).filter(Boolean))];
+    const refundOrders = refundOrderIds.length
+      ? await this.orderRepo.find({where: {id: {inq: refundOrderIds}}, fields: {id: true, storeId: true}})
+      : [];
+    const sourceOrderIds = new Set(refundOrders.filter(row => row.storeId === shift.storeId).map(row => row.id));
     const cash =
       payments.reduce(
         (sum, payment) =>

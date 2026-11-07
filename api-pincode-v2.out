@@ -1,0 +1,30 @@
+
+> Pressto-backend@0.0.1 prestart
+> npm run rebuild
+
+
+> Pressto-backend@0.0.1 rebuild
+> npm run clean && npm run build
+
+
+> Pressto-backend@0.0.1 clean
+> lb-clean dist *.tsbuildinfo .eslintcache
+
+
+> Pressto-backend@0.0.1 build
+> lb-tsc && npm run copy-assets
+
+
+> Pressto-backend@0.0.1 copy-assets
+> node -e "require('fs').cpSync('src/data','dist/data',{recursive:true})"
+
+
+> Pressto-backend@0.0.1 start
+> node -r source-map-support/register .
+
+◇ injected env (19) from .env // tip: ◈ encrypted .env [www.dotenvx.com]
+◇ injected env (0) from .env // tip: ⌘ enable debugging { debug: true }
+◇ injected env (0) from .env // tip: ⌘ override existing { override: true }
+Coupon ticket visibility is available.
+Server is running at http://127.0.0.1:3036
+Try http://127.0.0.1:3036/ping
