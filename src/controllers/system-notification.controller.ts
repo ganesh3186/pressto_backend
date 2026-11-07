@@ -52,6 +52,10 @@ export class SystemNotificationController {
             },
             unreadCount: { type: 'number' },
             allCount: { type: 'number' },
+            totalCount: {
+              type: 'number',
+              description: 'Notifications matching filter.where (for paging); equals allCount without a where',
+            },
           },
         },
       },
@@ -65,6 +69,7 @@ export class SystemNotificationController {
     notifications: SystemNotification[];
     unreadCount: number;
     allCount: number;
+    totalCount: number;
   }> {
     const userId = currentUser.id;
     if (!userId) {
@@ -89,10 +94,12 @@ export class SystemNotificationController {
       ),
     };
 
-    const [notifications, unreadCount, allCount] = await Promise.all([
+    const [notifications, unreadCount, allCount, matching] = await Promise.all([
       this.systemNotificationRepository.find(combinedFilter),
       this.systemNotificationRepository.count({ userId, status: 0, isDeleted: false }),
       this.systemNotificationRepository.count({ userId, isDeleted: false }),
+      // Total for the Notifications page's filters, so it can page on the server.
+      filter?.where ? this.systemNotificationRepository.count(combinedFilter.where) : null,
     ]);
 
     return {
@@ -100,6 +107,7 @@ export class SystemNotificationController {
       notifications,
       unreadCount: unreadCount.count,
       allCount: allCount.count,
+      totalCount: matching ? matching.count : allCount.count,
     };
   }
 

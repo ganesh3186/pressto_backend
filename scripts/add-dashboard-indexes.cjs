@@ -24,6 +24,9 @@ const INDEXES = [
     'rider_cash_handover',
     'handovertostoreid, status, confirmedat',
   ],
+  // Notification bell: each user's newest notifications and their counts
+  // (declared on SystemNotification).
+  ['systemNotificationUserCreatedAt', 'system_notification', 'userid, isdeleted, createdat'],
 ];
 
 async function addDashboardIndexes() {
