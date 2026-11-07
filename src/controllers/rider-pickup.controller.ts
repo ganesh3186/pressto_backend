@@ -26,6 +26,7 @@ import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/
 import {PickupUnsuccessfulReason} from '../models/pickup-unsuccessful-reason.enum';
 import {
   BagRepository,
+  CustomerAddressRepository,
   CustomerRepository,
   ItemCategoryRepository,
   PickupDeliverySlotRepository,
@@ -42,12 +43,31 @@ import {
 import {CustomerAddressService} from '../services/customer-address.service';
 import {CustomerPreferenceChanges, CustomerPreferenceService} from '../services/customer-preference.service';
 import {BcryptHasher} from '../services/hash.password.bcrypt';
+import {GeocodingService, hasRealCoordinates} from '../services/geocoding.service';
 import {SecurityDepositService} from '../services/security-deposit.service';
+import {ResolvedStore, StoreAssignmentService} from '../services/store-assignment.service';
 import {WalletService} from '../services/wallet.service';
 import {DeliveryGroupingPreference} from '../models/delivery-grouping-preference.enum';
 import {DeliveryType} from '../models/delivery-type.enum';
 import {filterSlotsForDate} from '../utils/pickup-slot-availability';
 import {PROTECTED_ROLES} from '../utils/role-guard';
+
+// Fields a rider may set on an address created inline with a new customer.
+const RIDER_ADDRESS_FIELDS = [
+  'addressType',
+  'addressName',
+  'addressLine1',
+  'addressLine2',
+  'doorFloorFlat',
+  'societyName',
+  'landmark',
+  'city',
+  'state',
+  'country',
+  'pincode',
+  'latitude',
+  'longitude',
+] as const;
 
 const RIDER_STATUS_TRANSITIONS: PickupRequestStatus[] = [
   PickupRequestStatus.OUT_FOR_PICKUP,
@@ -110,6 +130,12 @@ export class RiderPickupController {
     private preferenceService: CustomerPreferenceService,
     @inject('datasources.pressto')
     private dataSource: PresstoDataSource,
+    @inject('services.store-assignment')
+    private storeAssignmentService: StoreAssignmentService,
+    @inject('services.geocoding')
+    private geocodingService: GeocodingService,
+    @repository(CustomerAddressRepository)
+    private customerAddressRepository: CustomerAddressRepository,
   ) {}
 
   // ─── Identity ─────────────────────────────────────────────────────────────
@@ -195,12 +221,55 @@ export class RiderPickupController {
               email: {type: 'string', format: 'email'},
               phone: {type: 'string'},
               countryCode: {type: 'string', default: '+91'},
+              address: {
+                type: 'object',
+                description:
+                  "Customer's address. Saved as their default address; when it has no latitude/longitude " +
+                  'it is geocoded from its text, and the nearest store is auto-assigned from those coordinates.',
+                required: ['addressLine1', 'city', 'state', 'pincode'],
+                properties: {
+                  addressType: {type: 'string'},
+                  addressName: {type: 'string'},
+                  addressLine1: {type: 'string'},
+                  addressLine2: {type: 'string'},
+                  doorFloorFlat: {type: 'string'},
+                  societyName: {type: 'string'},
+                  landmark: {type: 'string'},
+                  city: {type: 'string'},
+                  state: {type: 'string'},
+                  country: {type: 'string'},
+                  pincode: {type: 'string'},
+                  latitude: {type: 'number'},
+                  longitude: {type: 'number'},
+                },
+              },
+              latitude: {
+                type: 'number',
+                description:
+                  "Fallback location (e.g. rider's current GPS) used only when no address is given, " +
+                  'or the address could not be geocoded.',
+              },
+              longitude: {type: 'number'},
+              pincode: {
+                type: 'string',
+                description: 'Last-resort fallback for store auto-assignment when no address is given.',
+              },
             },
           },
         },
       },
     })
-    body: {firstName: string; lastName: string; email?: string; phone: string; countryCode?: string},
+    body: {
+      firstName: string;
+      lastName: string;
+      email?: string;
+      phone: string;
+      countryCode?: string;
+      address?: Partial<CustomerAddress>;
+      latitude?: number;
+      longitude?: number;
+      pincode?: string;
+    },
   ): Promise<object> {
     const orConditions: object[] = [{phone: body.phone}];
     if (body.email) orConditions.push({email: body.email});
@@ -234,6 +303,54 @@ export class RiderPickupController {
     const customerCode = await this.generateCustomerCode();
     const fullName = `${body.firstName} ${body.lastName}`;
 
+    // Work out the customer's coordinates before the transaction (the
+    // geocode is an external HTTP call):
+    //   1. the address's own latitude/longitude, if real,
+    //   2. else geocode the address text,
+    //   3. else the top-level latitude/longitude (e.g. rider's GPS).
+    // Then pick the nearest store from those coordinates, falling back to
+    // the address's pincode (or the top-level one). A null result leaves
+    // the customer unassigned.
+    let addressData: Partial<CustomerAddress> | undefined;
+    let coordinateSource: 'address' | 'geocoded' | 'request' | null = null;
+    if (body.address) {
+      // Copy only the documented address fields — never id, customerId,
+      // isDeleted, isActive, timestamps, etc. from the request.
+      addressData = {};
+      for (const key of RIDER_ADDRESS_FIELDS) {
+        if (body.address[key] !== undefined) {
+          (addressData as Record<string, unknown>)[key] = body.address[key];
+        }
+      }
+      if (hasRealCoordinates(addressData.latitude, addressData.longitude)) {
+        coordinateSource = 'address';
+      } else {
+        delete addressData.latitude;
+        delete addressData.longitude;
+        const geocoded = await this.geocodingService.geocodeAddress(
+          this.addressService.toDisplaySnapshot(new CustomerAddress(addressData)),
+        );
+        if (geocoded) {
+          addressData.latitude = geocoded.latitude;
+          addressData.longitude = geocoded.longitude;
+          coordinateSource = 'geocoded';
+        }
+      }
+    }
+    if (!coordinateSource && hasRealCoordinates(body.latitude, body.longitude)) {
+      coordinateSource = 'request';
+    }
+    const coords =
+      coordinateSource === 'address' || coordinateSource === 'geocoded'
+        ? {latitude: addressData!.latitude, longitude: addressData!.longitude}
+        : coordinateSource === 'request'
+          ? {latitude: body.latitude, longitude: body.longitude}
+          : {};
+    const storeResolution = await this.storeAssignmentService.resolveNearestStore({
+      ...coords,
+      pincode: addressData?.pincode ?? body.pincode,
+    });
+
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
       const user = await this.usersRepository.create(
@@ -256,6 +373,7 @@ export class RiderPickupController {
           firstName: body.firstName,
           lastName: body.lastName,
           ...(body.email && {email: body.email}),
+          ...(storeResolution.store && {preferredStoreId: storeResolution.store.id}),
         },
         {transaction: tx},
       );
@@ -267,8 +385,24 @@ export class RiderPickupController {
       await this.walletService.createWallet(customer.id, {transaction: tx});
       await this.securityDepositService.createDeposit(customer.id, {transaction: tx});
 
+      const address = addressData
+        ? await this.customerAddressRepository.create(
+            {...addressData, customerId: customer.id, isDefault: true},
+            {transaction: tx},
+          )
+        : null;
+
       await tx.commit();
-      return {message: 'Customer created.', customer};
+      return {
+        message: 'Customer created.',
+        customer,
+        address,
+        coordinates:
+          coords.latitude != null ? {latitude: coords.latitude, longitude: coords.longitude, source: coordinateSource} : null,
+        assignedStore: storeResolution.store,
+        storeMatchedBy: storeResolution.matchedBy,
+        nearbyBeyondRadius: storeResolution.nearbyBeyondRadius,
+      };
     } catch (error) {
       await tx.rollback();
       throw error;
@@ -307,6 +441,113 @@ export class RiderPickupController {
       include: [{relation: 'user', scope: {fields: {id: true, phone: true, countryCode: true}}}],
       limit: 20,
     });
+  }
+
+  // ─── Nearest store for an existing customer ────────────────────────────────
+  //
+  // Location source, in order:
+  //   1. latitude/longitude and/or pincode passed as query params,
+  //   2. the saved address given by addressId,
+  //   3. the customer's default saved address (else their first one).
+  // Resolution is lat/long first, then pincode.
+  //
+  // Only a location from the customer's own saved address (2 or 3) is
+  // ever saved as preferredStoreId. Query params are lookup-only: they
+  // can be the rider's GPS wherever the rider happens to be, and the
+  // assignment is permanent (never overwritten afterwards), so it must
+  // not come from caller-supplied coordinates.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/customers/{customerId}/nearest-store')
+  @response(200, {description: "Nearest store for a customer's location (lat/long, else pincode)"})
+  async getNearestStoreForCustomer(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('customerId') customerId: string,
+    @param.query.number('latitude') latitude?: number,
+    @param.query.number('longitude') longitude?: number,
+    @param.query.string('pincode') pincode?: string,
+    @param.query.string('addressId') addressId?: string,
+  ): Promise<object> {
+    await this.resolveActiveRider(currentUser);
+    const customer = await this.customerRepository.findOne({where: {id: customerId, isDeleted: false}});
+    if (!customer) throw new HttpErrors.NotFound('Customer not found.');
+
+    let location: {latitude?: number | null; longitude?: number | null; pincode?: string | null};
+    let locationSource: 'request' | 'address' | 'none';
+
+    if ((latitude != null && longitude != null) || pincode) {
+      location = {latitude, longitude, pincode};
+      locationSource = 'request';
+    } else {
+      let address: CustomerAddress | undefined;
+      if (addressId) {
+        address = await this.addressService.findById(addressId).catch(err => {
+          // Only "no such row" is a 404; real DB errors must surface.
+          if (err?.code === 'ENTITY_NOT_FOUND') return undefined;
+          throw err;
+        });
+        if (!address || address.customerId !== customerId || address.isDeleted) {
+          throw new HttpErrors.NotFound('Address not found for this customer.');
+        }
+      } else {
+        // Default address, else the oldest one — deterministic, so repeat
+        // calls never resolve from a different address.
+        const addresses = await this.addressService.findAll(customerId);
+        const oldestFirst = [...addresses].sort(
+          (a, b) => new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime(),
+        );
+        address = oldestFirst.find(a => a.isDefault) ?? oldestFirst[0];
+      }
+      // Saved address without real coordinates → geocode its text and
+      // persist the result, so the nearest store comes from lat/long.
+      if (address) await this.addressService.ensureCoordinates(address);
+      location = address
+        ? {latitude: address.latitude, longitude: address.longitude, pincode: address.pincode}
+        : {};
+      locationSource = address ? 'address' : 'none';
+    }
+
+    const resolution: ResolvedStore =
+      locationSource === 'none'
+        ? {store: null, matchedBy: null, nearbyBeyondRadius: []}
+        : await this.storeAssignmentService.resolveNearestStore(location);
+
+    let assigned = false;
+    if (locationSource === 'address' && !customer.preferredStoreId && resolution.store) {
+      // Conditional on preferredStoreId still being null, so an admin
+      // assignment (or a concurrent call) that lands after the read above
+      // is never overwritten.
+      const {count} = await this.customerRepository.updateAll(
+        {preferredStoreId: resolution.store.id},
+        {id: customerId, preferredStoreId: null} as object,
+      );
+      assigned = count > 0;
+      if (!assigned) {
+        const fresh = await this.customerRepository.findById(customerId, {fields: {preferredStoreId: true}});
+        customer.preferredStoreId = fresh.preferredStoreId;
+      } else {
+        customer.preferredStoreId = resolution.store.id;
+      }
+    }
+
+    const preferredStore = customer.preferredStoreId
+      ? await this.storeRepository.findOne({
+          where: {id: customer.preferredStoreId},
+          fields: {id: true, name: true, code: true} as object,
+        })
+      : null;
+
+    return {
+      customerId,
+      locationSource,
+      nearestStore: resolution.store,
+      storeMatchedBy: resolution.matchedBy,
+      nearbyBeyondRadius: resolution.nearbyBeyondRadius,
+      preferredStoreId: customer.preferredStoreId ?? null,
+      preferredStore,
+      assignedNow: assigned,
+    };
   }
 
   // ─── Customer addresses ─────────────────────────────────────────────────────
@@ -685,6 +926,17 @@ export class RiderPickupController {
                 type: 'string',
                 description: 'Inline address text — for a brand-new customer with nothing saved yet.',
               },
+              pincode: {
+                type: 'string',
+                description:
+                  'Pincode of the inline address. Used for store auto-assignment (and geocoding) ' +
+                  'when storeId is not sent. Ignored with addressId — the saved address has its own.',
+              },
+              latitude: {
+                type: 'number',
+                description: 'Coordinates of the inline address, if known. Geocoded from the text/pincode when absent.',
+              },
+              longitude: {type: 'number'},
               slotId: {type: 'string', format: 'uuid'},
               requestedDate: {type: 'string', format: 'date'},
               handoverBy: {type: 'string', enum: Object.values(PickupHandoverBy)},
@@ -735,8 +987,9 @@ export class RiderPickupController {
                 type: 'string',
                 format: 'uuid',
                 description:
-                  'Required when pickupNow is false, or when pickupNow is true but the rider ' +
-                  'has no active run to attach to — nothing to inherit it from either way.',
+                  'Optional override. When omitted, the nearest store to the pickup address is ' +
+                  'assigned (lat/long first, then pincode). Not used when pickupNow attaches to ' +
+                  "the rider's active run, which keeps the run's store.",
               },
             },
           },
@@ -747,6 +1000,9 @@ export class RiderPickupController {
       customerId: string;
       addressId?: string;
       address?: string;
+      pincode?: string;
+      latitude?: number;
+      longitude?: number;
       slotId: string;
       requestedDate: string;
       handoverBy?: PickupHandoverBy;
@@ -775,15 +1031,29 @@ export class RiderPickupController {
 
     let addressText: string;
     let pincode: string | undefined;
+    let latitude: number | undefined;
+    let longitude: number | undefined;
     if (body.addressId) {
       const address = await this.addressService.findById(body.addressId);
-      if (address.customerId !== customer.id) {
+      if (address.customerId !== customer.id || address.isDeleted) {
         throw new HttpErrors.BadRequest('That address does not belong to this customer.');
       }
+      // Saved address with no coordinates: geocode its text once and save
+      // the result on the address.
+      await this.addressService.ensureCoordinates(address);
       addressText = this.addressService.toDisplaySnapshot(address);
       pincode = address.pincode;
+      if (hasRealCoordinates(address.latitude, address.longitude)) {
+        latitude = Number(address.latitude);
+        longitude = Number(address.longitude);
+      }
     } else if (body.address?.trim()) {
       addressText = body.address.trim();
+      pincode = body.pincode?.trim() || undefined;
+      if (hasRealCoordinates(body.latitude, body.longitude)) {
+        latitude = Number(body.latitude);
+        longitude = Number(body.longitude);
+      }
     } else {
       throw new HttpErrors.BadRequest('Provide either addressId or address.');
     }
@@ -870,18 +1140,47 @@ export class RiderPickupController {
       // standalone RIDER_ASSIGNED request instead of one attached to a run.
     }
 
-    if (!body.storeId) {
-      throw new HttpErrors.BadRequest(
-        'storeId is required when pickupNow is false, or when pickupNow is true but there is no active run to attach to.',
-      );
+    let storeId = body.storeId;
+    let storeAssignment: {matchedBy: 'manual' | 'coordinates' | 'pincode'; distanceKm?: number} = {
+      matchedBy: 'manual',
+    };
+    if (storeId) {
+      const store = await this.storeRepository.findOne({where: {id: storeId, isDeleted: false} as object});
+      if (!store) throw new HttpErrors.NotFound('Store not found.');
+    } else {
+      // Inline address with no coordinates: geocode the text (plus the
+      // pincode, if it isn't already in the text) to get lat/long.
+      if (latitude == null && !body.addressId) {
+        const query =
+          pincode && !addressText.includes(pincode) ? `${addressText}, ${pincode}` : addressText;
+        const geocoded = await this.geocodingService.geocodeAddress(query);
+        if (geocoded) {
+          latitude = geocoded.latitude;
+          longitude = geocoded.longitude;
+        }
+      }
+      const resolution = await this.storeAssignmentService.resolveNearestStore({latitude, longitude, pincode});
+      if (!resolution.store) {
+        const nearby = resolution.nearbyBeyondRadius
+          .map(s => `${s.name} (${s.distanceKm.toFixed(1)} km)`)
+          .join(', ');
+        throw new HttpErrors.UnprocessableEntity(
+          'No store serves this address (none within range of its location or covering its pincode). ' +
+            'Send storeId to assign one manually.' +
+            (nearby ? ` Nearest stores: ${nearby}.` : ''),
+        );
+      }
+      storeId = resolution.store.id;
+      storeAssignment = {
+        matchedBy: resolution.matchedBy as 'coordinates' | 'pincode',
+        ...(resolution.store.distanceKm != null && {distanceKm: resolution.store.distanceKm}),
+      };
     }
-    const store = await this.storeRepository.findOne({where: {id: body.storeId}});
-    if (!store) throw new HttpErrors.NotFound('Store not found.');
 
     const pickupRequest = await this.pickupRequestService.createRequest({
       ...base,
       ...selfAssignFields,
-      storeId: body.storeId,
+      storeId,
       ...(body.pickupNow ? {runId: v4()} : {}),
       status: body.pickupNow ? PickupRequestStatus.RIDER_ASSIGNED : PickupRequestStatus.REQUESTED,
     });
@@ -890,6 +1189,7 @@ export class RiderPickupController {
         ? 'Pickup request created.'
         : 'Pickup request created — awaiting rider assignment.',
       pickupRequest,
+      storeAssignment,
     };
   }
 

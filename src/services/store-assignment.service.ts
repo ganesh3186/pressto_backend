@@ -2,6 +2,7 @@ import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {Store} from '../models';
 import {StorePincodeCoverageRepository, StoreRepository} from '../repositories';
+import {hasRealCoordinates} from './geocoding.service';
 
 const EARTH_RADIUS_KM = 6371;
 const DEFAULT_RADIUS_KM = 15;
@@ -27,6 +28,13 @@ export type NearbyStore = {
   distanceKm: number;
   latitude: number;
   longitude: number;
+};
+
+export type ResolvedStore = {
+  store: {id: string; name: string; code: string; distanceKm?: number} | null;
+  matchedBy: 'coordinates' | 'pincode' | null;
+  /** Only populated when nothing matched — closest stores past the radius. */
+  nearbyBeyondRadius: NearbyStore[];
 };
 
 /**
@@ -99,6 +107,50 @@ export class StoreAssignmentService {
       nearestWithinRadius: within[0] ?? null,
       nearbyBeyondRadius: beyond,
     };
+  }
+
+  /**
+   * One-call "which store serves this location" — coordinates first
+   * (nearest active store within the radius), then the pincode coverage
+   * table as a fallback. Same precedence as the customer app's pickup
+   * flow (CustomerProfileController.createPickupRequest). Either input may
+   * be missing; `store` is null when neither resolves.
+   */
+  async resolveNearestStore(input: {
+    latitude?: number | string | null;
+    longitude?: number | string | null;
+    pincode?: string | null;
+  }): Promise<ResolvedStore> {
+    const lat = Number(input.latitude);
+    const lng = Number(input.longitude);
+    const hasCoords = hasRealCoordinates(input.latitude, input.longitude);
+
+    let nearbyBeyondRadius: NearbyStore[] = [];
+    if (hasCoords) {
+      const resolved = await this.resolveForCoordinates(lat, lng);
+      if (resolved.nearestWithinRadius) {
+        const s = resolved.nearestWithinRadius;
+        return {
+          store: {id: s.id, name: s.name, code: s.code, distanceKm: Number(s.distanceKm.toFixed(2))},
+          matchedBy: 'coordinates',
+          nearbyBeyondRadius: [],
+        };
+      }
+      nearbyBeyondRadius = resolved.nearbyBeyondRadius;
+    }
+
+    if (input.pincode) {
+      const pincodeStore = await this.resolveForPincode(input.pincode);
+      if (pincodeStore) {
+        return {
+          store: {id: pincodeStore.id, name: pincodeStore.name, code: pincodeStore.code},
+          matchedBy: 'pincode',
+          nearbyBeyondRadius: [],
+        };
+      }
+    }
+
+    return {store: null, matchedBy: null, nearbyBeyondRadius};
   }
 
   /** Nearest active store explicitly covering a pincode. */
