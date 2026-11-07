@@ -22,6 +22,8 @@ import { SystemNotificationRepository } from '../repositories/system-notificatio
 import { SystemNotificationService } from '../services/system-notification.service';
 import { CurrentUser } from '../types';
 
+const MAX_NOTIFICATIONS_PER_REQUEST = 200;
+
 export class SystemNotificationController {
   constructor(
     @repository(SystemNotificationRepository)
@@ -80,6 +82,11 @@ export class SystemNotificationController {
         ? { and: [baseWhere, filter.where] }
         : baseWhere,
       order: filter?.order ?? ['createdAt DESC'],
+      // Polled by every open tab, so it can't return a user's whole history.
+      limit: Math.min(
+        filter?.limit ?? MAX_NOTIFICATIONS_PER_REQUEST,
+        MAX_NOTIFICATIONS_PER_REQUEST,
+      ),
     };
 
     const [notifications, unreadCount, allCount] = await Promise.all([
