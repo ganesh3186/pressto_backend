@@ -1,0 +1,77 @@
+# Builds the Docker image, pushes it to ECR, and deploys to ECS.
+# staging branch -> staging deployment, production branch -> production deployment
+#
+# Bitbucket: Repository settings -> Pipelines -> Settings: enable Pipelines.
+# Repository settings -> Pipelines -> OpenID Connect: copy the Identity provider URL and
+# Audience into an AWS IAM OIDC provider, then create a deploy role trusting it.
+# Repository settings -> Pipelines -> Deployments: create "staging" and "production", each with variables:
+#   AWS_OIDC_ROLE_ARN  deploy role ARN
+#   ECR_REPOSITORY     e.g. pulse/staging/api
+#   ECS_CLUSTER        e.g. pulse-staging-cluster
+#   ECS_SERVICE        e.g. pulse-staging-api-service
+#   CONTAINER_NAME     e.g. api
+#
+# FIRST RUN: leave ECS_SERVICE empty. The pipeline only builds and pushes the image
+# (tags: commit SHA and "latest"). Create the ECS service with that image, then set
+# ECS_SERVICE to turn on auto-deploys. Deploys clone the service's current task definition
+# and swap in the new image, so no task definition file is kept in the repo.
+
+image: python:3.12
+
+definitions:
+  services:
+    docker:
+      memory: 6144
+  steps:
+    - step: &build-deploy
+        name: Build, push to ECR, deploy to ECS
+        size: 2x
+        oidc: true
+        services:
+          - docker
+        caches:
+          - docker
+        script:
+          - pip3 install --quiet awscli
+          - export AWS_REGION=ap-south-1
+          - export AWS_DEFAULT_REGION=$AWS_REGION
+          - echo "$BITBUCKET_STEP_OIDC_TOKEN" > /tmp/web-identity-token
+          - export AWS_WEB_IDENTITY_TOKEN_FILE=/tmp/web-identity-token
+          - export AWS_ROLE_ARN=$AWS_OIDC_ROLE_ARN
+          - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          - REGISTRY=$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+          - aws ecr get-login-password | docker login --username AWS --password-stdin $REGISTRY
+          - REPO=$REGISTRY/$ECR_REPOSITORY
+          - docker build --platform linux/amd64 -t $REPO:$BITBUCKET_COMMIT -t $REPO:latest .
+          - docker push $REPO:$BITBUCKET_COMMIT
+          - docker push $REPO:latest
+          - |
+            if [ -n "$ECS_SERVICE" ]; then
+              CURRENT_TD=$(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --query 'services[0].taskDefinition' --output text)
+              aws ecs describe-task-definition --task-definition $CURRENT_TD --query taskDefinition --output json > /tmp/current-taskdef.json
+              python3 - "$CONTAINER_NAME" "$REPO:$BITBUCKET_COMMIT" <<'PY'
+            import json, sys
+            name, image = sys.argv[1:3]
+            td = json.load(open("/tmp/current-taskdef.json"))
+            for k in ["taskDefinitionArn", "revision", "status", "requiresAttributes", "compatibilities", "registeredAt", "registeredBy"]:
+                td.pop(k, None)
+            for c in td["containerDefinitions"]:
+                if c["name"] == name:
+                    c["image"] = image
+            json.dump(td, open("/tmp/taskdef.json", "w"))
+            PY
+              NEW_ARN=$(aws ecs register-task-definition --cli-input-json file:///tmp/taskdef.json --query taskDefinition.taskDefinitionArn --output text)
+              aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --task-definition $NEW_ARN > /dev/null
+              aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE
+            fi
+
+pipelines:
+  branches:
+    staging:
+      - step:
+          <<: *build-deploy
+          deployment: staging
+    production:
+      - step:
+          <<: *build-deploy
+          deployment: production
