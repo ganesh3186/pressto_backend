@@ -1,5 +1,19 @@
 node_modules
-npm-debug.log
-/dist
-# Cache used by TypeScript's incremental build
+dist
+.git
+.env
+.env.*
+!.env.example
+firebase-service-account.json
 *.tsbuildinfo
+*.out
+*.err
+*.log
+audit-reports
+backups
+.sandbox
+.vscode
+docs
+*.md
+Dockerfile
+.dockerignore

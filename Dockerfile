@@ -1,28 +1,22 @@
-# Check out https://hub.docker.com/_/node to select a new base image
-FROM docker.io/library/node:24-slim
+FROM node:24-slim AS build
+WORKDIR /app
+COPY package*.json ./
+RUN --mount=type=cache,target=/root/.npm sh -c 'if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi'
+COPY . .
+RUN npm run build && npm prune --omit=dev
 
-# Set to a non-root built-in user `node`
-USER node
-
-# Create app directory (with user `node`)
-RUN mkdir -p /home/node/app
-
+FROM node:24-slim
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000
+ADD https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /certs/rds-ca.pem
+ENV NODE_EXTRA_CA_CERTS=/certs/rds-ca.pem
 WORKDIR /home/node/app
-
-# Install app dependencies
-# A wildcard is used to ensure both package.json AND package-lock.json are copied
-# where available (npm@5+)
-COPY --chown=node package*.json ./
-
-RUN npm install
-
-# Bundle app source code
-COPY --chown=node . .
-
-RUN npm run build
-
-# Bind to all network interfaces so that it can be mapped to the host OS
-ENV HOST=0.0.0.0 PORT=3000
-
-EXPOSE ${PORT}
-CMD [ "node", "." ]
+COPY --from=build --chown=node:node /app/package*.json ./
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/scripts ./scripts
+COPY --from=build --chown=node:node /app/public ./public
+RUN mkdir -p .sandbox && chown node:node .sandbox
+USER node
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s CMD node -e "fetch('http://127.0.0.1:3000/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "."]

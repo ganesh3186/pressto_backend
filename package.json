@@ -104,6 +104,7 @@
     "!*/__tests__"
   ],
   "dependencies": {
+    "@aws-sdk/rds-signer": "^3.1164.0",
     "@loopback/authentication": "^12.0.8",
     "@loopback/boot": "^8.0.3",
     "@loopback/core": "^7.0.2",

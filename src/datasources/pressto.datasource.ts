@@ -1,7 +1,19 @@
 import {inject, lifeCycleObserver, LifeCycleObserver} from '@loopback/core';
 import {juggler} from '@loopback/repository';
+import {Signer} from '@aws-sdk/rds-signer';
 import * as dotenv from 'dotenv';
 dotenv.config();
+
+// PG_IAM_AUTH=true: password is a short-lived RDS IAM token fetched per new connection
+const iamSigner =
+  process.env.PG_IAM_AUTH === 'true'
+    ? new Signer({
+        region: process.env.AWS_REGION ?? 'ap-south-1',
+        hostname: process.env.PG_HOST ?? '',
+        port: Number(process.env.PG_PORT) || 5432,
+        username: process.env.PG_USER ?? '',
+      })
+    : undefined;
 
 const config = {
   name: 'pressto',
@@ -9,8 +21,11 @@ const config = {
   host: process.env.PG_HOST,
   port: Number(process.env.PG_PORT),
   user: process.env.PG_USER,
-  password: process.env.PG_PASSWORD,
+  password: iamSigner
+    ? () => iamSigner.getAuthToken()
+    : process.env.PG_PASSWORD,
   database: process.env.PG_DATABASE,
+  ssl: process.env.PG_SSL === 'true' ? {rejectUnauthorized: process.env.PG_SSL_REJECT_UNAUTHORIZED !== 'false'} : false,
   // Previously unset, so pg.Pool defaulted to max:10 and no connection
   // timeout — once all 10 were busy (slow unindexed queries, wildcard
   // searches), every other request queued forever with no error, looking
