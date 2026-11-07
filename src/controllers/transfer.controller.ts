@@ -1,7 +1,14 @@
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {IsolationLevel, repository} from '@loopback/repository';
-import {get, HttpErrors, param, post, requestBody, response} from '@loopback/rest';
+import {
+  get,
+  HttpErrors,
+  param,
+  post,
+  requestBody,
+  response,
+} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
@@ -28,14 +35,19 @@ import {
   UsersRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
-import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
+import {
+  NotificationService,
+  RIDER_NOTIFICATION_TYPES,
+} from '../services/notification.service';
 import {SystemNotificationService} from '../services/system-notification.service';
 
 export class TransferController {
   constructor(
     @repository(TransferRepository) private transferRepo: TransferRepository,
-    @repository(TransferItemRepository) private transferItemRepo: TransferItemRepository,
-    @repository(TransferCustodyEventRepository) private custodyEventRepo: TransferCustodyEventRepository,
+    @repository(TransferItemRepository)
+    private transferItemRepo: TransferItemRepository,
+    @repository(TransferCustodyEventRepository)
+    private custodyEventRepo: TransferCustodyEventRepository,
     @repository(BagRepository) private bagRepo: BagRepository,
     @repository(StoreRepository) private storeRepo: StoreRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
@@ -46,8 +58,10 @@ export class TransferController {
     @repository(ItemRepository) private itemRepo: ItemRepository,
     @repository(ServiceRepository) private serviceRepo: ServiceRepository,
     @repository(UsersRepository) private usersRepo: UsersRepository,
-    @inject('services.store-scope') private storeScopeService: StoreScopeService,
-    @inject('services.notification') private notificationService: NotificationService,
+    @inject('services.store-scope')
+    private storeScopeService: StoreScopeService,
+    @inject('services.notification')
+    private notificationService: NotificationService,
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
     @inject('services.system-notification', {optional: true})
     private systemNotificationService?: SystemNotificationService,
@@ -56,7 +70,9 @@ export class TransferController {
   // ─── Validation helpers ───────────────────────────────────────────────────
 
   private async assertBagAvailable(bagId: string) {
-    const bag = await this.bagRepo.findOne({where: {id: bagId, isDeleted: false}});
+    const bag = await this.bagRepo.findOne({
+      where: {id: bagId, isDeleted: false},
+    });
     if (!bag) throw new HttpErrors.NotFound('Bag not found.');
     if (!bag.isActive) throw new HttpErrors.BadRequest('This bag is inactive.');
     if (bag.status !== BagStatus.AVAILABLE) {
@@ -95,13 +111,17 @@ export class TransferController {
     const openItems = await this.transferItemRepo.find({
       where: {
         garmentId: {inq: garmentIds},
-        scanStatus: {inq: [TransferItemScanStatus.SCANNED, TransferItemScanStatus.MISSING]},
+        scanStatus: {
+          inq: [TransferItemScanStatus.SCANNED, TransferItemScanStatus.MISSING],
+        },
       } as object,
     });
     if (!openItems.length) return garments;
 
     const parentIds = [...new Set(openItems.map(i => i.transferId))];
-    const parents = await this.transferRepo.find({where: {id: {inq: parentIds}} as object});
+    const parents = await this.transferRepo.find({
+      where: {id: {inq: parentIds}} as object,
+    });
     const parentById = new Map(parents.map(t => [t.id, t]));
 
     const blockedTags = new Set<string>();
@@ -110,21 +130,28 @@ export class TransferController {
       if (!parent) continue;
       const blocked =
         item.scanStatus === TransferItemScanStatus.SCANNED
-          ? TransferController.OPEN_TRANSFER_STATUSES.includes(parent.status ?? TransferStatus.SENT)
+          ? TransferController.OPEN_TRANSFER_STATUSES.includes(
+              parent.status ?? TransferStatus.SENT,
+            )
           : item.scanStatus === TransferItemScanStatus.MISSING &&
             parent.status === TransferStatus.DISCREPANCY;
       if (blocked) blockedTags.add(item.garmentTagNumber);
     }
     if (blockedTags.size) {
-      throw new HttpErrors.Conflict(`Already in an active transfer: ${[...blockedTags].join(', ')}.`);
+      throw new HttpErrors.Conflict(
+        `Already in an active transfer: ${[...blockedTags].join(', ')}.`,
+      );
     }
     return garments;
   }
 
   private async assertRiderAssignable(riderId: string) {
-    const rider = await this.riderRepo.findOne({where: {id: riderId, isDeleted: false}});
+    const rider = await this.riderRepo.findOne({
+      where: {id: riderId, isDeleted: false},
+    });
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
-    if (!rider.isActive) throw new HttpErrors.BadRequest('This rider is inactive.');
+    if (!rider.isActive)
+      throw new HttpErrors.BadRequest('This rider is inactive.');
     return rider;
   }
 
@@ -169,7 +196,9 @@ export class TransferController {
    */
   private async enrichTransfers(transfers: Transfer[]): Promise<object[]> {
     if (!transfers.length) return [];
-    const storeIds = [...new Set(transfers.flatMap(t => [t.fromStoreId, t.toStoreId]))];
+    const storeIds = [
+      ...new Set(transfers.flatMap(t => [t.fromStoreId, t.toStoreId])),
+    ];
     const transferById = new Map(transfers.map(t => [t.id, t]));
 
     const [stores, items] = await Promise.all([
@@ -185,12 +214,15 @@ export class TransferController {
     for (const item of items) {
       const bagId = item.bagId ?? transferById.get(item.transferId)?.bagId;
       if (!bagId) continue;
-      const perTransfer = bagCountByTransfer.get(item.transferId) ?? new Map<string, number>();
+      const perTransfer =
+        bagCountByTransfer.get(item.transferId) ?? new Map<string, number>();
       perTransfer.set(bagId, (perTransfer.get(bagId) ?? 0) + 1);
       bagCountByTransfer.set(item.transferId, perTransfer);
     }
 
-    const allBagIds = [...new Set([...bagCountByTransfer.values()].flatMap(m => [...m.keys()]))];
+    const allBagIds = [
+      ...new Set([...bagCountByTransfer.values()].flatMap(m => [...m.keys()])),
+    ];
     const bags = allBagIds.length
       ? await this.bagRepo.find({where: {id: {inq: allBagIds}} as object})
       : [];
@@ -215,7 +247,11 @@ export class TransferController {
         toStoreCode: storeById.get(t.toStoreId)?.code ?? null,
         bagNumber: transferBags[0]?.bagNumber ?? null,
         bags: transferBags,
-        currentLocationLabel: this.buildLocationLabel(t, fromStoreName, toStoreName),
+        currentLocationLabel: this.buildLocationLabel(
+          t,
+          fromStoreName,
+          toStoreName,
+        ),
       };
     });
   }
@@ -244,12 +280,17 @@ export class TransferController {
     const {currentUser, fromStoreId, toStoreId, bags, garments} = params;
 
     const bagIdByGarmentId = new Map<string, string>();
-    for (const bag of bags) for (const gid of bag.garmentIds) bagIdByGarmentId.set(gid, bag.bagId);
+    for (const bag of bags)
+      for (const gid of bag.garmentIds) bagIdByGarmentId.set(gid, bag.bagId);
 
     // Batch-resolve each garment's orderId via its orderItem — one inq, not N+1.
     const orderItemIds = [...new Set(garments.map(g => g.orderItemId))];
-    const orderItems = await this.orderItemRepo.find({where: {id: {inq: orderItemIds}} as object});
-    const orderIdByOrderItemId = new Map(orderItems.map(oi => [oi.id, oi.orderId]));
+    const orderItems = await this.orderItemRepo.find({
+      where: {id: {inq: orderItemIds}} as object,
+    });
+    const orderIdByOrderItemId = new Map(
+      orderItems.map(oi => [oi.id, oi.orderId]),
+    );
 
     const {v4} = await import('uuid');
     const now = new Date();
@@ -260,7 +301,9 @@ export class TransferController {
     const transferOrderNumber = `TO-${ym}-${String(seq).padStart(5, '0')}`;
     const transitId = `TR-${params.fromStoreCode}-${params.toStoreCode}-${ddMM}-${seq}`;
 
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
       const transfer = await this.transferRepo.create(
         {
@@ -316,9 +359,17 @@ export class TransferController {
           {transaction: tx},
         );
       }
-      for (const eventType of [TransferCustodyEventType.ITEMS_MAPPED, TransferCustodyEventType.SENT_OUT]) {
+      for (const eventType of [
+        TransferCustodyEventType.ITEMS_MAPPED,
+        TransferCustodyEventType.SENT_OUT,
+      ]) {
         await this.custodyEventRepo.create(
-          {id: v4(), transferId: transfer.id, eventType, performedBy: currentUser[securityId]},
+          {
+            id: v4(),
+            transferId: transfer.id,
+            eventType,
+            performedBy: currentUser[securityId],
+          },
           {transaction: tx},
         );
       }
@@ -328,7 +379,10 @@ export class TransferController {
         await this.bagRepo.updateById(
           bag.bagId,
           {
-            status: bagItemCount >= bag.maxCapacity ? BagStatus.FULL : BagStatus.IN_USE,
+            status:
+              bagItemCount >= bag.maxCapacity
+                ? BagStatus.FULL
+                : BagStatus.IN_USE,
             itemCount: bagItemCount,
             currentTransferId: transfer.id,
             currentStoreId: fromStoreId,
@@ -367,12 +421,16 @@ export class TransferController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:create']})
   @get('/transfers/eligible-items')
-  @response(200, {description: 'Orders + garment-level items at a store, eligible to transfer out'})
+  @response(200, {
+    description:
+      'Orders + garment-level items at a store, eligible to transfer out',
+  })
   async eligibleItems(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('storeId') storeId: string,
   ): Promise<object> {
-    if (!storeId) throw new HttpErrors.BadRequest('storeId query parameter is required.');
+    if (!storeId)
+      throw new HttpErrors.BadRequest('storeId query parameter is required.');
 
     const scope = await this.storeScopeService.resolve(currentUser);
     if (!this.storeScopeService.allows(scope, storeId)) {
@@ -404,16 +462,23 @@ export class TransferController {
     });
     const visitingGarments = inboundTransfers.length
       ? await this.garmentRepo.find({
-          where: {activeTransferId: {inq: inboundTransfers.map(t => t.id)}, isDeleted: false} as object,
+          where: {
+            activeTransferId: {inq: inboundTransfers.map(t => t.id)},
+            isDeleted: false,
+          } as object,
         })
       : [];
 
     let visitingOrders: Order[] = [];
     if (visitingGarments.length) {
       const visitingOrderItems = await this.orderItemRepo.find({
-        where: {id: {inq: [...new Set(visitingGarments.map(g => g.orderItemId))]}} as object,
+        where: {
+          id: {inq: [...new Set(visitingGarments.map(g => g.orderItemId))]},
+        } as object,
       });
-      const visitingOrderIds = [...new Set(visitingOrderItems.map(oi => oi.orderId))];
+      const visitingOrderIds = [
+        ...new Set(visitingOrderItems.map(oi => oi.orderId)),
+      ];
       visitingOrders = visitingOrderIds.length
         ? await this.orderRepo.find({
             where: {
@@ -425,14 +490,20 @@ export class TransferController {
         : [];
     }
 
-    const orderById = new Map([...homeOrders, ...visitingOrders].map(o => [o.id, o]));
+    const orderById = new Map(
+      [...homeOrders, ...visitingOrders].map(o => [o.id, o]),
+    );
     const orders = [...orderById.values()];
     if (!orders.length) return {orders: []};
 
     const orderIds = orders.map(o => o.id);
     const [orderItems, customers] = await Promise.all([
       this.orderItemRepo.find({where: {orderId: {inq: orderIds}} as object}),
-      this.customerRepo.find({where: {id: {inq: [...new Set(orders.map(o => o.customerId))]}} as object}),
+      this.customerRepo.find({
+        where: {
+          id: {inq: [...new Set(orders.map(o => o.customerId))]},
+        } as object,
+      }),
     ]);
 
     const orderItemIds = orderItems.map(oi => oi.id);
@@ -442,24 +513,97 @@ export class TransferController {
         })
       : [];
 
-    // Keep only garments actually here right now: a home garment must not
-    // itself be away, and a visiting garment must be visiting THIS store
-    // specifically (its order can be merged in above for a different
-    // reason — e.g. it also has other garments genuinely home here).
-    const visitingGarmentIds = new Set(visitingGarments.map(g => g.id));
+    // Include every home-store garment so the UI can show where away garments
+    // are; for visiting orders, expose only garments currently held here.
     const orderStoreById = new Map(orders.map(o => [o.id, o.storeId]));
-    const orderIdByOrderItemId = new Map(orderItems.map(oi => [oi.id, oi.orderId]));
+    const orderIdByOrderItemId = new Map(
+      orderItems.map(oi => [oi.id, oi.orderId]),
+    );
+    const visitingGarmentIds = new Set(visitingGarments.map(g => g.id));
     const garments = allGarments.filter(g => {
-      if (g.activeTransferId) return visitingGarmentIds.has(g.id);
       const orderId = orderIdByOrderItemId.get(g.orderItemId);
-      return orderId ? orderStoreById.get(orderId) === storeId : false;
+      return orderId
+        ? orderStoreById.get(orderId) === storeId ||
+            visitingGarmentIds.has(g.id)
+        : false;
     });
+
+    const transferItems = garments.length
+      ? await this.transferItemRepo.find({
+          where: {
+            garmentId: {inq: garments.map(g => g.id)},
+            scanStatus: {
+              inq: [
+                TransferItemScanStatus.SCANNED,
+                TransferItemScanStatus.MISSING,
+              ],
+            },
+          } as object,
+        })
+      : [];
+    const relatedTransferIds = [
+      ...new Set([
+        ...garments
+          .map(g => g.activeTransferId)
+          .filter((transferId): transferId is string => Boolean(transferId)),
+        ...transferItems.map(item => item.transferId),
+      ]),
+    ];
+    const relatedTransfers = relatedTransferIds.length
+      ? await this.transferRepo.find({
+          where: {id: {inq: relatedTransferIds}} as object,
+        })
+      : [];
+    const transferById = new Map(
+      relatedTransfers.map(transfer => [transfer.id, transfer]),
+    );
+    const lockedTransferByGarmentId = new Map<
+      string,
+      {transfer: Transfer; scanStatus?: TransferItemScanStatus}
+    >();
+    for (const item of transferItems) {
+      const transfer = transferById.get(item.transferId);
+      if (!transfer) continue;
+      const isLocked =
+        (item.scanStatus === TransferItemScanStatus.SCANNED &&
+          TransferController.OPEN_TRANSFER_STATUSES.includes(
+            transfer.status ?? TransferStatus.SENT,
+          )) ||
+        (item.scanStatus === TransferItemScanStatus.MISSING &&
+          transfer.status === TransferStatus.DISCREPANCY);
+      if (isLocked) {
+        lockedTransferByGarmentId.set(item.garmentId, {
+          transfer,
+          scanStatus: item.scanStatus,
+        });
+      }
+    }
+
+    const relatedStoreIds = [
+      ...new Set([
+        ...orders.map(order => order.storeId),
+        ...relatedTransfers.flatMap(transfer => [
+          transfer.fromStoreId,
+          transfer.toStoreId,
+        ]),
+      ]),
+    ];
+    const relatedStores = relatedStoreIds.length
+      ? await this.storeRepo.find({
+          where: {id: {inq: relatedStoreIds}} as object,
+        })
+      : [];
+    const storeById = new Map(relatedStores.map(store => [store.id, store]));
 
     const serviceIds = [...new Set(orderItems.map(oi => oi.serviceId))];
     const itemIds = [...new Set(orderItems.map(oi => oi.itemId))];
     const [services, items] = await Promise.all([
-      serviceIds.length ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as object}) : [],
-      itemIds.length ? this.itemRepo.find({where: {id: {inq: itemIds}} as object}) : [],
+      serviceIds.length
+        ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as object})
+        : [],
+      itemIds.length
+        ? this.itemRepo.find({where: {id: {inq: itemIds}} as object})
+        : [],
     ]);
 
     const orderItemById = new Map(orderItems.map(oi => [oi.id, oi]));
@@ -480,8 +624,62 @@ export class TransferController {
         const orderGarments = garmentsByOrderId.get(order.id) ?? [];
         const orderItemsList = orderGarments.map(garment => {
           const orderItem = orderItemById.get(garment.orderItemId);
-          const service = orderItem ? serviceById.get(orderItem.serviceId) : undefined;
+          const service = orderItem
+            ? serviceById.get(orderItem.serviceId)
+            : undefined;
           const item = orderItem ? itemById.get(orderItem.itemId) : undefined;
+          const orderId = orderIdByOrderItemId.get(garment.orderItemId);
+          const homeStoreId = orderId ? orderStoreById.get(orderId) : undefined;
+          const activeTransfer = garment.activeTransferId
+            ? transferById.get(garment.activeTransferId)
+            : undefined;
+          const blockingItem = lockedTransferByGarmentId.get(garment.id);
+          const blockingTransfer = blockingItem?.transfer;
+          const isMissingDiscrepancy =
+            blockingItem?.scanStatus === TransferItemScanStatus.MISSING &&
+            blockingTransfer?.status === TransferStatus.DISCREPANCY;
+          const isInTransit =
+            blockingTransfer?.status === TransferStatus.IN_TRANSIT;
+          const awaitingPickup =
+            blockingTransfer?.status === TransferStatus.SENT ||
+            blockingTransfer?.status === TransferStatus.RIDER_ASSIGNED;
+          const currentStoreId =
+            isInTransit || isMissingDiscrepancy
+              ? undefined
+              : awaitingPickup
+                ? blockingTransfer?.fromStoreId
+                : (activeTransfer?.toStoreId ?? homeStoreId);
+          const currentStoreName = currentStoreId
+            ? (storeById.get(currentStoreId)?.name ?? null)
+            : null;
+          const transferDestinationName = blockingTransfer
+            ? (storeById.get(blockingTransfer.toStoreId)?.name ?? null)
+            : null;
+          const isAtSelectedStore = currentStoreId === storeId;
+          const locationKind = isInTransit
+            ? 'in_transit'
+            : isMissingDiscrepancy
+              ? 'missing'
+              : isAtSelectedStore
+                ? 'at'
+                : 'sent';
+          const locationStoreName = isInTransit
+            ? transferDestinationName
+            : isMissingDiscrepancy
+              ? `Unknown location (reported at ${transferDestinationName ?? 'destination store'})`
+              : isAtSelectedStore
+                ? transferDestinationName
+                : currentStoreName;
+          let transferLockReason: string | null = null;
+          if (isInTransit) {
+            transferLockReason = `Transfer in transit to ${transferDestinationName ?? 'another store'}`;
+          } else if (isMissingDiscrepancy) {
+            transferLockReason = `Missing — discrepancy reported at ${transferDestinationName ?? 'destination store'}`;
+          } else if (blockingTransfer) {
+            transferLockReason = `Already in a transfer to ${transferDestinationName ?? 'another store'}`;
+          } else if (!isAtSelectedStore) {
+            transferLockReason = `Currently at ${currentStoreName ?? 'another store'}`;
+          }
           return {
             id: garment.id,
             garmentId: garment.id,
@@ -489,13 +687,30 @@ export class TransferController {
             itemName: item?.name ?? 'Garment',
             serviceId: orderItem?.serviceId ?? null,
             serviceName: service?.name ?? 'Service',
+            currentStoreId: currentStoreId ?? null,
+            currentStoreName,
+            destinationStoreName: locationStoreName,
+            locationKind,
+            locationLabel: isInTransit
+              ? `In transit to ${transferDestinationName ?? 'destination store'}`
+              : isMissingDiscrepancy
+                ? `Missing — discrepancy reported at ${transferDestinationName ?? 'destination store'}`
+                : currentStoreName
+                  ? `At ${currentStoreName}`
+                  : null,
+            transferLocked: !isAtSelectedStore || Boolean(blockingTransfer),
+            transferLockReason,
+            transferStatus: blockingTransfer?.status ?? null,
           };
         });
         const customer = customerById.get(order.customerId);
         return {
           orderId: order.orderNumber ?? order.id,
           orderNumber: order.orderNumber,
-          customerName: customer ? `${customer.firstName} ${customer.lastName}`.trim() : 'Customer',
+          storeId: order.storeId,
+          customerName: customer
+            ? `${customer.firstName} ${customer.lastName}`.trim()
+            : 'Customer',
           orderType: order.orderType,
           createdAt: order.createdAt,
           items: orderItemsList,
@@ -535,7 +750,11 @@ export class TransferController {
                   required: ['bagId', 'garmentIds'],
                   properties: {
                     bagId: {type: 'string', format: 'uuid'},
-                    garmentIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
+                    garmentIds: {
+                      type: 'array',
+                      minItems: 1,
+                      items: {type: 'string', format: 'uuid'},
+                    },
                   },
                 },
               },
@@ -543,7 +762,11 @@ export class TransferController {
               remarks: {type: 'string'},
               // Flat union of every bag's garmentIds — still required so a
               // single-bag caller's existing payload keeps working as-is.
-              garmentIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
+              garmentIds: {
+                type: 'array',
+                minItems: 1,
+                items: {type: 'string', format: 'uuid'},
+              },
             },
           },
         },
@@ -570,27 +793,40 @@ export class TransferController {
     if (!toStore) throw new HttpErrors.NotFound('To store not found.');
 
     // Normalize to one shape regardless of which the caller sent.
-    const bagInputs: {bagId: string; garmentIds: string[]}[] =
-      body.bags?.length ? body.bags : body.bagId ? [{bagId: body.bagId, garmentIds: body.garmentIds}] : [];
-    if (!bagInputs.length) throw new HttpErrors.BadRequest('bagId or bags is required.');
+    const bagInputs: {bagId: string; garmentIds: string[]}[] = body.bags?.length
+      ? body.bags
+      : body.bagId
+        ? [{bagId: body.bagId, garmentIds: body.garmentIds}]
+        : [];
+    if (!bagInputs.length)
+      throw new HttpErrors.BadRequest('bagId or bags is required.');
 
     const seenGarmentIds = new Set<string>();
-    const bags: {bagId: string; garmentIds: string[]; maxCapacity: number}[] = [];
+    const bags: {bagId: string; garmentIds: string[]; maxCapacity: number}[] =
+      [];
     const bagNumberById = new Map<string, number>();
     for (const input of bagInputs) {
       const garmentIds = [...new Set(input.garmentIds)];
       for (const gid of garmentIds) {
         if (seenGarmentIds.has(gid)) {
-          throw new HttpErrors.BadRequest('An item cannot be assigned to more than one bag.');
+          throw new HttpErrors.BadRequest(
+            'An item cannot be assigned to more than one bag.',
+          );
         }
         seenGarmentIds.add(gid);
       }
       const bag = await this.assertBagAvailable(input.bagId);
       if (garmentIds.length > (bag.maxCapacity ?? 500)) {
-        throw new HttpErrors.BadRequest(`Bag ${bag.bagNumber} holds at most ${bag.maxCapacity ?? 500} items.`);
+        throw new HttpErrors.BadRequest(
+          `Bag ${bag.bagNumber} holds at most ${bag.maxCapacity ?? 500} items.`,
+        );
       }
       bagNumberById.set(input.bagId, bag.bagNumber);
-      bags.push({bagId: input.bagId, garmentIds, maxCapacity: bag.maxCapacity ?? 500});
+      bags.push({
+        bagId: input.bagId,
+        garmentIds,
+        maxCapacity: bag.maxCapacity ?? 500,
+      });
     }
 
     const garments = await this.assertGarmentsTransferable([...seenGarmentIds]);
@@ -616,7 +852,9 @@ export class TransferController {
     if (!transfer.riderId && this.systemNotificationService) {
       this.systemNotificationService
         .notifyTransferOutRiderNeeded(transfer, fromStore.name, toStore.name)
-        .catch(err => console.error('Failed to notify transfer out rider needed:', err));
+        .catch(err =>
+          console.error('Failed to notify transfer out rider needed:', err),
+        );
     }
 
     return {
@@ -655,11 +893,18 @@ export class TransferController {
     })
     body: {riderId: string},
   ): Promise<object> {
-    const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    const transfer = await this.transferRepo.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
-    const assignableFrom: TransferStatus[] = [TransferStatus.SENT, TransferStatus.RIDER_ASSIGNED];
+    const assignableFrom: TransferStatus[] = [
+      TransferStatus.SENT,
+      TransferStatus.RIDER_ASSIGNED,
+    ];
     if (!assignableFrom.includes(transfer.status ?? TransferStatus.SENT)) {
-      throw new HttpErrors.BadRequest(`Cannot assign a rider to a transfer that is ${transfer.status}.`);
+      throw new HttpErrors.BadRequest(
+        `Cannot assign a rider to a transfer that is ${transfer.status}.`,
+      );
     }
 
     const scope = await this.storeScopeService.resolve(currentUser);
@@ -672,7 +917,9 @@ export class TransferController {
     const {v4} = await import('uuid');
     const now = new Date();
     const riderName = `${rider.firstName} ${rider.lastName}`;
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
       await this.transferRepo.updateById(
         id,
@@ -722,7 +969,10 @@ export class TransferController {
           : []),
       ]).catch(() => {});
 
-      return {message: 'Rider assigned.', transfer: await this.transferRepo.findById(id)};
+      return {
+        message: 'Rider assigned.',
+        transfer: await this.transferRepo.findById(id),
+      };
     } catch (error) {
       await tx.rollback();
       throw error;
@@ -740,12 +990,17 @@ export class TransferController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:update']})
   @post('/transfers/{id}/test-mark-in-transit')
-  @response(200, {description: 'TEST ONLY — transfer marked in transit without a real rider call'})
+  @response(200, {
+    description:
+      'TEST ONLY — transfer marked in transit without a real rider call',
+  })
   async testMarkInTransit(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
   ): Promise<object> {
-    const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    const transfer = await this.transferRepo.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
     if (transfer.status !== TransferStatus.RIDER_ASSIGNED) {
       throw new HttpErrors.BadRequest(
@@ -769,7 +1024,10 @@ export class TransferController {
       remarks: 'Marked in transit via admin test shortcut (no rider app yet).',
     });
 
-    return {message: 'Transfer marked in transit (test).', transfer: await this.transferRepo.findById(id)};
+    return {
+      message: 'Transfer marked in transit (test).',
+      transfer: await this.transferRepo.findById(id),
+    };
   }
 
   // ─── Return Batch ───────────────────────────────────────────────────────────
@@ -796,15 +1054,26 @@ export class TransferController {
               bagId: {type: 'string', format: 'uuid'},
               reason: {type: 'string'},
               remarks: {type: 'string'},
-              garmentIds: {type: 'array', minItems: 1, items: {type: 'string', format: 'uuid'}},
+              garmentIds: {
+                type: 'array',
+                minItems: 1,
+                items: {type: 'string', format: 'uuid'},
+              },
             },
           },
         },
       },
     })
-    body: {bagId: string; reason?: string; remarks?: string; garmentIds: string[]},
+    body: {
+      bagId: string;
+      reason?: string;
+      remarks?: string;
+      garmentIds: string[];
+    },
   ): Promise<object> {
-    const original = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    const original = await this.transferRepo.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!original) throw new HttpErrors.NotFound('Transfer not found.');
     if (
       original.status !== TransferStatus.RECEIVED &&
@@ -826,8 +1095,12 @@ export class TransferController {
     const originalItems = await this.transferItemRepo.find({
       where: {transferId: id, garmentId: {inq: garmentIds}} as object,
     });
-    const originalItemByGarmentId = new Map(originalItems.map(i => [i.garmentId, i]));
-    const notOnManifest = garmentIds.filter(gid => !originalItemByGarmentId.has(gid));
+    const originalItemByGarmentId = new Map(
+      originalItems.map(i => [i.garmentId, i]),
+    );
+    const notOnManifest = garmentIds.filter(
+      gid => !originalItemByGarmentId.has(gid),
+    );
     if (notOnManifest.length) {
       throw new HttpErrors.BadRequest(
         `Not part of this transfer's manifest: ${notOnManifest.join(', ')}.`,
@@ -850,7 +1123,10 @@ export class TransferController {
     });
     if (priorBatches.length) {
       const priorItems = await this.transferItemRepo.find({
-        where: {transferId: {inq: priorBatches.map(t => t.id)}, garmentId: {inq: garmentIds}} as object,
+        where: {
+          transferId: {inq: priorBatches.map(t => t.id)},
+          garmentId: {inq: garmentIds},
+        } as object,
       });
       if (priorItems.length) {
         throw new HttpErrors.Conflict(
@@ -860,14 +1136,21 @@ export class TransferController {
     }
 
     const [fromStore, toStore] = await Promise.all([
-      this.storeRepo.findOne({where: {id: original.toStoreId, isDeleted: false}}),
-      this.storeRepo.findOne({where: {id: original.fromStoreId, isDeleted: false}}),
+      this.storeRepo.findOne({
+        where: {id: original.toStoreId, isDeleted: false},
+      }),
+      this.storeRepo.findOne({
+        where: {id: original.fromStoreId, isDeleted: false},
+      }),
     ]);
-    if (!fromStore || !toStore) throw new HttpErrors.NotFound('Store not found.');
+    if (!fromStore || !toStore)
+      throw new HttpErrors.NotFound('Store not found.');
 
     const bag = await this.assertBagAvailable(body.bagId);
     if (garmentIds.length > (bag.maxCapacity ?? 500)) {
-      throw new HttpErrors.BadRequest(`This bag holds at most ${bag.maxCapacity ?? 500} items.`);
+      throw new HttpErrors.BadRequest(
+        `This bag holds at most ${bag.maxCapacity ?? 500} items.`,
+      );
     }
     const garments = await this.garmentRepo.find({
       where: {id: {inq: garmentIds}, isDeleted: false} as object,
@@ -879,7 +1162,9 @@ export class TransferController {
       toStoreId: original.fromStoreId,
       fromStoreCode: fromStore.code,
       toStoreCode: toStore.code,
-      bags: [{bagId: body.bagId, garmentIds, maxCapacity: bag.maxCapacity ?? 500}],
+      bags: [
+        {bagId: body.bagId, garmentIds, maxCapacity: bag.maxCapacity ?? 500},
+      ],
       garments,
       reason: body.reason,
       remarks: body.remarks,
@@ -887,7 +1172,16 @@ export class TransferController {
     });
     return {
       message: 'Return batch created and sent.',
-      transfer: {...transfer, bags: [{bagId: body.bagId, bagNumber: bag.bagNumber, itemCount: garmentIds.length}]},
+      transfer: {
+        ...transfer,
+        bags: [
+          {
+            bagId: body.bagId,
+            bagNumber: bag.bagNumber,
+            itemCount: garmentIds.length,
+          },
+        ],
+      },
       items,
     };
   }
@@ -897,7 +1191,9 @@ export class TransferController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
   @get('/transfers')
-  @response(200, {description: 'Transfers, filtered by direction/status/rider/store/date'})
+  @response(200, {
+    description: 'Transfers, filtered by direction/status/rider/store/date',
+  })
   async find(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('direction') direction?: string,
@@ -908,7 +1204,10 @@ export class TransferController {
     @param.query.string('dateTo') dateTo?: string,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
-    const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(scope, {storeId});
+    const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(
+      scope,
+      {storeId},
+    );
 
     const and: object[] = [{isDeleted: false}];
     if (status) and.push({status});
@@ -917,22 +1216,37 @@ export class TransferController {
       and.push({
         createdAt: {
           ...(dateFrom ? {gte: new Date(dateFrom)} : {}),
-          ...(dateTo ? {lte: new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo)
-            ? dateTo + 'T23:59:59.999Z' : dateTo)} : {}),
+          ...(dateTo
+            ? {
+                lte: new Date(
+                  /^\d{4}-\d{2}-\d{2}$/.test(dateTo)
+                    ? dateTo + 'T23:59:59.999Z'
+                    : dateTo,
+                ),
+              }
+            : {}),
         },
       });
     }
     if (narrowedStoreIds) {
-      if (direction === 'outgoing') and.push({fromStoreId: {inq: narrowedStoreIds}});
-      else if (direction === 'incoming') and.push({toStoreId: {inq: narrowedStoreIds}});
+      if (direction === 'outgoing')
+        and.push({fromStoreId: {inq: narrowedStoreIds}});
+      else if (direction === 'incoming')
+        and.push({toStoreId: {inq: narrowedStoreIds}});
       else {
         and.push({
-          or: [{fromStoreId: {inq: narrowedStoreIds}}, {toStoreId: {inq: narrowedStoreIds}}],
+          or: [
+            {fromStoreId: {inq: narrowedStoreIds}},
+            {toStoreId: {inq: narrowedStoreIds}},
+          ],
         });
       }
     }
 
-    const transfers = await this.transferRepo.find({where: {and} as object, order: ['createdAt DESC']});
+    const transfers = await this.transferRepo.find({
+      where: {and} as object,
+      order: ['createdAt DESC'],
+    });
     return {transfers: await this.enrichTransfers(transfers)};
   }
 
@@ -946,7 +1260,10 @@ export class TransferController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
   @get('/transfers/export')
-  @response(200, {description: 'All matching transfers for Excel export, within the caller store scope'})
+  @response(200, {
+    description:
+      'All matching transfers for Excel export, within the caller store scope',
+  })
   async exportTransfers(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('direction') direction?: string,
@@ -963,13 +1280,23 @@ export class TransferController {
   @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
   @get('/transfers/stats')
   @response(200, {description: 'Summary counts for the All Transfers screen'})
-  async stats(@inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile): Promise<object> {
+  async stats(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
-    const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(scope, {});
+    const narrowedStoreIds = await this.storeScopeService.narrowStoreIds(
+      scope,
+      {},
+    );
 
     const and: object[] = [{isDeleted: false}];
     if (narrowedStoreIds) {
-      and.push({or: [{fromStoreId: {inq: narrowedStoreIds}}, {toStoreId: {inq: narrowedStoreIds}}]});
+      and.push({
+        or: [
+          {fromStoreId: {inq: narrowedStoreIds}},
+          {toStoreId: {inq: narrowedStoreIds}},
+        ],
+      });
     }
 
     const transfers = await this.transferRepo.find({
@@ -984,14 +1311,24 @@ export class TransferController {
       stats: {
         total: transfers.length,
         sent: transfers.filter(t => t.status === TransferStatus.SENT).length,
-        riderAssigned: transfers.filter(t => t.status === TransferStatus.RIDER_ASSIGNED).length,
-        inTransit: transfers.filter(t => t.status === TransferStatus.IN_TRANSIT).length,
-        received: transfers.filter(t => t.status === TransferStatus.RECEIVED).length,
-        discrepancy: transfers.filter(t => t.status === TransferStatus.DISCREPANCY).length,
-        resolved: transfers.filter(t => t.status === TransferStatus.RESOLVED).length,
-        sentToday: transfers.filter(t => t.sentAt && new Date(t.sentAt) >= startOfToday).length,
-        receivedToday: transfers.filter(t => t.receivedAt && new Date(t.receivedAt) >= startOfToday)
+        riderAssigned: transfers.filter(
+          t => t.status === TransferStatus.RIDER_ASSIGNED,
+        ).length,
+        inTransit: transfers.filter(t => t.status === TransferStatus.IN_TRANSIT)
           .length,
+        received: transfers.filter(t => t.status === TransferStatus.RECEIVED)
+          .length,
+        discrepancy: transfers.filter(
+          t => t.status === TransferStatus.DISCREPANCY,
+        ).length,
+        resolved: transfers.filter(t => t.status === TransferStatus.RESOLVED)
+          .length,
+        sentToday: transfers.filter(
+          t => t.sentAt && new Date(t.sentAt) >= startOfToday,
+        ).length,
+        receivedToday: transfers.filter(
+          t => t.receivedAt && new Date(t.receivedAt) >= startOfToday,
+        ).length,
       },
     };
   }
@@ -1011,10 +1348,13 @@ export class TransferController {
     // same dual-lookup posture as GarmentController.lookupGarment, so a
     // non-uuid value resolves cleanly instead of Postgres throwing on a
     // malformed uuid literal.
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const isUuid = uuidRegex.test(id.trim());
     const transfer = await this.transferRepo.findOne({
-      where: isUuid ? {id, isDeleted: false} : {transitId: id.trim(), isDeleted: false},
+      where: isUuid
+        ? {id, isDeleted: false}
+        : {transitId: id.trim(), isDeleted: false},
     });
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
 
@@ -1029,7 +1369,10 @@ export class TransferController {
 
     const [items, custodyEvents] = await Promise.all([
       this.transferItemRepo.find({where: {transferId: transfer.id} as object}),
-      this.custodyEventRepo.find({where: {transferId: transfer.id} as object, order: ['performedAt ASC']}),
+      this.custodyEventRepo.find({
+        where: {transferId: transfer.id} as object,
+        order: ['performedAt ASC'],
+      }),
     ]);
 
     const orderIds = [...new Set(items.map(i => i.orderId))];
@@ -1050,7 +1393,10 @@ export class TransferController {
 
     return {
       transfer: enriched,
-      items: items.map(item => ({...item, orderNumber: orderById.get(item.orderId)?.orderNumber ?? null})),
+      items: items.map(item => ({
+        ...item,
+        orderNumber: orderById.get(item.orderId)?.orderNumber ?? null,
+      })),
       custodyEvents,
       returnBatches: await this.enrichTransfers(returnBatches),
     };
@@ -1067,7 +1413,9 @@ export class TransferController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:create']})
   @post('/transfers/{id}/receive')
-  @response(200, {description: 'Transfer received (clean or with discrepancies)'})
+  @response(200, {
+    description: 'Transfer received (clean or with discrepancies)',
+  })
   async receive(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.path.string('id') id: string,
@@ -1078,7 +1426,10 @@ export class TransferController {
             type: 'object',
             required: ['receivedGarmentIds'],
             properties: {
-              receivedGarmentIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              receivedGarmentIds: {
+                type: 'array',
+                items: {type: 'string', format: 'uuid'},
+              },
               extraGarmentTagNumbers: {type: 'array', items: {type: 'string'}},
               remarks: {type: 'string'},
             },
@@ -1086,9 +1437,15 @@ export class TransferController {
         },
       },
     })
-    body: {receivedGarmentIds: string[]; extraGarmentTagNumbers?: string[]; remarks?: string},
+    body: {
+      receivedGarmentIds: string[];
+      extraGarmentTagNumbers?: string[];
+      remarks?: string;
+    },
   ): Promise<object> {
-    const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    const transfer = await this.transferRepo.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
     if (transfer.status !== TransferStatus.IN_TRANSIT) {
       throw new HttpErrors.BadRequest(
@@ -1102,11 +1459,15 @@ export class TransferController {
     }
 
     const receivedIds = new Set(body.receivedGarmentIds ?? []);
-    const items = await this.transferItemRepo.find({where: {transferId: id} as object});
+    const items = await this.transferItemRepo.find({
+      where: {transferId: id} as object,
+    });
 
     const {v4} = await import('uuid');
     const now = new Date();
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
       let receivedCount = 0;
       let missingCount = 0;
@@ -1120,12 +1481,19 @@ export class TransferController {
         const isReceived = receivedIds.has(item.garmentId);
         await this.transferItemRepo.updateById(
           item.id,
-          {scanStatus: isReceived ? TransferItemScanStatus.RECEIVED : TransferItemScanStatus.MISSING},
+          {
+            scanStatus: isReceived
+              ? TransferItemScanStatus.RECEIVED
+              : TransferItemScanStatus.MISSING,
+          },
           {transaction: tx},
         );
         if (isReceived) {
           receivedCount++;
-          presentGarments.push({garmentId: item.garmentId, orderId: item.orderId});
+          presentGarments.push({
+            garmentId: item.garmentId,
+            orderId: item.orderId,
+          });
         } else {
           missingCount++;
         }
@@ -1141,7 +1509,9 @@ export class TransferController {
           warnings.push(`"${tag}" does not match any known garment — skipped.`);
           continue;
         }
-        const orderItem = await this.orderItemRepo.findOne({where: {id: garment.orderItemId}});
+        const orderItem = await this.orderItemRepo.findOne({
+          where: {id: garment.orderItemId},
+        });
         await this.transferItemRepo.create(
           {
             id: v4(),
@@ -1154,28 +1524,42 @@ export class TransferController {
           {transaction: tx},
         );
         extraCount++;
-        if (orderItem?.orderId) presentGarments.push({garmentId: garment.id, orderId: orderItem.orderId});
+        if (orderItem?.orderId)
+          presentGarments.push({
+            garmentId: garment.id,
+            orderId: orderItem.orderId,
+          });
       }
 
       if (presentGarments.length) {
-        const presentOrderIds = [...new Set(presentGarments.map(g => g.orderId))];
+        const presentOrderIds = [
+          ...new Set(presentGarments.map(g => g.orderId)),
+        ];
         const presentOrders = await this.orderRepo.find({
           where: {id: {inq: presentOrderIds}} as object,
           fields: {id: true, storeId: true} as object,
         });
-        const storeIdByOrderId = new Map(presentOrders.map(o => [o.id, o.storeId]));
+        const storeIdByOrderId = new Map(
+          presentOrders.map(o => [o.id, o.storeId]),
+        );
         for (const {garmentId, orderId} of presentGarments) {
           const isHome = storeIdByOrderId.get(orderId) === transfer.toStoreId;
           await this.garmentRepo.updateById(
             garmentId,
-            {activeTransferId: isHome ? (null as unknown as string) : transfer.id},
+            {
+              activeTransferId: isHome
+                ? (null as unknown as string)
+                : transfer.id,
+            },
             {transaction: tx},
           );
         }
       }
 
       const isClean = missingCount === 0 && extraCount === 0;
-      const newStatus = isClean ? TransferStatus.RECEIVED : TransferStatus.DISCREPANCY;
+      const newStatus = isClean
+        ? TransferStatus.RECEIVED
+        : TransferStatus.DISCREPANCY;
       await this.transferRepo.updateById(
         id,
         {
@@ -1192,9 +1576,13 @@ export class TransferController {
         {
           id: v4(),
           transferId: id,
-          eventType: isClean ? TransferCustodyEventType.RECEIVED : TransferCustodyEventType.DISCREPANCY,
+          eventType: isClean
+            ? TransferCustodyEventType.RECEIVED
+            : TransferCustodyEventType.DISCREPANCY,
           performedBy: currentUser[securityId],
-          remarks: isClean ? undefined : `${missingCount} missing, ${extraCount} extra.`,
+          remarks: isClean
+            ? undefined
+            : `${missingCount} missing, ${extraCount} extra.`,
         },
         {transaction: tx},
       );
@@ -1202,7 +1590,9 @@ export class TransferController {
       if (isClean) {
         // Release every bag this transfer actually used, not just the
         // primary bagId — a multi-bag transfer locks one Bag row per bag.
-        const bagIds = [...new Set(items.map(item => item.bagId ?? transfer.bagId))];
+        const bagIds = [
+          ...new Set(items.map(item => item.bagId ?? transfer.bagId)),
+        ];
         for (const bagId of bagIds) {
           await this.bagRepo.updateById(
             bagId,
@@ -1229,9 +1619,15 @@ export class TransferController {
 
       await tx.commit();
       return {
-        message: isClean ? 'Transfer received.' : 'Transfer received with discrepancies.',
+        message: isClean
+          ? 'Transfer received.'
+          : 'Transfer received with discrepancies.',
         transfer: await this.transferRepo.findById(id),
-        reconciliation: {received: receivedCount, missing: missingCount, extra: extraCount},
+        reconciliation: {
+          received: receivedCount,
+          missing: missingCount,
+          extra: extraCount,
+        },
         warnings,
       };
     } catch (error) {
@@ -1266,7 +1662,10 @@ export class TransferController {
               // up — flipped to `received` before the transfer is closed.
               // Omit/empty if nothing was found (the missing items are
               // being written off as-is).
-              foundGarmentIds: {type: 'array', items: {type: 'string', format: 'uuid'}},
+              foundGarmentIds: {
+                type: 'array',
+                items: {type: 'string', format: 'uuid'},
+              },
               remarks: {type: 'string'},
             },
           },
@@ -1275,13 +1674,19 @@ export class TransferController {
     })
     body: {foundGarmentIds?: string[]; remarks: string},
   ): Promise<object> {
-    const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    const transfer = await this.transferRepo.findOne({
+      where: {id, isDeleted: false},
+    });
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
     if (transfer.status !== TransferStatus.DISCREPANCY) {
-      throw new HttpErrors.BadRequest(`Transfer is ${transfer.status}, not discrepancy.`);
+      throw new HttpErrors.BadRequest(
+        `Transfer is ${transfer.status}, not discrepancy.`,
+      );
     }
     if (!body.remarks?.trim()) {
-      throw new HttpErrors.BadRequest('Remarks are required to resolve a discrepancy.');
+      throw new HttpErrors.BadRequest(
+        'Remarks are required to resolve a discrepancy.',
+      );
     }
 
     const scope = await this.storeScopeService.resolve(currentUser);
@@ -1289,10 +1694,17 @@ export class TransferController {
       throw new HttpErrors.NotFound('Transfer not found.');
     }
 
-    const items = await this.transferItemRepo.find({where: {transferId: id} as object});
+    const items = await this.transferItemRepo.find({
+      where: {transferId: id} as object,
+    });
     const foundIds = new Set(body.foundGarmentIds ?? []);
     const notMissing = [...foundIds].filter(
-      gid => !items.some(i => i.garmentId === gid && i.scanStatus === TransferItemScanStatus.MISSING),
+      gid =>
+        !items.some(
+          i =>
+            i.garmentId === gid &&
+            i.scanStatus === TransferItemScanStatus.MISSING,
+        ),
     );
     if (notMissing.length) {
       throw new HttpErrors.BadRequest(
@@ -1302,19 +1714,27 @@ export class TransferController {
 
     const {v4} = await import('uuid');
     const now = new Date();
-    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    const tx = await this.dataSource.beginTransaction(
+      IsolationLevel.READ_COMMITTED,
+    );
     try {
       let foundCount = 0;
       const foundGarments: {garmentId: string; orderId: string}[] = [];
       for (const item of items) {
-        if (item.scanStatus === TransferItemScanStatus.MISSING && foundIds.has(item.garmentId)) {
+        if (
+          item.scanStatus === TransferItemScanStatus.MISSING &&
+          foundIds.has(item.garmentId)
+        ) {
           await this.transferItemRepo.updateById(
             item.id,
             {scanStatus: TransferItemScanStatus.RECEIVED},
             {transaction: tx},
           );
           foundCount++;
-          foundGarments.push({garmentId: item.garmentId, orderId: item.orderId});
+          foundGarments.push({
+            garmentId: item.garmentId,
+            orderId: item.orderId,
+          });
         }
       }
 
@@ -1327,12 +1747,18 @@ export class TransferController {
           where: {id: {inq: foundOrderIds}} as object,
           fields: {id: true, storeId: true} as object,
         });
-        const storeIdByOrderId = new Map(foundOrders.map(o => [o.id, o.storeId]));
+        const storeIdByOrderId = new Map(
+          foundOrders.map(o => [o.id, o.storeId]),
+        );
         for (const {garmentId, orderId} of foundGarments) {
           const isHome = storeIdByOrderId.get(orderId) === transfer.toStoreId;
           await this.garmentRepo.updateById(
             garmentId,
-            {activeTransferId: isHome ? (null as unknown as string) : transfer.id},
+            {
+              activeTransferId: isHome
+                ? (null as unknown as string)
+                : transfer.id,
+            },
             {transaction: tx},
           );
         }
@@ -1340,7 +1766,8 @@ export class TransferController {
 
       const remainingDiscrepant = items.filter(
         i =>
-          (i.scanStatus === TransferItemScanStatus.MISSING && !foundIds.has(i.garmentId)) ||
+          (i.scanStatus === TransferItemScanStatus.MISSING &&
+            !foundIds.has(i.garmentId)) ||
           i.scanStatus === TransferItemScanStatus.EXTRA,
       ).length;
 
@@ -1369,7 +1796,9 @@ export class TransferController {
 
       // Release every bag this transfer actually used, not just the
       // primary bagId — a multi-bag transfer locks one Bag row per bag.
-      const bagIds = [...new Set(items.map(item => item.bagId ?? transfer.bagId))];
+      const bagIds = [
+        ...new Set(items.map(item => item.bagId ?? transfer.bagId)),
+      ];
       for (const bagId of bagIds) {
         await this.bagRepo.updateById(
           bagId,
@@ -1411,8 +1840,12 @@ export class TransferController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
   @get('/transfers/item/{garmentTag}')
-  @response(200, {description: 'Current transfer/bag/store location for one garment tag'})
-  async trackItem(@param.path.string('garmentTag') garmentTag: string): Promise<object> {
+  @response(200, {
+    description: 'Current transfer/bag/store location for one garment tag',
+  })
+  async trackItem(
+    @param.path.string('garmentTag') garmentTag: string,
+  ): Promise<object> {
     const item = await this.transferItemRepo.findOne({
       where: {garmentTagNumber: garmentTag} as object,
       order: ['createdAt DESC'],
@@ -1435,7 +1868,11 @@ export class TransferController {
       garmentTagNumber: garmentTag,
       currentStage: item.scanStatus,
       currentTransfer: transfer,
-      currentLocationLabel: this.buildLocationLabel(transfer, fromStore?.name ?? null, toStore?.name ?? null),
+      currentLocationLabel: this.buildLocationLabel(
+        transfer,
+        fromStore?.name ?? null,
+        toStore?.name ?? null,
+      ),
       bag,
       fromStore,
       toStore,
@@ -1449,7 +1886,9 @@ export class TransferController {
   @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
   @get('/transfer-custody-events')
-  @response(200, {description: 'Custody/trail log, filterable by tag/transfer/store/date'})
+  @response(200, {
+    description: 'Custody/trail log, filterable by tag/transfer/store/date',
+  })
   async listCustodyEvents(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('garmentTag') garmentTag?: string,
@@ -1468,18 +1907,28 @@ export class TransferController {
         where: {garmentTagNumber: garmentTag} as object,
       });
       const tagTransferIds = [...new Set(items.map(i => i.transferId))];
-      transferIds = transferIds ? transferIds.filter(id => tagTransferIds.includes(id)) : tagTransferIds;
+      transferIds = transferIds
+        ? transferIds.filter(id => tagTransferIds.includes(id))
+        : tagTransferIds;
     }
 
     if (storeId ?? dateFrom ?? dateTo) {
       const and: object[] = [];
-      if (storeId) and.push({or: [{fromStoreId: storeId}, {toStoreId: storeId}]});
+      if (storeId)
+        and.push({or: [{fromStoreId: storeId}, {toStoreId: storeId}]});
       if (dateFrom ?? dateTo) {
         and.push({
           createdAt: {
             ...(dateFrom ? {gte: new Date(dateFrom)} : {}),
-            ...(dateTo ? {lte: new Date(/^\d{4}-\d{2}-\d{2}$/.test(dateTo)
-            ? dateTo + 'T23:59:59.999Z' : dateTo)} : {}),
+            ...(dateTo
+              ? {
+                  lte: new Date(
+                    /^\d{4}-\d{2}-\d{2}$/.test(dateTo)
+                      ? dateTo + 'T23:59:59.999Z'
+                      : dateTo,
+                  ),
+                }
+              : {}),
           },
         });
       }
@@ -1488,19 +1937,26 @@ export class TransferController {
         fields: {id: true} as object,
       });
       const matchingIds = matching.map(t => t.id);
-      transferIds = transferIds ? transferIds.filter(id => matchingIds.includes(id)) : matchingIds;
+      transferIds = transferIds
+        ? transferIds.filter(id => matchingIds.includes(id))
+        : matchingIds;
     }
 
     const scope = await this.storeScopeService.resolve(currentUser);
     if (!scope.global) {
       const scoped = await this.transferRepo.find({
         where: {
-          or: [{fromStoreId: {inq: scope.storeIds}}, {toStoreId: {inq: scope.storeIds}}],
+          or: [
+            {fromStoreId: {inq: scope.storeIds}},
+            {toStoreId: {inq: scope.storeIds}},
+          ],
         } as object,
         fields: {id: true} as object,
       });
       const scopedIds = scoped.map(t => t.id);
-      transferIds = transferIds ? transferIds.filter(id => scopedIds.includes(id)) : scopedIds;
+      transferIds = transferIds
+        ? transferIds.filter(id => scopedIds.includes(id))
+        : scopedIds;
     }
 
     if (transferIds !== null && !transferIds.length) return {events: []};
@@ -1517,19 +1973,29 @@ export class TransferController {
     // the admin panel show raw ids.
     const [transfers, users, bags] = await Promise.all([
       this.transferRepo.find({
-        where: {id: {inq: [...new Set(events.map(e => e.transferId))]}} as object,
+        where: {
+          id: {inq: [...new Set(events.map(e => e.transferId))]},
+        } as object,
         fields: {id: true, transitId: true} as object,
       }),
       this.usersRepo.find({
-        where: {id: {inq: [...new Set(events.map(e => e.performedBy).filter(Boolean))]}} as object,
+        where: {
+          id: {
+            inq: [...new Set(events.map(e => e.performedBy).filter(Boolean))],
+          },
+        } as object,
         fields: {id: true, fullName: true} as object,
       }),
       this.bagRepo.find({
-        where: {id: {inq: [...new Set(events.map(e => e.bagId).filter(Boolean))]}} as object,
+        where: {
+          id: {inq: [...new Set(events.map(e => e.bagId).filter(Boolean))]},
+        } as object,
         fields: {id: true, bagNumber: true} as object,
       }),
     ]);
-    const transitIdByTransferId = new Map(transfers.map(t => [t.id, t.transitId]));
+    const transitIdByTransferId = new Map(
+      transfers.map(t => [t.id, t.transitId]),
+    );
     const nameByUserId = new Map(users.map(u => [u.id, u.fullName]));
     const bagNumberByBagId = new Map(bags.map(b => [b.id, b.bagNumber]));
 
@@ -1538,7 +2004,7 @@ export class TransferController {
         ...e,
         transitId: transitIdByTransferId.get(e.transferId) ?? null,
         performedByName: nameByUserId.get(e.performedBy) ?? null,
-        bagNumber: e.bagId ? bagNumberByBagId.get(e.bagId) ?? null : null,
+        bagNumber: e.bagId ? (bagNumberByBagId.get(e.bagId) ?? null) : null,
       })),
     };
   }
