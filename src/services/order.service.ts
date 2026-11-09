@@ -8,6 +8,7 @@ import {BindingScope, Getter, inject, injectable} from '@loopback/core';
 import type {ApprovalService} from './approval.service';
 import {IsolationLevel, Options, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
+import {SalesReturnStatus} from '../models/sales-return.model';
 import {
   collectOrderExportRows,
   OrderExportFilters,
@@ -1354,31 +1355,74 @@ export class OrderService {
     return challan;
   }
 
+  /**
+   * Whether an approved credit note was issued against this invoice while
+   * keeping the invoice as issued (lines marked invoiceBasis /
+   * preservesInvoice). Same test as InvoiceController.creditTotals().
+   */
+  private async invoiceHasPreservingCreditNote(invoiceId: string, options?: Options): Promise<boolean> {
+    const notes = await this.salesReturnRepo.find(
+      {where: {invoiceId, status: SalesReturnStatus.APPROVED}, fields: {id: true, returnedItems: true}},
+      options,
+    );
+    return notes.some(note =>
+      (note.returnedItems ?? []).some(line =>
+        Boolean(
+          (line as {invoiceBasis?: unknown}).invoiceBasis ??
+            (line as {preservesInvoice?: boolean}).preservesInvoice,
+        ),
+      ),
+    );
+  }
+
   async syncInvoiceTotalsForOrder(order: Order, tx?: unknown): Promise<Invoice | null> {
     const txOpt = tx ? {transaction: tx} : undefined;
     const invoice = await this.invoiceRepo.findOne({where: {orderId: order.id}}, txOpt);
     if (!invoice || invoice.isConsolidated) return invoice;
+    // Writes happen only with the order row locked: outside a transaction,
+    // lock it, re-read the order and redo this sync inside the transaction,
+    // so a payment committing meanwhile can't be overwritten by stale values.
+    const syncUnderOrderLock = async (): Promise<Invoice | null> => {
+      const transaction = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+      try {
+        await this.dataSource.execute(
+          'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
+          [order.id], {transaction},
+        );
+        const currentOrder = await this.orderRepo.findById(order.id, undefined, {transaction});
+        const synced = await this.syncInvoiceTotalsForOrder(currentOrder, transaction);
+        await transaction.commit();
+        return synced;
+      } catch (error) {
+        await transaction.rollback();
+        throw error;
+      }
+    };
+    // An issued invoice with a credit note against it keeps its original
+    // totals; the credit note carries the reduction. Copying the reduced
+    // order totals onto it would contradict its saved line snapshot and
+    // double-count the credit (see InvoiceController.creditTotals).
+    // Payments still sync — balanceDue comes from the order, which is
+    // already net of the credit.
+    if (await this.invoiceHasPreservingCreditNote(invoice.id, txOpt)) {
+      const balance = await this.computeBalanceDue(order, txOpt);
+      if (
+        Number(invoice.amountReceived ?? 0) !== balance.alreadyPaid ||
+        Number(invoice.balanceDue ?? 0) !== balance.due
+      ) {
+        if (!tx) return syncUnderOrderLock();
+        const patch = {amountReceived: balance.alreadyPaid, balanceDue: balance.due, updatedAt: new Date()};
+        await this.invoiceRepo.updateById(invoice.id, patch, txOpt);
+        Object.assign(invoice, patch);
+      }
+      return invoice;
+    }
     const totals = orderInvoiceTotals(order, invoice);
     if (!totals) return invoice;
     if (Object.entries(totals).some(
       ([key, value]) => Number(invoice[key as keyof Invoice]) !== value,
     )) {
-      if (!tx) {
-        const transaction = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
-        try {
-          await this.dataSource.execute(
-            'SELECT id FROM public.orders WHERE id = $1 FOR UPDATE',
-            [order.id], {transaction},
-          );
-          const currentOrder = await this.orderRepo.findById(order.id, undefined, {transaction});
-          const synced = await this.syncInvoiceTotalsForOrder(currentOrder, transaction);
-          await transaction.commit();
-          return synced;
-        } catch (error) {
-          await transaction.rollback();
-          throw error;
-        }
-      }
+      if (!tx) return syncUnderOrderLock();
       const balance = await this.computeBalanceDue(order, txOpt);
       const patch = {
         ...totals,
@@ -7710,13 +7754,17 @@ export class OrderService {
         invoice = await this.invoiceRepo.findOne({where: {orderId}}, options);
         if (invoice) {
           if (!invoice.isConsolidated) {
-            const totals = orderInvoiceTotals(order, invoice);
+            // Same rule as syncInvoiceTotalsForOrder: never rewrite the
+            // totals of an invoice that has a credit note issued against it.
+            const preserved = await this.invoiceHasPreservingCreditNote(invoice.id, options);
+            const totals = preserved ? null : orderInvoiceTotals(order, invoice);
             await this.invoiceRepo.updateById(
               invoice.id,
               totals
                 ? {...totals, amountReceived: alreadyPaid, balanceDue: due}
                 : {amountReceived: alreadyPaid,
-                  balanceDue: rupeeBalance(invoice.totalAmount, alreadyPaid)},
+                  // The order's due is already net of the credit note.
+                  balanceDue: preserved ? due : rupeeBalance(invoice.totalAmount, alreadyPaid)},
               options,
             );
             invoice = await this.invoiceRepo.findById(

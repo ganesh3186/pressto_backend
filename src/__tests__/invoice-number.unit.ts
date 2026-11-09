@@ -57,6 +57,7 @@ describe('store financial-year invoice numbers', () => {
   it('allocates a counter for the store and financial year in the invoice transaction', async () => {
     const tx = {};
     const service = Object.assign(Object.create(OrderService.prototype), {
+      salesReturnRepo: {find: async () => []},
       storeRepo: {
         findOne: async (filter: any, options: any) => {
           expect(filter.where.id).to.equal('store-1');
@@ -84,6 +85,7 @@ describe('store financial-year invoice numbers', () => {
 
   it('does not fall back to an internal code when a store has no configured prefix', async () => {
     const service = Object.assign(Object.create(OrderService.prototype), {
+      salesReturnRepo: {find: async () => []},
       storeRepo: {findOne: async () => ({id: 'store', code: 'ST008'})},
     }) as OrderService;
     await expect(
@@ -98,6 +100,9 @@ describe('invoice numbering entry points', () => {
   it('uses the ticket store for an automatic invoice, including a gateway callback', async () => {
     const tx = {commit: async () => undefined, rollback: async () => undefined};
     const service = Object.assign(Object.create(OrderService.prototype), {
+      salesReturnRepo: {find: async () => []},
+      // Invoice creation snapshots printable item details; none needed here.
+      getOrderDetails: async () => ({items: []}),
       dataSource: {beginTransaction: async () => tx, execute: async () => []},
       orderRepo: {
         findOne: async () => ({
@@ -132,6 +137,7 @@ describe('invoice numbering entry points', () => {
     const existing = {id: 'invoice', invoiceNumber: 'ST008/069942'};
     let patch: any;
     const service = Object.assign(Object.create(OrderService.prototype), {
+      salesReturnRepo: {find: async () => []},
       dataSource: {
         beginTransaction: async () => ({
           commit: async () => undefined,
