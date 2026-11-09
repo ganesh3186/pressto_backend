@@ -3,8 +3,15 @@ import {repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {Customer, CustomerAddress} from '../models';
 import {CustomerAddressRepository, CustomerRepository} from '../repositories';
-import {StoreAssignmentService} from './store-assignment.service';
+import {NearbyStore, StoreAssignmentService} from './store-assignment.service';
 import {GeocodingService, hasRealCoordinates} from './geocoding.service';
+
+export interface PickupStoreResolution {
+  store: {id: string; name: string; code: string} | null;
+  matchedBy: 'preferred' | 'distance' | 'pincode' | null;
+  distanceKm: number | null;
+  nearbyStores: NearbyStore[];
+}
 
 @injectable({scope: BindingScope.TRANSIENT})
 export class CustomerAddressService {
@@ -70,6 +77,75 @@ export class CustomerAddressService {
     }
 
     return address;
+  }
+
+  /**
+   * Which store serves a pickup at this address: the nearest within radius,
+   * then pincode coverage. An address with no usable coordinates is geocoded
+   * and saved, so that only happens once per address.
+   */
+  async resolvePickupStore(address: CustomerAddress): Promise<PickupStoreResolution> {
+    let latitude = hasRealCoordinates(address.latitude, address.longitude) ? address.latitude : undefined;
+    let longitude = hasRealCoordinates(address.latitude, address.longitude) ? address.longitude : undefined;
+    if (latitude == null || longitude == null) {
+      const geocoded = await this.geocodingService.geocodeAddress(this.toDisplaySnapshot(address));
+      if (geocoded) {
+        latitude = geocoded.latitude;
+        longitude = geocoded.longitude;
+        await this.update(address.id, {latitude, longitude});
+      }
+    }
+
+    let nearbyStores: NearbyStore[] = [];
+    if (latitude != null && longitude != null) {
+      const resolved = await this.storeAssignmentService.resolveForCoordinates(latitude, longitude);
+      const nearest = resolved.nearestWithinRadius;
+      if (nearest) {
+        return {
+          store: {id: nearest.id, name: nearest.name, code: nearest.code},
+          matchedBy: 'distance',
+          distanceKm: nearest.distanceKm,
+          nearbyStores: [],
+        };
+      }
+      nearbyStores = resolved.nearbyBeyondRadius;
+    }
+
+    const pincodeStore = address.pincode
+      ? await this.storeAssignmentService.resolveForPincode(address.pincode)
+      : null;
+    if (pincodeStore) {
+      return {
+        store: {id: pincodeStore.id, name: pincodeStore.name, code: pincodeStore.code},
+        matchedBy: 'pincode',
+        distanceKm: null,
+        nearbyStores: [],
+      };
+    }
+    return {store: null, matchedBy: null, distanceKm: null, nearbyStores};
+  }
+
+  /**
+   * Store for a pickup staff are booking: the customer's preferred store when
+   * this is their primary address, otherwise the same lookup the customer app
+   * uses. A preferred store that has since closed falls through to that lookup.
+   */
+  async suggestPickupStoreForStaff(address: CustomerAddress): Promise<PickupStoreResolution> {
+    if (address.isDefault) {
+      const customer = await this.customerRepository.findById(address.customerId);
+      const preferred = customer.preferredStoreId
+        ? await this.storeAssignmentService.findActiveStore(customer.preferredStoreId)
+        : null;
+      if (preferred) {
+        return {
+          store: {id: preferred.id, name: preferred.name, code: preferred.code},
+          matchedBy: 'preferred',
+          distanceKm: null,
+          nearbyStores: [],
+        };
+      }
+    }
+    return this.resolvePickupStore(address);
   }
 
   async findAll(customerId: string): Promise<CustomerAddress[]> {

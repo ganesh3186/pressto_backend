@@ -101,6 +101,12 @@ export class StoreAssignmentService {
     };
   }
 
+  async findActiveStore(storeId: string): Promise<Store | null> {
+    return this.storeRepo.findOne({
+      where: {id: storeId, isActive: true, isDeleted: false} as object,
+    });
+  }
+
   /** Nearest active store explicitly covering a pincode. */
   async resolveForPincode(pincode: string): Promise<Store | null> {
     const normalized = String(pincode ?? '').trim();

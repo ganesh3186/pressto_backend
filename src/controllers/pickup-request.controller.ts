@@ -8,6 +8,7 @@ import {authorize} from '../authorization';
 import {PresstoDataSource} from '../datasources';
 import {RiderAssignmentService} from '../services/rider-assignment.service';
 import {StoreScope, StoreScopeService} from '../services/store-scope.service';
+import {CustomerAddressService, PickupStoreResolution} from '../services/customer-address.service';
 import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
 import {SystemNotificationService} from '../services/system-notification.service';
 import {PickupRequest} from '../models';
@@ -216,6 +217,23 @@ export class PickupRequestController {
         reworkOfOrderNumber: reworkOfOrderId ? orderNumberById.get(reworkOfOrderId) ?? null : null,
       };
     });
+  }
+
+  // ─── Store suggestion ───────────────────────────────────────────────────────
+
+  // Advisory only: staff can still pick another store, or go ahead when no
+  // store is found, while store coordinates are incomplete.
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['pickup_request:create']})
+  @get('/pickup-requests/store-suggestion')
+  @response(200, {description: 'The store that serves a pickup at this saved address, if any'})
+  async suggestStore(
+    @param.query.string('customerAddressId', {required: true}) customerAddressId: string,
+    @inject('services.customer-address') addressService: CustomerAddressService,
+  ): Promise<PickupStoreResolution> {
+    const address = await addressService.findById(customerAddressId);
+    if (address.isDeleted) throw new HttpErrors.NotFound('Address not found.');
+    return addressService.suggestPickupStoreForStaff(address);
   }
 
   // ─── Create ─────────────────────────────────────────────────────────────────
