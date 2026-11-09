@@ -52,7 +52,7 @@ interface CreateBody {
   source: PickupRequestSource;
   itemCountEstimate?: number;
   itemCategoryEstimate?: Array<{
-    itemCategoryId: string;
+    itemCategoryId?: string;
     quantity: number;
     serviceId?: string;
     deliverySpeed?: DeliveryType;
@@ -271,7 +271,7 @@ export class PickupRequestController {
                 description: 'Per-category counts (e.g. how many clothes vs curtains) — used to size the pickup (bike vs van). Not binding; the real order is built after in-store inspection.',
                 items: {
                   type: 'object',
-                  required: ['itemCategoryId', 'quantity'],
+                  required: ['quantity'],
                   properties: {
                     itemCategoryId: {type: 'string', format: 'uuid'},
                     quantity: {type: 'number'},
@@ -308,10 +308,12 @@ export class PickupRequestController {
       if (!store) throw new HttpErrors.NotFound('Store not found.');
     }
     if (body.itemCategoryEstimate?.length && !body.isReworkPickup) {
-      const categoryIds = [...new Set(body.itemCategoryEstimate.map(line => line.itemCategoryId))];
+      const categoryIds = [...new Set(body.itemCategoryEstimate.map(line => line.itemCategoryId).filter((id): id is string => Boolean(id)))];
       const serviceIds = [...new Set(body.itemCategoryEstimate.map(line => line.serviceId).filter((id): id is string => Boolean(id)))];
       const [categories, services] = await Promise.all([
-        this.itemCategoryRepository.find({where: {id: {inq: categoryIds}, isDeleted: false, isActive: true} as object}),
+        categoryIds.length
+          ? this.itemCategoryRepository.find({where: {id: {inq: categoryIds}, isDeleted: false, isActive: true} as object})
+          : [],
         serviceIds.length
           ? this.serviceRepository.find({where: {id: {inq: serviceIds}, isDeleted: false, isActive: true} as object})
           : [],
@@ -349,8 +351,10 @@ export class PickupRequestController {
         const categoryByItemId = new Map(originalCatalogItems.map(item => [item.id, item.itemCategoryId]));
         const originalPairs = new Set(originalItems.map(item =>
           `${item.serviceId}:${categoryByItemId.get(item.itemId)}`));
-        if (body.itemCategoryEstimate.some(line =>
-          !originalPairs.has(`${line.serviceId}:${line.itemCategoryId}`))) {
+        const originalServiceIds = new Set(originalItems.map(item => item.serviceId));
+        if (body.itemCategoryEstimate.some(line => (line.itemCategoryId
+          ? !originalPairs.has(`${line.serviceId}:${line.itemCategoryId}`)
+          : !originalServiceIds.has(line.serviceId as string)))) {
           throw new HttpErrors.BadRequest('Rework service and item category must belong to the original order.');
         }
       }
@@ -549,7 +553,7 @@ export class PickupRequestController {
       ...(pickupRequest.mediaIds ?? []),
       ...riderMediaIds,
     ])];
-    const itemCategoryIds = [...new Set((pickupRequest.itemCategoryEstimate ?? []).map(line => line.itemCategoryId))];
+    const itemCategoryIds = [...new Set((pickupRequest.itemCategoryEstimate ?? []).map(line => line.itemCategoryId).filter(Boolean))];
     const serviceIds = [...new Set([
       ...(pickupRequest.itemCategoryEstimate ?? []).map(line => line.serviceId),
       ...(pickupRequest.actualItemsByService ?? []).map(line => line.serviceId),
