@@ -1,3 +1,4 @@
+import {batchedStubs} from './helpers/batched-stubs';
 import {expect} from '@loopback/testlab';
 import {UserProfile} from '@loopback/security';
 import {ShiftController} from '../controllers/shift.controller';
@@ -8,7 +9,7 @@ function setupClose(actualSettlement: number) {
   const controller = Object.assign(Object.create(ShiftController.prototype), {
     shiftRepository: {
       findById: async () => ({
-        id: 'shift-a',
+        id: '5a1f0c3e-0000-4000-8000-00000000000a',
         storeId: 'store-a',
         status: ShiftStatus.OPEN,
         openedAt: new Date('2026-10-01T09:00:00Z'),
@@ -22,6 +23,7 @@ function setupClose(actualSettlement: number) {
     resolveNetRevenue: async () => ({revenue: {}, salesReturn: {}}),
     resolveOrderSummary: async () => ({}),
   }) as ShiftController;
+    batchedStubs(controller);
   const closing = {
     remarks: 'done',
     collections: {cash: 0, card: 0, upi: 0, cheque: 0, pgLink: 0, ppVoucher: 0, wallet: 0},
@@ -44,7 +46,7 @@ describe('shift Card and UPI settlement', () => {
     const {controller, closing, saved} = setupClose(0);
     let error: Error | undefined;
     try {
-      await controller.close({} as UserProfile, 'shift-a', closing);
+      await controller.close({} as UserProfile, '5a1f0c3e-0000-4000-8000-00000000000a', closing);
     } catch (caught) {
       error = caught as Error;
     }
@@ -54,7 +56,7 @@ describe('shift Card and UPI settlement', () => {
 
   it('stores its own expected amount and difference when balanced', async () => {
     const {controller, closing, saved} = setupClose(100);
-    await controller.close({} as UserProfile, 'shift-a', closing);
+    await controller.close({} as UserProfile, '5a1f0c3e-0000-4000-8000-00000000000a', closing);
     expect(saved()?.closing.cardPgSettlement).to.containEql({
       actualSettlement: 100,
       expectedSettlement: 100,

@@ -1,3 +1,4 @@
+import {pageBounds, sqlPage, visibleOrderSql} from '../utils/sql-page';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {Options, repository} from '@loopback/repository';
@@ -1095,62 +1096,18 @@ export class SalesReturnController {
       ? {status: statuses.length > 1 ? {inq: statuses} : statuses[0]}
       : {};
 
-    const resolvedLimit = limit !== undefined ? Number(limit) : undefined;
-    let resolvedSkip = skip !== undefined ? Number(skip) : undefined;
-    if (
-      resolvedSkip === undefined &&
-      page !== undefined &&
-      resolvedLimit !== undefined
-    ) {
-      const pageNum = Number(page);
-      const zeroBasedPage = pageNum >= 1 ? pageNum - 1 : Math.max(0, pageNum);
-      resolvedSkip = zeroBasedPage * resolvedLimit;
-    }
-
-    const salesReturns = await this.salesReturnRepo.find({
-      where,
-      order: ['createdAt DESC'],
-    });
-    if (!salesReturns.length) {
-      return {
-        salesReturns: [],
-        total: 0,
-        limit: resolvedLimit,
-        skip: resolvedSkip,
-        page: page ?? 1,
-      };
-    }
-
-    const orderIds = [...new Set(salesReturns.map(sr => sr.orderId))];
-    const orders = await this.orderRepo.find({where: {id: {inq: orderIds}}});
-    const orderById = new Map(orders.map(o => [o.id, o]));
-
+    const bounds = pageBounds(limit, skip, page);
+    const {limit: resolvedLimit, skip: resolvedSkip} = bounds;
     const scope = await this.storeScopeService.resolve(currentUser!);
-    // Also allow orders reachable via an active inter-store transfer grant
-    // to this scope — additive, doesn't narrow anything the direct
-    // storeId check already allowed.
-    const transferGrantedOrderIds = scope.global
-      ? []
-      : await this.storeScopeService.transferGrantedOrderIds(scope.storeIds);
-    const grantedOrderIdSet = new Set(transferGrantedOrderIds.map(String));
-    const inScope = scope.global
-      ? salesReturns
-      : salesReturns.filter(sr => {
-          if (grantedOrderIdSet.has(String(sr.orderId))) return true;
-          const order = orderById.get(sr.orderId);
-          return order
-            ? this.storeScopeService.allows(scope, order.storeId)
-            : false;
-        });
-
-    const total = inScope.length;
-
-    const paged =
-      resolvedLimit !== undefined
-        ? inScope.slice(resolvedSkip ?? 0, (resolvedSkip ?? 0) + resolvedLimit)
-        : resolvedSkip !== undefined
-          ? inScope.slice(resolvedSkip)
-          : inScope;
+    const scoped = scope.global ? '' : `EXISTS (SELECT 1 FROM public.orders scope_o
+      WHERE scope_o.id = sales_return.orderid AND ${visibleOrderSql('scope_o')})`;
+    const result = await sqlPage<SalesReturn>(this.salesReturnRepo, 'sales_return', where,
+      bounds.limit, bounds.skip, scoped, scope.global ? [] : [scope.storeIds, scope.storeIds]);
+    const paged = result.rows;
+    const total = result.total;
+    const orderIds = [...new Set(paged.map(sr => sr.orderId))];
+    const orders = orderIds.length ? await this.orderRepo.find({where: {id: {inq: orderIds}}}) : [];
+    const orderById = new Map(orders.map(o => [o.id, o]));
 
     const customerIds = [
       ...new Set(paged.map(sr => sr.customerId).filter(Boolean)),

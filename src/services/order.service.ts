@@ -1,8 +1,11 @@
+import {createHash} from 'crypto';
+import {findInBatches} from '../utils/batch-find';
 import {formatInvoiceNumber, invoiceNumberPeriod} from '../utils/invoice-number';
 import {ticketNumberPeriod} from '../utils/ticket-number';
 import {dispatchWhatsApp, WalletWhatsAppNotification, WhatsAppService} from './whatsapp.service';
 import {PaymentService} from './payment.service';
-import {BindingScope, inject, injectable} from '@loopback/core';
+import {BindingScope, Getter, inject, injectable} from '@loopback/core';
+import type {ApprovalService} from './approval.service';
 import {IsolationLevel, Options, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import {
@@ -31,6 +34,7 @@ import {
 import {PresstoDataSource} from '../datasources';
 import {Order} from '../models/order.model';
 import {OrderItem} from '../models/order-item.model';
+import {GarmentStatusHistory} from '../models/garment-status-history.model';
 import {Customer} from '../models/customer.model';
 import {Challan, ChallanStatus} from '../models/challan.model';
 import {Invoice, InvoiceStatus} from '../models/invoice.model';
@@ -391,6 +395,7 @@ export class OrderService {
     @repository(InvoiceOrderLinkRepository)
     private invoiceOrderLinkRepo: InvoiceOrderLinkRepository,
     @repository(AuditLogRepository) private auditLogRepo: AuditLogRepository,
+    @inject.getter('services.approval') private getApprovalService: Getter<ApprovalService>,
   ) {}
 
   // ─── Inspection ──────────────────────────────────────────────────────────
@@ -614,12 +619,52 @@ export class OrderService {
     return cheapest;
   }
 
+  /** Request-local pricing snapshot: bulk mapping/coupon reads and one hierarchy lookup. */
+  private async preparePricing(storeId: string, customerId: string, items: {
+    itemId: string; serviceId: string; additionalServiceIds?: string[];
+    units?: {additionalServiceIds?: string[]}[];
+  }[]) {
+    const serviceIds = [...new Set(items.flatMap(item => [item.serviceId,
+      ...(item.additionalServiceIds ?? []), ...(item.units ?? []).flatMap(unit => unit.additionalServiceIds ?? [])]))];
+    const itemIds = [...new Set(items.map(item => item.itemId))];
+    const [mappings, overrides, store, storeOverride, assignments] = await Promise.all([
+      this.serviceItemMappingRepo.find({where: {serviceId: {inq: serviceIds}, itemId: {inq: itemIds}}}),
+      this.couponPriceOverrideRepo.find({where: {serviceId: {inq: serviceIds}, itemId: {inq: itemIds}, isActive: true, isDeleted: false}}),
+      this.storeRepo.findById(storeId),
+      this.storePriceOverrideRepo.findOne({where: {storeId, isActive: true, isDeleted: false}}),
+      this.customerLabelAssignmentRepo.find({where: {customerId, isDeleted: false} as object}),
+    ]);
+    const cluster = store.clusterId ? await this.clusterRepo.findById(store.clusterId) : null;
+    const [clusterOverride, regionOverride, coupons] = await Promise.all([
+      store.clusterId ? this.clusterPriceListRepo.findOne({where: {clusterId: store.clusterId, isActive: true, isDeleted: false}}) : null,
+      cluster?.regionId ? this.priceListRepo.findOne({where: {regionId: cluster.regionId, isActive: true, isDeleted: false}}) : null,
+      overrides.length ? this.couponRepo.find({where: {id: {inq: [...new Set(overrides.map(row => row.couponId))]}, isActive: true, isDeleted: false}}) : [],
+    ]);
+    const couponById = new Map(coupons.map(coupon => [coupon.id, coupon]));
+    const labels = assignments.map(row => row.customerLabelId);
+    const couponPrices = new Map<string, number>();
+    const now = new Date();
+    for (const row of overrides) {
+      const c = couponById.get(row.couponId);
+      if (!c || c.discountType !== CouponDiscountType.PRICE_OVERRIDE || now < new Date(c.startDate) || now > new Date(c.endDate)) continue;
+      if (c.storeIds?.length && !c.storeIds.includes(storeId)) continue;
+      if (c.clusterIds?.length && (!store.clusterId || !c.clusterIds.includes(store.clusterId))) continue;
+      if (c.regionIds?.length && (!cluster?.regionId || !c.regionIds.includes(cluster.regionId))) continue;
+      if (c.customerLabelIds?.length && !c.customerLabelIds.some(id => labels.includes(id))) continue;
+      const key = row.serviceId + ':' + row.itemId;
+      const price = Number(row.overridePrice);
+      couponPrices.set(key, Math.min(couponPrices.get(key) ?? price, price));
+    }
+    return {mappings: new Map(mappings.map(row => [row.serviceId + ':' + row.itemId, row])),
+      couponPrices, store, cluster, storeOverride, clusterOverride, regionOverride};
+  }
+
   async resolvePricing(
     storeId: string,
     serviceId: string,
     itemId: string,
     customerId: string,
-    options: {additional?: boolean} = {},
+    options: {additional?: boolean; context?: Awaited<ReturnType<OrderService['preparePricing']>>} = {},
   ): Promise<{
     basePrice: number;
     resolvedPrice: number;
@@ -627,7 +672,8 @@ export class OrderService {
     priceSource: 'coupon' | 'store' | 'cluster' | 'region' | 'base';
     estimatedDurationInDays: number | null;
   }> {
-    const mapping = await this.serviceItemMappingRepo.findOne({
+    const context = options.context;
+    const mapping = context ? context.mappings.get(serviceId + ':' + itemId) : await this.serviceItemMappingRepo.findOne({
       where: {serviceId, itemId},
     });
     if (mapping?.basePrice == null) {
@@ -649,7 +695,7 @@ export class OrderService {
     // (serviceId, itemId) — auto-applied, never selected/redeemed (see
     // CouponPriceOverride). Skips store/cluster/region uplift entirely
     // when it hits; falls through to the normal waterfall otherwise.
-    const couponOverridePrice = await this.resolveCouponOverridePrice(
+    const couponOverridePrice = context ? (context.couponPrices.get(serviceId + ':' + itemId) ?? null) : await this.resolveCouponOverridePrice(
       storeId,
       serviceId,
       itemId,
@@ -690,25 +736,25 @@ export class OrderService {
     };
 
     // Priority 1: store override
-    const override = await this.storePriceOverrideRepo.findOne({
+    const override = context ? context.storeOverride : await this.storePriceOverrideRepo.findOne({
       where: {storeId, isActive: true, isDeleted: false},
     });
     const storePct = readPct(override);
     if (storePct != null) return uplift(storePct, 'store');
 
     // Priority 2: cluster price list
-    const store = await this.storeRepo.findById(storeId);
+    const store = context ? context.store : await this.storeRepo.findById(storeId);
     if (store.clusterId) {
-      const clusterPriceList = await this.clusterPriceListRepo.findOne({
+      const clusterPriceList = context ? context.clusterOverride : await this.clusterPriceListRepo.findOne({
         where: {clusterId: store.clusterId, isActive: true, isDeleted: false},
       });
       const clusterPct = readPct(clusterPriceList);
       if (clusterPct != null) return uplift(clusterPct, 'cluster');
 
       // Priority 3: region price list
-      const cluster = await this.clusterRepo.findById(store.clusterId);
+      const cluster = context ? context.cluster! : await this.clusterRepo.findById(store.clusterId);
       if (cluster.regionId) {
-        const priceList = await this.priceListRepo.findOne({
+        const priceList = context ? context.regionOverride : await this.priceListRepo.findOne({
           where: {regionId: cluster.regionId, isActive: true, isDeleted: false},
         });
         const regionPct = readPct(priceList);
@@ -1451,9 +1497,10 @@ export class OrderService {
     });
     if (!orders.length) return {limit, used: 0, remaining: limit};
 
-    const payments = await this.paymentTransactionRepo.find({
-      where: {orderId: {inq: orders.map(o => o.id)}} as any,
-    });
+    // A long-standing on-account customer has thousands of tickets; chunk the lookup.
+    const payments = await findInBatches(orders.map(o => o.id), ids => this.paymentTransactionRepo.find({
+      where: {orderId: {inq: ids}} as any,
+    }));
     const paidByOrder = new Map<string, number>();
     for (const p of payments) {
       const amt =
@@ -1525,8 +1572,32 @@ export class OrderService {
   async createOrder(
     input: CreateOrderInput,
     createdBy: string,
+    idempotencyKey?: string,
   ): Promise<object> {
     const {v4} = await import('uuid');
+    if (idempotencyKey && !/^[a-zA-Z0-9_-]{16,128}$/.test(idempotencyKey)) {
+      throw new HttpErrors.BadRequest('Invalid Idempotency-Key.');
+    }
+    let requestKey = idempotencyKey ? createHash('sha256').update(createdBy + ':' + idempotencyKey).digest('hex') : null;
+    const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+    const replay = async (options?: object) => {
+      if (!requestKey) return null;
+      const rows = await this.dataSource.execute('SELECT fingerprint, response FROM public.order_creation_request WHERE request_key = $1', [requestKey], options);
+      if (!rows.length) return null;
+      if (rows[0].fingerprint !== fingerprint) throw new HttpErrors.Conflict('Idempotency-Key was already used for a different order.');
+      return {...rows[0].response, idempotencyReplay: true};
+    };
+    let previous: object | null = null;
+    try {
+      previous = await replay();
+    } catch (error) {
+      // Retry storage not migrated yet (npm run migrate:order-idempotency):
+      // keep taking orders, just without retry protection.
+      if ((error as {code?: string}).code !== '42P01') throw error;
+      console.warn(JSON.stringify({event: 'order_idempotency_table_missing'}));
+      requestKey = null;
+    }
+    if (previous) return previous;
     if (input.isDraft && ((input.payments?.length ?? 0) > 0 || Number(input.walletAmount ?? 0) > 0)) {
       throw new HttpErrors.BadRequest('Drafts cannot collect payment.');
     }
@@ -1735,12 +1806,14 @@ export class OrderService {
     const additionalChargePercentage =
       await this.resolveAdditionalChargePercentage(input.storeId);
 
+    const pricingContext = await this.preparePricing(input.storeId, input.customerId, workingItems);
     for (const item of workingItems) {
       const pricing = await this.resolvePricing(
         input.storeId,
         item.serviceId,
         item.itemId,
         input.customerId,
+        {context: pricingContext},
       );
 
       // A rejected line is recorded but never billed — everything payable is 0,
@@ -1776,7 +1849,7 @@ export class OrderService {
           item.itemId,
           input.customerId,
           {
-            additional: true,
+            additional: true, context: pricingContext,
           },
         );
         resolvedServicePrices.set(addlServiceId, {
@@ -2172,6 +2245,11 @@ export class OrderService {
     });
 
     try {
+      if (requestKey) {
+        await this.dataSource.execute('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [requestKey], {transaction: tx});
+        const lockedReplay = await replay({transaction: tx});
+        if (lockedReplay) {await tx.commit(); return lockedReplay;}
+      }
       await this.lockCustomerForOrder(input.customerId, tx);
       const orderNumber = await this.resolveNextOrderNumber(input.storeId, tx);
       if (!couponCodes.length && customer.referredByCouponId &&
@@ -2543,7 +2621,33 @@ export class OrderService {
           ? await this.generateInvoiceForOrder(order.id, createdBy, true, tx)
           : null;
 
+      const approvalService = pendingApprovalPayments.length ? await this.getApprovalService() : undefined;
+      const approvalRequests = [];
+      for (const leg of pendingApprovalPayments) {
+        approvalRequests.push(await approvalService!.createRequest({
+          type: leg.paymentMode === PaymentMode.CHEQUE ? ApprovalRequestType.CHEQUE_PAYMENT : ApprovalRequestType.PDC_PAYMENT,
+          entityType: 'order', entityId: order.id, requestedBy: createdBy,
+          metadata: {...leg},
+        }, tx, true));
+      }
+      const response = {
+        order: {...order, status: orderInitialStatus},
+        items: createdItems,
+        garments: createdGarments,
+        payments: createdPayments,
+        challan,
+        invoice,
+        walletAmountDeducted: walletAmount,
+        totalCollected,
+        balanceDue: rupeeBalance(totalAmount, totalCollected),
+        pendingApprovalPayments,
+        approvalRequests,
+      };
+      if (requestKey) await this.dataSource.execute(
+        'INSERT INTO public.order_creation_request (request_key, fingerprint, response) VALUES ($1, $2, $3::jsonb)',
+        [requestKey, fingerprint, JSON.stringify(response)], {transaction: tx});
       await tx.commit();
+      for (const request of approvalRequests) approvalService!.notifyApprovalRequired(request);
       if (walletNotification) {
         const notification = walletNotification;
         dispatchWhatsApp(() => this.whatsAppService.notifyWalletRedeemed(notification));
@@ -2555,18 +2659,7 @@ export class OrderService {
         this.whatsAppService.notifyOrder(order.id, 'created'),
       );
 
-      return {
-        order: {...order, status: orderInitialStatus},
-        items: createdItems,
-        garments: createdGarments,
-        payments: createdPayments,
-        challan,
-        invoice,
-        walletAmountDeducted: walletAmount,
-        totalCollected,
-        balanceDue: rupeeBalance(totalAmount, totalCollected),
-        pendingApprovalPayments,
-      };
+      return response;
     } catch (err) {
       await tx.rollback();
       throw err;
@@ -2756,9 +2849,7 @@ export class OrderService {
       }
       return newStatus === OrderStatus.RECEIVED_AT_STORE ? {garments} : {};
     }
-    const tx = newStatus === OrderStatus.DELIVERED
-      ? await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED})
-      : undefined;
+    const tx = await this.dataSource.beginTransaction({isolationLevel: IsolationLevel.READ_COMMITTED});
     try {
       if (tx) {
         await this.dataSource.execute('SELECT id FROM public.orders WHERE id = $1 FOR UPDATE', [orderId], {transaction: tx});
@@ -2766,11 +2857,11 @@ export class OrderService {
         if (!current || !ORDER_STATUS_TRANSITIONS[current.status!].includes(newStatus)) {
           throw new HttpErrors.Conflict('Order status changed. Refresh and retry.');
         }
-        deliveryStop = (await this.deliveryOrderRepo.find({
+        deliveryStop = (newStatus === OrderStatus.DELIVERED || newStatus === OrderStatus.OUT_FOR_DELIVERY) ? (await this.deliveryOrderRepo.find({
           where: {orderId} as object,
           order: ['createdAt DESC'],
           limit: 1,
-        }, {transaction: tx}))[0];
+        }, {transaction: tx}))[0] : undefined;
         if (deliveryStop?.status === DeliveryOrderStatus.RETURN_TO_STORE) {
           throw new HttpErrors.BadRequest('A failed delivery stop needs a new delivery run before dispatch or completion.');
         }
@@ -2790,11 +2881,11 @@ export class OrderService {
         changedBy,
         remarks,
       }, options);
-      if (deliveryStop && tx) {
+      if (deliveryStop && newStatus === OrderStatus.DELIVERED) {
         await this.deliveryOrderRepo.updateById(deliveryStop.id, {status: DeliveryOrderStatus.DELIVERED}, options);
       }
       if (tx) {
-        await this._cascadeGarmentsToDelivered(orderId, changedBy, v4, tx);
+        if (newStatus === OrderStatus.DELIVERED) await this._cascadeGarmentsToDelivered(orderId, changedBy, v4, tx);
         await tx.commit();
       }
     } catch (error) {
@@ -4343,42 +4434,53 @@ export class OrderService {
   }
 
   /**
-   * Walks one garment forward along received → in_inspection → in_process,
-   * stopping at `target`. Returns true if it actually moved.
+   * Walks garments forward along received → in_inspection → in_process,
+   * stopping at `target`. Every garment that moves ends at `target`, so one
+   * status update per batch is enough; history still gets one row per hop.
+   * Returns how many garments actually moved.
    */
-  private async stepGarmentForward(
-    garment: {id: string; status?: GarmentStatus},
+  private async stepGarmentsForward(
+    garments: {id: string; status?: GarmentStatus}[],
     target: GarmentStatus,
     changedBy: string,
     remarks: string,
     v4: () => string,
-  ): Promise<boolean> {
+  ): Promise<number> {
     const PATH = [
       GarmentStatus.RECEIVED,
       GarmentStatus.IN_INSPECTION,
       GarmentStatus.IN_PROCESS,
     ];
-    // On-hold and returned garments are out of the pipeline — leave them be.
-    if (!isActiveGarmentStatus(garment.status)) return false;
-
-    let idx = PATH.indexOf(garment.status as GarmentStatus);
     const targetIdx = PATH.indexOf(target);
-    if (idx < 0 || targetIdx < 0 || idx >= targetIdx) return false; // already there or past it
+    if (targetIdx < 0) return 0;
 
     const now = new Date();
-    while (idx < targetIdx) {
-      idx++;
-      await this.garmentRepo.updateById(garment.id, {status: PATH[idx]});
-      await this.garmentStatusHistoryRepo.create({
-        id: v4(),
-        garmentId: garment.id,
-        status: PATH[idx],
-        changedAt: now,
-        changedBy,
-        remarks,
-      });
+    const movedIds: string[] = [];
+    const history: Partial<GarmentStatusHistory>[] = [];
+    const seen = new Set<string>();
+    for (const garment of garments) {
+      // On-hold and returned garments are out of the pipeline — leave them be.
+      if (seen.has(garment.id) || !isActiveGarmentStatus(garment.status)) continue;
+      seen.add(garment.id);
+      let idx = PATH.indexOf(garment.status as GarmentStatus);
+      if (idx < 0 || idx >= targetIdx) continue; // already there or past it
+      movedIds.push(garment.id);
+      // One millisecond apart, so "latest status" stays unambiguous for the
+      // timeline and for restoring a garment after a hold.
+      for (let hop = 0; idx < targetIdx; hop++) {
+        idx++;
+        const changedAt = new Date(now.getTime() + hop);
+        history.push({id: v4(), garmentId: garment.id, status: PATH[idx], changedAt, changedBy, remarks});
+      }
     }
-    return true;
+
+    for (let offset = 0; offset < movedIds.length; offset += 500) {
+      await this.garmentRepo.updateAll({status: target}, {id: {inq: movedIds.slice(offset, offset + 500)}});
+    }
+    for (let offset = 0; offset < history.length; offset += 500) {
+      await this.garmentStatusHistoryRepo.createAll(history.slice(offset, offset + 500));
+    }
+    return movedIds.length;
   }
 
   async completeCounterInspection(
@@ -4402,17 +4504,13 @@ export class OrderService {
       throw new HttpErrors.BadRequest('This order has no garments to inspect.');
     }
 
-    let advanced = 0;
-    for (const garment of garments) {
-      const moved = await this.stepGarmentForward(
-        garment as any,
-        GarmentStatus.IN_PROCESS,
-        changedBy,
-        'Inspected at counter',
-        v4,
-      );
-      if (moved) advanced++;
-    }
+    const advanced = await this.stepGarmentsForward(
+      garments,
+      GarmentStatus.IN_PROCESS,
+      changedBy,
+      'Inspected at counter',
+      v4,
+    );
 
     await this.stepOrderForward(
       orderId,
@@ -4467,22 +4565,20 @@ export class OrderService {
       orderItems.map(oi => [itemKey(oi.serviceId, oi.itemId), oi]),
     );
 
-    let advanced = 0;
+    const inspected: typeof garments = [];
     for (const unit of units) {
       const orderItem = itemByKey.get(itemKey(unit.serviceId, unit.itemId));
       if (!orderItem) continue;
       const garment = (byItem.get(orderItem.id) ?? [])[unit.unitIndex];
-      if (!garment) continue;
-
-      const moved = await this.stepGarmentForward(
-        garment as any,
-        GarmentStatus.IN_INSPECTION,
-        changedBy,
-        'Inspected at counter',
-        v4,
-      );
-      if (moved) advanced++;
+      if (garment) inspected.push(garment);
     }
+    const advanced = await this.stepGarmentsForward(
+      inspected,
+      GarmentStatus.IN_INSPECTION,
+      changedBy,
+      'Inspected at counter',
+      v4,
+    );
 
     // The order is only as far along as its least advanced garment.
     const current = await this.garmentRepo.find({
@@ -4570,7 +4666,8 @@ export class OrderService {
         where: {orderId: order.id}, order: ['createdAt DESC'], limit: 1,
       }, options))[0] : undefined;
       if (channel === 'rider' && ((!stop && params.deliveryId) ||
-        (stop && (stop.status === DeliveryOrderStatus.RETURN_TO_STORE || stop.status === DeliveryOrderStatus.DELIVERED ||
+        (stop && (stop.status === DeliveryOrderStatus.HANDOVER_PENDING ||
+          stop.status === DeliveryOrderStatus.RETURN_TO_STORE || stop.status === DeliveryOrderStatus.DELIVERED ||
           (params.deliveryId && stop.deliveryId !== params.deliveryId))))) {
         throw new HttpErrors.Conflict('This delivery stop is no longer available for handover.');
       }
@@ -4972,18 +5069,14 @@ export class OrderService {
     );
 
     const now = new Date();
-    for (const g of toDeliver) {
-      await this.garmentRepo.updateById(g.id, {
-        status: GarmentStatus.DELIVERED,
-      }, options);
-      await this.garmentStatusHistoryRepo.create({
-        id: v4(),
-        garmentId: g.id,
-        status: GarmentStatus.DELIVERED,
-        changedAt: now,
-        changedBy,
-        remarks: 'Delivered with order',
-      }, options);
+    for (let offset = 0; offset < toDeliver.length; offset += 500) {
+      const batch = toDeliver.slice(offset, offset + 500);
+      await this.garmentRepo.updateAll({status: GarmentStatus.DELIVERED},
+        {id: {inq: batch.map(g => g.id)}}, options);
+      await this.garmentStatusHistoryRepo.createAll(batch.map(g => ({
+        id: v4(), garmentId: g.id, status: GarmentStatus.DELIVERED,
+        changedAt: now, changedBy, remarks: 'Delivered with order',
+      })), options);
     }
     return toDeliver.length;
   }
@@ -5171,7 +5264,7 @@ export class OrderService {
   /** One page of listOrders() for a free-text search or payment filter. */
   private async searchOrderPage(
     where: object,
-    terms: {search?: string; invoiceNumber?: string; paymentStatus?: string},
+    terms: {search?: string; orderNumber?: string; invoiceNumber?: string; paymentStatus?: string},
     limit: number,
     skip: number,
   ): Promise<[Order[], {count: number}]> {
@@ -5193,7 +5286,7 @@ export class OrderService {
    */
   private async searchOrderIds(
     where: object,
-    terms: {search?: string; invoiceNumber?: string; paymentStatus?: string},
+    terms: {search?: string; orderNumber?: string; invoiceNumber?: string; paymentStatus?: string},
     limit: number,
     skip: number,
   ): Promise<{ids: string[]; count: number}> {
@@ -5223,6 +5316,11 @@ export class OrderService {
       sqlParams.push(invoiceLike, invoiceLike);
     }
 
+    if (terms.orderNumber) {
+      sqlConditions.push('o.ordernumber ILIKE ?');
+      sqlParams.push(`%${terms.orderNumber}%`);
+    }
+
     if (terms.search) {
       const [searchSql, searchParams] = await this.orderSearchCondition(terms.search);
       sqlConditions.push(searchSql);
@@ -5239,7 +5337,7 @@ export class OrderService {
     // Payment-only counts must be exact, not capped at the search limit. Batch
     // payment aggregation over the scoped set and calculate page + count in one
     // statement, avoiding a per-order payment index lookup repeated by two queries.
-    if (terms.paymentStatus && !terms.search && !terms.invoiceNumber) {
+    if (terms.paymentStatus && !terms.search && !terms.orderNumber && !terms.invoiceNumber) {
       const grouped = orderPaymentFilterSql(terms.paymentStatus, true);
       const baseWhere = base.sql ? `WHERE ${base.sql.replace(/^WHERE /, '')}` : '';
       const sums = grouped.join ? `, payment_sums AS (
@@ -5275,7 +5373,7 @@ export class OrderService {
     // (1M+ for "m"), which held DB connections for 10s+ and starved the pool.
     // Count only up to SEARCH_COUNT_CAP; a specific search still gets its exact
     // count, a broad one reports the cap (pagination stops there).
-    const cappedSearch = Boolean(terms.search || terms.invoiceNumber);
+    const cappedSearch = Boolean(terms.search || terms.orderNumber || terms.invoiceNumber);
     const count = connector.parameterize({
       sql: `SELECT count(*)::int AS count FROM (SELECT 1 FROM public.orders o ${paymentFilter.join} ${whereSql}${cappedSearch ? ' LIMIT ?' : ''}) matches`,
       params: cappedSearch ? [...whereParams, SEARCH_COUNT_CAP] : whereParams,
@@ -5294,6 +5392,13 @@ export class OrderService {
   /** SQL condition (with `?` placeholders) for listOrders' free-text search. */
   private async orderSearchCondition(q: string): Promise<[string, unknown[]]> {
     const like = `%${q}%`;
+    // A full name ("ganesh verma") spans firstname and lastname, so neither
+    // column contains it whole. Each word must match one of the two.
+    const words = q.split(/\s+/).filter(Boolean);
+    const wordLikes = words.length > 1 ? words.map(word => `%${word}%`) : [];
+    const fullName = (alias: string, first: number) => wordLikes.length
+      ? ' OR (' + wordLikes.map((_, i) => `(${alias}.firstname ILIKE $${first + i} OR ${alias}.lastname ILIKE $${first + i})`).join(' AND ') + ')'
+      : '';
     // Specific terms (a name, a phone, an order number) match few customers:
     // resolve them through the trigram indexes and pass them as ONE array
     // parameter so orders are found via their customerid index. Broad terms
@@ -5301,12 +5406,12 @@ export class OrderService {
     // which stops as soon as the page is filled because matches are dense.
     const customerRows: {id: string}[] = await this.dataSource.execute(
       `SELECT c.id FROM public.customer c
-        WHERE c.isdeleted = false AND (c.firstname ILIKE $1 OR c.lastname ILIKE $1)
+        WHERE c.isdeleted = false AND (c.firstname ILIKE $1 OR c.lastname ILIKE $1${fullName('c', 2)})
        UNION
        SELECT c.id FROM public.users u JOIN public.customer c ON c.userid = u.id::text
         WHERE u.isdeleted = false AND c.isdeleted = false AND u.phone ILIKE $1
        LIMIT ${SEARCH_CUSTOMER_LIST_CAP + 1}`,
-      [like],
+      [like, ...wordLikes],
     );
     const fewCustomers = customerRows.length <= SEARCH_CUSTOMER_LIST_CAP;
     const searchSql = fewCustomers
@@ -5314,14 +5419,18 @@ export class OrderService {
       : '(o.ordernumber ILIKE ? OR EXISTS (SELECT 1 FROM public.customer c' +
         ' LEFT JOIN public.users u ON u.id = c.userid::uuid AND u.isdeleted = false' +
         ' WHERE c.id = o.customerid AND c.isdeleted = false' +
-        ' AND (c.firstname ILIKE ? OR c.lastname ILIKE ? OR u.phone ILIKE ?)))';
+        ' AND (c.firstname ILIKE ? OR c.lastname ILIKE ? OR u.phone ILIKE ?' +
+        (wordLikes.length ? ' OR (' + wordLikes.map(() => '(c.firstname ILIKE ? OR c.lastname ILIKE ?)').join(' AND ') + ')' : '') +
+        ')))';
     return fewCustomers
       ? [searchSql, [like, customerRows.map(row => row.id)]]
-      : [searchSql, [like, like, like, like]];
+      : [searchSql, [like, like, like, like, ...wordLikes.flatMap(word => [word, word])]];
   }
 
   async listOrders(params: {
     search?: string;
+    /** Partial ticket number only (Manage Ticket's Ticket ID box). */
+    orderNumber?: string;
     invoiceNumber?: string;
     paymentStatus?: string;
     dateFrom?: string;
@@ -5444,6 +5553,7 @@ export class OrderService {
       baseConditions.length === 1 ? baseConditions[0] : {and: baseConditions};
 
     const search = params.search?.trim();
+    const orderNumber = params.orderNumber?.trim();
     const invoiceNumber = params.invoiceNumber?.trim();
     if (params.matchingIdsOnly) {
       const {ids} = await this.searchOrderIds(
@@ -5456,8 +5566,8 @@ export class OrderService {
     }
     const limitedFrom =
       dateFrom !== params.dateFrom ? {paymentFilterFrom: dateFrom} : {};
-    const [orders, countResult] = search || invoiceNumber || paymentFilter
-      ? await this.searchOrderPage(where, {search, invoiceNumber, paymentStatus: paymentFilter}, limit, skip)
+    const [orders, countResult] = search || orderNumber || invoiceNumber || paymentFilter
+      ? await this.searchOrderPage(where, {search, orderNumber, invoiceNumber, paymentStatus: paymentFilter}, limit, skip)
       : await Promise.all([
           this.orderRepo.find({
             where: where as any,
@@ -6017,6 +6127,8 @@ export class OrderService {
 
     let pickupRiderName: string | null = null;
     let pickupRiderPhone: string | null = null;
+    // Booking remark first, then what the rider noted per service at the door.
+    const pickupRemarks: Array<{source: 'booking' | 'rider'; serviceName?: string; remarks: string}> = [];
 
     if (isHomePickup) {
       const pickupRequest = await this.pickupRequestRepo.findOne({
@@ -6027,6 +6139,14 @@ export class OrderService {
       });
 
       if (pickupRequest) {
+        if (pickupRequest.remarks?.trim()) {
+          pickupRemarks.push({source: 'booking', remarks: pickupRequest.remarks.trim()});
+        }
+        for (const line of pickupRequest.actualItemsByService ?? []) {
+          if (line.remarks?.trim()) {
+            pickupRemarks.push({source: 'rider', serviceName: line.serviceName, remarks: line.remarks.trim()});
+          }
+        }
         pickupRiderName = pickupRequest.assignedRiderName ?? null;
         const rider = (pickupRequest as any).assignedRider;
         if (rider) {
@@ -6047,6 +6167,16 @@ export class OrderService {
         }
       }
     }
+
+    // ── Failed delivery attempts (rider or admin), newest first ──────────────
+    const failedStops = await this.deliveryOrderRepo.find({
+      where: {orderId, failureRemarks: {neq: null}} as object,
+      fields: {failureRemarks: true, updatedAt: true} as object,
+      order: ['updatedAt DESC'],
+    });
+    const deliveryAttemptRemarks = failedStops
+      .filter(stop => stop.failureRemarks?.trim())
+      .map(stop => ({remarks: stop.failureRemarks!.trim(), at: stop.updatedAt ?? null}));
 
     // ── Garment stage histories ───────────────────────────────────────────────
     const garmentIds = garments.map(g => g.id);
@@ -6468,8 +6598,10 @@ export class OrderService {
           ? {
               pickupRiderName,
               pickupRiderPhone,
+              pickupRemarks,
             }
           : {}),
+        deliveryAttemptRemarks,
       },
       items: enrichedItems,
       orderCharges: namedOrderCharges,

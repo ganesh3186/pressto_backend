@@ -1,7 +1,8 @@
+import {pettySqlFixture} from './helpers/petty-sql-fixture';
 import {expect} from '@loopback/testlab';
 import {ReportsService} from '../services/reports.service';
 
-describe('petty cash expense report', () => {
+(process.env.RUN_PG_FIXTURE_TESTS === 'true' ? describe : describe.skip)('petty cash expense report [PostgreSQL fixtures]', () => {
   it('keeps pending and approved description totals across pages', async () => {
     const entries = [
       {id: '1', description: 'Office Supplies', amount: 100.1},
@@ -28,6 +29,7 @@ describe('petty cash expense report', () => {
       pettyCashRegisterRepo: {find: async () => entries},
       shiftRepo: {find: async () => []},
     }) as ReportsService;
+    pettySqlFixture(service);
     const report = await service.buildPettyCashExpense({
       storeIds: ['store-a'],
       from: new Date('2026-10-01'),
@@ -103,6 +105,7 @@ describe('petty cash expense report', () => {
         ],
       },
     }) as ReportsService;
+    pettySqlFixture(service);
     const params = {
       storeIds: ['store-a'],
       from: new Date('2026-10-17T00:00:00Z'),
@@ -177,6 +180,7 @@ describe('petty cash expense report', () => {
         ],
       },
     }) as ReportsService;
+    pettySqlFixture(service);
     const report = await service.buildPettyCashExpense({
       storeIds: ['store-a'],
       from: new Date('2026-10-17T00:00:00Z'),
@@ -228,6 +232,7 @@ describe('petty cash expense report', () => {
         ],
       },
     }) as ReportsService;
+    pettySqlFixture(service);
     const report = await service.buildPettyCashExpense({
       storeIds: ['store-a'],
       from: new Date('2026-10-17T00:00:00Z'),
@@ -263,6 +268,7 @@ describe('petty cash expense report', () => {
         ],
       },
     }) as ReportsService;
+    pettySqlFixture(service);
     const report = await service.buildPettyCashExpense({
       storeIds: ['store-a'],
       from: new Date('2026-10-17T00:00:00Z'),

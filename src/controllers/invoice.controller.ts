@@ -319,7 +319,8 @@ export class InvoiceController {
       const range: Record<string, string> = {};
       if (params.dateFrom) range.gte = params.dateFrom;
       if (params.dateTo) range.lte = params.dateTo;
-      clauses.push({createdAt: range});
+      if (range.gte) clauses.push({createdAt: {gte: range.gte}});
+      if (range.lte) clauses.push({createdAt: {lte: range.lte}});
     }
 
     if (params.type === 'onAccount' || params.type === 'regular') {

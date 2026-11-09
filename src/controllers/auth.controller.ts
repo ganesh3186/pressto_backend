@@ -539,7 +539,12 @@ export class AuthController {
       resetPasswordOtpExpires: expiry,
     });
 
-    await this.otpService.sendOtpEmail(user.email!, otp);
+    try {
+      await this.otpService.sendOtpEmail(user.email!, otp);
+    } catch {
+      // Preserve the documented response; do not expose addresses or OTPs in logs.
+      console.error(JSON.stringify({event: 'password_reset_email_failed'}));
+    }
 
     return { message: 'If the email exists, an OTP will be sent.' };
   }

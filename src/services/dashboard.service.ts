@@ -364,28 +364,24 @@ export class DashboardService {
     const orderIds = orders.map(o => o.id);
     if (!orderIds.length) return {orderCount: 0, itemCount: 0, rows: []};
 
-    const [orderItems, transactions] = await Promise.all([
-      this.orderItemRepo.find({
-        where: {orderId: {inq: orderIds}} as object,
-        fields: {id: true} as object,
-      }),
-      this.paymentTransactionRepo.find({
+    // A wide window across every store holds thousands of orders: count
+    // garments in SQL and chunk the payment lookup instead of IN lists.
+    const [garmentCounts, transactions] = await Promise.all([
+      this.orderRepo.execute(
+        `SELECT count(*)::int AS count FROM public.garment g
+           JOIN public.order_item oi ON oi.id = g.orderitemid
+          WHERE oi.orderid = ANY($1::uuid[]) AND g.isdeleted = false`,
+        [orderIds]),
+      findInBatches(orderIds, ids => this.paymentTransactionRepo.find({
         where: {
-          orderId: {inq: orderIds},
+          orderId: {inq: ids},
           transactionType: {neq: 'refund'},
         } as object,
         fields: {orderId: true, paymentMode: true, amount: true} as object,
-      }),
+      })),
     ]);
 
-    const itemCount = orderItems.length
-      ? (
-          await this.garmentRepo.count({
-            orderItemId: {inq: orderItems.map(oi => oi.id)},
-            isDeleted: false,
-          } as object)
-        ).count
-      : 0;
+    const itemCount = Number((garmentCounts as {count: number}[])[0]?.count ?? 0);
 
     // An order is labelled by the first payment mode recorded against it,
     // so a split-tender order lands in the bucket it opened with rather
@@ -455,53 +451,21 @@ export class DashboardService {
    * inbound transfer instead.
    */
   private async computePipeline(storeIds: string[]) {
-    const orders = await this.orderRepo.find({
-      where: {storeId: {inq: storeIds}} as object,
-      fields: {id: true} as object,
-    });
-    const orderIds = orders.map(o => o.id);
+    const counts = await this.orderRepo.execute(
+      `SELECT count(*) FILTER (WHERE g.status = $2)::int AS ready,
+        count(*) FILTER (WHERE g.status = ANY($3::text[]))::int AS inprocess
+       FROM public.garment g JOIN public.order_item oi ON oi.id = g.orderitemid
+       JOIN public.orders o ON o.id = oi.orderid
+       WHERE o.storeid = ANY($1::uuid[]) AND g.isdeleted = false`,
+      [storeIds, GarmentStatus.READY, IN_PROCESS_STATUSES]);
+    const ready = Number(counts[0]?.ready ?? 0);
+    const inProcess = Number(counts[0]?.inprocess ?? 0);
 
-    let ready = 0;
-    let inProcess = 0;
-    if (orderIds.length) {
-      const orderItems = await this.orderItemRepo.find({
-        where: {orderId: {inq: orderIds}} as object,
-        fields: {id: true} as object,
-      });
-      const orderItemIds = orderItems.map(oi => oi.id);
-      if (orderItemIds.length) {
-        const [readyCount, inProcessCount] = await Promise.all([
-          this.garmentRepo.count({
-            orderItemId: {inq: orderItemIds},
-            status: GarmentStatus.READY,
-            isDeleted: false,
-          } as object),
-          this.garmentRepo.count({
-            orderItemId: {inq: orderItemIds},
-            status: {inq: IN_PROCESS_STATUSES},
-            isDeleted: false,
-          } as object),
-        ]);
-        ready = readyCount.count;
-        inProcess = inProcessCount.count;
-      }
-    }
-
-    const inbound = await this.transferRepo.find({
-      where: {
-        toStoreId: {inq: storeIds},
-        status: {inq: IN_FLIGHT_TRANSFER_STATUSES},
-        isDeleted: false,
-      } as object,
-      fields: {id: true} as object,
-    });
-    const pendingReceive = inbound.length
-      ? (
-          await this.transferItemRepo.count({
-            transferId: {inq: inbound.map(t => t.id)},
-          } as object)
-        ).count
-      : 0;
+    const inbound = await this.transferItemRepo.execute(
+      `SELECT count(*)::int AS count FROM public.transfer_item ti JOIN public.transfer t ON t.id = ti.transferid
+       WHERE t.tostoreid = ANY($1::uuid[]) AND t.status = ANY($2::text[]) AND t.isdeleted = false`,
+      [storeIds, IN_FLIGHT_TRANSFER_STATUSES]);
+    const pendingReceive = Number(inbound[0]?.count ?? 0);
 
     return {ready, inProcess, pendingReceive};
   }
@@ -519,9 +483,9 @@ export class DashboardService {
     if (!deliveries.length) return [];
 
     const deliveryById = new Map(deliveries.map(d => [d.id, d]));
-    const deliveryOrders = await this.deliveryOrderRepo.find({
-      where: {deliveryId: {inq: deliveries.map(d => d.id)}} as object,
-    });
+    const deliveryOrders = await findInBatches(deliveries.map(d => d.id), ids => this.deliveryOrderRepo.find({
+      where: {deliveryId: {inq: ids}} as object,
+    }));
 
     return deliveryOrders.map(row => {
       const delivery = deliveryById.get(row.deliveryId);
@@ -591,7 +555,7 @@ export class DashboardService {
    * a rider has collected but not yet submitted has no batch row yet.
    */
   private async computePettyRider(storeIds: string[], from: Date, to: Date) {
-    const [windowActivity, balances, orders] = await Promise.all([
+    const [windowActivity, balances, cashRows] = await Promise.all([
       // Both petty-cash helpers are per-store; sum across the caller stores.
       Promise.all(
         storeIds.map(id =>
@@ -599,10 +563,11 @@ export class DashboardService {
         ),
       ),
       Promise.all(storeIds.map(id => this.pettyCashService.computeBalance(id))),
-      this.orderRepo.find({
-        where: {storeId: {inq: storeIds}} as object,
-        fields: {id: true} as object,
-      }),
+      this.paymentTransactionRepo.execute(
+        `SELECT COALESCE(sum(p.amount), 0) AS amount FROM public.payment_transaction p
+          JOIN public.orders o ON o.id = p.orderid
+          WHERE o.storeid = ANY($1::uuid[]) AND p.riderid IS NOT NULL
+            AND p.riderhandoverstatus IN ('with_rider', 'submitted')`, [storeIds]),
     ]);
 
     const pettyUsedToday = windowActivity.reduce(
@@ -611,22 +576,7 @@ export class DashboardService {
     );
     const pettyBalance = balances.reduce((sum, b) => sum + (Number(b) || 0), 0);
 
-    let riderChangePending = 0;
-    const orderIds = orders.map(o => o.id);
-    if (orderIds.length) {
-      const withRider = await this.paymentTransactionRepo.find({
-        where: {
-          orderId: {inq: orderIds},
-          riderId: {neq: null},
-          riderHandoverStatus: {inq: ['with_rider', 'submitted']},
-        } as object,
-        fields: {amount: true} as object,
-      });
-      riderChangePending = withRider.reduce(
-        (sum, t) => sum + (Number(t.amount) || 0),
-        0,
-      );
-    }
+    const riderChangePending = Number(cashRows[0]?.amount ?? 0);
 
     const confirmed = await this.riderCashHandoverRepo.find({
       where: {

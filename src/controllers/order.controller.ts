@@ -369,22 +369,25 @@ export class OrderController {
       },
     })
     body: CreateOrderInput,
+    @param.header.string('Idempotency-Key') idempotencyKey?: string,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     if (!this.storeScopeService.allows(scope, body.storeId)) {
       throw new HttpErrors.NotFound('Store not found.');
     }
     const createdBy = currentUser[securityId];
-    const result = (await this.orderService.createOrder(body, createdBy)) as {
+    const result = (await this.orderService.createOrder(body, createdBy, idempotencyKey)) as {
       order: {id: string};
+      idempotencyReplay?: boolean;
+      approvalRequests?: object[];
       pendingApprovalPayments: Array<{
         amount: number;
         paymentMode: PaymentMode;
         transactionReference?: string;
       }>;
     };
-    const approvalRequests = [];
-    for (const leg of result.pendingApprovalPayments ?? []) {
+    const approvalRequests = result.approvalRequests ?? [];
+    for (const leg of result.approvalRequests ? [] : result.pendingApprovalPayments ?? []) {
       approvalRequests.push(
         await this._createPendingPaymentApprovalRequest(
           result.order.id,
@@ -394,7 +397,7 @@ export class OrderController {
       );
     }
 
-    if (result?.order?.id && this.systemNotificationService) {
+    if (!result.idempotencyReplay && result?.order?.id && this.systemNotificationService) {
       this.orderRepository
         .findById(result.order.id)
         .then(async savedOrder => {
@@ -462,6 +465,10 @@ export class OrderController {
     @param.query.boolean('homeStoreOnly') homeStoreOnly?: boolean,
     @param.query.string('invoiceNumber') invoiceNumber?: string,
     @param.query.string('paymentStatus') paymentStatus?: string,
+    // Manage Ticket's Ticket ID box: a partial ticket number only. Sending it
+    // as `search` also matched customer phones, so the page and its total
+    // disagreed with what the screen kept.
+    @param.query.string('orderNumber') orderNumber?: string,
   ): Promise<object> {
     const scope = await this.storeScopeService.resolve(currentUser);
     const storeIds = await this.storeScopeService.narrowStoreIds(scope, {
@@ -478,6 +485,7 @@ export class OrderController {
         : undefined;
     return this.orderService.listOrders({
       search,
+      orderNumber,
       invoiceNumber,
       paymentStatus,
       dateFrom,

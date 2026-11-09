@@ -31,7 +31,7 @@ Static MyAccount URL buttons and footers are configured on the approved provider
 
 ### Documents and flags
 
-WHATSAPP_ENABLED=false still blocks every provider call, PDF generation and notification-data preparation. No credentials or flags in the actual .env are changed by this update.
+WHATSAPP_ENABLED=false blocks every notification send, PDF generation and notification-data preparation. Login codes are the one exception, and still go out. No credentials or flags in the actual .env are changed by this update.
 
 WHATSAPP_ATTACHMENTS_ENABLED=true is now required for both ticket creation and payment confirmation. Ticket creation reuses OrderSummaryPdfService and sends its PDF URL as the document header, not as a body link. Its existing signed download route, storage and signing settings remain unchanged.
 
@@ -75,14 +75,14 @@ ApprovalService dispatches pulse_cust_approval_221026 after createRequest comple
 
 POST /auth/customer/send-otp and POST /auth/rider/send-otp retain their existing phone/countryCode request and account checks. Both now delegate to the existing OtpService: generate a cryptographically random six-digit code, save only its bcrypt hash in users.loginOtp and its ten-minute expiry in users.loginOtpExpires, then await the shared Tata transport. The approved pulse_login_otp_221026 authentication template receives the same code in its body and Copy code button (URL subtype, index 0). It has no attachment and does not depend on WHATSAPP_ATTACHMENTS_ENABLED.
 
-Login codes go to the resolved user's login phone and country code, rather than an alternate number or customer notification contact. This is a user-requested login challenge for customers and riders, separate from customer notification preferences. With WHATSAPP_ENABLED=true (or unset, preserving the existing flag semantics), the send response is {message: "Login code requested on WhatsApp", expiresInSeconds: 600}, with no plaintext otp. Provider rejection, timeout or missing credentials returns HTTP 503; failures do not fall back to returning the code. Provider acceptance still does not confirm delivery. At the user's explicit request, WHATSAPP_ENABLED=false restores the original {message: "OTP sent", otp} response for both customer and rider login without calling Tata. Both modes save only the hash and ten-minute expiry in the database, and use the same verify-otp endpoints and existing login responses. No SMS fallback, database migration, new service, PDF configuration or frontend admin change is added. Verify the template's approval, language and Copy code button in Tata before rollout.
+Login codes go to the resolved user's login phone and country code, rather than an alternate number or customer notification contact. This is a user-requested login challenge for customers and riders, separate from customer notification preferences. Whatever WHATSAPP_ENABLED is set to, the send response is {message: "Login code requested on WhatsApp", expiresInSeconds: 600}, with no plaintext otp. Provider rejection, timeout or missing credentials returns HTTP 503; failures do not fall back to returning the code. Provider acceptance still does not confirm delivery. Only the hash and ten-minute expiry are saved in the database, and the verify-otp endpoints and login responses are unchanged. No SMS fallback, database migration, new service, PDF configuration or frontend admin change is added. Verify the template's approval, language and Copy code button in Tata before rollout.
 
 ## Previous rollout reference
 
 One singleton WhatsAppService sends approved customer templates through Tata Omni.
 The existing Karix payload has been replaced; these are different provider APIs.
 Credentials belong only in the ignored backend .env. .env.example contains placeholders.
-WHATSAPP_ENABLED=false disables sends. No real messages are sent by validation.
+WHATSAPP_ENABLED=false disables notification sends; login codes still go out. No real messages are sent by validation.
 
 `WHATSAPP_DELIVERY_PAYMENT_LINK_ENABLED=false` temporarily skips only
 `pulse_ready_to_deliver_with_rider_details_with_paymentlink_221026` for unpaid
@@ -124,7 +124,7 @@ Configure ORDER_SUMMARY_URL_SIGNING_SECRET with a unique random secret of at lea
 GET /documents/order-summaries/{fileName}?expires=...&signature=... validates the filename, signature and expiry before reading the PDF. Invalid links return 403, expired links 410, and missing files 404. Responses are application/pdf with private/no-store caching.
 Missing/invalid configuration or generation/send failures skip the notification and log a generic error without rolling back the saved order. There is no automatic retry worker; an explicit service retry may generate another unique file. No placeholder or null URL is sent. WHATSAPP_ENABLED=false skips both PDF generation and messaging for this flow.
 Mount STORAGE_DIRECTORY on persistent storage. Multiple backend instances must share that storage and signing secret so a customer request can reach any instance. Files remain until operational cleanup; do not remove a file while its link is still needed. Local .sandbox files are not database backups and must survive redeployments.
-WHATSAPP_ATTACHMENTS_ENABLED=false does not block this text template. WHATSAPP_ENABLED=false still blocks all WhatsApp API calls.
+WHATSAPP_ATTACHMENTS_ENABLED=false does not block this text template. WHATSAPP_ENABLED=false still blocks this template.
 
 ## Wallet and PG-link behavior
 

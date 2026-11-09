@@ -30,6 +30,9 @@ describe('approval request details', () => {
       {
         storeScopeService: {resolve: async () => ({global: true})},
         approvalRequestRepo: {
+          entityClass: {modelName: 'ApprovalRequest'},
+          dataSource: {connector: {buildWhere: () => ({sql: '', params: []}), parameterize: (query: object) => query},
+            execute: async () => [{ids: requests.map(row => row.id), total: requests.length}]},
           count: async () => ({count: 2}),
           find: async () => requests,
         },

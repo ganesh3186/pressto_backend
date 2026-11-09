@@ -238,16 +238,14 @@ export class RiderAttendanceController {
   }
 
   private async listForRider(riderId: string, from?: string, to?: string) {
-    const range: Record<string, Date> = {};
-    if (from) range.gte = new Date(from);
-    if (to) range.lte = new Date(to);
+    // Separate clauses: the connector applies only the first operator of a
+    // combined {gte, lte}. A date-only `to` covers that whole day.
+    const and: object[] = [{riderId}, {isDeleted: false}];
+    if (from) and.push({punchInAt: {gte: new Date(from)}});
+    if (to) and.push({punchInAt: {lte: new Date(/^\d{4}-\d{2}-\d{2}$/.test(to) ? to + 'T23:59:59.999Z' : to)}});
 
     const records = await this.attendanceRepository.find({
-      where: {
-        riderId,
-        isDeleted: false,
-        ...(Object.keys(range).length ? {punchInAt: range} : {}),
-      } as object,
+      where: {and} as object,
       order: ['punchInAt DESC'],
     });
 

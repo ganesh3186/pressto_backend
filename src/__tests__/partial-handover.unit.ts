@@ -1,3 +1,4 @@
+import {batchedStubs} from './helpers/batched-stubs';
 /* eslint-disable @typescript-eslint/no-explicit-any -- Transactional repository doubles. */
 import {expect} from '@loopback/testlab';
 import {OrderService} from '../services/order.service';
@@ -76,6 +77,7 @@ function setup(rider = false) {
     },
     notifyStatusChange: (...args: unknown[]) => notifications.push(args),
   }) as OrderService;
+    batchedStubs(service);
   const params = {orderId: 'order', collectorType: HandoverCollectorType.OTHER,
     collectorName: 'New Collector', collectorPhone: '2222222222', handedOverBy: 'current-staff', remarks: 'Remaining items collected'};
   const collect = () => rider ? service.recordDeliveryHandover({...params, deliveryId: 'run'}) : service.handoverInStore(params);
@@ -113,6 +115,15 @@ describe('completion after a partial handover', () => {
     expect(test.state().handovers).to.have.length(1);
     expect(test.state().orders[0].status).to.equal('delivered');
     expect(test.state().audits).to.have.length(0);
+  });
+
+  it('rejects rider delivery completion when the stop is pending handover', async () => {
+    const test = setup(true);
+    test.state().stops[0].status = 'handover_pending';
+    const previous = copy(test.state());
+    await expect(test.collect()).to.be.rejectedWith(/delivery stop is no longer available/);
+    expect(test.state()).to.eql(previous);
+    expect(test.notifications).to.have.length(0);
   });
 
   it('does not soft-delete records or conflict with an already archived handover', async () => {

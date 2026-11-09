@@ -1,3 +1,4 @@
+import {literalContains} from '../utils/search-pattern';
 import {authenticate} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {Count, Filter, FilterExcludingWhere, IsolationLevel, repository, Where} from '@loopback/repository';
@@ -526,9 +527,9 @@ export class EmployeeController {
       const q = params.search.trim();
       const digits = q.replace(/\D/g, '');
       const orClauses: object[] = [
-        {firstName: {ilike: `%${q}%`}},
-        {lastName: {ilike: `%${q}%`}},
-        {employeeCode: {ilike: `%${q}%`}},
+        {firstName: {ilike: literalContains(q)}},
+        {lastName: {ilike: literalContains(q)}},
+        {employeeCode: {ilike: literalContains(q)}},
       ];
       // Email and phone live on Users, not Employee. Require a few digits
       // for phone so a short search doesn't match almost every number.

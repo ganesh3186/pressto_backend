@@ -162,6 +162,10 @@ export class WhatsAppService {
 
   private configured(): boolean {
     if (process.env.WHATSAPP_ENABLED === 'false') return false;
+    return this.hasAccessToken();
+  }
+
+  private hasAccessToken(): boolean {
     if (process.env.WHATSAPP_ACCESS_TOKEN?.trim()) return true;
     this.warnOnce(
       'credentials',
@@ -347,7 +351,10 @@ export class WhatsAppService {
       !this.deliveryPaymentLinkEnabled()
     )
       return false;
-    if (!this.configured()) return false;
+    // WHATSAPP_ENABLED turns off notifications. A login code is requested by
+    // the user, who can't log in without it, so it still goes out.
+    const isLoginOtp = input.templateId === 'pulse_login_otp_221026';
+    if (!(isLoginOtp ? this.hasAccessToken() : this.configured())) return false;
     const spec = TEMPLATES[input.templateId];
     const to = this.phone(input.to);
     if (
@@ -389,7 +396,7 @@ export class WhatsAppService {
       type: 'body',
       parameters: input.bodyParams.map(text => ({type: 'text', text})),
     });
-    if (input.templateId === 'pulse_login_otp_221026') {
+    if (isLoginOtp) {
       if (!/^\d{6}$/.test(input.bodyParams[0])) return false;
       components.push({
         type: 'button',

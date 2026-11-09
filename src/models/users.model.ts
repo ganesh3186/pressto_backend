@@ -5,6 +5,7 @@ import {Media} from './media.model';
 
 @model({
   settings: {
+    hiddenProperties: ['password', 'loginOtp', 'loginOtpExpires', 'resetPasswordOtp', 'resetPasswordOtpExpires'],
     postgresql: {
       table: 'users',
       schema: 'public',

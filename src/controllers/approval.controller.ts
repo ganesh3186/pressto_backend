@@ -1,3 +1,4 @@
+import {pageBounds, sqlPage, visibleOrderSql} from '../utils/sql-page';
 import {authenticate, AuthenticationBindings} from '@loopback/authentication';
 import {inject} from '@loopback/core';
 import {isEntityNotFoundError, repository, Where} from '@loopback/repository';
@@ -582,66 +583,19 @@ export class ApprovalController {
 
     const scope = await this.storeScopeService.resolve(currentUser);
 
-    const resolvedLimit = limit !== undefined ? Number(limit) : undefined;
-    let resolvedSkip = skip !== undefined ? Number(skip) : undefined;
-    if (resolvedSkip === undefined && page !== undefined && resolvedLimit !== undefined) {
-      const pageNum = Number(page);
-      const zeroBasedPage = pageNum >= 1 ? pageNum - 1 : Math.max(0, pageNum);
-      resolvedSkip = zeroBasedPage * resolvedLimit;
-    }
-
-    if (scope.global) {
-      const countResult = await this.approvalRequestRepo.count(where);
-      const total = countResult.count;
-
-      const requests = await this.approvalRequestRepo.find({
-        where,
-        order: ['createdAt DESC'],
-        ...(resolvedLimit !== undefined ? {limit: resolvedLimit} : {}),
-        ...(resolvedSkip !== undefined ? {skip: resolvedSkip} : {}),
-      });
-
-      const enriched = await Promise.all(requests.map(r => this.enrichRequest(r)));
-      return {
-        requests: enriched,
-        total,
-        limit: resolvedLimit,
-        skip: resolvedSkip,
-        page:
-          page ??
-          (resolvedSkip !== undefined && resolvedLimit
-            ? Math.floor(resolvedSkip / resolvedLimit) + 1
-            : 1),
-      };
-    }
-
-    const requests = await this.approvalRequestRepo.find({
-      where,
-      order: ['createdAt DESC'],
-    });
-
-    const inScope = await this._filterByStoreScope(requests, currentUser);
-    const total = inScope.length;
-
-    const paged =
-      resolvedLimit !== undefined
-        ? inScope.slice(resolvedSkip ?? 0, (resolvedSkip ?? 0) + resolvedLimit)
-        : resolvedSkip !== undefined
-        ? inScope.slice(resolvedSkip)
-        : inScope;
-
-    const enriched = await Promise.all(paged.map(r => this.enrichRequest(r)));
-    return {
-      requests: enriched,
-      total,
-      limit: resolvedLimit,
-      skip: resolvedSkip,
-      page:
-        page ??
-        (resolvedSkip !== undefined && resolvedLimit
-          ? Math.floor(resolvedSkip / resolvedLimit) + 1
-          : 1),
-    };
+    const bounds = pageBounds(limit, skip, page);
+    const orderId = `CASE approval_request.entitytype
+      WHEN 'order' THEN approval_request.entityid
+      WHEN 'garment' THEN (SELECT oi.orderid FROM public.garment g JOIN public.order_item oi ON oi.id = g.orderitemid WHERE g.id = approval_request.entityid)
+      WHEN 'payment' THEN (SELECT p.orderid FROM public.payment_transaction p WHERE p.id = approval_request.entityid)
+      WHEN 'refund_due' THEN (SELECT r.orderid FROM public.refund_due r WHERE r.id = approval_request.entityid)
+      END`;
+    const scoped = scope.global ? '' : `EXISTS (SELECT 1 FROM public.orders scope_o
+      WHERE scope_o.id = (${orderId}) AND scope_o.isdeleted = false AND ${visibleOrderSql('scope_o')})`;
+    const result = await sqlPage<ApprovalRequest>(this.approvalRequestRepo, 'approval_request', where,
+      bounds.limit, bounds.skip, scoped, scope.global ? [] : [scope.storeIds, scope.storeIds]);
+    return {requests: await Promise.all(result.rows.map(r => this.enrichRequest(r))), total: result.total,
+      ...bounds, page: Math.floor(bounds.skip / bounds.limit) + 1};
   }
 
   // ─── Get Single Request + Audit Trail ────────────────────────────────────

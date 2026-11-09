@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import {BindingScope, inject, injectable} from '@loopback/core';
-import {repository} from '@loopback/repository';
+import {IsolationLevel, Options, repository} from '@loopback/repository';
 import {HttpErrors} from '@loopback/rest';
 import Razorpay from 'razorpay';
 import {GatewayPaymentLink} from '../models/gateway-payment-link.model';
@@ -20,6 +20,9 @@ import {WhatsAppService} from './whatsapp.service';
 import {PresstoDataSource} from '../datasources/pressto.datasource';
 
 const PAYMENT_LINK_VALIDITY_MS = 24 * 60 * 60 * 1000;
+// The SDK (2.9.x) takes no timeout option and its axios client defaults to
+// none, so a stalled Razorpay call would hold the request open forever.
+const RAZORPAY_TIMEOUT_MS = 15000;
 
 export interface CreateGatewayOrderInput {
   amount: number;
@@ -79,7 +82,8 @@ export class RazorpayService {
     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
       throw new HttpErrors.ServiceUnavailable('Razorpay is not configured.');
     }
-    return (this.razorpayClient ??= new Razorpay({
+    if (this.razorpayClient) return this.razorpayClient;
+    const client = new Razorpay({
       // Razorpay's own SDK field names — snake_case is their API's shape,
       // not this codebase's convention (mirrors the same suppress-comment
       // pattern already used in email.service.ts for a third-party shape).
@@ -87,7 +91,10 @@ export class RazorpayService {
       key_id: process.env.RAZORPAY_KEY_ID,
       key_secret: process.env.RAZORPAY_KEY_SECRET,
       /* eslint-enable @typescript-eslint/naming-convention */
-    }));
+    });
+    const http = (client.api as unknown as {rq?: {defaults: {timeout?: number}}}).rq;
+    if (http) http.defaults.timeout = RAZORPAY_TIMEOUT_MS;
+    return (this.razorpayClient = client);
   }
 
   async createOrder(
@@ -155,12 +162,43 @@ export class RazorpayService {
       throw new HttpErrors.BadRequest('Amount must be greater than zero.');
     }
 
-    await this.assertNoUnappliedOrderPayment(input);
+    const tx = await this.dataSource.beginTransaction({
+      isolationLevel: IsolationLevel.READ_COMMITTED,
+    });
+    try {
+      await this.dataSource.execute(
+        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+        [
+          `pressto.gateway-payment-link:${input.referenceType}`,
+          input.referenceId,
+        ],
+        {transaction: tx},
+      );
+      const link = await this.createPaymentLinkLocked(input, {
+        transaction: tx,
+      });
+      await tx.commit();
+      return link;
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+  }
+
+  private async createPaymentLinkLocked(
+    input: CreateGatewayOrderInput,
+    options: Options,
+  ): Promise<GatewayPaymentLink> {
+    await this.assertNoUnappliedOrderPayment(input, options);
     // Checked before reusing any open link: a ticket paid in cash since the
     // last link was issued must not get a link for money it no longer owes.
     if (input.referenceType === GatewayPaymentReferenceType.ORDER_PAYMENT) {
-      const order = await this.orderRepo.findById(input.referenceId);
-      const {due} = await this.orderService.computeBalanceDue(order);
+      const order = await this.orderRepo.findById(
+        input.referenceId,
+        undefined,
+        options,
+      );
+      const {due} = await this.orderService.computeBalanceDue(order, options);
       if (due <= 0) {
         throw new HttpErrors.Conflict('Nothing is due on this ticket.');
       }
@@ -172,15 +210,18 @@ export class RazorpayService {
     }
 
     const now = new Date();
-    const openLinks = await this.gatewayPaymentLinkRepo.find({
-      where: {
-        referenceType: input.referenceType,
-        referenceId: input.referenceId,
-        status: GatewayPaymentLinkStatus.CREATED,
-        razorpayPaymentLinkId: {neq: null},
-      } as object,
-      order: ['createdAt DESC'],
-    });
+    const openLinks = await this.gatewayPaymentLinkRepo.find(
+      {
+        where: {
+          referenceType: input.referenceType,
+          referenceId: input.referenceId,
+          status: GatewayPaymentLinkStatus.CREATED,
+          razorpayPaymentLinkId: {neq: null},
+        } as object,
+        order: ['createdAt DESC'],
+      },
+      options,
+    );
 
     const reusable = openLinks.find(
       link =>
@@ -203,9 +244,11 @@ export class RazorpayService {
             'Check the ticket before sharing a new link.',
         );
       }
-      await this.gatewayPaymentLinkRepo.updateById(stale.id, {
-        status: GatewayPaymentLinkStatus.CANCELLED,
-      });
+      await this.gatewayPaymentLinkRepo.updateById(
+        stale.id,
+        {status: GatewayPaymentLinkStatus.CANCELLED},
+        options,
+      );
     }
 
     const {v4} = await import('uuid');
@@ -236,32 +279,39 @@ export class RazorpayService {
     });
     /* eslint-enable @typescript-eslint/naming-convention */
 
-    return this.gatewayPaymentLinkRepo.create({
-      id,
-      razorpayPaymentLinkId: link.id,
-      shortUrl: link.short_url,
-      amount: input.amount,
-      status: GatewayPaymentLinkStatus.CREATED,
-      referenceType: input.referenceType,
-      referenceId: input.referenceId,
-      createdBy: input.createdBy,
-      expiresAt,
-    });
+    return this.gatewayPaymentLinkRepo.create(
+      {
+        id,
+        razorpayPaymentLinkId: link.id,
+        shortUrl: link.short_url,
+        amount: input.amount,
+        status: GatewayPaymentLinkStatus.CREATED,
+        referenceType: input.referenceType,
+        referenceId: input.referenceId,
+        createdBy: input.createdBy,
+        expiresAt,
+      },
+      options,
+    );
   }
 
   private async assertNoUnappliedOrderPayment(
     input: CreateGatewayOrderInput,
+    options?: Options,
   ): Promise<void> {
     if (input.referenceType !== GatewayPaymentReferenceType.ORDER_PAYMENT)
       return;
-    const unresolved = await this.gatewayPaymentLinkRepo.findOne({
-      where: {
-        referenceType: input.referenceType,
-        referenceId: input.referenceId,
-        status: GatewayPaymentLinkStatus.PAID,
-        applicationError: {neq: ''},
+    const unresolved = await this.gatewayPaymentLinkRepo.findOne(
+      {
+        where: {
+          referenceType: input.referenceType,
+          referenceId: input.referenceId,
+          status: GatewayPaymentLinkStatus.PAID,
+          applicationError: {neq: ''},
+        },
       },
-    });
+      options,
+    );
     if (unresolved)
       throw new HttpErrors.Conflict(
         'A gateway payment was received but could not be applied to this ticket. Reconcile it before creating another payment link.',

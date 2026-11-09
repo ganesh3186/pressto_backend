@@ -24,6 +24,7 @@ describe('store dashboard pickup date filter', () => {
       deliveries: false,
       riders: false,
       collected: false,
+      invoices: false,
       handover: false,
     });
 
