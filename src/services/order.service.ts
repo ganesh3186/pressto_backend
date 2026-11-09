@@ -151,6 +151,7 @@ import {
  * caller's store scope, so callers with different scopes never share an entry.
  */
 export const orderListCountCache = new ShortLivedCache<{count: number}>(60000, 500);
+const UUID_PATTERN = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 /** Most matches an order list search will count (see searchOrderPage). */
 const SEARCH_COUNT_CAP = 1000;
 /** Above this many matching customers a search is "broad" (see searchOrderPage). */
@@ -3403,7 +3404,7 @@ export class OrderService {
     }
   }
 
-  private async getReprocessOriginalLines(order: Order) {
+  private async getReprocessOriginalLines(order: Order, options?: Options) {
     const lines = new Map<string, {quantity: number; additionalServiceIds: string[]}>();
     if (!order.reprocessOfOrderId) return lines;
 
@@ -3413,7 +3414,7 @@ export class OrderService {
         entityId: order.reprocessOfOrderId,
         type: ApprovalRequestType.REPROCESS,
       },
-    });
+    }, options);
     const request = requests.find(row =>
       String(row.metadata?.reworkOrderId ?? '') === String(order.id),
     );
@@ -3423,8 +3424,8 @@ export class OrderService {
     if (!garmentIds.length) return lines;
 
     const [originalItems, originalGarments] = await Promise.all([
-      this.orderItemRepo.find({where: {orderId: order.reprocessOfOrderId}}),
-      this.garmentRepo.find({where: {id: {inq: garmentIds}}}),
+      this.orderItemRepo.find({where: {orderId: order.reprocessOfOrderId}}, options),
+      this.garmentRepo.find({where: {id: {inq: garmentIds}}}, options),
     ]);
     const itemById = new Map(originalItems.map(item => [item.id, item]));
     for (const garment of originalGarments) {
@@ -5995,7 +5996,7 @@ export class OrderService {
   // ─── Get Order Details ────────────────────────────────────────────────────
 
   private async getSplitStandardDays(
-    items: OrderItem[],
+    items: OrderItem[], options?: Options,
   ): Promise<Map<string, number>> {
     if (!items.length) return new Map();
     const serviceIds = [
@@ -6014,7 +6015,7 @@ export class OrderService {
         serviceId: {inq: serviceIds},
         itemId: {inq: [...new Set(items.map(item => item.itemId))]},
       } as any,
-    });
+    }, options);
     const durations = new Map(
       mappings.map(mapping => [
         `${mapping.serviceId}:${mapping.itemId}`,
@@ -6040,10 +6041,10 @@ export class OrderService {
     );
   }
 
-  async getOrderDetails(orderId: string): Promise<object> {
+  async getOrderDetails(orderId: string, options?: Options): Promise<object> {
     const order = await this.orderRepo.findOne({
       where: {id: orderId, isDeleted: false},
-    });
+    }, options);
     if (!order) throw new HttpErrors.NotFound('Order not found.');
 
     // ── Parallel batch 1: order sub-tables ───────────────────────────────────
@@ -6058,10 +6059,10 @@ export class OrderService {
       invoicedOrders,
       creditNotes,
     ] = await Promise.all([
-      this.orderItemRepo.find({where: {orderId}}),
-      this.orderChargeRepo.find({where: {orderId}}),
-      this.statusHistoryRepo.find({where: {orderId}, order: ['changedAt ASC']}),
-      this.paymentTransactionRepo.find({where: {orderId}}),
+      this.orderItemRepo.find({where: {orderId}}, options),
+      this.orderChargeRepo.find({where: {orderId}}, options),
+      this.statusHistoryRepo.find({where: {orderId}, order: ['changedAt ASC']}, options),
+      this.paymentTransactionRepo.find({where: {orderId}}, options),
       this.orderRepo.find({
         where: {parentOrderId: orderId, isDeleted: false} as any,
         fields: {
@@ -6071,13 +6072,13 @@ export class OrderService {
           totalAmount: true,
           allocatedPayment: true,
         } as any,
-      }),
+      }, options),
       this.orderLabelAssignmentRepo.find({
         where: {orderId, isDeleted: false} as any,
-      }),
-      this.couponRedemptionRepo.find({where: {orderId, isReversed: false} as object}),
-      this.getInvoicedOrderIds([orderId]),
-      this.salesReturnRepo.find({where: {orderId, status: 'approved'} as object}),
+      }, options),
+      this.couponRedemptionRepo.find({where: {orderId, isReversed: false} as object}, options),
+      this.getInvoicedOrderIds([orderId], options),
+      this.salesReturnRepo.find({where: {orderId, status: 'approved'} as object}, options),
     ]);
 
     const orderLabels = orderLabelAssignments.length
@@ -6085,22 +6086,23 @@ export class OrderService {
           where: {
             id: {inq: orderLabelAssignments.map(a => a.orderLabelId)},
           } as any,
-        })
+        }, options)
       : [];
 
     // The first status row is written by createOrder with the receiving
     // cashier's user id. Resolve it once so historical taffeta labels retain
     // the correct "REC. BY" name instead of depending on the current session.
     const createdById = statusHistory[0]?.changedBy;
-    const createdByUser = createdById
-      ? await this.userRepo.findById(createdById).catch(() => null)
+    // A bad id would abort the surrounding transaction, not just this lookup.
+    const createdByUser = createdById && UUID_PATTERN.test(createdById)
+      ? await this.userRepo.findById(createdById, undefined, options).catch(() => null)
       : null;
     const createdByName =
       createdByUser?.fullName || createdByUser?.username || null;
 
     const orderItemIds = orderItems.map(i => i.id);
     const intakeReturns = orderItems.some(item => item.rejectedAtIntake)
-      ? await this.intakeRejectedRepo.find({where: {orderId}})
+      ? await this.intakeRejectedRepo.find({where: {orderId}}, options)
       : [];
     const draftMediaIds = order.status === OrderStatus.DRAFT
       ? orderItems.flatMap(item => (item.draftUnitInspections ?? []).flatMap(raw => {
@@ -6113,13 +6115,13 @@ export class OrderService {
       ...intakeReturns.flatMap(row => row.mediaIds ?? []), ...draftMediaIds,
     ])];
     const returnMedia = returnMediaIds.length
-      ? await this.mediaRepo.find({where: {id: {inq: returnMediaIds}, isActive: true}})
+      ? await this.mediaRepo.find({where: {id: {inq: returnMediaIds}, isActive: true}}, options)
       : [];
     const returnMediaById = new Map(returnMedia
       .filter(file => file.fileType.startsWith('image/'))
       .map(file => [file.id, file.fileUrl]));
     const intakeReturnsByItem = new Map(intakeReturns.map(row => [row.orderItemId, row]));
-    const standardDaysByItem = await this.getSplitStandardDays(orderItems);
+    const standardDaysByItem = await this.getSplitStandardDays(orderItems, options);
     const additionalSvcIds = orderItems.flatMap(
       i => (i.additionalServiceIds as string[] | null) ?? [],
     );
@@ -6140,22 +6142,22 @@ export class OrderService {
     ] = await Promise.all([
       this.customerRepo.findOne({
         where: {id: order.customerId, isDeleted: false},
-      }),
+      }, options),
       serviceIds.length
-        ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as any})
+        ? this.serviceRepo.find({where: {id: {inq: serviceIds}} as any}, options)
         : Promise.resolve([]),
       itemIds.length
-        ? this.itemRepo.find({where: {id: {inq: itemIds}} as any})
+        ? this.itemRepo.find({where: {id: {inq: itemIds}} as any}, options)
         : Promise.resolve([]),
       orderItemIds.length
         ? this.garmentRepo.find({
             where: {orderItemId: {inq: orderItemIds}, isDeleted: false} as any,
-          })
+          }, options)
         : Promise.resolve([]),
       orderItemIds.length
         ? this.orderItemChargeRepo.find({
             where: {orderItemId: {inq: orderItemIds}} as any,
-          })
+          }, options)
         : Promise.resolve([]),
       // This order is a split child — pull the parent so the UI can name and link
       // back to it, not just hold an opaque uuid.
@@ -6163,7 +6165,7 @@ export class OrderService {
         ? this.orderRepo.findOne({
             where: {id: order.parentOrderId} as any,
             fields: {id: true, orderNumber: true, status: true, isOnAccount: true} as any,
-          })
+          }, options)
         : Promise.resolve(null),
       // This is a free rework — name the order it is redoing, so a ₹0 total
       // does not read as a billing error.
@@ -6171,7 +6173,7 @@ export class OrderService {
         ? this.orderRepo.findOne({
             where: {id: order.reprocessOfOrderId} as any,
             fields: {id: true, orderNumber: true, status: true} as any,
-          })
+          }, options)
         : Promise.resolve(null),
     ]);
 
@@ -6181,7 +6183,7 @@ export class OrderService {
       customerUser = await this.userRepo.findOne({
         where: {id: customer.userId} as any,
         fields: {id: true, phone: true, countryCode: true} as any,
-      });
+      }, options);
     }
 
     // ── Pickup rider (for home_pickup orders) ──────────────────────────────────
@@ -6204,7 +6206,7 @@ export class OrderService {
           ? {id: order.pickupRequestId, isDeleted: false}
           : {convertedOrderId: orderId, isDeleted: false},
         include: [{relation: 'assignedRider'}],
-      });
+      }, options);
 
       if (pickupRequest) {
         if (pickupRequest.remarks?.trim()) {
@@ -6226,7 +6228,7 @@ export class OrderService {
             const riderUser = await this.userRepo.findOne({
               where: {id: rider.userId} as any,
               fields: {phone: true} as any,
-            });
+            }, options);
             pickupRiderPhone =
               riderUser?.phone ?? rider.alternateNumber ?? null;
           } else {
@@ -6241,7 +6243,7 @@ export class OrderService {
       where: {orderId, failureRemarks: {neq: null}} as object,
       fields: {failureRemarks: true, updatedAt: true} as object,
       order: ['updatedAt DESC'],
-    });
+    }, options);
     const deliveryAttemptRemarks = failedStops
       .filter(stop => stop.failureRemarks?.trim())
       .map(stop => ({remarks: stop.failureRemarks!.trim(), at: stop.updatedAt ?? null}));
@@ -6258,7 +6260,7 @@ export class OrderService {
         ? this.garmentStatusHistoryRepo.find({
             where: {garmentId: {inq: garmentIds}} as any,
             order: ['changedAt ASC'],
-          })
+          }, options)
         : Promise.resolve([]),
       // A held garment (status on_hold) doesn't say WHY on its own — this is
       // what lets the order-status screen show "On Hold — Return Pending" vs
@@ -6270,17 +6272,17 @@ export class OrderService {
               entityId: {inq: garmentIds},
               status: ApprovalRequestStatus.PENDING,
             } as any,
-          })
+          }, options)
         : Promise.resolve([]),
       garmentIds.length
         ? this.garmentAdditionalServiceRepo.find({
             where: {garmentId: {inq: garmentIds}} as any,
-          })
+          }, options)
         : Promise.resolve([]),
       garmentIds.length
         ? this.garmentAdditionalChargeRepo.find({
             where: {garmentId: {inq: garmentIds}, isDeleted: false} as any,
-          })
+          }, options)
         : Promise.resolve([]),
     ]);
     const pendingApprovalByGarment = new Map(
@@ -6298,7 +6300,7 @@ export class OrderService {
       ? await this.transferRepo.find({
           where: {id: {inq: activeTransferIds}} as any,
           fields: {id: true, toStoreId: true} as any,
-        })
+        }, options)
       : [];
     const transferById = new Map(activeTransfers.map(t => [t.id, t]));
     const awayStoreIds = [...new Set(activeTransfers.map(t => t.toStoreId))];
@@ -6306,7 +6308,7 @@ export class OrderService {
       ? await this.storeRepo.find({
           where: {id: {inq: awayStoreIds}} as any,
           fields: {id: true, name: true} as any,
-        })
+        }, options)
       : [];
     const awayStoreNameById = new Map(awayStores.map(s => [s.id, s.name]));
 
@@ -6324,7 +6326,7 @@ export class OrderService {
     const chargeMasters = chargeMasterIds.length
       ? await this.additionalChargeRepo.find({
           where: {id: {inq: chargeMasterIds}},
-        })
+        }, options)
       : [];
     const chargeMasterMap = new Map(chargeMasters.map(c => [c.id, c]));
     const withChargeName = <T extends {additionalChargeId: string}>(
@@ -6349,7 +6351,7 @@ export class OrderService {
     const garmentServiceMasters = missingGarmentServices.length
       ? await this.serviceRepo.find({
           where: {id: {inq: missingGarmentServices}} as any,
-        })
+        }, options)
       : [];
     const serviceMap = new Map(
       [...services, ...garmentServiceMasters].map(s => [s.id, s]),
@@ -6464,7 +6466,7 @@ export class OrderService {
     };
 
     // ── Assemble enriched items ───────────────────────────────────────────────
-    const reprocessOriginalLines = await this.getReprocessOriginalLines(order);
+    const reprocessOriginalLines = await this.getReprocessOriginalLines(order, options);
     const enrichedItems = orderItems.map(oi => ({
       id: oi.id,
       // order_item has no status column — an item is exactly as far along as its
@@ -7829,7 +7831,8 @@ export class OrderService {
             {where: {orderId}},
             options,
           );
-          const printableItems = new Map(((await this.getOrderDetails(orderId)) as {
+          // Same transaction: during order creation the order isn't committed yet.
+          const printableItems = new Map(((await this.getOrderDetails(orderId, options)) as {
             items?: Array<{id: string}>;
           }).items?.map(item => [item.id, item]) ?? []);
           const items = rows.map(row => ({

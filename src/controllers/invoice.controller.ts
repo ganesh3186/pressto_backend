@@ -598,7 +598,7 @@ export class InvoiceController {
         {where: {orderId}},
         options,
       );
-      const printableItems = new Map(((await this.orderService.getOrderDetails(orderId)) as {
+      const printableItems = new Map(((await this.orderService.getOrderDetails(orderId, options)) as {
         items?: Array<{id: string; itemName?: string; serviceName?: string;
           isMeasurement?: boolean; garments?: object[]}>;
       }).items?.map(item => [item.id, item]) ?? []);
