@@ -310,16 +310,16 @@ export class PickupRequestController {
     if (body.itemCategoryEstimate?.length && !body.isReworkPickup) {
       const categoryIds = [...new Set(body.itemCategoryEstimate.map(line => line.itemCategoryId).filter((id): id is string => Boolean(id)))];
       const serviceIds = [...new Set(body.itemCategoryEstimate.map(line => line.serviceId).filter((id): id is string => Boolean(id)))];
-      const [categories, services] = await Promise.all([
-        categoryIds.length
-          ? this.itemCategoryRepository.find({where: {id: {inq: categoryIds}, isDeleted: false, isActive: true} as object})
-          : [],
+      const categoryWhere = {where: {id: {inq: categoryIds}, isDeleted: false, isActive: true} as object};
+      const [itemCategories, serviceCategories, services] = await Promise.all([
+        categoryIds.length ? this.itemCategoryRepository.find(categoryWhere) : [],
+        categoryIds.length ? this.serviceCategoryRepository.find(categoryWhere) : [],
         serviceIds.length
           ? this.serviceRepository.find({where: {id: {inq: serviceIds}, isDeleted: false, isActive: true} as object})
           : [],
       ]);
-      if (categories.length !== categoryIds.length) {
-        throw new HttpErrors.BadRequest('Select valid item categories for this pickup.');
+      if (itemCategories.length + serviceCategories.length !== categoryIds.length) {
+        throw new HttpErrors.BadRequest('Select valid categories for this pickup.');
       }
       if (services.length !== serviceIds.length) {
         throw new HttpErrors.BadRequest('Select valid services for this pickup.');
@@ -352,8 +352,21 @@ export class PickupRequestController {
         const originalPairs = new Set(originalItems.map(item =>
           `${item.serviceId}:${categoryByItemId.get(item.itemId)}`));
         const originalServiceIds = new Set(originalItems.map(item => item.serviceId));
+        const isOriginalPair = (line: {serviceId?: string; itemCategoryId?: string}) =>
+          originalPairs.has(`${line.serviceId}:${line.itemCategoryId}`);
+        // Lines added by hand may carry the service's own category instead of an item category.
+        const lineServiceIds = [...new Set(body.itemCategoryEstimate
+          .filter(line => line.itemCategoryId && !isOriginalPair(line))
+          .map(line => line.serviceId)
+          .filter((id): id is string => Boolean(id) && originalServiceIds.has(id as string)))];
+        const lineServices = lineServiceIds.length
+          ? await this.serviceRepository.find({where: {id: {inq: lineServiceIds}} as object})
+          : [];
+        const serviceCategoryByServiceId = new Map(lineServices.map(service => [service.id, service.serviceCategoryId]));
         if (body.itemCategoryEstimate.some(line => (line.itemCategoryId
-          ? !originalPairs.has(`${line.serviceId}:${line.itemCategoryId}`)
+          ? !isOriginalPair(line) && !(line.serviceId &&
+            originalServiceIds.has(line.serviceId) &&
+            serviceCategoryByServiceId.get(line.serviceId) === line.itemCategoryId)
           : !originalServiceIds.has(line.serviceId as string)))) {
           throw new HttpErrors.BadRequest('Rework service and item category must belong to the original order.');
         }

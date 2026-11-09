@@ -14,15 +14,32 @@ describe('pickup request category selection', () => {
     itemCategoryEstimate: [{itemCategoryId: 'special-item-category', serviceId: 'clean', quantity: 5}],
   };
 
-  it('rejects a service category ID in place of the selected item category', async () => {
+  it('rejects an ID that is neither an item category nor a service category', async () => {
     const controller = Object.assign(Object.create(PickupRequestController.prototype), {
       itemCategoryRepository: {find: async () => []},
+      serviceCategoryRepository: {find: async () => []},
       serviceRepository: {find: async () => [{id: 'clean'}]},
     }) as PickupRequestController;
 
     await expect(controller.create({...selection,
-      itemCategoryEstimate: [{itemCategoryId: 'pdc-service-category', serviceId: 'clean', quantity: 5}],
-    })).to.be.rejectedWith(/valid item categories/);
+      itemCategoryEstimate: [{itemCategoryId: 'unknown-category', serviceId: 'clean', quantity: 5}],
+    })).to.be.rejectedWith(/valid categories/);
+  });
+
+  it('accepts a service category ID on an estimate line', async () => {
+    const controller = Object.assign(Object.create(PickupRequestController.prototype), {
+      itemCategoryRepository: {find: async () => []},
+      serviceCategoryRepository: {find: async () => [{id: 'pdc-service-category'}]},
+      serviceRepository: {find: async () => [{id: 'clean'}]},
+      pickupRequestRepository: {count: async () => ({count: 0})},
+      pickupRequestService: {createRequest: async (body: object) => body},
+    }) as PickupRequestController;
+    const lines = [{itemCategoryId: 'pdc-service-category', serviceId: 'clean', quantity: 5}];
+
+    const result = await controller.create({...selection, itemCategoryEstimate: lines}) as {
+      pickupRequest: {itemCategoryEstimate: unknown[]};
+    };
+    expect(result.pickupRequest.itemCategoryEstimate).to.deepEqual(lines);
   });
 
   it('accepts an estimate line with no item category', async () => {
@@ -42,6 +59,7 @@ describe('pickup request category selection', () => {
   it('stores only the service and item category selected for the pickup', async () => {
     const controller = Object.assign(Object.create(PickupRequestController.prototype), {
       itemCategoryRepository: {find: async () => [{id: 'special-item-category'}]},
+      serviceCategoryRepository: {find: async () => []},
       serviceRepository: {find: async () => [{id: 'clean'}]},
       pickupRequestRepository: {count: async () => ({count: 0})},
       pickupRequestService: {createRequest: async (body: object) => body},

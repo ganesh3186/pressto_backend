@@ -24,6 +24,8 @@ export function hasRealCoordinates(
   const lat = Number(latitude);
   const lng = Number(longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  // Outside the valid lat/long ranges is a bad input, not a location.
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return false;
   return !(lat === 0 && lng === 0);
 }
 

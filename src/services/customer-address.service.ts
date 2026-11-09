@@ -43,36 +43,28 @@ export class CustomerAddressService {
     // coordinates (missing, or the (0,0) "Null Island" placeholder — see
     // hasRealCoordinates), so geocode it here too rather than silently
     // never auto-assigning a store for this customer.
-    if (!hasRealCoordinates(address.latitude, address.longitude)) {
-      const geocoded = await this.geocodingService.geocodeAddress(
-        this.toDisplaySnapshot(address),
-      );
-      if (geocoded) {
-        await this.addressRepository.updateById(address.id, {
-          latitude: geocoded.latitude,
-          longitude: geocoded.longitude,
-        });
-        address.latitude = geocoded.latitude;
-        address.longitude = geocoded.longitude;
-      }
-    }
+    await this.ensureCoordinates(address);
 
     // Self-registered customers have no admin-assigned store. The first
     // address with real coordinates gets one auto-assigned (nearest store
     // within STORE_ASSIGNMENT_RADIUS_KM) so store-scoped features have
     // somewhere to resolve to — never overrides a store an admin, or an
     // earlier address, already set.
-    if (!customer.preferredStoreId && hasRealCoordinates(address.latitude, address.longitude)) {
-      // hasRealCoordinates just confirmed both are set and non-(0,0) — TS
-      // can't narrow through a plain function call, hence the assertions.
-      const {nearestWithinRadius} = await this.storeAssignmentService.resolveForCoordinates(
-        address.latitude!,
-        address.longitude!,
-      );
-      if (nearestWithinRadius) {
-        await this.customerRepository.updateById(customerId, {
-          preferredStoreId: nearestWithinRadius.id,
-        } as Partial<Customer>);
+    // Falls back to the pincode coverage table when coordinates are
+    // missing or no store is within the radius.
+    if (!customer.preferredStoreId) {
+      const {store} = await this.storeAssignmentService.resolveNearestStore({
+        latitude: address.latitude,
+        longitude: address.longitude,
+        pincode: address.pincode,
+      });
+      if (store) {
+        // Conditional on preferredStoreId still being null — an admin
+        // assignment landing after the read above must not be overwritten.
+        await this.customerRepository.updateAll(
+          {preferredStoreId: store.id} as Partial<Customer>,
+          {id: customerId, preferredStoreId: null} as object,
+        );
       }
     }
 
@@ -85,20 +77,14 @@ export class CustomerAddressService {
    * and saved, so that only happens once per address.
    */
   async resolvePickupStore(address: CustomerAddress): Promise<PickupStoreResolution> {
-    let latitude = hasRealCoordinates(address.latitude, address.longitude) ? address.latitude : undefined;
-    let longitude = hasRealCoordinates(address.latitude, address.longitude) ? address.longitude : undefined;
-    if (latitude == null || longitude == null) {
-      const geocoded = await this.geocodingService.geocodeAddress(this.toDisplaySnapshot(address));
-      if (geocoded) {
-        latitude = geocoded.latitude;
-        longitude = geocoded.longitude;
-        await this.update(address.id, {latitude, longitude});
-      }
-    }
+    await this.ensureCoordinates(address);
 
     let nearbyStores: NearbyStore[] = [];
-    if (latitude != null && longitude != null) {
-      const resolved = await this.storeAssignmentService.resolveForCoordinates(latitude, longitude);
+    if (hasRealCoordinates(address.latitude, address.longitude)) {
+      const resolved = await this.storeAssignmentService.resolveForCoordinates(
+        address.latitude!,
+        address.longitude!,
+      );
       const nearest = resolved.nearestWithinRadius;
       if (nearest) {
         return {
@@ -146,6 +132,26 @@ export class CustomerAddressService {
       }
     }
     return this.resolvePickupStore(address);
+  }
+
+  /**
+   * Fills in a saved address's lat/long by geocoding its text when it has
+   * no real coordinates, and saves them onto the address so this happens
+   * at most once per address. Mutates and returns the same object. A
+   * failed geocode (no key, no match, network error) leaves it unchanged.
+   */
+  async ensureCoordinates(address: CustomerAddress): Promise<CustomerAddress> {
+    if (hasRealCoordinates(address.latitude, address.longitude)) return address;
+    const geocoded = await this.geocodingService.geocodeAddress(this.toDisplaySnapshot(address));
+    if (geocoded) {
+      await this.addressRepository.updateById(address.id, {
+        latitude: geocoded.latitude,
+        longitude: geocoded.longitude,
+      });
+      address.latitude = geocoded.latitude;
+      address.longitude = geocoded.longitude;
+    }
+    return address;
   }
 
   async findAll(customerId: string): Promise<CustomerAddress[]> {
