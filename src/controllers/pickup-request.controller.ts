@@ -292,14 +292,16 @@ export class PickupRequestController {
     if (body.itemCategoryEstimate?.length && !body.isReworkPickup) {
       const categoryIds = [...new Set(body.itemCategoryEstimate.map(line => line.itemCategoryId))];
       const serviceIds = [...new Set(body.itemCategoryEstimate.map(line => line.serviceId).filter((id): id is string => Boolean(id)))];
-      const [categories, services] = await Promise.all([
-        this.itemCategoryRepository.find({where: {id: {inq: categoryIds}, isDeleted: false, isActive: true} as object}),
+      const categoryWhere = {where: {id: {inq: categoryIds}, isDeleted: false, isActive: true} as object};
+      const [itemCategories, serviceCategories, services] = await Promise.all([
+        this.itemCategoryRepository.find(categoryWhere),
+        this.serviceCategoryRepository.find(categoryWhere),
         serviceIds.length
           ? this.serviceRepository.find({where: {id: {inq: serviceIds}, isDeleted: false, isActive: true} as object})
           : [],
       ]);
-      if (categories.length !== categoryIds.length) {
-        throw new HttpErrors.BadRequest('Select valid item categories for this pickup.');
+      if (itemCategories.length + serviceCategories.length !== categoryIds.length) {
+        throw new HttpErrors.BadRequest('Select valid categories for this pickup.');
       }
       if (services.length !== serviceIds.length) {
         throw new HttpErrors.BadRequest('Select valid services for this pickup.');
@@ -331,8 +333,18 @@ export class PickupRequestController {
         const categoryByItemId = new Map(originalCatalogItems.map(item => [item.id, item.itemCategoryId]));
         const originalPairs = new Set(originalItems.map(item =>
           `${item.serviceId}:${categoryByItemId.get(item.itemId)}`));
+        // Lines added by hand carry the service's own category instead of an item category.
+        const originalServiceIds = new Set(originalItems.map(item => item.serviceId));
+        const lineServiceIds = [...new Set(body.itemCategoryEstimate.map(line => line.serviceId).filter((id): id is string => Boolean(id)))];
+        const lineServices = lineServiceIds.length
+          ? await this.serviceRepository.find({where: {id: {inq: lineServiceIds}} as object})
+          : [];
+        const serviceCategoryByServiceId = new Map(lineServices.map(service => [service.id, service.serviceCategoryId]));
         if (body.itemCategoryEstimate.some(line =>
-          !originalPairs.has(`${line.serviceId}:${line.itemCategoryId}`))) {
+          !originalPairs.has(`${line.serviceId}:${line.itemCategoryId}`) &&
+          !(line.serviceId &&
+            originalServiceIds.has(line.serviceId) &&
+            serviceCategoryByServiceId.get(line.serviceId) === line.itemCategoryId))) {
           throw new HttpErrors.BadRequest('Rework service and item category must belong to the original order.');
         }
       }
