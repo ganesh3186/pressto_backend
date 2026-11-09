@@ -16,7 +16,11 @@ describe('zero-amount invoice', () => {
           }),
           execute: async () => [],
         },
-        orderService: {allocateInvoiceNumber: async () => 'DLG11-1026-069943'},
+        orderService: {
+          allocateInvoiceNumber: async () => 'DLG11-1026-069943',
+          // generate() snapshots printable item details; none needed here.
+          getOrderDetails: async () => ({items: []}),
+        },
         orderRepo: {
           findOne: async () => ({
             id: 'damage-order',
@@ -65,7 +69,11 @@ describe('zero-amount invoice', () => {
           }),
           execute: async () => [],
         },
-        orderService: {allocateInvoiceNumber: async () => 'DLG11-1026-069943'},
+        orderService: {
+          allocateInvoiceNumber: async () => 'DLG11-1026-069943',
+          // generate() snapshots printable item details; none needed here.
+          getOrderDetails: async () => ({items: []}),
+        },
         orderRepo: {
           findOne: async () => ({
             id: 'free-order',

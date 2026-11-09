@@ -3,6 +3,7 @@ import {UserProfile} from '@loopback/security';
 import {
   calculateDiscountedSalesReturnAmount,
   calculateSalesReturnCreditAmount,
+  completesGarmentServiceReturn,
   SalesReturnController,
 } from '../controllers/sales-return.controller';
 import {SalesReturnStatus} from '../models/sales-return.model';
@@ -14,6 +15,29 @@ import {
 } from '../services/approval.service';
 
 describe('sales return pricing', () => {
+  it('returns the garment once when its main and last additional service are selected together', () => {
+    const main = {serviceId: 'main', serviceType: 'main' as const};
+    const additional = {serviceId: 'starch', serviceType: 'additional' as const};
+    const selected = [main, additional];
+
+    expect(completesGarmentServiceReturn(main, selected, [], [
+      {id: 'row-starch', serviceId: 'starch'},
+    ])).to.be.false();
+    expect(completesGarmentServiceReturn(additional, selected, [], [
+      {id: 'row-starch', serviceId: 'starch'},
+    ])).to.be.true();
+  });
+
+  it('does not let an old service instance complete a newly added service', () => {
+    const main = {serviceId: 'main', serviceType: 'main' as const};
+    const previous = [{serviceId: 'starch', serviceType: 'additional' as const,
+      garmentAdditionalServiceId: 'old-row'}];
+
+    expect(completesGarmentServiceReturn(main, [main], previous, [
+      {id: 'new-row', serviceId: 'starch'},
+    ])).to.be.false();
+  });
+
   it('saves the selected garment and tax rates on a new credit note', async () => {
     let saved: Record<string, unknown> | undefined;
     const controller = Object.assign(Object.create(SalesReturnController.prototype), {

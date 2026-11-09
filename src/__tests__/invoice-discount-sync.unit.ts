@@ -74,6 +74,7 @@ describe('invoice discount sync', () => {
       totalAmount: null,
     };
     const service = Object.assign(Object.create(OrderService.prototype), {
+      salesReturnRepo: {find: async () => []},
       dataSource: {
         beginTransaction: async () => ({
           commit: async () => {},
@@ -136,6 +137,7 @@ describe('invoice discount sync', () => {
       totalAmount: 227,
     };
     const service = Object.assign(Object.create(OrderService.prototype), {
+      salesReturnRepo: {find: async () => []},
       dataSource: {
         beginTransaction: async () => ({
           commit: async () => {},
@@ -223,6 +225,7 @@ describe('invoice discount sync', () => {
       let orderUpdated = false;
       let invoiceUpdated = false;
       const service = Object.assign(Object.create(OrderService.prototype), {
+        salesReturnRepo: {find: async () => []},
         dataSource: {
           beginTransaction: async () => ({commit: async () => {}, rollback: async () => {}}),
           execute: async () => {},
@@ -268,6 +271,7 @@ describe('invoice discount sync', () => {
       totalAmount: 227,
     };
     const service = Object.assign(Object.create(OrderService.prototype), {
+      salesReturnRepo: {find: async () => []},
       dataSource: {
         beginTransaction: async () => ({
           commit: async () => {},
@@ -326,6 +330,7 @@ describe('invoice discount sync', () => {
       items: undefined,
     };
     const service = Object.assign(Object.create(OrderService.prototype), {
+      salesReturnRepo: {find: async () => []},
       dataSource: {
         beginTransaction: async () => ({
           commit: async () => {},
@@ -361,5 +366,75 @@ describe('invoice discount sync', () => {
       totalAmount: 204,
       balanceDue: 0,
     });
+  });
+
+  it('keeps an issued invoice\'s totals after a credit note, syncing only the balance', async () => {
+    // Invoice issued at 824 + GST = 972; an add-on (402) was then credited
+    // back, so the order itself dropped to 422 + GST = 498.
+    const order = {
+      id: 'order-1',
+      subtotal: 422,
+      discountAmount: 0,
+      taxAmount: 75.96,
+      totalAmount: 498,
+    };
+    const invoice: Record<string, unknown> = {
+      id: 'invoice-1',
+      subtotal: 824,
+      discount: 0,
+      cgst: 74.16,
+      sgst: 74.16,
+      totalAmount: 972,
+      amountReceived: 0,
+      balanceDue: 972,
+    };
+    const updates: Array<Record<string, unknown>> = [];
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      salesReturnRepo: {
+        find: async () => [{id: 'cn-1', returnedItems: [{serviceName: 'Alter Large', preservesInvoice: true}]}],
+      },
+      invoiceRepo: {
+        findOne: async () => invoice,
+        updateById: async (_id: string, patch: Record<string, unknown>) => {
+          updates.push(patch);
+        },
+      },
+      computeBalanceDue: async () => ({alreadyPaid: 0, due: 498}),
+    }) as OrderService;
+
+    const result = (await service.syncInvoiceTotalsForOrder(order as never, {})) as unknown as Record<string, unknown>;
+
+    expect(result).to.containEql({subtotal: 824, totalAmount: 972, balanceDue: 498});
+    expect(updates).to.have.length(1);
+    expect(Object.keys(updates[0]).sort()).to.deepEqual(['amountReceived', 'balanceDue', 'updatedAt']);
+  });
+
+  it('locks the order before syncing a credited invoice\'s balance on a plain read', async () => {
+    const order = {id: 'order-1', subtotal: 422, discountAmount: 0, taxAmount: 75.96, totalAmount: 498};
+    const invoice: Record<string, unknown> = {
+      id: 'invoice-1', subtotal: 824, discount: 0, cgst: 74.16, sgst: 74.16,
+      totalAmount: 972, amountReceived: 0, balanceDue: 972,
+    };
+    const calls: string[] = [];
+    const tx = {commit: async () => { calls.push('commit'); }, rollback: async () => { calls.push('rollback'); }};
+    const service = Object.assign(Object.create(OrderService.prototype), {
+      dataSource: {
+        beginTransaction: async () => { calls.push('begin'); return tx; },
+        execute: async (sql: string) => { calls.push(sql.includes('FOR UPDATE') ? 'lock' : sql); },
+      },
+      orderRepo: {findById: async () => order},
+      salesReturnRepo: {find: async () => [{id: 'cn-1', returnedItems: [{preservesInvoice: true}]}]},
+      invoiceRepo: {
+        findOne: async () => invoice,
+        updateById: async (_id: string, _patch: object, options?: {transaction?: unknown}) => {
+          calls.push(options?.transaction === tx ? 'update-in-tx' : 'update-outside-tx');
+        },
+      },
+      computeBalanceDue: async () => ({alreadyPaid: 0, due: 498}),
+    }) as OrderService;
+
+    await service.syncInvoiceTotalsForOrder(order as never);
+
+    expect(calls).to.deepEqual(['begin', 'lock', 'update-in-tx', 'commit']);
   });
 });

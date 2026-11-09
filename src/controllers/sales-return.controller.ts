@@ -28,6 +28,7 @@ import {RefundBankDetails} from '../models/refund-due.model';
 import {
   CustomerRepository,
   GarmentRepository,
+  GarmentAdditionalServiceRepository,
   GstTaxConfigurationRepository,
   InvoiceOrderLinkRepository,
   InvoiceRepository,
@@ -66,6 +67,10 @@ interface CreditBasis {
 interface CreditLine {
   orderItemId: string;
   garmentId?: string;
+  serviceId?: string;
+  serviceType?: 'main' | 'additional';
+  garmentAdditionalServiceId?: string;
+  returnsGarment?: boolean;
   itemName?: string;
   serviceName?: string;
   unitPrice?: number;
@@ -80,6 +85,29 @@ interface CreditLine {
   grossAmount: number;
   garmentIds: string[];
   invoiceBasis: CreditBasis;
+}
+
+interface ServiceReturnSelection {
+  serviceId?: string;
+  serviceType?: 'main' | 'additional';
+  garmentAdditionalServiceId?: string;
+}
+
+export function completesGarmentServiceReturn(
+  current: ServiceReturnSelection,
+  selected: ServiceReturnSelection[],
+  previous: ServiceReturnSelection[],
+  activeAdditionalServices: Array<{id: string; serviceId: string}>,
+): boolean {
+  if (selected[selected.length - 1] !== current) return false;
+  const mainReturned = [...previous, ...selected]
+    .some(line => line.serviceType === 'main');
+  return mainReturned && activeAdditionalServices.every(service =>
+    previous.some(line => line.serviceType === 'additional' &&
+      line.garmentAdditionalServiceId === service.id) ||
+    selected.some(line => line.serviceType === 'additional' &&
+      (line.garmentAdditionalServiceId === service.id ||
+        (!line.garmentAdditionalServiceId && line.serviceId === service.serviceId))));
 }
 
 /** Credit follows the issued invoice's discount and tax, never its payment state. */
@@ -184,6 +212,8 @@ export class SalesReturnController {
     private paymentRepo: PaymentTransactionRepository,
     @repository(CustomerRepository) private customerRepo: CustomerRepository,
     @repository(GarmentRepository) private garmentRepo: GarmentRepository,
+    @repository(GarmentAdditionalServiceRepository)
+    private garmentAdditionalServiceRepo: GarmentAdditionalServiceRepository,
     @repository(GstTaxConfigurationRepository)
     private gstConfigRepo: GstTaxConfigurationRepository,
     @repository(RefundDueRepository) private refundDueRepo: RefundDueRepository,
@@ -280,6 +310,9 @@ export class SalesReturnController {
                   properties: {
                     orderItemId: {type: 'string'},
                     garmentId: {type: 'string', format: 'uuid'},
+                    serviceId: {type: 'string', format: 'uuid'},
+                    serviceType: {type: 'string', enum: ['main', 'additional']},
+                    garmentAdditionalServiceId: {type: 'string', format: 'uuid'},
                     quantity: {type: 'number'},
                     amount: {type: 'number'},
                   },
@@ -310,6 +343,9 @@ export class SalesReturnController {
       returnedItems?: Array<{
         orderItemId: string;
         garmentId?: string;
+        serviceId?: string;
+        serviceType?: 'main' | 'additional';
+        garmentAdditionalServiceId?: string;
         quantity: number;
         amount: number;
       }>;
@@ -362,18 +398,20 @@ export class SalesReturnController {
         );
       }
       if (
-        new Set(body.returnedItems.map(line => `${line.orderItemId}:${line.garmentId ?? 'quantity'}`)).size !==
+        new Set(body.returnedItems.map(line => `${line.orderItemId}:${line.garmentId ?? 'quantity'}:${line.serviceType ?? 'item'}:${line.garmentAdditionalServiceId ?? line.serviceId ?? ''}`)).size !==
           body.returnedItems.length ||
         body.returnedItems.some(
           line =>
             !line.orderItemId ||
             !Number.isSafeInteger(line.quantity) ||
             line.quantity < 1 ||
-            (line.garmentId && line.quantity !== 1),
+            (line.garmentId && line.quantity !== 1) ||
+            ([line.serviceId, line.serviceType].some(Boolean) &&
+              [line.garmentId, line.serviceId, line.serviceType].some(value => !value)),
         )
       ) {
         throw new HttpErrors.BadRequest(
-          'Return each item once with a positive whole-number quantity.',
+          'Return each item or service once with complete service details and a positive whole-number quantity.',
         );
       }
 
@@ -381,12 +419,19 @@ export class SalesReturnController {
         body.returnedItems!.some(other => other.orderItemId === line.orderItemId && other.garmentId))) {
         throw new HttpErrors.BadRequest('Select individual garments or an item quantity, not both for the same item.');
       }
+      if (body.returnedItems.some(line => line.garmentId &&
+        body.returnedItems!.some(other => other.garmentId === line.garmentId &&
+          Boolean(other.serviceId) !== Boolean(line.serviceId)))) {
+        throw new HttpErrors.BadRequest(
+          'Select either the whole garment or individual services, not both.',
+        );
+      }
 
       // A returned or damaged garment was already removed from ticket billing;
       // only still-billable pieces may enter a sales return.
       const requestedQtyByOrderItemId = new Map<string, number>();
       for (const line of body.returnedItems ?? []) {
-        if (!line.orderItemId) continue;
+        if (!line.orderItemId || line.serviceId) continue;
         requestedQtyByOrderItemId.set(
           line.orderItemId,
           (requestedQtyByOrderItemId.get(line.orderItemId) ?? 0) +
@@ -416,8 +461,10 @@ export class SalesReturnController {
           for (const line of (existing.returnedItems ?? []) as Array<{
             orderItemId?: string;
             quantity?: number;
+            serviceId?: string;
+            returnsGarment?: boolean;
           }>) {
-            if (!line.orderItemId) continue;
+            if (!line.orderItemId || (line.serviceId && !line.returnsGarment)) continue;
             alreadyCreditedQtyByItemId.set(
               line.orderItemId,
               (alreadyCreditedQtyByItemId.get(line.orderItemId) ?? 0) +
@@ -468,10 +515,13 @@ export class SalesReturnController {
                           const line = raw as {
                             orderItemId?: string;
                             quantity?: number;
+                            serviceId?: string;
+                            returnsGarment?: boolean;
                           };
                           return (
                             n +
-                            (line.orderItemId === id
+                            (line.orderItemId === id &&
+                            (!line.serviceId || line.returnsGarment)
                               ? Number(line.quantity) || 0
                               : 0)
                           );
@@ -516,6 +566,16 @@ export class SalesReturnController {
       const previousLines = previousReturns.flatMap(
         record => record.returnedItems ?? [],
       ) as CreditLine[];
+      const pendingServiceGarmentIds = new Set(
+        previousReturns.filter(record => record.status === SalesReturnStatus.PENDING)
+          .flatMap(record => record.returnedItems ?? [])
+          .map(raw => raw as CreditLine)
+          .filter(line => line.serviceId && line.garmentId)
+          .map(line => line.garmentId!),
+      );
+      const approvedPreviousLines = previousReturns
+        .filter(record => record.status === SalesReturnStatus.APPROVED)
+        .flatMap(record => record.returnedItems ?? []) as CreditLine[];
       const previousBasis = previousLines.find(
         line => line.invoiceBasis,
       )?.invoiceBasis;
@@ -537,7 +597,11 @@ export class SalesReturnController {
       const snapshotItems = (invoice.items ?? []) as {
         orderItemId: string;
         quantity: number;
+        unitPrice?: number;
         totalPrice: number;
+        garments?: Array<{id?: string; additionalServices?: Array<{
+          id?: string; serviceId?: string; amount?: number;
+        }>}>;
       }[];
       const allGarments = await this.garmentRepo.find(
         {
@@ -550,12 +614,37 @@ export class SalesReturnController {
         options,
       );
       const reservedIds = new Set(
-        previousLines.flatMap(line => line.garmentIds?.length ? line.garmentIds : line.garmentId ? [line.garmentId] : []),
+        previousLines.flatMap(line =>
+          line.garmentIds?.length ? line.garmentIds : line.garmentId ? [line.garmentId] : []),
       );
+      const wholeReturnReservedIds = new Set(
+        previousLines.filter(line => !line.serviceId).flatMap(line =>
+          line.garmentIds?.length ? line.garmentIds : line.garmentId ? [line.garmentId] : []),
+      );
+      const legacyPendingWholeQtyByItem = new Map<string, number>();
+      previousReturns.filter(record => record.status === SalesReturnStatus.PENDING)
+        .flatMap(record => record.returnedItems ?? [])
+        .forEach(raw => {
+          const line = raw as CreditLine;
+          if (line.serviceId || line.garmentId || line.garmentIds?.length) return;
+          legacyPendingWholeQtyByItem.set(
+            line.orderItemId,
+            (legacyPendingWholeQtyByItem.get(line.orderItemId) ?? 0) +
+              (Number(line.quantity) || 0),
+          );
+        });
+      for (const [orderItemId, quantity] of legacyPendingWholeQtyByItem) {
+        allGarments.filter(garment => garment.orderItemId === orderItemId &&
+          ![GarmentStatus.RETURNED_TO_CUSTOMER, GarmentStatus.DAMAGED].includes(garment.status!) &&
+          !wholeReturnReservedIds.has(garment.id))
+          .slice(0, quantity)
+          .forEach(garment => wholeReturnReservedIds.add(garment.id));
+      }
       const selectedIds = new Set<string>();
       const details = await this.orderService.getOrderDetails(orderId) as {
         items?: Array<{id: string; itemName?: string; serviceName?: string;
-          unitPrice?: number; isMeasurement?: boolean; garments?: Array<{id: string}>}>;
+          unitPrice?: number; isMeasurement?: boolean; garments?: Array<{id: string;
+            additionalServices?: Array<{serviceId: string; name?: string}>}>}>;
       };
       const detailItems = new Map((details.items ?? []).map(item => [item.id, item]));
       const taxableBasis = Math.max(0, basis.subtotal - basis.discount);
@@ -582,6 +671,89 @@ export class SalesReturnController {
             ].includes(garment.status!) &&
             !reservedIds.has(garment.id) && !selectedIds.has(garment.id),
         );
+        if (requested.serviceId) {
+          const garment = allGarments.find(row =>
+            row.id === requested.garmentId && row.orderItemId === item.id &&
+            ![GarmentStatus.RETURNED_TO_CUSTOMER, GarmentStatus.DAMAGED].includes(row.status!),
+          );
+          if (!garment)
+            throw new HttpErrors.Conflict('Selected garment is no longer available for return.');
+          if (wholeReturnReservedIds.has(garment.id))
+            throw new HttpErrors.Conflict(
+              'Selected garment is reserved by another whole-item credit note.',
+            );
+          if (pendingServiceGarmentIds.has(garment.id))
+            throw new HttpErrors.Conflict(
+              'Selected garment has another pending service credit note.',
+            );
+          const additionalServices = await this.garmentAdditionalServiceRepo.find({
+            where: {garmentId: garment.id, isDeleted: false} as object,
+          }, options);
+          const selectedAdditionalService = requested.serviceType === 'additional'
+            ? additionalServices.find(row => requested.garmentAdditionalServiceId
+              ? row.id === requested.garmentAdditionalServiceId
+              : row.serviceId === requested.serviceId)
+            : undefined;
+          const valid = requested.serviceType === 'main'
+            ? requested.serviceId === item.serviceId
+            : selectedAdditionalService?.serviceId === requested.serviceId;
+          if (!valid)
+            throw new HttpErrors.BadRequest('Selected service is not active on this item.');
+          const duplicate = previousLines.some(line => line.garmentId === garment.id &&
+            line.serviceType === requested.serviceType &&
+            (requested.serviceType === 'additional' && requested.garmentAdditionalServiceId
+              ? line.garmentAdditionalServiceId === requested.garmentAdditionalServiceId
+              : line.serviceId === requested.serviceId));
+          if (duplicate)
+            throw new HttpErrors.Conflict('Selected service is already credited or reserved.');
+          const selectedServices = body.returnedItems!.filter(line =>
+            line.garmentId === garment.id && line.serviceId);
+          const previousServices = approvedPreviousLines.filter(line =>
+            line.garmentId === garment.id && line.serviceId);
+          const returnsGarment = completesGarmentServiceReturn(
+            requested,
+            selectedServices,
+            previousServices,
+            additionalServices.map(row => ({id: row.id, serviceId: row.serviceId})),
+          );
+          const area = detailItems.get(item.id)?.isMeasurement
+            ? Math.max(0, money((garment as unknown as {length?: number}).length)) *
+              Math.max(0, money((garment as unknown as {width?: number}).width))
+            : 1;
+          const snapshotAdditionalService = snapshot?.garments
+            ?.find(row => row.id === garment.id)?.additionalServices
+            ?.find(row => requested.garmentAdditionalServiceId
+              ? row.id === requested.garmentAdditionalServiceId
+              : row.serviceId === requested.serviceId);
+          const serviceAmount = requested.serviceType === 'main'
+            ? money(snapshot?.unitPrice ?? item.unitPrice) * area
+            : money(snapshotAdditionalService?.amount ?? selectedAdditionalService?.amount) *
+              (1 + money(order.deliveryTypePercentage) / 100) * area;
+          const amounts = invoiceCreditValue(serviceAmount, basis);
+          returnedItems.push({
+            orderItemId: item.id,
+            garmentId: garment.id,
+            serviceId: requested.serviceId,
+            serviceType: requested.serviceType,
+            garmentAdditionalServiceId: selectedAdditionalService?.id,
+            returnsGarment,
+            itemName: detailItems.get(item.id)?.itemName,
+            serviceName: requested.serviceType === 'main'
+              ? detailItems.get(item.id)?.serviceName
+              : detailItems.get(item.id)?.garments?.find(g => g.id === garment.id)
+                ?.additionalServices?.find(service => service.serviceId === requested.serviceId)?.name,
+            quantity: 1,
+            garmentSnapshot: detailItems.get(item.id)?.garments
+              ?.find(row => row.id === garment.id),
+            cgstRate,
+            sgstRate,
+            originalAmount: money(serviceAmount),
+            ...amounts,
+            garmentIds: returnsGarment ? [garment.id] : [],
+            invoiceBasis: basis,
+          });
+          continue;
+        }
         const legacyReserved = previousReturns
           .filter(record => record.status === SalesReturnStatus.PENDING)
           .flatMap(record => record.returnedItems ?? [])
@@ -1146,7 +1318,7 @@ export class SalesReturnController {
       );
     }
     for (const line of (record.returnedItems ?? []) as Array<{
-      orderItemId?: string; garmentId?: string;
+      orderItemId?: string; garmentId?: string; serviceId?: string;
     }>) {
       if (!line.garmentId) continue;
       const garment = await this.garmentRepo.findOne({where: {
@@ -1226,9 +1398,32 @@ export class SalesReturnController {
     for (const line of (record.returnedItems ?? []) as Array<{
       orderItemId?: string;
       garmentId?: string;
+      serviceId?: string;
+      serviceType?: 'main' | 'additional';
+      garmentAdditionalServiceId?: string;
+      returnsGarment?: boolean;
       quantity?: number;
     }>) {
       if (!line.orderItemId) continue;
+      if (line.serviceId) {
+        if (line.serviceType === 'additional' && line.garmentId) {
+          const attached = await this.garmentAdditionalServiceRepo.findOne({where: {
+            ...(line.garmentAdditionalServiceId
+              ? {id: line.garmentAdditionalServiceId}
+              : {garmentId: line.garmentId, serviceId: line.serviceId}),
+            isDeleted: false,
+          } as object}, options);
+          if (attached) await this.garmentAdditionalServiceRepo.updateById(
+            attached.id, {isDeleted: true, updatedAt: new Date()}, options,
+          );
+        }
+        if (line.returnsGarment && line.garmentId) {
+          await this.garmentRepo.updateById(line.garmentId, {
+            status: GarmentStatus.RETURNED_TO_CUSTOMER,
+          }, options);
+        }
+        continue;
+      }
       const garments = await this.garmentRepo.find(
         {
           where: {
@@ -1385,8 +1580,10 @@ export class SalesReturnController {
       for (const line of (ret.returnedItems ?? []) as Array<{
         orderItemId?: string;
         quantity?: number;
+        serviceId?: string;
+        returnsGarment?: boolean;
       }>) {
-        if (!line.orderItemId) continue;
+        if (!line.orderItemId || (line.serviceId && !line.returnsGarment)) continue;
         returnedQtyByItem.set(
           line.orderItemId,
           (returnedQtyByItem.get(line.orderItemId) ?? 0) +

@@ -49,8 +49,11 @@ function setup(paid = 750) {
     items: [300, 450, 250].map((value, i) => ({
       id: `item-${i}`,
       itemId: `catalog-${i}`,
+      serviceId: `main-${i}`,
+      serviceName: `Main ${i}`,
       orderId: 'order',
       quantity: 1,
+      unitPrice: value,
       totalPrice: value,
     })),
     garments: [0, 1, 2].map(i => ({
@@ -59,6 +62,7 @@ function setup(paid = 750) {
       status: 'ready',
       isDeleted: false,
     })),
+    additionalServices: [],
     payments: paid
       ? [
           {
@@ -115,6 +119,7 @@ function setup(paid = 750) {
       invoiceOrderLinkRepo: repo('links'),
       orderItemRepo: repo('items'),
       garmentRepo: repo('garments'),
+      garmentAdditionalServiceRepo: repo('additionalServices'),
       salesReturnRepo: repo('notes'),
       paymentRepo: repo('payments'),
       refundDueRepo: repo('refunds'),
@@ -223,6 +228,128 @@ function setup(paid = 750) {
 }
 
 describe('invoiced credit-note settlement', () => {
+  it('rejects a second pending service note for the same garment', async () => {
+    const test = setup(1000);
+    const state = test.state();
+    state.additionalServices.push({
+      id: 'garment-service-2', garmentId: 'garment-2', serviceId: 'starch',
+      amount: 50, isDeleted: false,
+    });
+    state.notes.push({
+      id: 'pending-main', orderId: 'order', status: 'pending', creditAmount: 200,
+      returnedItems: [{orderItemId: 'item-2', garmentId: 'garment-2',
+        serviceId: 'main-2', serviceType: 'main', quantity: 1, amount: 200}],
+    });
+
+    await expect(test.controller.create(user, 'order', {
+      reason: 'Overlapping pending service',
+      returnedItems: [{orderItemId: 'item-2', garmentId: 'garment-2',
+        serviceId: 'starch', serviceType: 'additional', quantity: 1, amount: 50}],
+    })).to.be.rejectedWith(/another pending service credit note/);
+  });
+
+  it('rejects service returns reserved by explicit and legacy pending whole-item credits', async () => {
+    for (const returnedItem of [
+      {orderItemId: 'item-2', garmentId: 'garment-2', garmentIds: ['garment-2'],
+        quantity: 1, amount: 250},
+      {orderItemId: 'item-2', quantity: 1, amount: 250},
+    ]) {
+      const test = setup(1000);
+      test.state().notes.push({
+        id: 'pending-whole', orderId: 'order', status: 'pending', creditAmount: 250,
+        returnedItems: [returnedItem],
+      });
+
+      await expect(test.controller.create(user, 'order', {
+        reason: 'Overlapping service return',
+        returnedItems: [{orderItemId: 'item-2', garmentId: 'garment-2',
+          serviceId: 'main-2', serviceType: 'main', quantity: 1, amount: 250}],
+      })).to.be.rejectedWith(/reserved by another whole-item credit note/);
+    }
+  });
+
+  it('rejects a whole-garment return after that garment has a service credit', async () => {
+    const test = setup(1000);
+    const state = test.state();
+    Object.assign(state.items[2], {quantity: 2, totalPrice: 500});
+    state.garments[0].orderItemId = 'item-2';
+    state.notes.push({
+      id: 'service-return', orderId: 'order', status: 'approved', creditAmount: 50,
+      returnedItems: [{orderItemId: 'item-2', garmentId: 'garment-2', serviceId: 'starch',
+        serviceType: 'additional', returnsGarment: false, quantity: 1, amount: 50}],
+    });
+
+    await expect(test.controller.create(user, 'order', {
+      reason: 'Return the same garment whole',
+      returnedItems: [{
+        orderItemId: 'item-2', garmentId: 'garment-2', quantity: 1, amount: 250,
+      }],
+    })).to.be.rejectedWith(/already credited or reserved/);
+  });
+
+  it('rejects mixed whole-garment and service lines before applying credit', async () => {
+    const test = setup(1000);
+
+    await expect(test.controller.create(user, 'order', {
+      reason: 'Duplicate garment value',
+      returnedItems: [
+        {orderItemId: 'item-2', garmentId: 'garment-2', quantity: 1, amount: 250},
+        {orderItemId: 'item-2', garmentId: 'garment-2', serviceId: 'main-2',
+          serviceType: 'main', quantity: 1, amount: 250},
+      ],
+    })).to.be.rejectedWith(/whole garment or individual services/);
+
+    expect(test.state().notes).to.have.length(0);
+    expect(test.state().garments[2].status).to.equal('ready');
+  });
+
+  it('rejects incomplete service metadata without returning the garment', async () => {
+    const test = setup(1000);
+
+    await expect(test.controller.create(user, 'order', {
+      reason: 'Malformed service return',
+      returnedItems: [{
+        orderItemId: 'item-2', garmentId: 'garment-2', serviceType: 'main',
+        quantity: 1, amount: 250,
+      }],
+    })).to.be.rejectedWith(/complete service details/);
+
+    expect(test.state().notes).to.have.length(0);
+    expect(test.state().garments[2].status).to.equal('ready');
+  });
+
+  it('marks the garment returned when main and last additional service return together', async () => {
+    const test = setup(1000);
+    const state = test.state();
+    Object.assign(state.items[2], {unitPrice: 200, totalPrice: 250});
+    state.additionalServices.push({
+      id: 'garment-service-2', garmentId: 'garment-2', serviceId: 'starch',
+      amount: 50, isDeleted: false,
+    });
+
+    await test.controller.create(user, 'order', {
+      reason: 'Return all services',
+      returnedItems: [
+        {orderItemId: 'item-2', garmentId: 'garment-2', serviceId: 'main-2',
+          serviceType: 'main', quantity: 1, amount: 200},
+        {orderItemId: 'item-2', garmentId: 'garment-2', serviceId: 'starch',
+          serviceType: 'additional', garmentAdditionalServiceId: 'garment-service-2',
+          quantity: 1, amount: 50},
+      ],
+    });
+
+    expect(state.garments[2].status).to.equal('returned_to_customer');
+    expect(state.additionalServices[0].isDeleted).to.equal(true);
+    expect(state.notes[0].returnedItems.filter((line: any) => line.returnsGarment))
+      .to.have.length(1);
+    expect(state.notes[0].returnedItems.find((line: any) => line.serviceType === 'additional'))
+      .to.containEql({garmentAdditionalServiceId: 'garment-service-2'});
+    expect(state.notes[0].returnedItems.every((line: any) => line.garmentSnapshot?.id === 'garment-2'))
+      .to.equal(true);
+    expect(state.notes[0].returnedItems.every((line: any) => line.cgstRate === 0 && line.sgstRate === 0))
+      .to.equal(true);
+  });
+
   it('credits two explicitly selected garments from one line without changing the issued invoice', async () => {
     const test = setup(1000);
     const state = test.state();
