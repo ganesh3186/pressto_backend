@@ -40,7 +40,16 @@ POST /rider/customers
   "lastName": "required",
   "email": "optional",
   "phone": "required",
-  "countryCode": "+91 (optional, defaults to +91)"
+  "countryCode": "+91 (optional, defaults to +91)",
+  "address": {                 // optional — saved as the customer's default address
+    "addressLine1": "required", "city": "required", "state": "required", "pincode": "required",
+    "addressLine2": "", "doorFloorFlat": "", "societyName": "", "landmark": "",
+    "country": "", "addressType": "", "addressName": "",
+    "latitude": 19.07, "longitude": 72.87   // optional — geocoded from the text when absent
+  },
+  "latitude": 19.07,   // optional fallback, e.g. rider's GPS — used only if the address has no / un-geocodable coordinates
+  "longitude": 72.87,
+  "pincode": "400001"  // optional fallback when no address is sent
 }
 ```
 For the case where a neighbour of the current pickup also wants their
@@ -48,7 +57,35 @@ items collected and has no account yet. Creates a login, the `customer`
 role, a `Customer` profile, and a wallet/security-deposit record — same
 setup a self-registered customer gets.
 
-**Response `200`**: `{ "message": "Customer created.", "customer": {...} }`
+**Nearest-store auto-assignment.** Coordinates are taken from, in order:
+1. `address.latitude`/`longitude`, if sent;
+2. otherwise the **address text is geocoded** (Google Geocoding,
+   `GOOGLE_GEOCODING_API_KEY`) and the result saved on the address;
+3. otherwise top-level `latitude`/`longitude`.
+
+The nearest active store within `STORE_ASSIGNMENT_RADIUS_KM` (default 15 km)
+of those coordinates becomes the customer's `preferredStoreId`. If nothing is
+in range or no coordinates were found, the store covering `address.pincode`
+(or top-level `pincode`) is used. If neither resolves, the customer is created
+with no store; saving an address later (§2a) or §2.1 retries.
+
+Customer, address and store assignment are saved in one transaction. For existing customers see §2.1.
+
+**Response `200`**:
+```json
+{
+  "message": "Customer created.",
+  "customer": { "...": "...", "preferredStoreId": "uuid | absent" },
+  "address": { "...saved CustomerAddress, or null if none was sent" },
+  "coordinates": { "latitude": 19.07, "longitude": 72.87, "source": "address | geocoded | request" },
+  "assignedStore": { "id": "uuid", "name": "...", "code": "...", "distanceKm": 1.42 } ,
+  "storeMatchedBy": "coordinates | pincode | null",
+  "nearbyBeyondRadius": []
+}
+```
+`assignedStore` is `null` when nothing matched. `distanceKm` is only present
+for a `coordinates` match. `nearbyBeyondRadius` lists the closest stores
+outside the radius, and is only filled when nothing matched.
 
 **Error cases — all `409 Conflict`, no retry-with-flag path (unlike the
 admin/self-registration flows) since the rider app has no UI for a
@@ -58,6 +95,47 @@ confirm-and-link step:**
 | Phone/email belongs to a `super_admin`-class account | "That phone or email belongs to a protected system account." |
 | Phone/email already belongs to an existing customer | "...already belongs to customer CUST0005 — search for them instead of creating a new one." → use §3 instead |
 | Phone/email belongs to a non-customer login (e.g. staff) | "...Ask the store to add this customer instead." |
+
+---
+
+## 2.1 Nearest store for an existing customer
+
+```
+GET /rider/customers/{customerId}/nearest-store
+    ?latitude=19.07&longitude=72.87   (optional)
+    &pincode=400001                   (optional)
+    &addressId=uuid                   (optional)
+```
+Location used, in order: query `latitude`/`longitude`/`pincode` → the saved
+address `addressId` → the customer's default saved address (else their first).
+A saved address with no coordinates is geocoded from its text first, and the
+coordinates are saved onto the address.
+Resolution is lat/long first (nearest within radius), then pincode.
+
+If the customer has **no** `preferredStoreId` yet **and the location came from
+one of their saved addresses** (`locationSource: "address"`), the resolved
+store is saved as it (`assignedNow: true`). An existing assignment is never
+overwritten.
+
+Query `latitude`/`longitude`/`pincode` are **lookup-only**
+(`locationSource: "request"`). The store is returned but never saved, because
+the rider's GPS may not be at the customer's home. To assign a store for a
+customer with no saved address, save one first (§2a).
+
+**Response `200`**:
+```json
+{
+  "customerId": "uuid",
+  "locationSource": "request | address | none",
+  "nearestStore": { "id": "uuid", "name": "...", "code": "...", "distanceKm": 1.42 },
+  "storeMatchedBy": "coordinates | pincode | null",
+  "nearbyBeyondRadius": [],
+  "preferredStoreId": "uuid | null",
+  "preferredStore": { "id": "uuid", "name": "...", "code": "..." },
+  "assignedNow": true
+}
+```
+`404` if the customer, or the given `addressId` for this customer, is not found.
 
 ---
 
@@ -245,6 +323,9 @@ POST /rider/pickup-requests
   "customerId": "uuid, required",
   "addressId": "uuid — one of the customer's saved addresses",
   "address": "string — inline text, for a brand-new customer with nothing saved",
+  "pincode": "400001 — pincode of the inline address (optional, used for store assignment)",
+  "latitude": 18.91,  // optional — coordinates of the inline address
+  "longitude": 72.81, // optional
   "slotId": "uuid, required",
   "requestedDate": "2026-08-16",
   "handoverBy": "self | family_member | household_help (optional)",
@@ -257,12 +338,31 @@ POST /rider/pickup-requests
   "remarks": "Please handle the curtains gently.",
   "mediaIds": ["uuid-from-file-upload"],
   "pickupNow": true,
-  "storeId": "uuid — required only when pickupNow is false"
+  "storeId": "uuid — optional override; auto-assigned from the address when omitted"
 }
 ```
 Provide **either** `addressId` (resolved + frozen as a text snapshot,
 same as the customer app) **or** `address` (free text) — `400` if neither
 is given, or if `addressId` doesn't belong to `customerId`.
+
+### Store auto-assignment
+
+When `storeId` is omitted, the pickup goes to the **nearest store to the
+pickup address**:
+
+| Address sent | Coordinates used | Pincode used |
+|---|---|---|
+| `addressId` (saved address) | the address's lat/long; if it has none, its text is geocoded once and saved onto the address | the address's pincode |
+| inline `address` | `latitude`/`longitude` if sent, else geocoded from the address text + `pincode` | `pincode` |
+
+Coordinates are tried first: the nearest active store within
+`STORE_ASSIGNMENT_RADIUS_KM` (default 15 km). Then the store covering the
+pincode (`store_pincode_coverage`). If neither matches, **`422`** with the
+nearest stores outside the radius listed in the message. Send `storeId`
+to assign one manually.
+
+An explicit `storeId` always wins. `pickupNow: true` with an active run
+keeps the run's store (see below).
 
 - `itemCategoryEstimate` — per-category counts, from `GET /profile/customer/item-categories`
   or the equivalent admin item-category master data. `serviceId` and
@@ -293,10 +393,11 @@ is given, or if `addressId` doesn't belong to `customerId`.
   has nothing `out_for_pickup` right now — walk the existing pickup to
   `out_for_pickup` first (§6) before using `pickupNow: true` on a new one.
 - **`false`**: a standalone new pickup, its own new `runId`, created at
-  `rider_assigned`. `storeId` is **required** in this branch — there's no
-  run to inherit it from.
+  `rider_assigned`. The store is auto-assigned from the address (see
+  *Store auto-assignment*) unless `storeId` is sent.
 
-**Response `200`**: `{ "message": "...", "pickupRequest": {...} }` — the
+**Response `200`**: `{ "message": "...", "pickupRequest": {...}, "storeAssignment": {"matchedBy": "manual | coordinates | pincode", "distanceKm": 1.2} }`
+(`storeAssignment` is absent when the request attached to an active run). — the
 message differs slightly ("...and attached to the current run." vs plain
 "created.") so the UI can distinguish which branch fired without parsing
 the object.
