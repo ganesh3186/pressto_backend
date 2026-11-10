@@ -288,6 +288,22 @@ export class PickupRequest extends Entity {
   @property({type: 'string', postgresql: {dataType: 'uuid'}})
   unsuccessfulBy?: string;
 
+  // Why this pickup was cancelled — one PickupCancellationReason code, set
+  // when an admin moves it to `cancelled`. cancellationOtherReason is free
+  // text, only meaningful when cancellationReason is 'other'. cancelledAt/By
+  // record who cancelled it and when (audit, same shape as unsuccessful*).
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  cancellationReason?: string;
+
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  cancellationOtherReason?: string;
+
+  @property({type: 'date'})
+  cancelledAt?: Date;
+
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  cancelledBy?: string;
+
   // How many times POST .../reprocess has sent this back out — purely a
   // display counter, doesn't gate anything.
   @property({type: 'number', default: 0})

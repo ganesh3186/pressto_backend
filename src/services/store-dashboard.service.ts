@@ -352,7 +352,18 @@ export class StoreDashboardService {
         ? {cashBasis: activeShift ? ('shift' as const) : ('day' as const)}
         : {}),
       kpis: {
-        ...(access.collected ? {collected: num(totals.collected)} : {}),
+        // Total collection = counter payments (riderid IS NULL) PLUS confirmed
+        // rider cash handovers accepted at the store in this window. The two
+        // are disjoint — rider-collected payments are excluded from `collected`
+        // and only re-enter the till when the rider hands the cash over — so
+        // adding them double-counts nothing and reflects all cash the store
+        // actually received. (`handover.accepted` below still breaks it out.)
+        ...(access.collected
+          ? {
+              collected:
+                num(totals.collected) + (access.handover ? num(totals.accepted) : 0),
+            }
+          : {}),
         ...(access.tickets
           ? {tickets: num(totals.tickets), ticketAmount: num(totals.ticketamount)}
           : {}),
@@ -499,11 +510,17 @@ export class StoreDashboardService {
     const stores = q.add(storeIds);
     const from = q.add(window.from);
     const to = q.add(window.to);
+    // Cash window: shift-open on the live "today" view, else the full range.
+    // Both the counter `collected` sum and the rider-handover `accepted` sum
+    // use it, so the two stay on the same window and the KPI that adds them
+    // (window(), kpis.collected) is never a mix of a shift and a full day.
+    const cashFrom_ = q.add(cashFrom);
 
-    // Collected mirrors DashboardService.computeOrderCollections: any of
-    // the store's tickets (a ticket raised last week can be paid today),
-    // counter payments only (rider cash settles through handover), no
-    // refunds, and only modes that put money in the till.
+    // The `collected` COLUMN is counter cash only — rider-collected payments
+    // (riderId set) are excluded here and re-enter via the `accepted`
+    // handover sum below. The Total-collection KPI in window() adds the two;
+    // this column on its own still mirrors DashboardService.
+    // computeOrderCollections (counter payments, no refunds, till modes only).
     const rows: Row[] = await this.dataSource.execute(
       `SELECT
          (SELECT COALESCE(SUM(pt.amount), 0)
@@ -513,7 +530,7 @@ export class StoreDashboardService {
              AND pt.riderid IS NULL
              AND pt.transactiontype <> 'refund'
              AND pt.paymentmode = ANY(${q.add(COLLECTED_PAYMENT_MODES)}::text[])
-             AND pt.paymentdate BETWEEN ${q.add(cashFrom)} AND ${to}) AS collected,
+             AND pt.paymentdate BETWEEN ${cashFrom_} AND ${to}) AS collected,
          t.tickets, t.ticketamount, inv.invoices, inv.invoiceamount,
          (SELECT COUNT(*)
             FROM orders o
@@ -532,7 +549,7 @@ export class StoreDashboardService {
            WHERE ${access.handover ? 'TRUE' : 'FALSE'} AND h.handovertostoreid = ANY(${stores}::uuid[])
              AND h.status = ${q.add(RiderCashHandoverStatus.CONFIRMED)}
              AND h.isdeleted IS NOT TRUE
-             AND h.confirmedat BETWEEN ${from} AND ${to}) AS accepted
+             AND h.confirmedat BETWEEN ${cashFrom_} AND ${to}) AS accepted
        FROM
          -- Tickets raised in the window: cancelled and draft tickets are not sales.
          (SELECT COUNT(*)::int AS tickets, COALESCE(SUM(o.totalamount), 0) AS ticketamount
