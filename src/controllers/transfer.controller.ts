@@ -1574,31 +1574,130 @@ export class TransferController {
     // display values (transitId, performer name) the same way
     // enrichTransfers() already does for list/detail, rather than making
     // the admin panel show raw ids.
-    const [transfers, users, bags] = await Promise.all([
+    const [transfers, users] = await Promise.all([
       findInBatches([...new Set(events.map(e => e.transferId))], ids => this.transferRepo.find({
         where: {id: {inq: ids}} as object,
-        fields: {id: true, transitId: true} as object,
+        // riderName = the handover rider; bagId = the transfer's primary bag,
+        // used as the fallback bag for events that carry no bag of their own;
+        // from/to store = where each event physically happened (see below).
+        fields: {
+          id: true,
+          transitId: true,
+          bagId: true,
+          riderName: true,
+          fromStoreId: true,
+          toStoreId: true,
+        } as object,
       })),
       findInBatches([...new Set(events.map(e => e.performedBy).filter(Boolean))], ids => this.usersRepo.find({
         where: {id: {inq: ids}} as object,
         fields: {id: true, fullName: true} as object,
       })),
-      findInBatches([...new Set(events.map(e => e.bagId).filter(Boolean))], ids => this.bagRepo.find({
-        where: {id: {inq: ids}} as object,
-        fields: {id: true, bagNumber: true} as object,
-      })),
     ]);
-    const transitIdByTransferId = new Map(transfers.map(t => [t.id, t.transitId]));
-    const nameByUserId = new Map(users.map(u => [u.id, u.fullName]));
+    const transferById = new Map(transfers.map(t => [t.id, t]));
+
+    // Bag numbers for every bag referenced — the event's own bag AND each
+    // transfer's primary bag — so transfer-level events (in_transit, sent_out,
+    // received) still show which bag the item is travelling in.
+    const bagIds = [
+      ...new Set(
+        [...events.map(e => e.bagId), ...transfers.map(t => t.bagId)].filter(Boolean),
+      ),
+    ];
+    const bags = bagIds.length
+      ? await findInBatches(bagIds, ids =>
+          this.bagRepo.find({
+            where: {id: {inq: ids}} as object,
+            fields: {id: true, bagNumber: true} as object,
+          }))
+      : [];
     const bagNumberByBagId = new Map(bags.map(b => [b.id, b.bagNumber]));
 
+    // Item name for each tag on the trail (garment → orderItem → item), so a
+    // row shows "GT… · Shirt", not just the bare tag.
+    const tagNumbers = [...new Set(events.map(e => e.garmentTagNumber).filter(Boolean))];
+    const garments = tagNumbers.length
+      ? await this.garmentRepo.find({
+          where: {garmentTagNumber: {inq: tagNumbers}} as object,
+          fields: {garmentTagNumber: true, orderItemId: true} as object,
+        })
+      : [];
+    const orderItems = garments.length
+      ? await this.orderItemRepo.find({
+          where: {id: {inq: [...new Set(garments.map(g => g.orderItemId))]}} as object,
+          fields: {id: true, itemId: true} as object,
+        })
+      : [];
+    const itemList = orderItems.length
+      ? await this.itemRepo.find({
+          where: {id: {inq: [...new Set(orderItems.map(oi => oi.itemId))]}} as object,
+          fields: {id: true, name: true} as object,
+        })
+      : [];
+    const itemNameByItemId = new Map(itemList.map(i => [i.id, i.name]));
+    const itemIdByOrderItemId = new Map(orderItems.map(oi => [oi.id, oi.itemId]));
+    const itemNameByTag = new Map(
+      garments.map(g => [
+        g.garmentTagNumber,
+        itemNameByItemId.get(itemIdByOrderItemId.get(g.orderItemId) ?? '') ?? null,
+      ]),
+    );
+
+    const nameByUserId = new Map(users.map(u => [u.id, u.fullName]));
+
+    // Store names, so each event can say *where* it happened instead of a bare
+    // dash. An event's location depends on its type: packing/dispatch happens
+    // at the origin, receiving/discrepancy at the destination, and in-transit
+    // is between the two.
+    const storeIds = [
+      ...new Set(
+        transfers.flatMap(t => [t.fromStoreId, t.toStoreId]).filter(Boolean),
+      ),
+    ];
+    const stores = storeIds.length
+      ? await findInBatches(storeIds, ids =>
+          this.storeRepo.find({
+            where: {id: {inq: ids}} as object,
+            fields: {id: true, name: true} as object,
+          }))
+      : [];
+    const storeNameById = new Map(stores.map(s => [s.id, s.name]));
+    const DESTINATION_EVENTS = new Set<string>([
+      TransferCustodyEventType.RECEIVED,
+      TransferCustodyEventType.DISCREPANCY,
+      TransferCustodyEventType.BAG_RELEASED,
+      TransferCustodyEventType.DISCREPANCY_RESOLVED,
+    ]);
+
     return {
-      events: events.map(e => ({
-        ...e,
-        transitId: transitIdByTransferId.get(e.transferId) ?? null,
-        performedByName: nameByUserId.get(e.performedBy) ?? null,
-        bagNumber: e.bagId ? bagNumberByBagId.get(e.bagId) ?? null : null,
-      })),
+      events: events.map(e => {
+        const transfer = transferById.get(e.transferId);
+        const bagId = e.bagId ?? transfer?.bagId;
+        const fromName = transfer ? storeNameById.get(transfer.fromStoreId) ?? null : null;
+        const toName = transfer ? storeNameById.get(transfer.toStoreId) ?? null : null;
+        let storeName: string | null;
+        let storeId: string | null;
+        if (e.eventType === TransferCustodyEventType.IN_TRANSIT) {
+          storeName = fromName && toName ? `${fromName} → ${toName}` : toName ?? fromName;
+          storeId = transfer?.toStoreId ?? null;
+        } else if (DESTINATION_EVENTS.has(e.eventType)) {
+          storeName = toName;
+          storeId = transfer?.toStoreId ?? null;
+        } else {
+          storeName = fromName;
+          storeId = transfer?.fromStoreId ?? null;
+        }
+        return {
+          ...e,
+          transitId: transfer?.transitId ?? null,
+          performedByName: nameByUserId.get(e.performedBy) ?? null,
+          riderName: transfer?.riderName ?? null,
+          bagNumber: bagId ? bagNumberByBagId.get(bagId) ?? null : null,
+          itemName: e.garmentTagNumber ? itemNameByTag.get(e.garmentTagNumber) ?? null : null,
+          storeName,
+          storeId,
+        };
+      }),
     };
   }
 }
