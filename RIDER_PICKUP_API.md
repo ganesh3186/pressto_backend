@@ -60,9 +60,14 @@ Response:
     "firstName": "Priya",
     "lastName": "Shah",
     "email": "priya@example.com"
-  }
+  },
+  "address": { "id": "3b1c...", "pincode": "422009", "...": "saved default address, or null" },
+  "availableStores": [ { "id": "...", "name": "...", "...": "same shape as GET /rider/stores/by-pincode stores[]" } ]
 }
 ```
+
+`availableStores` lists the stores serving the address's pincode, for
+the pickup's store picker. It is `[]` when no `address` was sent.
 
 ### `GET /rider/customers?search=<name, phone, or email>`
 
@@ -165,7 +170,7 @@ list. All four return only active, non-deleted rows.
 | `itemCategoryEstimate[].itemCategoryId` | `GET /rider/item-categories`, with `GET /rider/service-categories` as a fallback — see note below |
 | `itemCategoryEstimate[].serviceId` | `GET /rider/services` |
 | `slotId` | `GET /rider/pickup-slots?type&date` |
-| `storeId` | `GET /rider/stores` |
+| `storeId` | `GET /rider/stores/by-pincode?addressId=` — only stores serving the selected address's pincode (see below) |
 | `addressId` | `GET /rider/customers/{customerId}/addresses` (above) |
 | `customerId` | `GET /rider/customers?search=` (above) |
 
@@ -210,6 +215,49 @@ what riders themselves send.
   { "id": "79e1ea9d-2484-4350-be9c-a32b85eb5d44", "name": "Babulnath", "code": "BBN", "city": "Mumbai", "isActive": true }
 ]
 ```
+
+### `GET /rider/stores/by-pincode?addressId=<id>` — store picker for the pickup
+
+The store list to show once the rider has picked the pickup address.
+It returns only active stores that serve that address's pincode,
+nearest first: stores the pincode coverage table lists for it, then
+any other store located in that pincode. Send one of:
+
+- `addressId`: a saved address. Use this for an existing customer, or for a new
+  customer after their address is saved.
+- `pincode`: the 6-digit pincode of an inline, unsaved address.
+
+```json
+{
+  "pincode": "400001",
+  "serviceable": true,
+  "stores": [
+    {
+      "id": "79e1ea9d-2484-4350-be9c-a32b85eb5d44",
+      "name": "Babulnath", "code": "BBN",
+      "address": "...", "city": "Mumbai", "state": "Maharashtra", "pincode": "400007",
+      "phone": "...", "latitude": 18.96, "longitude": 72.81,
+      "centroidDistanceKm": 2.1, "pctOfPincodeInRange": 100,
+      "matchedBy": "coverage"
+    }
+  ]
+}
+```
+
+`matchedBy`: `coverage` (from the pincode coverage table) or
+`store_pincode` (the store's own pincode matches; `centroidDistanceKm`
+is then `null`). `serviceable: false` with an empty `stores` list means
+no store serves this pincode. If `storeId` is left out on create, the
+store is auto-assigned from this same list: the nearest one to the
+address coordinates, otherwise the first. Only when the list is empty
+does it fall back to the nearest store by location.
+
+Flow:
+
+| Customer | Steps |
+|---|---|
+| Existing | `GET /rider/customers?search=` → `GET /rider/customers/{id}/addresses` → pick an address → `GET /rider/stores/by-pincode?addressId=` → pick a store → `POST /rider/pickup-requests` with `addressId` + `storeId` |
+| New | `POST /rider/customers` with `address`. The response includes `address.id` and `availableStores` (the same list), so no extra call is needed → pick a store → `POST /rider/pickup-requests` with `addressId` + `storeId`. A customer created without an address: `POST /rider/customers/{id}/addresses` first, then call this endpoint with that address's id. |
 
 ### `GET /rider/pickup-slots?type=pickup&date=2026-08-25`
 
@@ -313,6 +361,13 @@ Notes:
     whichever rider makes sense — `storeId` required.
 - **`handoverBy`**: `self` | `family_member` | `household_help` — if
   not `self`, `handoverPersonName` is required.
+- **`storeId`** must be active and one of the stores
+  `GET /rider/stores/by-pincode` returns for the address's pincode.
+  Otherwise the request fails with `400`, and the message lists the valid stores.
+  If no store serves the pincode, any active `storeId` is still
+  accepted as a manual override. Leaving out `storeId` auto-assigns
+  from the same list, so the pickup never goes to a store outside it. When `pickupNow` attaches the pickup to the rider's
+  active run, the run's store is used and `storeId` is ignored.
 
 Response (attached to a run):
 
@@ -364,9 +419,19 @@ at the doorstep, **each with its own bag**:
   "itemsByService": [
     { "serviceId": "c84dfe93-f45f-48bc-86d3-4710264eb200", "quantity": 3, "deliverySpeed": "express", "remarks": "2 shirts have a small stain near the collar", "mediaIds": ["7c2b...", "9f1a..."], "bagId": "a1b2..." },
     { "serviceId": "00354f2b-363f-4a8f-9e68-44cab7256c3a", "quantity": 1, "deliverySpeed": "standard", "bagId": "e5f6..." }
-  ]
+  ],
+  "handoverBy": "family_member",
+  "handoverPersonName": "Suresh"
 }
 ```
+
+`handoverBy` / `handoverPersonName` are **optional**. They record who
+actually handed the clothes over at the doorstep: `self`, `family_member`
+or `household_help`, plus the person's name, which is required unless
+`self`. When sent, they replace the values the customer chose at booking.
+That's what the admin pickup detail shows as "Handover by" / "Handover
+person". When left out, the booking values stay. Ask the rider at the door
+rather than carrying the booking value over blindly.
 
 `bagId` is **required on every line** — one exclusive bag per service.
 Scan a separate physical bag for each service before sending this; the

@@ -48,7 +48,7 @@ import {CustomerPreferenceChanges, CustomerPreferenceService} from '../services/
 import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {GeocodingService, hasRealCoordinates} from '../services/geocoding.service';
 import {SecurityDepositService} from '../services/security-deposit.service';
-import {ResolvedStore, StoreAssignmentService} from '../services/store-assignment.service';
+import {PincodeStore, ResolvedStore, StoreAssignmentService} from '../services/store-assignment.service';
 import {WalletService} from '../services/wallet.service';
 import {DeliveryGroupingPreference} from '../models/delivery-grouping-preference.enum';
 import {DeliveryType} from '../models/delivery-type.enum';
@@ -349,10 +349,19 @@ export class RiderPickupController {
         : coordinateSource === 'request'
           ? {latitude: body.latitude, longitude: body.longitude}
           : {};
-    const storeResolution = await this.storeAssignmentService.resolveNearestStore({
-      ...coords,
-      pincode: addressData?.pincode ?? body.pincode,
-    });
+    const storePincode = addressData?.pincode ?? body.pincode;
+    const pincodeStores = storePincode
+      ? await this.storeAssignmentService.listStoresForPincode(storePincode)
+      : [];
+    // Picked from the same list the store picker shows, so assignedStore
+    // is always one of availableStores when that list is non-empty.
+    const storeResolution = await this.storeAssignmentService.resolveStoreWithinPincode(
+      {...coords, pincode: storePincode},
+      pincodeStores,
+    );
+    // Store picker for this customer's first pickup — same list as
+    // GET /rider/stores/by-pincode?addressId=<address.id>.
+    const availableStores = addressData?.pincode ? pincodeStores : [];
 
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
@@ -400,6 +409,7 @@ export class RiderPickupController {
         message: 'Customer created.',
         customer,
         address,
+        availableStores,
         coordinates:
           coords.latitude != null ? {latitude: coords.latitude, longitude: coords.longitude, source: coordinateSource} : null,
         assignedStore: storeResolution.store,
@@ -515,7 +525,7 @@ export class RiderPickupController {
     const resolution: ResolvedStore =
       locationSource === 'none'
         ? {store: null, matchedBy: null, nearbyBeyondRadius: []}
-        : await this.storeAssignmentService.resolveNearestStore(location);
+        : await this.storeAssignmentService.resolveStoreWithinPincode(location);
 
     let assigned = false;
     if (locationSource === 'address' && !customer.preferredStoreId && resolution.store) {
@@ -771,6 +781,48 @@ export class RiderPickupController {
       where: {isActive: true, isDeleted: false} as object,
       order: ['name ASC'],
     });
+  }
+
+  // ─── Stores serving the selected address's pincode ─────────────────────────
+  // The pickup form's store picker: after the rider picks (or saves) the
+  // customer's address, list only the stores that serve its pincode, and
+  // the rider chooses one of them as storeId. Same flow for an existing
+  // customer (pick a saved address) and a new one (POST /rider/customers
+  // with an address, or POST /rider/customers/{id}/addresses, returns the
+  // address id). `pincode` is for an inline, unsaved address.
+  // createPickupRequest enforces the same list, so a store picked here is
+  // always accepted there.
+
+  @authenticate('jwt')
+  @authorize({roles: ['rider']})
+  @get('/rider/stores/by-pincode')
+  @response(200, {description: "Active stores serving the selected address's pincode, nearest first"})
+  async getStoresForPincode(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.query.string('addressId') addressId?: string,
+    @param.query.string('pincode') pincodeParam?: string,
+  ): Promise<{pincode: string; serviceable: boolean; stores: PincodeStore[]}> {
+    await this.resolveActiveRider(currentUser);
+
+    let pincode: string;
+    if (addressId) {
+      const address = await this.addressService.findById(addressId).catch(err => {
+        if (err?.code === 'ENTITY_NOT_FOUND') return undefined;
+        throw err;
+      });
+      if (!address || address.isDeleted) throw new HttpErrors.NotFound('Address not found.');
+      pincode = String(address.pincode ?? '').trim();
+    } else if (pincodeParam?.trim()) {
+      pincode = pincodeParam.trim();
+    } else {
+      throw new HttpErrors.BadRequest('Provide either addressId or pincode.');
+    }
+    if (!/^\d{6}$/.test(pincode)) {
+      throw new HttpErrors.BadRequest(`"${pincode}" is not a valid 6-digit pincode.`);
+    }
+
+    const stores = await this.storeAssignmentService.listStoresForPincode(pincode);
+    return {pincode, serviceable: stores.length > 0, stores};
   }
 
   // ─── Pickup / delivery slots ─────────────────────────────────────────────────
@@ -1148,9 +1200,22 @@ export class RiderPickupController {
     let storeAssignment: {matchedBy: 'manual' | 'coordinates' | 'pincode'; distanceKm?: number} = {
       matchedBy: 'manual',
     };
+    // The stores GET /rider/stores/by-pincode offers for this address. Both
+    // a manual storeId and the auto-assigned one must come from this list
+    // whenever it is non-empty.
+    const pincodeStores = pincode ? await this.storeAssignmentService.listStoresForPincode(pincode) : [];
     if (storeId) {
       const store = await this.storeRepository.findOne({where: {id: storeId, isDeleted: false} as object});
       if (!store) throw new HttpErrors.NotFound('Store not found.');
+      if (!store.isActive) throw new HttpErrors.BadRequest('That store is inactive.');
+      // A pincode no store serves has nothing to pick from, so a manual
+      // storeId is still accepted there, as before.
+      if (pincodeStores.length && !pincodeStores.some(s => s.id === storeId)) {
+        throw new HttpErrors.BadRequest(
+          `${store.name} does not serve pincode ${pincode}. Choose one of: ` +
+            pincodeStores.map(s => s.name).join(', ') + '.',
+        );
+      }
     } else {
       // Inline address with no coordinates: geocode the text (plus the
       // pincode, if it isn't already in the text) to get lat/long.
@@ -1163,7 +1228,10 @@ export class RiderPickupController {
           longitude = geocoded.longitude;
         }
       }
-      const resolution = await this.storeAssignmentService.resolveNearestStore({latitude, longitude, pincode});
+      const resolution = await this.storeAssignmentService.resolveStoreWithinPincode(
+        {latitude, longitude, pincode},
+        pincodeStores,
+      );
       if (!resolution.store) {
         const nearby = resolution.nearbyBeyondRadius
           .map(s => `${s.name} (${s.distanceKm.toFixed(1)} km)`)
@@ -1288,6 +1356,17 @@ export class RiderPickupController {
                 type: 'string',
                 description: 'Required when reasons includes "other".',
               },
+              handoverBy: {
+                type: 'string',
+                enum: Object.values(PickupHandoverBy),
+                description:
+                  'picked_up only, optional — who actually handed the clothes over at the doorstep. ' +
+                  'Replaces the value from booking. Omit to keep the booking value.',
+              },
+              handoverPersonName: {
+                type: 'string',
+                description: 'Required with handoverBy unless it is "self".',
+              },
             },
           },
         },
@@ -1295,6 +1374,8 @@ export class RiderPickupController {
     })
     body: {
       status: PickupRequestStatus;
+      handoverBy?: PickupHandoverBy;
+      handoverPersonName?: string;
       itemsByService?: Array<{
         serviceId: string;
         quantity: number;
@@ -1334,6 +1415,21 @@ export class RiderPickupController {
       if (body.itemsByService.some(i => !i.bagId)) {
         throw new HttpErrors.BadRequest('Every service needs its own scanned bag.');
       }
+      if (body.handoverBy && body.handoverBy !== PickupHandoverBy.SELF && !body.handoverPersonName?.trim()) {
+        throw new HttpErrors.BadRequest('handoverPersonName is required unless handoverBy is "self".');
+      }
+      // Who actually handed the clothes over at the doorstep — replaces the
+      // booking-time value only when the rider sends one, so an app that
+      // doesn't send it keeps the customer's original choice.
+      const doorstepHandover = body.handoverBy
+        ? {
+            handoverBy: body.handoverBy,
+            handoverPersonName:
+              body.handoverBy === PickupHandoverBy.SELF
+                ? (null as unknown as string)
+                : body.handoverPersonName!.trim(),
+          }
+        : {};
 
       const bagIds = body.itemsByService.map(i => i.bagId);
       if (new Set(bagIds).size !== bagIds.length) {
@@ -1371,7 +1467,7 @@ export class RiderPickupController {
           // bagId here is just the first/primary snapshot for back-compat
           // display (see the model's doc comment) — the real breakdown is
           // actualItemsByService[].bagId.
-          {status: body.status, bagId: actualItemsByService[0].bagId, actualItemsByService},
+          {status: body.status, bagId: actualItemsByService[0].bagId, actualItemsByService, ...doorstepHandover},
           {transaction: tx},
         );
         for (const item of actualItemsByService) {
