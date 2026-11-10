@@ -79,6 +79,18 @@ interface UpdateBody {
   deliverySpeed?: DeliveryType;
 }
 
+// Statuses in which an admin may still change the processing store — see
+// assertProcessingStoreChangeable.
+export const PROCESSING_STORE_CHANGEABLE_STATUSES: string[] = [
+  PickupRequestStatus.REQUESTED,
+  PickupRequestStatus.SCHEDULED,
+  PickupRequestStatus.RIDER_ASSIGNED,
+  PickupRequestStatus.OUT_FOR_PICKUP,
+  PickupRequestStatus.ARRIVED_AT_PICKUP,
+  PickupRequestStatus.PICKED_UP,
+  PickupRequestStatus.PICKUP_UNSUCCESSFUL,
+];
+
 // A pickup with no store in these statuses is visible to global admins only.
 const GLOBAL_ONLY_UNOWNED_STATUSES: string[] = [
   PickupRequestStatus.NOT_SERVICEABLE,
@@ -170,6 +182,53 @@ export class PickupRequestController {
     const allowed = PICKUP_REQUEST_STATUS_TRANSITIONS[current] ?? [];
     if (!allowed.includes(next)) {
       throw new HttpErrors.BadRequest(`Cannot move a pickup request from ${current} to ${next}.`);
+    }
+  }
+
+  // Changing a pickup's processing store (PATCH storeId). Allowed until the
+  // bag is committed to a store: once received_at_store, home-pickup order
+  // drafts must match pickup.storeId (OrderService submit check), and once
+  // the rider has batched it into a pending handover, that handover already
+  // names its destination store. Terminal/never-serviceable pickups are
+  // locked too. A scoped caller may only move a pickup to one of their own
+  // stores.
+  private async assertProcessingStoreChangeable(
+    pickup: PickupRequest,
+    newStoreId: string,
+    scope: StoreScope,
+  ): Promise<void> {
+    const status = pickup.status ?? PickupRequestStatus.REQUESTED;
+    if (!PROCESSING_STORE_CHANGEABLE_STATUSES.includes(status)) {
+      throw new HttpErrors.BadRequest(
+        `The processing store cannot be changed once the pickup is ${status}.`,
+      );
+    }
+    if (pickup.convertedOrderId || Object.keys(pickup.convertedOrders ?? {}).length) {
+      throw new HttpErrors.BadRequest(
+        'The processing store cannot be changed after an order has been created from this pickup.',
+      );
+    }
+    const store = await this.storeRepository.findOne({where: {id: newStoreId, isDeleted: false} as object});
+    if (!store) throw new HttpErrors.NotFound('Store not found.');
+    if (!scope.global && !scope.storeIds.includes(String(newStoreId))) {
+      throw new HttpErrors.Forbidden('You can only move a pickup to a store you manage.');
+    }
+    if (status === PickupRequestStatus.PICKED_UP) {
+      const pending = (await this.dataSource.execute(
+        `SELECT 1
+         FROM public.pickup_handover_item i
+         JOIN public.pickup_handover h ON h.id = i.pickuphandoverid
+         WHERE i.pickuprequestid = $1
+           AND h.isdeleted = false
+           AND h.status = 'pending'
+         LIMIT 1`,
+        [pickup.id],
+      )) as unknown[];
+      if (pending.length) {
+        throw new HttpErrors.Conflict(
+          'The rider has already started a handover for this pickup. Reject or complete that handover before changing the processing store.',
+        );
+      }
     }
   }
 
@@ -766,6 +825,9 @@ export class PickupRequestController {
     const {status, convertedOrderId, deliverySpeed, ...rest} = body;
     if (status !== undefined && status !== existing.status) {
       this.assertTransition(existing.status ?? PickupRequestStatus.REQUESTED, status);
+    }
+    if (rest.storeId !== undefined && rest.storeId !== existing.storeId) {
+      await this.assertProcessingStoreChangeable(existing, rest.storeId, scope);
     }
 
     if (convertedOrderId !== undefined) {
