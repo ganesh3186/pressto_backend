@@ -88,6 +88,17 @@ export class PickupRequest extends Entity {
   @belongsTo(() => Store)
   storeId?: string;
 
+  // Only for a NOT_SERVICEABLE pickup (no storeId — no store serves the
+  // address): the closest store beyond the service radius, set at
+  // creation. It decides which store's pickup list shows the request, and
+  // nothing else — it is not where the pickup goes, so it stays separate
+  // from storeId, which dashboards, rider assignment and store counts key
+  // off. Closest by distance, else by pincode (StoreAssignmentService.
+  // nearestStoreByPincode). Null only when neither finds a store; such a
+  // request is visible to global (all-store) admins only.
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  nearestStoreId?: string;
+
   @property({
     type: 'string',
     required: true,

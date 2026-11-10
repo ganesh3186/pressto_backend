@@ -43,6 +43,15 @@ describe('pickup request detail', () => {
         {id: 'service-2', name: 'Dry clean', serviceCategoryId: 'service-category-1'},
       ]},
       serviceCategoryRepository: {find: async () => [{id: 'service-category-1', name: 'Laundry'}]},
+      dataSource: {
+        execute: async () => [{
+          handovernumber: 'PH000004',
+          ridername: 'Ramesh K',
+          ridercode: 'RD012',
+          confirmedat: new Date('2026-11-10T06:35:00Z'),
+          receivedbyname: 'Priya Store',
+        }],
+      },
     }) as PickupRequestController;
 
     const detail = await controller.findById({} as UserProfile, 'pickup-1') as {
@@ -57,7 +66,16 @@ describe('pickup request detail', () => {
       convertedOrderNumbers: string[];
       itemCategoryEstimate: Array<{itemCategoryName: string; serviceName: string}>;
       actualItemsByService: Array<{bagNumber: number; remarks: string; mediaUrls: string[]; serviceCategoryName: string}>;
+      storeReceipt: object | null;
     };
+
+    expect(detail.storeReceipt).to.deepEqual({
+      handoverNumber: 'PH000004',
+      riderName: 'Ramesh K',
+      riderCode: 'RD012',
+      receivedByName: 'Priya Store',
+      receivedAt: new Date('2026-11-10T06:35:00Z'),
+    });
 
     expect(detail.bagNumber).to.equal(101);
     expect(detail.bagNumbers).to.deepEqual([101, 102]);

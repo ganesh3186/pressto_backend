@@ -79,6 +79,55 @@ interface UpdateBody {
   deliverySpeed?: DeliveryType;
 }
 
+// Statuses in which an admin may still change the processing store — see
+// assertProcessingStoreChangeable.
+export const PROCESSING_STORE_CHANGEABLE_STATUSES: string[] = [
+  PickupRequestStatus.REQUESTED,
+  PickupRequestStatus.SCHEDULED,
+  PickupRequestStatus.RIDER_ASSIGNED,
+  PickupRequestStatus.OUT_FOR_PICKUP,
+  PickupRequestStatus.ARRIVED_AT_PICKUP,
+  PickupRequestStatus.PICKED_UP,
+  PickupRequestStatus.PICKUP_UNSUCCESSFUL,
+];
+
+// A pickup with no store in these statuses is visible to global admins only.
+const GLOBAL_ONLY_UNOWNED_STATUSES: string[] = [
+  PickupRequestStatus.NOT_SERVICEABLE,
+  PickupRequestStatus.CANCELLED,
+];
+
+/**
+ * Which pickup requests a store-scoped caller sees in the list.
+ *
+ * A pickup with a storeId belongs to that store. One without a storeId
+ * either is not assigned yet (call-center intake often doesn't know the
+ * destination store — see PickupRequest.storeId) or is NOT_SERVICEABLE.
+ * A not-serviceable one carries nearestStoreId and is shown only to that
+ * store, not to every store. nearestStoreId is set on nothing else.
+ *
+ * `lenient` (no explicit store/cluster filter): open unassigned pickups
+ * are still shown so nothing becomes invisible to everyone. A
+ * not-serviceable or cancelled pickup with no store is never shown to
+ * every store: it is left to global (all-store) admins, who skip this
+ * filter entirely. An explicit store/cluster filter is exact: only that
+ * store's own pickups and its not-serviceable ones.
+ */
+export function pickupScopeWhere(storeIds: string[], lenient: boolean): object {
+  const owned: object[] = [
+    {storeId: {inq: storeIds}},
+    {storeId: null, nearestStoreId: {inq: storeIds}},
+  ];
+  // A cancelled pickup with no store is no work for any store — and one
+  // cancelled from not-serviceable would otherwise reappear everywhere.
+  const unassigned = {
+    storeId: null,
+    nearestStoreId: null,
+    status: {nin: GLOBAL_ONLY_UNOWNED_STATUSES},
+  };
+  return {or: lenient ? [...owned, unassigned] : owned};
+}
+
 export class PickupRequestController {
   constructor(
     @inject('services.pickup-request')
@@ -136,16 +185,76 @@ export class PickupRequestController {
     }
   }
 
+  // Changing a pickup's processing store (PATCH storeId). Allowed until the
+  // bag is committed to a store: once received_at_store, home-pickup order
+  // drafts must match pickup.storeId (OrderService submit check), and once
+  // the rider has batched it into a pending handover, that handover already
+  // names its destination store. Terminal/never-serviceable pickups are
+  // locked too. A scoped caller may only move a pickup to one of their own
+  // stores.
+  private async assertProcessingStoreChangeable(
+    pickup: PickupRequest,
+    newStoreId: string,
+    scope: StoreScope,
+  ): Promise<void> {
+    const status = pickup.status ?? PickupRequestStatus.REQUESTED;
+    if (!PROCESSING_STORE_CHANGEABLE_STATUSES.includes(status)) {
+      throw new HttpErrors.BadRequest(
+        `The processing store cannot be changed once the pickup is ${status}.`,
+      );
+    }
+    if (pickup.convertedOrderId || Object.keys(pickup.convertedOrders ?? {}).length) {
+      throw new HttpErrors.BadRequest(
+        'The processing store cannot be changed after an order has been created from this pickup.',
+      );
+    }
+    const store = await this.storeRepository.findOne({where: {id: newStoreId, isDeleted: false} as object});
+    if (!store) throw new HttpErrors.NotFound('Store not found.');
+    if (!scope.global && !scope.storeIds.includes(String(newStoreId))) {
+      throw new HttpErrors.Forbidden('You can only move a pickup to a store you manage.');
+    }
+    if (status === PickupRequestStatus.PICKED_UP) {
+      const pending = (await this.dataSource.execute(
+        `SELECT 1
+         FROM public.pickup_handover_item i
+         JOIN public.pickup_handover h ON h.id = i.pickuphandoverid
+         WHERE i.pickuprequestid = $1
+           AND h.isdeleted = false
+           AND h.status = 'pending'
+         LIMIT 1`,
+        [pickup.id],
+      )) as unknown[];
+      if (pending.length) {
+        throw new HttpErrors.Conflict(
+          'The rider has already started a handover for this pickup. Reject or complete that handover before changing the processing store.',
+        );
+      }
+    }
+  }
+
   // Same IDOR guard Orders applies via StoreScopeService.assertOrderVisible
   // — a scoped caller can't read/update/delete a pickup request outside
   // their store(s) just by knowing its id. A not-yet-assigned pickup
   // (storeId unset — see PickupRequest.storeId) stays visible to any
   // scoped caller, matching find()'s leniency for the same reason.
-  private assertPickupScopeVisible(scope: StoreScope, storeId?: string | null): void {
+  // A not-serviceable pickup (no storeId) belongs to its nearestStoreId
+  // instead — see pickupScopeWhere.
+  private assertPickupScopeVisible(
+    scope: StoreScope,
+    pickup: {storeId?: string | null; nearestStoreId?: string | null; status?: string | null},
+  ): void {
     if (scope.global) return;
-    if (!storeId) return;
-    if (scope.storeIds.includes(String(storeId))) return;
-    throw new HttpErrors.NotFound('Pickup request not found.');
+    const owningStoreId = pickup.storeId || pickup.nearestStoreId;
+    if (owningStoreId) {
+      if (scope.storeIds.includes(String(owningStoreId))) return;
+      throw new HttpErrors.NotFound('Pickup request not found.');
+    }
+    // No store at all: an open unassigned intake stays visible to any store,
+    // but a not-serviceable or cancelled one is global-only (same rule as
+    // pickupScopeWhere).
+    if (GLOBAL_ONLY_UNOWNED_STATUSES.includes(String(pickup.status))) {
+      throw new HttpErrors.NotFound('Pickup request not found.');
+    }
   }
 
   private async assertRiderAssignable(riderId: string) {
@@ -455,20 +564,9 @@ export class PickupRequestController {
       clusterId: clusterIdFilter,
     });
 
-    let scopeWhere: object = {};
-    if (Array.isArray(storeIds)) {
-      // A pickup request's storeId is unset until it's assigned to a
-      // rider (call-center intake often doesn't know the destination
-      // store yet — see PickupRequest.storeId). With no explicit
-      // store/cluster filter, a scoped caller's default view still
-      // includes those not-yet-assigned requests so nothing becomes
-      // invisible to everyone; a deliberately picked store/cluster
-      // filter is exact, no such leniency.
-      scopeWhere =
-        !storeIdFilter && !clusterIdFilter
-          ? {or: [{storeId: {inq: storeIds}}, {storeId: null}]}
-          : {storeId: {inq: storeIds}};
-    }
+    const scopeWhere = Array.isArray(storeIds)
+      ? pickupScopeWhere(storeIds, !storeIdFilter && !clusterIdFilter)
+      : undefined;
 
     const rawIncludes = filter?.include;
     const filterIncludes = Array.isArray(rawIncludes) ? rawIncludes : [];
@@ -482,7 +580,13 @@ export class PickupRequestController {
     const requests = await this.pickupRequestRepository.find({
       ...filter,
       include,
-      where: {...filter?.where, ...scopeWhere, isDeleted: false},
+      // ANDed, not spread: the scope is an `or`, and spreading it would
+      // silently replace an `or` the caller sent in filter.where.
+      where: {
+        and: [filter?.where, scopeWhere, {isDeleted: false}].filter(
+          (clause): clause is object => !!clause && Object.keys(clause).length > 0,
+        ),
+      } as object,
       order: filter?.order ?? ['createdAt DESC'],
     });
     return this.enrichWithReworkOrderNumber(await this.enrichWithSuggestedRider(requests));
@@ -514,6 +618,18 @@ export class PickupRequestController {
           bagNumbers: {type: 'array', items: {type: 'number'}},
           mediaUrls: {type: 'array', items: {type: 'string'}},
           riderMediaUrls: {type: 'array', items: {type: 'string'}},
+          storeReceipt: {
+            type: 'object',
+            nullable: true,
+            description: 'Rider-to-store handover once the store confirmed receipt; null before that.',
+            properties: {
+              handoverNumber: {type: 'string'},
+              riderName: {type: 'string'},
+              riderCode: {type: 'string'},
+              receivedByName: {type: 'string', nullable: true},
+              receivedAt: {type: 'string', format: 'date-time', nullable: true},
+            },
+          },
           itemCategoryEstimate: {type: 'array', items: {type: 'object', properties: {
             itemCategoryName: {type: 'string', nullable: true},
             serviceName: {type: 'string', nullable: true},
@@ -544,7 +660,7 @@ export class PickupRequestController {
     });
     if (!pickupRequest) throw new HttpErrors.NotFound('Pickup request not found.');
     const scope = await this.storeScopeService.resolve(currentUser);
-    this.assertPickupScopeVisible(scope, pickupRequest.storeId);
+    this.assertPickupScopeVisible(scope, pickupRequest);
 
     const bagIds = [...new Set([
       pickupRequest.bagId,
@@ -572,7 +688,7 @@ export class PickupRequestController {
       ...(pickupRequest.actualItemsByService ?? []).map(line => line.serviceId),
     ].filter((id): id is string => Boolean(id)))];
 
-    const [bags, media, itemCategories, services, convertedOrders, enriched] = await Promise.all([
+    const [bags, media, itemCategories, services, convertedOrders, enriched, storeReceipt] = await Promise.all([
       bagIds.length ? this.bagRepository.find({where: {id: {inq: bagIds}} as object}) : [],
       mediaIds.length ? this.mediaRepository.find({where: {id: {inq: mediaIds}} as object}) : [],
       itemCategoryIds.length ? this.itemCategoryRepository.find({where: {id: {inq: itemCategoryIds}} as object}) : [],
@@ -581,6 +697,7 @@ export class PickupRequestController {
         ? this.orderRepository.find({where: {id: {inq: convertedOrderIds}} as object, fields: {id: true, orderNumber: true} as object})
         : [],
       this.enrichWithSuggestedRider([pickupRequest]).then(requests => this.enrichWithReworkOrderNumber(requests)),
+      this.storeReceiptFor(id),
     ]);
     const bagNumberById = new Map(bags.map(bag => [bag.id, bag.bagNumber]));
     const convertedOrderNumberById = new Map(convertedOrders.map(order => [order.id, order.orderNumber]));
@@ -597,6 +714,7 @@ export class PickupRequestController {
 
     return {
       ...enriched[0],
+      storeReceipt,
       convertedOrderNumber: pickupRequest.convertedOrderId
         ? convertedOrderNumberById.get(pickupRequest.convertedOrderId) ?? null : null,
       convertedOrderNumbers: convertedOrderIds
@@ -624,6 +742,43 @@ export class PickupRequestController {
           mediaUrls: toUrls(line.mediaIds),
         };
       }),
+    };
+  }
+
+  /**
+   * Who handed this pickup's bag to the store and who received it — the
+   * latest confirmed store-bound PickupHandover (POST /pickup-handovers/{id}/confirm)
+   * that contains this pickup. Null until a store confirms one; a pickup a
+   * rider marked received_at_store directly has no handover record.
+   */
+  private async storeReceiptFor(pickupRequestId: string): Promise<{
+    handoverNumber: string;
+    riderName: string;
+    riderCode: string;
+    receivedByName: string | null;
+    receivedAt: Date | null;
+  } | null> {
+    const rows = (await this.dataSource.execute(
+      `SELECT h.handovernumber, h.ridername, h.ridercode, h.confirmedat, u.fullname AS receivedbyname
+       FROM public.pickup_handover_item i
+       JOIN public.pickup_handover h ON h.id = i.pickuphandoverid
+       LEFT JOIN public.users u ON u.id::text = h.confirmedby::text
+       WHERE i.pickuprequestid = $1
+         AND h.isdeleted = false
+         AND h.status = 'confirmed'
+         AND coalesce(h.handovertotype, 'store') = 'store'
+       ORDER BY h.confirmedat DESC NULLS LAST
+       LIMIT 1`,
+      [pickupRequestId],
+    )) as Array<Record<string, unknown>>;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      handoverNumber: String(row.handovernumber),
+      riderName: String(row.ridername),
+      riderCode: String(row.ridercode),
+      receivedByName: (row.receivedbyname as string | null) ?? null,
+      receivedAt: (row.confirmedat as Date | null) ?? null,
     };
   }
 
@@ -665,11 +820,14 @@ export class PickupRequestController {
     const existing = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false}});
     if (!existing) throw new HttpErrors.NotFound('Pickup request not found.');
     const scope = await this.storeScopeService.resolve(currentUser);
-    this.assertPickupScopeVisible(scope, existing.storeId);
+    this.assertPickupScopeVisible(scope, existing);
 
     const {status, convertedOrderId, deliverySpeed, ...rest} = body;
     if (status !== undefined && status !== existing.status) {
       this.assertTransition(existing.status ?? PickupRequestStatus.REQUESTED, status);
+    }
+    if (rest.storeId !== undefined && rest.storeId !== existing.storeId) {
+      await this.assertProcessingStoreChangeable(existing, rest.storeId, scope);
     }
 
     if (convertedOrderId !== undefined) {
@@ -748,7 +906,7 @@ export class PickupRequestController {
     const existing = await this.pickupRequestRepository.findOne({where: {id, isDeleted: false}});
     if (!existing) throw new HttpErrors.NotFound('Pickup request not found.');
     const scope = await this.storeScopeService.resolve(currentUser);
-    this.assertPickupScopeVisible(scope, existing.storeId);
+    this.assertPickupScopeVisible(scope, existing);
 
     const inFlight =
       existing.status !== PickupRequestStatus.REQUESTED &&

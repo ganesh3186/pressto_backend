@@ -51,6 +51,7 @@ import { CustomerPhoneService } from '../services/customer-phone.service';
 import { CustomerPreferenceChanges, CustomerPreferenceService } from '../services/customer-preference.service';
 import { filterSlotsForDate } from '../utils/pickup-slot-availability';
 import { SystemNotificationService } from '../services/system-notification.service';
+import { StoreAssignmentService } from '../services/store-assignment.service';
 
 export class CustomerProfileController {
   constructor(
@@ -88,6 +89,8 @@ export class CustomerProfileController {
     private serviceCategoryRepository: ServiceCategoryRepository,
     @inject('services.system-notification', {optional: true})
     private systemNotificationService?: SystemNotificationService,
+    @inject('services.store-assignment', {optional: true})
+    private storeAssignmentService?: StoreAssignmentService,
   ) { }
 
   private async resolveCustomer(userId: string): Promise<Customer> {
@@ -702,6 +705,13 @@ export class CustomerProfileController {
     const { store, nearbyStores } = await this.addressService.resolvePickupStore(address);
     const storeId = store?.id;
     const status = storeId ? undefined : PickupRequestStatus.NOT_SERVICEABLE;
+    // The only store whose pickup list shows this not-serviceable request:
+    // the closest by distance (nearbyStores is nearest-first), else — when
+    // coordinates are unavailable — the closest by pincode.
+    const nearestStoreId = storeId
+      ? undefined
+      : nearbyStores[0]?.id ??
+        (await this.storeAssignmentService?.nearestStoreByPincode(address.pincode))?.id;
 
     const { v4 } = await import('uuid');
     const count = await this.pickupRequestRepository.count();
@@ -716,6 +726,7 @@ export class CustomerProfileController {
       address: this.addressService.toDisplaySnapshot(address),
       pincode: address.pincode,
       storeId,
+      nearestStoreId,
       status,
       requestedDate: body.requestedDate,
       slot: slot.label,
