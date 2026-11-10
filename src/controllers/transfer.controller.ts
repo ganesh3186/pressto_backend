@@ -123,6 +123,47 @@ export class TransferController {
     return garments;
   }
 
+  /**
+   * Non-throwing twin of assertGarmentsTransferable: which of these garments
+   * are currently locked into an active transfer, and on which transit. Used
+   * to *flag* (not hide) them in the eligible-items picker so the UI can show
+   * "In transit" up front, instead of letting someone add one only to be
+   * rejected at create time. Mirrors the exact block rule used there — a
+   * garment scanned on a still-open transfer, or missing on a still-
+   * discrepancy one — so the picker and the create guard never disagree.
+   */
+  private async activeTransferByGarment(
+    garmentIds: string[],
+  ): Promise<Map<string, {transitId: string; status: TransferStatus}>> {
+    const result = new Map<string, {transitId: string; status: TransferStatus}>();
+    if (!garmentIds.length) return result;
+
+    const openItems = await this.transferItemRepo.find({
+      where: {
+        garmentId: {inq: garmentIds},
+        scanStatus: {inq: [TransferItemScanStatus.SCANNED, TransferItemScanStatus.MISSING]},
+      } as object,
+    });
+    if (!openItems.length) return result;
+
+    const parentIds = [...new Set(openItems.map(i => i.transferId))];
+    const parents = await this.transferRepo.find({where: {id: {inq: parentIds}} as object});
+    const parentById = new Map(parents.map(t => [t.id, t]));
+
+    for (const item of openItems) {
+      const parent = parentById.get(item.transferId);
+      if (!parent || !item.garmentId) continue;
+      const status = parent.status ?? TransferStatus.SENT;
+      const blocked =
+        item.scanStatus === TransferItemScanStatus.SCANNED
+          ? TransferController.OPEN_TRANSFER_STATUSES.includes(status)
+          : item.scanStatus === TransferItemScanStatus.MISSING &&
+            status === TransferStatus.DISCREPANCY;
+      if (blocked) result.set(item.garmentId, {transitId: parent.transitId, status});
+    }
+    return result;
+  }
+
   private async assertRiderAssignable(riderId: string) {
     const rider = await this.riderRepo.findOne({where: {id: riderId, isDeleted: false}});
     if (!rider) throw new HttpErrors.NotFound('Rider not found.');
@@ -451,6 +492,12 @@ export class TransferController {
       return orderId ? orderStoreById.get(orderId) === storeId : false;
     });
 
+    // Which of these on-hand garments are still locked into an active
+    // transfer (data can leave garment.activeTransferId unset yet still have a
+    // live transfer_item row) — flag them so the picker shows "In transit"
+    // instead of letting the user hit the create-time 409.
+    const activeTransferByGarmentId = await this.activeTransferByGarment(garments.map(g => g.id));
+
     const serviceIds = [...new Set(orderItems.map(oi => oi.serviceId))];
     const itemIds = [...new Set(orderItems.map(oi => oi.itemId))];
     const [services, items] = await Promise.all([
@@ -478,6 +525,7 @@ export class TransferController {
           const orderItem = orderItemById.get(garment.orderItemId);
           const service = orderItem ? serviceById.get(orderItem.serviceId) : undefined;
           const item = orderItem ? itemById.get(orderItem.itemId) : undefined;
+          const activeTransfer = activeTransferByGarmentId.get(garment.id);
           return {
             id: garment.id,
             garmentId: garment.id,
@@ -485,6 +533,11 @@ export class TransferController {
             itemName: item?.name ?? 'Garment',
             serviceId: orderItem?.serviceId ?? null,
             serviceName: service?.name ?? 'Service',
+            // Already in flight on another transfer — the picker shows this as
+            // locked "In transit" and keeps it out of "Add all to bag".
+            transferLocked: Boolean(activeTransfer),
+            transferLockReason: activeTransfer ? 'In transit' : undefined,
+            activeTransitId: activeTransfer?.transitId ?? null,
           };
         });
         const customer = customerById.get(order.customerId);
