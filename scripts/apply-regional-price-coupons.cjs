@@ -83,30 +83,31 @@ function idsByName(rows, label) {
 
 async function loadDatabase(client, codes) {
   const q = async (sql, params) => (await client.query(sql, params)).rows;
-  const [stores, services, items, mappings, clusters, storePct, clusterPct, regionPct, coupons, uniqueIndex] =
-    await Promise.all([
-      q(`SELECT id, code, name, clusterid, isactive FROM public.store WHERE COALESCE(isdeleted, false) = false`),
-      q(`SELECT id, name FROM public.service WHERE COALESCE(isdeleted, false) = false`),
-      q(`SELECT id, name FROM public.item WHERE COALESCE(isdeleted, false) = false`),
-      q(`SELECT serviceid, itemid, baseprice FROM public.service_item_mapping WHERE COALESCE(isdeleted, false) = false`),
-      q(`SELECT id, regionid FROM public.cluster`),
-      q(`SELECT storeid AS id, percentage FROM public.store_price_override
-          WHERE isactive = true AND COALESCE(isdeleted, false) = false AND percentage IS NOT NULL`),
-      q(`SELECT clusterid AS id, percentage FROM public.cluster_price_list
-          WHERE isactive = true AND COALESCE(isdeleted, false) = false AND percentage IS NOT NULL`),
-      q(`SELECT regionid AS id, percentage FROM public.price_list
-          WHERE isactive = true AND COALESCE(isdeleted, false) = false AND percentage IS NOT NULL`),
-      q(`SELECT id, code, name, discounttype, isactive, isdeleted FROM public.coupon
-          WHERE discounttype = 'price_override' OR UPPER(code) = ANY($1)`, [codes]),
-      q(`SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'coupon_price_override'
-          AND indexdef ILIKE 'CREATE UNIQUE INDEX%(couponid, serviceid, itemid)%'`),
-    ]);
+  // One connection runs one query at a time, so these are read in turn.
+  const stores = await q(`SELECT id, code, name, clusterid, isactive FROM public.store
+    WHERE COALESCE(isdeleted, false) = false`);
+  const services = await q(`SELECT id, name FROM public.service WHERE COALESCE(isdeleted, false) = false`);
+  const items = await q(`SELECT id, name FROM public.item WHERE COALESCE(isdeleted, false) = false`);
+  const mappings = await q(`SELECT serviceid, itemid, baseprice FROM public.service_item_mapping
+    WHERE COALESCE(isdeleted, false) = false`);
+  const clusters = await q(`SELECT id, regionid FROM public.cluster`);
+  const storePct = await q(`SELECT storeid AS id, percentage FROM public.store_price_override
+    WHERE isactive = true AND COALESCE(isdeleted, false) = false AND percentage IS NOT NULL`);
+  const clusterPct = await q(`SELECT clusterid AS id, percentage FROM public.cluster_price_list
+    WHERE isactive = true AND COALESCE(isdeleted, false) = false AND percentage IS NOT NULL`);
+  const regionPct = await q(`SELECT regionid AS id, percentage FROM public.price_list
+    WHERE isactive = true AND COALESCE(isdeleted, false) = false AND percentage IS NOT NULL`);
+  const coupons = await q(`SELECT id, code, name, discounttype, isactive, isdeleted FROM public.coupon
+    WHERE discounttype = 'price_override' OR UPPER(code) = ANY($1)`, [codes]);
+  const uniqueIndex = await q(`SELECT 1 FROM pg_indexes WHERE schemaname = 'public'
+    AND tablename = 'coupon_price_override'
+    AND indexdef ILIKE 'CREATE UNIQUE INDEX%(couponid, serviceid, itemid)%'`);
   const ours = coupons.filter(c => codes.includes(String(c.code).toUpperCase()));
   const rows = ours.length
     ? await q(
         `SELECT id, couponid, serviceid, itemid, overrideprice, isactive, isdeleted
-           FROM public.coupon_price_override WHERE couponid = ANY($1::uuid[])`,
-        [ours.map(c => c.id)],
+           FROM public.coupon_price_override WHERE couponid::text = ANY($1::text[])`,
+        [ours.map(c => String(c.id))],
       )
     : [];
   return {
@@ -181,7 +182,7 @@ function plan(db, specs) {
 
       const coupon = db.coupons.find(c => String(c.code).toUpperCase() === spec.code) ?? null;
       const existing = new Map(
-        db.rows.filter(r => coupon && r.couponid === coupon.id).map(r => [`${r.serviceid}:${r.itemid}`, r]),
+        db.rows.filter(r => coupon && String(r.couponid) === String(coupon.id)).map(r => [`${r.serviceid}:${r.itemid}`, r]),
       );
       let added = 0;
       let changed = 0;
@@ -296,8 +297,8 @@ async function writeRows(client, couponId, c) {
     await client.query(
       `UPDATE public.coupon_price_override
           SET isdeleted = true, deletedat = NOW(), updatedat = NOW()
-        WHERE id = ANY($1::uuid[])`,
-      [c.removed],
+        WHERE id::text = ANY($1::text[])`,
+      [c.removed.map(String)],
     );
   }
 }
