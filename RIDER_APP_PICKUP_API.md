@@ -64,9 +64,10 @@ setup a self-registered customer gets.
 3. otherwise top-level `latitude`/`longitude`.
 
 The nearest active store within `STORE_ASSIGNMENT_RADIUS_KM` (default 15 km)
-of those coordinates becomes the customer's `preferredStoreId`. If nothing is
-in range or no coordinates were found, the store covering `address.pincode`
-(or top-level `pincode`) is used. If neither resolves, the customer is created
+of those coordinates becomes the customer's `preferredStoreId`. When usable
+coordinates exist but no store is in range, pincode coverage does not override
+the radius and no store is assigned. Pincode coverage is used only when no
+usable coordinates were found. If neither resolves, the customer is created
 with no store; saving an address later (§2a) or §2.1 retries.
 
 Customer, address and store assignment are saved in one transaction. For existing customers see §2.1.
@@ -110,7 +111,9 @@ Location used, in order: query `latitude`/`longitude`/`pincode` → the saved
 address `addressId` → the customer's default saved address (else their first).
 A saved address with no coordinates is geocoded from its text first, and the
 coordinates are saved onto the address.
-Resolution is lat/long first (nearest within radius), then pincode.
+Usable latitude/longitude resolves only to the nearest store within the
+configured radius. Pincode coverage is used only when coordinates are
+unavailable; it does not override an out-of-radius coordinate result.
 
 If the customer has **no** `preferredStoreId` yet **and the location came from
 one of their saved addresses** (`locationSource: "address"`), the resolved
@@ -355,11 +358,11 @@ pickup address**:
 | `addressId` (saved address) | the address's lat/long; if it has none, its text is geocoded once and saved onto the address | the address's pincode |
 | inline `address` | `latitude`/`longitude` if sent, else geocoded from the address text + `pincode` | `pincode` |
 
-Coordinates are tried first: the nearest active store within
-`STORE_ASSIGNMENT_RADIUS_KM` (default 15 km). Then the store covering the
-pincode (`store_pincode_coverage`). If neither matches, **`422`** with the
-nearest stores outside the radius listed in the message. Send `storeId`
-to assign one manually.
+When coordinates are available, only the nearest active store within
+`STORE_ASSIGNMENT_RADIUS_KM` (default 15 km) is eligible. Pincode coverage is
+used only when usable coordinates are unavailable. If neither matches,
+**`422`** lists the nearest stores outside the radius. Send `storeId` to
+assign one manually.
 
 An explicit `storeId` always wins. `pickupNow: true` with an active run
 keeps the run's store (see below).

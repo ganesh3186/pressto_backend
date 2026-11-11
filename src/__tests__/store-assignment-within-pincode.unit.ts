@@ -18,8 +18,7 @@ const pincodeStore = (id: string, latitude: number | null, longitude: number | n
 });
 
 describe('StoreAssignmentService.resolveStoreWithinPincode', () => {
-  // Any store-table read here would mean it fell back to the
-  // coordinate-first lookup, which can pick a store outside the list.
+  // The shared fallback store is at the test coordinates and inside radius.
   const service = new StoreAssignmentService(
     {find: async () => [{id: 'outside', name: 'Outside', code: 'OUT', latitude: 19.0, longitude: 72.8}]} as never,
     {find: async () => []} as never,
@@ -45,6 +44,15 @@ describe('StoreAssignmentService.resolveStoreWithinPincode', () => {
 
   it('falls back to the nearest store by coordinates when no store serves the pincode', async () => {
     const result = await service.resolveStoreWithinPincode({latitude: 19.0, longitude: 72.8, pincode: '400001'}, []);
+    expect(result.store?.id).to.equal('outside');
+    expect(result.matchedBy).to.equal('coordinates');
+  });
+
+  it('falls back to an in-radius store when every pincode store is too far away', async () => {
+    const result = await service.resolveStoreWithinPincode(
+      {latitude: 19.0, longitude: 72.8, pincode: '400001'},
+      [pincodeStore('far', 20.0, 72.8)],
+    );
     expect(result.store?.id).to.equal('outside');
     expect(result.matchedBy).to.equal('coordinates');
   });

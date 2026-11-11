@@ -72,9 +72,9 @@ export class CustomerAddressService {
   }
 
   /**
-   * Which store serves a pickup at this address: the nearest within radius,
-   * then pincode coverage. An address with no usable coordinates is geocoded
-   * and saved, so that only happens once per address.
+   * Which store serves a pickup at this address: the nearest within radius
+   * when coordinates are available, otherwise pincode coverage. An address
+   * with no usable coordinates is geocoded and saved first.
    */
   async resolvePickupStore(address: CustomerAddress): Promise<PickupStoreResolution> {
     await this.ensureCoordinates(address);
@@ -95,6 +95,7 @@ export class CustomerAddressService {
         };
       }
       nearbyStores = resolved.nearbyBeyondRadius;
+      return {store: null, matchedBy: null, distanceKm: null, nearbyStores};
     }
 
     const pincodeStore = address.pincode

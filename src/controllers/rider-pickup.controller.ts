@@ -463,7 +463,7 @@ export class RiderPickupController {
   //   1. latitude/longitude and/or pincode passed as query params,
   //   2. the saved address given by addressId,
   //   3. the customer's default saved address (else their first one).
-  // Resolution is lat/long first, then pincode.
+  // Coordinates enforce the configured radius; pincode is used only without them.
   //
   // Only a location from the customer's own saved address (2 or 3) is
   // ever saved as preferredStoreId. Query params are lookup-only: they
@@ -796,12 +796,12 @@ export class RiderPickupController {
   @authenticate('jwt')
   @authorize({roles: ['rider']})
   @get('/rider/stores/by-pincode')
-  @response(200, {description: "Active stores serving the selected address's pincode, nearest first"})
+  @response(200, {description: "Active stores serving the selected address's pincode within the configured radius, nearest first"})
   async getStoresForPincode(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('addressId') addressId?: string,
     @param.query.string('pincode') pincodeParam?: string,
-  ): Promise<{pincode: string; serviceable: boolean; stores: PincodeStore[]}> {
+  ): Promise<{pincode: string; radiusKm: number; serviceable: boolean; stores: PincodeStore[]}> {
     await this.resolveActiveRider(currentUser);
 
     let pincode: string;
@@ -822,7 +822,12 @@ export class RiderPickupController {
     }
 
     const stores = await this.storeAssignmentService.listStoresForPincode(pincode);
-    return {pincode, serviceable: stores.length > 0, stores};
+    return {
+      pincode,
+      radiusKm: StoreAssignmentService.radiusKm(),
+      serviceable: stores.length > 0,
+      stores,
+    };
   }
 
   // ─── Pickup / delivery slots ─────────────────────────────────────────────────
@@ -1044,7 +1049,8 @@ export class RiderPickupController {
                 format: 'uuid',
                 description:
                   'Optional override. When omitted, the nearest store to the pickup address is ' +
-                  'assigned (lat/long first, then pincode). Not used when pickupNow attaches to ' +
+                  'assigned within the configured radius when coordinates are available; pincode ' +
+                  'coverage is used only without usable coordinates. Not used when pickupNow attaches to ' +
                   "the rider's active run, which keeps the run's store.",
               },
             },
@@ -1150,6 +1156,9 @@ export class RiderPickupController {
       customerMobile: customer.user?.phone ?? '',
       address: addressText,
       pincode,
+      ...(latitude != null && longitude != null
+        ? {pickupLatitude: latitude, pickupLongitude: longitude}
+        : {}),
       requestedDate: body.requestedDate,
       slot: slot.label,
       pickupSlotId: slot.id,
@@ -1184,6 +1193,9 @@ export class RiderPickupController {
       if (currentRun) {
         const pickupRequest = await this.pickupRequestService.createRequest({
           ...base,
+          ...(latitude != null && longitude != null
+            ? {pickupLatitude: latitude, pickupLongitude: longitude}
+            : {}),
           ...selfAssignFields,
           storeId: currentRun.storeId,
           runId: currentRun.runId,
@@ -1251,6 +1263,9 @@ export class RiderPickupController {
 
     const pickupRequest = await this.pickupRequestService.createRequest({
       ...base,
+      ...(latitude != null && longitude != null
+        ? {pickupLatitude: latitude, pickupLongitude: longitude}
+        : {}),
       ...selfAssignFields,
       storeId,
       ...(body.pickupNow ? {runId: v4()} : {}),

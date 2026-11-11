@@ -92,13 +92,17 @@ describe('pickup store resolution', () => {
     expect(pincodesLookedUp).to.deepEqual([]);
   });
 
-  it('falls back to pincode coverage and drops the nearby list', async () => {
-    const {service} = setup({beyond: [FAR], pincodeStore: {id: 'cover', name: 'Cover', code: 'ST3'}});
+  it('does not bypass the radius with pincode coverage when coordinates are available', async () => {
+    const {service, pincodesLookedUp} = setup({
+      beyond: [FAR],
+      pincodeStore: {id: 'cover', name: 'Cover', code: 'ST3'},
+    });
     const result = await service.resolvePickupStore(address({}));
 
-    expect(result.store?.id).to.equal('cover');
-    expect(result.matchedBy).to.equal('pincode');
-    expect(result.nearbyStores).to.deepEqual([]);
+    expect(result.store).to.equal(null);
+    expect(result.matchedBy).to.equal(null);
+    expect(result.nearbyStores).to.deepEqual([FAR]);
+    expect(pincodesLookedUp).to.deepEqual([]);
   });
 
   it('reports no store and the closest stores past the radius', async () => {

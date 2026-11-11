@@ -292,6 +292,7 @@ export class RiderPerformanceController {
       PickupRequestStatus.PICKUP_UNSUCCESSFUL,
     ];
     const TRANSFER_COMPLETED: TransferStatus[] = [
+      TransferStatus.DELIVERED,
       TransferStatus.RECEIVED,
       TransferStatus.DISCREPANCY,
       TransferStatus.RESOLVED,

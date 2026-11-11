@@ -35,14 +35,15 @@ describe('StoreAssignmentService.resolveNearestStore', () => {
     expect(result.store?.id).to.equal('store-b');
   });
 
-  it('falls back to pincode when no store is within radius', async () => {
+  it('does not bypass the radius with pincode coverage when coordinates are available', async () => {
     const result = await makeService([{storeId: 'store-a', centroidDistanceKm: 1}]).resolveNearestStore({
       latitude: 25.0,
       longitude: 72.8,
       pincode: '400001',
     });
-    expect(result.matchedBy).to.equal('pincode');
-    expect(result.store?.id).to.equal('store-a');
+    expect(result.matchedBy).to.equal(null);
+    expect(result.store).to.equal(null);
+    expect(result.nearbyBeyondRadius.length).to.be.greaterThan(0);
   });
 
   it('treats out-of-range coordinates as missing and falls back to pincode', async () => {

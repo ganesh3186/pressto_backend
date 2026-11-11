@@ -2,17 +2,23 @@ import {BindingScope, injectable} from '@loopback/core';
 import {repository} from '@loopback/repository';
 import {Store} from '../models';
 import {StorePincodeCoverageRepository, StoreRepository} from '../repositories';
+import {storeSearchRadiusKm} from '../utils/config';
 import {hasRealCoordinates} from './geocoding.service';
 
 const EARTH_RADIUS_KM = 6371;
-const DEFAULT_RADIUS_KM = 15;
 
 function toRadians(deg: number): number {
   return (deg * Math.PI) / 180;
 }
 
-/** Great-circle distance between two lat/lng points, in km. */
-function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+function toNumber(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+/** Great-circle (straight-line) distance between two lat/lng points, in km. */
+export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const dLat = toRadians(lat2 - lat1);
   const dLng = toRadians(lng2 - lng1);
   const a =
@@ -34,6 +40,8 @@ export type NearbyStore = {
 export type PincodeStore = {
   id: string;
   name: string;
+  storeId?: string;
+  storeName?: string;
   code: string;
   address: string;
   city: string;
@@ -64,8 +72,8 @@ export type ResolvedStore = {
  *     preferredStoreId (CustomerAddressService.create), and
  *   - resolving/blocking a self-service pickup request's storeId
  *     (CustomerProfileController.createPickupRequest).
- * Radius is configurable via STORE_ASSIGNMENT_RADIUS_KM so it can be
- * tuned without a code change; defaults to 15km when unset or invalid.
+ * Radius is the shared STORE_SEARCH_RADIUS_KM setting (utils/config.ts)
+ * so it can be tuned without a code change; defaults to 15km when unset.
  */
 @injectable({scope: BindingScope.TRANSIENT})
 export class StoreAssignmentService {
@@ -76,8 +84,7 @@ export class StoreAssignmentService {
   ) {}
 
   static radiusKm(): number {
-    const raw = Number(process.env.STORE_ASSIGNMENT_RADIUS_KM);
-    return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RADIUS_KM;
+    return storeSearchRadiusKm();
   }
 
   /** Every active store with coordinates, sorted nearest-first. */
@@ -135,9 +142,9 @@ export class StoreAssignmentService {
   }
 
   /**
-   * One-call "which store serves this location" — coordinates first
-   * (nearest active store within the radius), then the pincode coverage
-   * table as a fallback. Same precedence as the customer app's pickup
+   * One-call "which store serves this location" — use coordinates when
+   * available and enforce the radius; use pincode coverage only when usable
+   * coordinates are unavailable. Same precedence as the customer app's pickup
    * flow (CustomerProfileController.createPickupRequest). Either input may
    * be missing; `store` is null when neither resolves.
    */
@@ -164,7 +171,7 @@ export class StoreAssignmentService {
       nearbyBeyondRadius = resolved.nearbyBeyondRadius;
     }
 
-    if (input.pincode) {
+    if (!hasCoords && input.pincode) {
       const pincodeStore = await this.resolveForPincode(input.pincode);
       if (pincodeStore) {
         return {
@@ -197,9 +204,11 @@ export class StoreAssignmentService {
     if (hasRealCoordinates(input.latitude, input.longitude)) {
       const lat = Number(input.latitude);
       const lng = Number(input.longitude);
+      const radius = StoreAssignmentService.radiusKm();
       const nearest = stores
         .filter(s => s.latitude != null && s.longitude != null)
         .map(s => ({store: s, distanceKm: haversineKm(lat, lng, s.latitude!, s.longitude!)}))
+        .filter(candidate => candidate.distanceKm <= radius)
         .sort((a, b) => a.distanceKm - b.distanceKm)[0];
       if (nearest) {
         const {id, name, code} = nearest.store;
@@ -209,6 +218,7 @@ export class StoreAssignmentService {
           nearbyBeyondRadius: [],
         };
       }
+      return this.resolveNearestStore(input);
     }
     const {id, name, code} = stores[0];
     return {store: {id, name, code}, matchedBy: 'pincode', nearbyBeyondRadius: []};
@@ -277,8 +287,11 @@ export class StoreAssignmentService {
     const normalized = String(pincode ?? '').trim();
     if (!/^\d{6}$/.test(normalized)) return null;
 
-    const coverage = await this.coverageRepo.find({
+    const coverage = (await this.coverageRepo.find({
       where: {pincode: normalized, isActive: true, isDeleted: false} as object,
+    })).filter(row => {
+      const distance = toNumber(row.centroidDistanceKm);
+      return distance !== null && distance <= StoreAssignmentService.radiusKm();
     });
     if (!coverage.length) return null;
 
@@ -302,8 +315,8 @@ export class StoreAssignmentService {
 
   /**
    * Every active store that serves a pincode, nearest first: the stores the
-   * coverage table lists for it (sorted by distance from the pincode's
-   * centroid), then any other active store located in that pincode itself.
+   * coverage table lists for it within the configured radius, sorted by
+   * distance from the pincode's centroid.
    * Empty for an invalid or uncovered pincode. Backs the rider app's store
    * picker on pickup creation.
    */
@@ -314,23 +327,24 @@ export class StoreAssignmentService {
     const coverage = await this.coverageRepo.find({
       where: {pincode: normalized, isActive: true, isDeleted: false} as object,
     });
-    const coverageIds = [...new Set(coverage.map(row => row.storeId))];
+    const radius = StoreAssignmentService.radiusKm();
+    const coverageWithinRadius = coverage.filter(row => {
+      const distance = toNumber(row.centroidDistanceKm);
+      return distance !== null && distance <= radius;
+    });
+    const coverageIds = [...new Set(coverageWithinRadius.map(row => row.storeId))];
+    if (!coverageIds.length) return [];
     const stores = await this.storeRepo.find({
       where: {
         isActive: true,
         isDeleted: false,
-        or: [{pincode: normalized}, ...(coverageIds.length ? [{id: {inq: coverageIds}}] : [])],
+        id: {inq: coverageIds},
       } as object,
     });
 
-    const toNumber = (value: unknown): number | null => {
-      if (value == null || value === '') return null;
-      const n = Number(value);
-      return Number.isFinite(n) ? n : null;
-    };
     // A store can appear on more than one coverage row; keep its nearest.
     const coverageByStore = new Map<string, {distance: number | null; pct: number | null}>();
-    for (const row of coverage) {
+    for (const row of coverageWithinRadius) {
       const distance = toNumber(row.centroidDistanceKm);
       const existing = coverageByStore.get(row.storeId);
       if (!existing || (distance ?? Infinity) < (existing.distance ?? Infinity)) {
@@ -344,6 +358,8 @@ export class StoreAssignmentService {
         return {
           id: store.id,
           name: store.name,
+          storeId: store.id,
+          storeName: store.name,
           code: store.code,
           address: store.address,
           city: store.city,
@@ -354,11 +370,10 @@ export class StoreAssignmentService {
           longitude: toNumber(store.longitude),
           centroidDistanceKm: covered?.distance ?? null,
           pctOfPincodeInRange: covered?.pct ?? null,
-          matchedBy: covered ? 'coverage' : 'store_pincode',
+          matchedBy: 'coverage',
         };
       })
       .sort((a, b) => {
-        if (a.matchedBy !== b.matchedBy) return a.matchedBy === 'coverage' ? -1 : 1;
         const byDistance = (a.centroidDistanceKm ?? Infinity) - (b.centroidDistanceKm ?? Infinity);
         return byDistance || a.name.localeCompare(b.name);
       });

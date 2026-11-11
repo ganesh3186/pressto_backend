@@ -76,6 +76,8 @@ export class TransferController {
     TransferStatus.SENT,
     TransferStatus.RIDER_ASSIGNED,
     TransferStatus.IN_TRANSIT,
+    // Handed over by the rider but not yet booked in by the store.
+    TransferStatus.DELIVERED,
   ];
 
   /**
@@ -192,6 +194,8 @@ export class TransferController {
         return `Rider assigned (${rider}), awaiting pickup at ${from}`;
       case TransferStatus.IN_TRANSIT:
         return `In transit with ${rider} → ${to}`;
+      case TransferStatus.DELIVERED:
+        return `Handed over at ${to} by ${rider}, awaiting receipt`;
       case TransferStatus.RECEIVED:
         return `Received at ${to}`;
       case TransferStatus.DISCREPANCY:
@@ -721,10 +725,18 @@ export class TransferController {
     const {v4} = await import('uuid');
     const now = new Date();
     const riderName = `${rider.firstName} ${rider.lastName}`;
+    const assignmentWhere = transfer.status === TransferStatus.SENT
+      ? {id, status: TransferStatus.SENT, isDeleted: false}
+      : {
+          id,
+          status: TransferStatus.RIDER_ASSIGNED,
+          riderId: transfer.riderId ?? null,
+          riderAssignedAt: transfer.riderAssignedAt ?? null,
+          isDeleted: false,
+        };
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
-      await this.transferRepo.updateById(
-        id,
+      const {count} = await this.transferRepo.updateAll(
         {
           status: TransferStatus.RIDER_ASSIGNED,
           riderId: rider.id,
@@ -732,8 +744,12 @@ export class TransferController {
           riderAssignedAt: now,
           riderAssignedBy: currentUser[securityId],
         },
+        assignmentWhere as object,
         {transaction: tx},
       );
+      if (count !== 1) {
+        throw new HttpErrors.Conflict('This transfer can no longer be assigned to a rider.');
+      }
       await this.custodyEventRepo.create(
         {
           id: v4(),
@@ -1065,6 +1081,7 @@ export class TransferController {
         sent: transfers.filter(t => t.status === TransferStatus.SENT).length,
         riderAssigned: transfers.filter(t => t.status === TransferStatus.RIDER_ASSIGNED).length,
         inTransit: transfers.filter(t => t.status === TransferStatus.IN_TRANSIT).length,
+        delivered: transfers.filter(t => t.status === TransferStatus.DELIVERED).length,
         received: transfers.filter(t => t.status === TransferStatus.RECEIVED).length,
         discrepancy: transfers.filter(t => t.status === TransferStatus.DISCREPANCY).length,
         resolved: transfers.filter(t => t.status === TransferStatus.RESOLVED).length,
@@ -1169,9 +1186,11 @@ export class TransferController {
   ): Promise<object> {
     const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
-    if (transfer.status !== TransferStatus.IN_TRANSIT) {
+    // DELIVERED = the rider recorded a handover count first; IN_TRANSIT is
+    // still accepted so rider apps without the delivery step keep working.
+    if (transfer.status !== TransferStatus.IN_TRANSIT && transfer.status !== TransferStatus.DELIVERED) {
       throw new HttpErrors.BadRequest(
-        `Cannot receive a transfer that is ${transfer.status} — it must be in_transit first.`,
+        `Cannot receive a transfer that is ${transfer.status} — it must be in_transit or delivered first.`,
       );
     }
 

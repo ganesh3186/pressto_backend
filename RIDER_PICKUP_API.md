@@ -219,9 +219,9 @@ what riders themselves send.
 ### `GET /rider/stores/by-pincode?addressId=<id>` — store picker for the pickup
 
 The store list to show once the rider has picked the pickup address.
-It returns only active stores that serve that address's pincode,
-nearest first: stores the pincode coverage table lists for it, then
-any other store located in that pincode. Send one of:
+It returns only active stores whose pincode-coverage record has a measured
+distance within the configured radius, nearest first. A store merely having
+the same pincode is not enough without that measurement. Send one of:
 
 - `addressId`: a saved address. Use this for an existing customer, or for a new
   customer after their address is saved.
@@ -230,11 +230,14 @@ any other store located in that pincode. Send one of:
 ```json
 {
   "pincode": "400001",
+  "radiusKm": 15,
   "serviceable": true,
   "stores": [
     {
       "id": "79e1ea9d-2484-4350-be9c-a32b85eb5d44",
-      "name": "Babulnath", "code": "BBN",
+      "name": "Babulnath",
+      "storeId": "79e1ea9d-2484-4350-be9c-a32b85eb5d44",
+      "storeName": "Babulnath", "code": "BBN",
       "address": "...", "city": "Mumbai", "state": "Maharashtra", "pincode": "400007",
       "phone": "...", "latitude": 18.96, "longitude": 72.81,
       "centroidDistanceKm": 2.1, "pctOfPincodeInRange": 100,
@@ -244,13 +247,17 @@ any other store located in that pincode. Send one of:
 }
 ```
 
-`matchedBy`: `coverage` (from the pincode coverage table) or
-`store_pincode` (the store's own pincode matches; `centroidDistanceKm`
-is then `null`). `serviceable: false` with an empty `stores` list means
+`radiusKm` comes from the API's `STORE_ASSIGNMENT_RADIUS_KM` environment
+variable. Rider and customer clients should use this response value instead of
+defining their own distance limit.
+
+`matchedBy` is `coverage` (from the pincode coverage table). Every returned
+store has a measured `centroidDistanceKm` within `radiusKm`.
+`serviceable: false` with an empty `stores` list means
 no store serves this pincode. If `storeId` is left out on create, the
-store is auto-assigned from this same list: the nearest one to the
-address coordinates, otherwise the first. Only when the list is empty
-does it fall back to the nearest store by location.
+address coordinates select an active store within the configured radius;
+pincode coverage is used only when usable coordinates are unavailable. With
+no coordinates, the first measured in-radius store in this list is selected.
 
 Flow:
 
@@ -366,8 +373,10 @@ Notes:
   Otherwise the request fails with `400`, and the message lists the valid stores.
   If no store serves the pincode, any active `storeId` is still
   accepted as a manual override. Leaving out `storeId` auto-assigns
-  from the same list, so the pickup never goes to a store outside it. When `pickupNow` attaches the pickup to the rider's
-  active run, the run's store is used and `storeId` is ignored.
+  an active store within the configured radius when coordinates are available,
+  which can be a store outside the pincode coverage list. Without usable
+  coordinates it selects from that list. When `pickupNow` attaches the pickup
+  to the rider's active run, the run's store is used and `storeId` is ignored.
 
 Response (attached to a run):
 

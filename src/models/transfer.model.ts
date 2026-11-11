@@ -105,6 +105,38 @@ export class Transfer extends Entity {
   @property({type: 'number', default: 0})
   itemCount?: number;
 
+  // Physical count confirmed by the rider before starting transit. Kept
+  // separate from itemCount, which is the store-created manifest count.
+  @property({type: 'number'})
+  riderVerifiedItemCount?: number;
+
+  // Rider delivery (PATCH /rider/transfers/{id}/status, status=delivered).
+  // dispatchedItemCount is the baseline: manifest items (one TransferItem
+  // per individual garment), fixed on the first delivery attempt so a retry
+  // compares against the same number.
+  @property({type: 'number'})
+  dispatchedItemCount?: number;
+
+  @property({type: 'date'})
+  deliveredAt?: Date;
+
+  @property({type: 'string', postgresql: {dataType: 'uuid'}})
+  deliveredByRiderId?: string;
+
+  @property({type: 'number'})
+  deliveredItemCount?: number;
+
+  @property({type: 'string', jsonSchema: {enum: ['matched', 'short', 'excess']}})
+  deliveryCountStatus?: 'matched' | 'short' | 'excess';
+
+  @property({type: 'string', postgresql: {dataType: 'text'}})
+  deliveryDiscrepancyReason?: string;
+
+  // Count mismatch flagged for the destination store's review; inventory
+  // stays with the receive/reconciliation workflow.
+  @property({type: 'boolean', default: false})
+  deliveryCountReviewRequired?: boolean;
+
   // Denormalized — missing+extra count, set at receive time and
   // recomputed if resolve-discrepancy finds any previously-missing items.
   @property({type: 'number', default: 0})

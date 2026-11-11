@@ -1,10 +1,31 @@
 import {BindingScope, injectable} from '@loopback/core';
 import * as https from 'https';
+import {ShortLivedCache} from '../utils/short-lived-cache';
 
 export interface GeocodedPoint {
   latitude: number;
   longitude: number;
 }
+
+/**
+ * Outcome of a PIN-code lookup. `not_found` is a definite "no such PIN
+ * code" from the provider; `unavailable` covers everything that might
+ * succeed on retry (no API key, quota, provider error, network, timeout).
+ */
+export type PincodeLookupResult =
+  | ({status: 'found'} & GeocodedPoint)
+  | {status: 'not_found'}
+  | {status: 'unavailable'};
+
+/** Six digits, not starting with 0 — the Indian PIN code format. */
+export const INDIAN_PINCODE_PATTERN = /^[1-9]\d{5}$/;
+
+/** A PIN code's centroid doesn't move, so successful lookups are kept for a day. */
+const PINCODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const PINCODE_CACHE_MAX_ENTRIES = 5000;
+
+class PincodeNotFound extends Error {}
+class PincodeLookupUnavailable extends Error {}
 
 /**
  * Whether an address/store actually has usable coordinates — null/undefined
@@ -41,6 +62,12 @@ export function hasRealCoordinates(
 @injectable({scope: BindingScope.SINGLETON})
 export class GeocodingService {
   private warnedMissingKey = false;
+  // Only successful lookups stay cached: ShortLivedCache drops a load that
+  // rejects, and every non-found outcome is surfaced as a rejection below.
+  private readonly pincodeCache = new ShortLivedCache<GeocodedPoint>(
+    PINCODE_CACHE_TTL_MS,
+    PINCODE_CACHE_MAX_ENTRIES,
+  );
 
   private apiKey(): string | null {
     const key = process.env.GOOGLE_GEOCODING_API_KEY;
@@ -63,6 +90,7 @@ export class GeocodingService {
   private fetchJson(url: string): Promise<{status: string; results?: Array<{
     geometry: {location: {lat: number; lng: number}; location_type?: string};
     partial_match?: boolean;
+    types?: string[];
   }>}> {
   /* eslint-enable @typescript-eslint/naming-convention */
     return new Promise((resolve, reject) => {
@@ -113,5 +141,58 @@ export class GeocodingService {
       console.error('[GeocodingService] Geocoding request failed.', error);
       return null;
     }
+  }
+
+  /**
+   * Shared PIN-code → coordinates lookup (the PIN code's centroid, so an
+   * approximate location). Used wherever a store has no usable coordinates
+   * of its own (rider transfer list, nearby-store search). Never throws.
+   * Successful results are cached per process; failures are not, so a
+   * provider outage or a newly-added key recovers on the next call.
+   */
+  async geocodePincode(pincode: string): Promise<PincodeLookupResult> {
+    const pin = String(pincode ?? '').trim();
+    if (!INDIAN_PINCODE_PATTERN.test(pin)) return {status: 'not_found'};
+    try {
+      const point = await this.pincodeCache.get(pin, () => this.loadPincode(pin));
+      return {status: 'found', ...point};
+    } catch (error) {
+      return error instanceof PincodeNotFound ? {status: 'not_found'} : {status: 'unavailable'};
+    }
+  }
+
+  private async loadPincode(pin: string): Promise<GeocodedPoint> {
+    const key = this.apiKey();
+    if (!key) throw new PincodeLookupUnavailable('Geocoding API key not configured.');
+
+    let response: Awaited<ReturnType<GeocodingService['fetchJson']>>;
+    try {
+      const url =
+        'https://maps.googleapis.com/maps/api/geocode/json?components=' +
+        encodeURIComponent(`postal_code:${pin}|country:IN`) +
+        '&key=' +
+        key;
+      response = await this.fetchJson(url);
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('[GeocodingService] PIN code lookup failed.', error);
+      throw new PincodeLookupUnavailable('PIN code lookup failed.');
+    }
+
+    if (response.status === 'ZERO_RESULTS') throw new PincodeNotFound(pin);
+    if (response.status !== 'OK') {
+      // OVER_QUERY_LIMIT, REQUEST_DENIED, UNKNOWN_ERROR, … — retryable or
+      // a configuration problem, never an answer about the PIN code itself.
+      // eslint-disable-next-line no-console
+      console.error(`[GeocodingService] PIN code lookup returned ${response.status}.`);
+      throw new PincodeLookupUnavailable(response.status);
+    }
+    // Google can answer an unknown postal code with a broader match (the
+    // whole country); only a postal_code result is an answer for this PIN.
+    const result = response.results?.find(r => r.types?.includes('postal_code'));
+    const lat = result?.geometry.location.lat;
+    const lng = result?.geometry.location.lng;
+    if (!result || !hasRealCoordinates(lat, lng)) throw new PincodeNotFound(pin);
+    return {latitude: Number(lat), longitude: Number(lng)};
   }
 }
