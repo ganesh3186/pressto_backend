@@ -14,6 +14,7 @@ import {SystemNotificationService} from '../services/system-notification.service
 import {PickupRequest} from '../models';
 import {RiderPincodeMappingWithRelations} from '../models/rider-pincode-mapping.model';
 import {PickupRequestSource} from '../models/pickup-request-source.enum';
+import {PickupCancellationReason} from '../models/pickup-cancellation-reason.enum';
 import {PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus} from '../models/pickup-request-status.enum';
 import {DeliveryType} from '../models/delivery-type.enum';
 import {ApprovalRequestType} from '../models/approval-request-type.enum';
@@ -77,6 +78,8 @@ interface UpdateBody {
   status?: PickupRequestStatus;
   convertedOrderId?: string;
   deliverySpeed?: DeliveryType;
+  cancellationReason?: string;
+  cancellationOtherReason?: string;
 }
 
 // Statuses in which an admin may still change the processing store — see
@@ -810,6 +813,15 @@ export class PickupRequestController {
               status: {type: 'string', enum: Object.values(PickupRequestStatus)},
               convertedOrderId: {type: 'string', format: 'uuid'},
               deliverySpeed: {type: 'string', enum: Object.values(DeliveryType)},
+              cancellationReason: {
+                type: 'string',
+                enum: Object.values(PickupCancellationReason),
+                description: 'Required when status is cancelled — why the pickup was cancelled.',
+              },
+              cancellationOtherReason: {
+                type: 'string',
+                description: 'Required when cancellationReason is "other" — the free-text reason.',
+              },
             },
           },
         },
@@ -822,9 +834,28 @@ export class PickupRequestController {
     const scope = await this.storeScopeService.resolve(currentUser);
     this.assertPickupScopeVisible(scope, existing);
 
-    const {status, convertedOrderId, deliverySpeed, ...rest} = body;
+    const {status, convertedOrderId, deliverySpeed, cancellationReason, cancellationOtherReason, ...rest} =
+      body;
     if (status !== undefined && status !== existing.status) {
       this.assertTransition(existing.status ?? PickupRequestStatus.REQUESTED, status);
+    }
+
+    // A cancellation now requires a reason — one predefined code, plus a
+    // free-text note when that code is "other". Captured only on the
+    // transition INTO cancelled (re-saving an already-cancelled pickup
+    // doesn't demand it again).
+    const isCancelling =
+      status === PickupRequestStatus.CANCELLED && existing.status !== PickupRequestStatus.CANCELLED;
+    if (isCancelling) {
+      if (!cancellationReason?.trim()) {
+        throw new HttpErrors.BadRequest('A cancellation reason is required to cancel a pickup.');
+      }
+      if (!Object.values(PickupCancellationReason).includes(cancellationReason as PickupCancellationReason)) {
+        throw new HttpErrors.BadRequest('Invalid cancellation reason.');
+      }
+      if (cancellationReason === PickupCancellationReason.OTHER && !cancellationOtherReason?.trim()) {
+        throw new HttpErrors.BadRequest('Please describe the cancellation reason.');
+      }
     }
     if (rest.storeId !== undefined && rest.storeId !== existing.storeId) {
       await this.assertProcessingStoreChangeable(existing, rest.storeId, scope);
@@ -863,6 +894,17 @@ export class PickupRequestController {
     await this.pickupRequestRepository.updateById(id, {
       ...rest,
       ...(status !== undefined ? {status} : {}),
+      ...(isCancelling
+        ? {
+            cancellationReason,
+            cancellationOtherReason:
+              cancellationReason === PickupCancellationReason.OTHER
+                ? cancellationOtherReason!.trim()
+                : (null as unknown as string),
+            cancelledAt: new Date(),
+            cancelledBy: currentUser[securityId],
+          }
+        : {}),
       ...(convertedOrderId !== undefined && !existing.convertedOrderId ? {convertedOrderId} : {}),
       ...(convertedOrderId !== undefined && deliverySpeed
         ? {convertedOrders: {...existing.convertedOrders, [deliverySpeed]: convertedOrderId}}

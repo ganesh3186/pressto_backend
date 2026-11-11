@@ -31,6 +31,7 @@ import {
   ServiceCategory,
   UpgradeServiceChoice,
 } from '../models';
+import { PickupCancellationReason } from '../models/pickup-cancellation-reason.enum';
 import { PICKUP_REQUEST_STATUS_TRANSITIONS, PickupRequestStatus } from '../models/pickup-request-status.enum';
 import { PickupRequestSource } from '../models/pickup-request-source.enum';
 import {
@@ -777,7 +778,14 @@ export class CustomerProfileController {
       throw new HttpErrors.BadRequest(`Cannot cancel a pickup request that is already ${current}.`);
     }
 
-    await this.pickupRequestRepository.updateById(id, { status: PickupRequestStatus.CANCELLED });
+    await this.pickupRequestRepository.updateById(id, {
+      status: PickupRequestStatus.CANCELLED,
+      // Self-service cancel from the customer app — record it with a reason so
+      // the admin trail shows why, same as an admin-side cancellation.
+      cancellationReason: PickupCancellationReason.CUSTOMER_REQUESTED,
+      cancelledAt: new Date(),
+      cancelledBy: currentUser[securityId],
+    });
 
     if (this.systemNotificationService) {
       this.systemNotificationService

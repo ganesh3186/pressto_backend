@@ -30,6 +30,10 @@ type CollectionBuckets = {
   cheque: number;
   pgLink: number;
   wallet: number;
+  // Confirmed rider cash handovers accepted at the store in the window — cash
+  // the rider collected in the field that has now re-entered the till. Not a
+  // payment mode (nothing in BUCKET_OF maps here); filled separately.
+  riderHandover: number;
 };
 
 const emptyCollections = (): CollectionBuckets => ({
@@ -38,6 +42,7 @@ const emptyCollections = (): CollectionBuckets => ({
   cheque: 0,
   pgLink: 0,
   wallet: 0,
+  riderHandover: 0,
 });
 
 /**
@@ -199,6 +204,7 @@ export class DashboardService {
 
     const [
       cashBreakdown,
+      riderHandoverTotal,
       orderStats,
       pipeline,
       dispatched,
@@ -208,6 +214,9 @@ export class DashboardService {
       access.collected
         ? this.computeOrderCollections(storeIds, cashFrom, to)
         : emptyCollections(),
+      access.collected && access.handover
+        ? this.computeRiderCashHandovers(storeIds, cashFrom, to)
+        : 0,
       access.tickets
         ? this.computeOrderStats(storeIds, from, to)
         : {orderCount: 0, itemCount: 0, rows: []},
@@ -219,6 +228,9 @@ export class DashboardService {
       canPettyRider ? this.computePettyRider(storeIds, from, to) : {},
     ]);
 
+    // Fold accepted rider handovers into the same cash window as the counter
+    // collection, so this summary agrees with /dashboard/window's `collected`.
+    cashBreakdown.riderHandover = riderHandoverTotal;
     const cashCollected = Object.values(cashBreakdown).reduce(
       (sum, v) => sum + v,
       0,
@@ -337,6 +349,32 @@ export class DashboardService {
       if (bucket) collections[bucket] += Number(t.amount) || 0;
     }
     return collections;
+  }
+
+  /**
+   * Confirmed rider cash handovers accepted at these stores inside the window.
+   * This is the field-collected cash (excluded from computeOrderCollections,
+   * which only counts counter payments with no riderId) re-entering the till.
+   * Summed over the same window as the counter collection so the two add up to
+   * the real total the store received. Mirrors StoreDashboardService's
+   * windowAggregates `accepted`.
+   */
+  private async computeRiderCashHandovers(
+    storeIds: string[],
+    from: Date,
+    to: Date,
+  ): Promise<number> {
+    if (!storeIds.length) return 0;
+    const handovers = await this.riderCashHandoverRepo.find({
+      where: {
+        handoverToStoreId: {inq: storeIds},
+        status: RiderCashHandoverStatus.CONFIRMED,
+        isDeleted: false,
+        confirmedAt: {between: [from, to]},
+      } as object,
+      fields: {totalAmount: true} as object,
+    });
+    return handovers.reduce((sum, h) => sum + (Number(h.totalAmount) || 0), 0);
   }
 
   /** The open shift for these stores, if any. */
