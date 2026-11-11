@@ -33,6 +33,8 @@ describe('rider transfer bag numbers', () => {
             {id: 'bag-3', bagNumber: 103},
           ],
         },
+        storeRepository: {find: async () => []},
+        storeLocationService: {resolveCoordinates: async () => []},
       },
     ) as RiderTransferController;
 

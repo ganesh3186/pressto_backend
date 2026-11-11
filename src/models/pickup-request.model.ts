@@ -63,6 +63,13 @@ export class PickupRequest extends Entity {
   @property({type: 'string'})
   pincode?: string;
 
+  // Exact pickup point captured from the selected/supplied customer address.
+  @property({type: 'number', postgresql: {dataType: 'decimal'}})
+  pickupLatitude?: number;
+
+  @property({type: 'number', postgresql: {dataType: 'decimal'}})
+  pickupLongitude?: number;
+
   @property({type: 'date', required: true})
   requestedDate: string;
 

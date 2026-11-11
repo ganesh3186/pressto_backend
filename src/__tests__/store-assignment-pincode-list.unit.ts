@@ -14,13 +14,13 @@ const store = (id: string, name: string, pincode = '999999') => ({
 });
 
 describe('StoreAssignmentService.listStoresForPincode', () => {
-  it('lists covering stores nearest first, then stores located in the pincode', async () => {
+  it('lists only measured covering stores inside the configured radius', async () => {
     let storeWhere: object | undefined;
     const service = new StoreAssignmentService(
       {
         find: async (filter: {where: object}) => {
           storeWhere = filter.where;
-          return [store('in-pin', 'Local', '400001'), store('far', 'Far'), store('near', 'Near')];
+          return [store('far', 'Far'), store('near', 'Near')];
         },
       } as never,
       {
@@ -28,28 +28,39 @@ describe('StoreAssignmentService.listStoresForPincode', () => {
           {storeId: 'far', centroidDistanceKm: '8.5', pctOfPincodeInRange: '40'},
           {storeId: 'near', centroidDistanceKm: '2', pctOfPincodeInRange: '100'},
           {storeId: 'near', centroidDistanceKm: '3'},
+          {storeId: 'outside', centroidDistanceKm: '15.1', pctOfPincodeInRange: '100'},
+          {storeId: 'unknown-null', centroidDistanceKm: null},
+          {storeId: 'unknown-empty', centroidDistanceKm: ''},
         ],
       } as never,
     );
 
     const stores = await service.listStoresForPincode(' 400001 ');
 
-    expect(stores.map(s => s.id)).to.deepEqual(['near', 'far', 'in-pin']);
-    expect(stores[0]).to.containDeep({centroidDistanceKm: 2, pctOfPincodeInRange: 100, matchedBy: 'coverage', latitude: 19});
-    expect(stores[2]).to.containDeep({centroidDistanceKm: null, matchedBy: 'store_pincode'});
+    expect(stores.map(s => s.id)).to.deepEqual(['near', 'far']);
+    expect(stores[0]).to.containDeep({
+      storeId: 'near',
+      storeName: 'Near',
+      centroidDistanceKm: 2,
+      pctOfPincodeInRange: 100,
+      matchedBy: 'coverage',
+      latitude: 19,
+    });
     expect(storeWhere).to.deepEqual({
       isActive: true,
       isDeleted: false,
-      or: [{pincode: '400001'}, {id: {inq: ['far', 'near']}}],
+      id: {inq: ['far', 'near']},
     });
   });
 
-  it('still finds stores located in a pincode with no coverage rows', async () => {
+  it('does not return unmeasured stores when there are no coverage rows', async () => {
+    let storeQueries = 0;
     const service = new StoreAssignmentService(
-      {find: async () => [store('in-pin', 'Local', '400001')]} as never,
+      {find: async () => { storeQueries++; return [store('in-pin', 'Local', '400001')]; }} as never,
       {find: async () => []} as never,
     );
-    expect((await service.listStoresForPincode('400001')).map(s => s.id)).to.deepEqual(['in-pin']);
+    expect(await service.listStoresForPincode('400001')).to.deepEqual([]);
+    expect(storeQueries).to.equal(0);
   });
 
   it('returns nothing for an invalid pincode without querying', async () => {

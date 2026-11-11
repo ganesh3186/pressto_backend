@@ -123,8 +123,9 @@ it live rather than caching it at assignment time.
 This override complements the automatic selection it overrides:
 
 - **Nearest-store auto-assignment** — a pickup with no explicit `storeId` is
-  assigned the nearest active store to the pickup address (coordinates within
-  `STORE_ASSIGNMENT_RADIUS_KM`, else pincode coverage). See
+  assigned the nearest active store within `STORE_ASSIGNMENT_RADIUS_KM` when
+  usable coordinates exist. Pincode coverage is used only without usable
+  coordinates. See
   `RIDER_APP_PICKUP_API.md` §"Store auto-assignment" and the
   `/rider/customers/{id}/nearest-store` endpoint.
 - **Suggested processing store on the booking form** — staff booking a pickup

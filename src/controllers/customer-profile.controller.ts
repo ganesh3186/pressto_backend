@@ -726,6 +726,9 @@ export class CustomerProfileController {
       customerMobile: user.phone,
       address: this.addressService.toDisplaySnapshot(address),
       pincode: address.pincode,
+      ...(address.latitude != null && address.longitude != null
+        ? {pickupLatitude: Number(address.latitude), pickupLongitude: Number(address.longitude)}
+        : {}),
       storeId,
       nearestStoreId,
       status,

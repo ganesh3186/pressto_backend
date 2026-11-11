@@ -86,10 +86,11 @@ PATCH /rider/transfers/{id}/status
 ```
 
 Marking a transfer in transit now **requires** `bagIds`, covering every
-bag from the list above:
+bag from the list above. Send optional `itemCount` with the physical number
+of items the rider verified:
 
 ```json
-{ "status": "in_transit", "bagIds": ["uuid-of-bag-1", "uuid-of-bag-2"] }
+{ "status": "in_transit", "bagIds": ["uuid-of-bag-1", "uuid-of-bag-2"], "itemCount": 22 }
 ```
 
 If any bag hasn't been scanned, the call is rejected — no partial or
@@ -99,8 +100,20 @@ force option:
 400 { "error": { "message": "Scan every bag in this transfer before starting transit — still missing: 1042, 1043." } }
 ```
 
-Everything else about this endpoint is unchanged: only riders assigned
-to the transfer can call it, and the transfer must currently be
+`itemCount` must be between zero and the manifest count. Older clients may
+omit it; the transfer starts without recording a verified count.
+
+```json
+{
+  "message": "Transfer marked in transit.",
+  "expectedItemCount": 24,
+  "riderVerifiedItemCount": 22,
+  "shortageCount": 2
+}
+```
+
+When `itemCount` is omitted, the two verification fields are `null`. Only the
+assigned rider can call this endpoint, and the transfer must currently be
 `rider_assigned`.
 
 Docs updated: `RIDER_APP_TRANSFER_API.md`.

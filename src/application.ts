@@ -52,6 +52,8 @@ import { NotificationService } from './services/notification.service';
 import { GeocodingService } from './services/geocoding.service';
 import { WhatsAppService } from './services/whatsapp.service';
 import { SystemNotificationService } from './services/system-notification.service';
+import { storeSearchRadiusKm } from './utils/config';
+import { StoreLocationService } from './services/store-location.service';
 
 export { ApplicationConfig };
 
@@ -60,6 +62,10 @@ export class presstoBackendApplication extends BootMixin(
 ) {
   constructor(options: ApplicationConfig = {}) {
     super(options);
+
+    // Fail fast on a misconfigured STORE_SEARCH_RADIUS_KM instead of
+    // discovering it on the first store lookup.
+    storeSearchRadiusKm();
 
     this.component(AuthenticationComponent);
 
@@ -126,6 +132,7 @@ export class presstoBackendApplication extends BootMixin(
     this.bind('services.rider-assignment').toClass(RiderAssignmentService);
     this.bind('services.razorpay').toClass(RazorpayService);
     this.bind('services.store-assignment').toClass(StoreAssignmentService);
+    this.bind('services.store-location').toClass(StoreLocationService);
     // NotificationService must stay a true singleton: getFirebaseApp() relies on
     // instance state (this.app) to avoid re-initializing Firebase every call. A
     // manual .toClass() binding defaults to TRANSIENT scope even though the class

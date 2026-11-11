@@ -8,6 +8,7 @@ import {RiderCashHandoverStatus} from '../models/rider-cash-handover-status.enum
 import {RiderCashHandoverTargetType} from '../models/rider-cash-handover-target-type.enum';
 import {
   PaymentTransactionRepository,
+  InvoiceRepository,
   OrderRepository,
   RiderCashHandoverItemRepository,
   RiderCashHandoverRepository,
@@ -25,6 +26,7 @@ import {
 export class RiderCashHandoverController {
   constructor(
     @repository(PaymentTransactionRepository) private paymentTransactionRepo: PaymentTransactionRepository,
+    @repository(InvoiceRepository) private invoiceRepo: InvoiceRepository,
     @repository(OrderRepository) private orderRepo: OrderRepository,
     @repository(RiderCashHandoverRepository) private handoverRepo: RiderCashHandoverRepository,
     @repository(RiderCashHandoverItemRepository) private handoverItemRepo: RiderCashHandoverItemRepository,
@@ -183,6 +185,22 @@ export class RiderCashHandoverController {
     const unbatched = await this.paymentTransactionRepo.find({
       where: {riderId, riderHandoverStatus: 'with_rider'} as object,
     });
+    const orderIds = [...new Set([...batchedItems.map(item => item.orderId), ...unbatched.map(t => t.orderId)])];
+    const historyOrders = orderIds.length
+      ? await this.orderRepo.find({
+          where: {id: {inq: orderIds}} as object,
+          fields: {id: true, orderNumber: true} as object,
+        })
+      : [];
+    const orderNumberById = new Map(historyOrders.map(order => [order.id, order.orderNumber]));
+    const invoices = orderIds.length
+      ? await this.invoiceRepo.find({
+          where: {orderId: {inq: orderIds}} as object,
+          fields: {orderId: true, invoiceNumber: true} as object,
+          order: ['createdAt ASC'],
+        })
+      : [];
+    const invoiceNumberByOrderId = new Map(invoices.map(invoice => [invoice.orderId, invoice.invoiceNumber]));
 
     const rows = [
       ...batchedItems.map(item => ({
@@ -190,7 +208,7 @@ export class RiderCashHandoverController {
         handoverId: item.riderCashHandoverId,
         customer: {name: item.customerName, mobile: ''},
         orderCode: item.orderNumber,
-        invoiceId: item.paymentTransactionId,
+        invoiceNumber: invoiceNumberByOrderId.get(item.orderId) ?? '—',
         amount: item.amount,
         status:
           handoverById.get(item.riderCashHandoverId)?.status === RiderCashHandoverStatus.CONFIRMED
@@ -203,8 +221,8 @@ export class RiderCashHandoverController {
           id: t.id,
           handoverId: null,
           customer: {name: '', mobile: ''},
-          orderCode: '',
-          invoiceId: t.id,
+          orderCode: orderNumberById.get(t.orderId) ?? '—',
+          invoiceNumber: invoiceNumberByOrderId.get(t.orderId) ?? '—',
           amount: t.amount,
           status: 'with_rider',
         })),

@@ -97,6 +97,7 @@ const IN_FLIGHT_TRANSFER_STATUSES = [
   TransferStatus.SENT,
   TransferStatus.RIDER_ASSIGNED,
   TransferStatus.IN_TRANSIT,
+  TransferStatus.DELIVERED,
 ];
 
 /**

@@ -7,6 +7,12 @@ export enum TransferStatus {
   // receive() will accept it.
   RIDER_ASSIGNED = 'rider_assigned',
   IN_TRANSIT = 'in_transit',
+  // The rider has handed the bag(s) over at the destination and recorded
+  // how many items they handed over (PATCH /rider/transfers/{id}/status).
+  // The destination store's receive() still does the item-level check —
+  // this only closes the rider's leg. Optional: receive() also accepts
+  // IN_TRANSIT directly, so rider apps without the delivery step still work.
+  DELIVERED = 'delivered',
   RECEIVED = 'received',
   DISCREPANCY = 'discrepancy',
   // Reached only from DISCREPANCY, via POST /transfers/{id}/resolve-discrepancy.
@@ -24,7 +30,8 @@ export enum TransferStatus {
 export const TRANSFER_STATUS_TRANSITIONS: Record<TransferStatus, TransferStatus[]> = {
   [TransferStatus.SENT]: [TransferStatus.RIDER_ASSIGNED],
   [TransferStatus.RIDER_ASSIGNED]: [TransferStatus.IN_TRANSIT],
-  [TransferStatus.IN_TRANSIT]: [TransferStatus.RECEIVED, TransferStatus.DISCREPANCY],
+  [TransferStatus.IN_TRANSIT]: [TransferStatus.DELIVERED, TransferStatus.RECEIVED, TransferStatus.DISCREPANCY],
+  [TransferStatus.DELIVERED]: [TransferStatus.RECEIVED, TransferStatus.DISCREPANCY],
   [TransferStatus.RECEIVED]: [],
   [TransferStatus.DISCREPANCY]: [TransferStatus.RESOLVED],
   [TransferStatus.RESOLVED]: [],

@@ -65,6 +65,8 @@ one):
       "status": "rider_assigned",
       "fromStoreId": "uuid",
       "toStoreId": "uuid",
+      "fromStore": {"id": "uuid", "name": "Source store", "latitude": 19.07, "longitude": 72.87},
+      "toStore": {"id": "uuid", "name": "Destination store", "latitude": 19.12, "longitude": 72.91},
       "bagNumbers": [1042, 1043],
       "riderId": "uuid",
       "riderName": "Rohan Sharma",
@@ -77,6 +79,8 @@ one):
 }
 ```
 `bagNumbers` contains every bag in the transfer, including the primary bag.
+`fromStore` and `toStore` are `null` if the referenced active store cannot be
+resolved. Their `latitude`/`longitude` fields are individually nullable.
 `itemCount` is the manifest size — use it for a badge/count without a
 separate call. Ordered `riderAssignedAt DESC`, limited to the newest 100
 transfers.
@@ -96,7 +100,11 @@ resolve one to the other client-side. `404` if not found, `403`
 **Response `200`**
 ```json
 {
-  "transfer": { "...transfer record, including its primary bagId..." },
+  "transfer": {
+    "...transfer record, including its primary bagId...": "...",
+    "fromStore": {"id": "uuid", "name": "Source store", "latitude": 19.07, "longitude": 72.87},
+    "toStore": {"id": "uuid", "name": "Destination store", "latitude": 19.12, "longitude": 72.91}
+  },
   "items": [
     {
       "id": "uuid",
@@ -128,7 +136,7 @@ separate per-scan API call.
 PATCH /rider/transfers/{id}/status
 ```
 ```json
-{"status": "in_transit", "bagIds": ["uuid-of-bag-1", "uuid-of-bag-2"]}
+{"status": "in_transit", "bagIds": ["uuid-of-bag-1", "uuid-of-bag-2"], "itemCount": 24}
 ```
 `{id}` here must be the real path param the app already has from §2/§3 —
 same dual uuid/transitId acceptance as §3. Riders may only ever set this one
@@ -143,7 +151,22 @@ with `400` naming the still-unscanned bag number(s): `"Scan every bag in
 this transfer before starting transit — still missing: 1042, 1043."`
 Don't let the rider skip a bag; there is no partial/force option.
 
-**Response `200`**: `{ "message": "Transfer marked in transit." }`
+`itemCount` is optional for older app versions. When supplied, it is the
+physical number of items the rider verified and must be between zero and the
+transfer manifest count. When omitted, transit still starts but no item count
+is recorded as verified.
+
+**Response `200`**:
+```json
+{
+  "message": "Transfer marked in transit.",
+  "expectedItemCount": 24,
+  "riderVerifiedItemCount": 22,
+  "shortageCount": 2
+}
+```
+When `itemCount` was omitted, `riderVerifiedItemCount` and `shortageCount` are
+`null`.
 
 There's no separate "arrived" or "handed over" call — the destination
 store's own `receive()` action is what closes out the rider's leg. Once
