@@ -41,7 +41,7 @@ describe('invoice list search and type filter', () => {
       {
         storeScopeService: Object.assign(
           Object.create(StoreScopeService.prototype),
-          {transferGrantedOrderIds: async () => []},
+          {transferGrantedOrderIds: async () => [], storeRepo: {find: async () => []}},
         ),
         _enrichInvoices: async (invoices: Invoice[]) => invoices,
         orderRepo: notUsed('order'),

@@ -17,6 +17,14 @@ import {
 } from '../repositories';
 import {Employee} from '../models';
 import {OrderStatus} from '../models/order-status.enum';
+import {ShortLivedCache} from '../utils/short-lived-cache';
+
+/**
+ * Ids of stores that are inactive or deleted right now, shared by every
+ * request in this process. A store switched off reaches open sessions within
+ * this window.
+ */
+export const inactiveStoreIdsCache = new ShortLivedCache<Set<string>>(60000, 1);
 
 /** Scope levels a role can declare (Roles.scope). super_admin ignores these. */
 type RoleScope = 'store' | 'cluster' | 'region';
@@ -108,18 +116,48 @@ export class StoreScopeService {
       const regionIds = await this.allRegionIdsForEmployee(employee);
       if (!regionIds.length) return EMPTY_SCOPE(scope);
       const storeIds = [...new Set((await Promise.all(regionIds.map(id => this.storeIdsForRegion(id)))).flat())];
-      return {global: false, storeIds, scopeLevel: scope};
+      return {global: false, storeIds: await this.onlyActiveStoreIds(storeIds), scopeLevel: scope};
     }
     if (scope === 'cluster') {
       const clusterIds = await this.allClusterIdsForEmployee(employee);
       if (!clusterIds.length) return EMPTY_SCOPE(scope);
       const storeIds = [...new Set((await Promise.all(clusterIds.map(id => this.storeIdsForCluster(id)))).flat())];
-      return {global: false, storeIds, scopeLevel: scope};
+      return {global: false, storeIds: await this.onlyActiveStoreIds(storeIds), scopeLevel: scope};
     }
     // store scope (default)
     const storeIds = await this.allStoreIdsForEmployee(employee);
     if (!storeIds.length) return EMPTY_SCOPE(scope);
-    return {global: false, storeIds, scopeLevel: scope};
+    return {global: false, storeIds: await this.onlyActiveStoreIds(storeIds), scopeLevel: scope};
+  }
+
+  /** The subset of these stores that are active and not deleted, read fresh. */
+  async onlyActiveStoreIds(storeIds: string[]): Promise<string[]> {
+    if (!storeIds.length) return [];
+    const stores = await this.storeRepo.find({
+      where: {id: {inq: storeIds}, isActive: true, isDeleted: false} as object,
+      fields: {id: true},
+    });
+    const active = new Set(stores.map(store => String(store.id)));
+    return storeIds.filter(id => active.has(String(id)));
+  }
+
+  /**
+   * True when a store-scoped employee is assigned to stores but every one of
+   * them is inactive: they have nowhere to work, so they may not sign in.
+   */
+  async isLockedOutByInactiveStores(scope: StoreScope, employee?: Employee | null): Promise<boolean> {
+    if (scope.global || scope.scopeLevel !== 'store' || scope.storeIds.length || !employee) return false;
+    return (await this.allStoreIdsForEmployee(employee)).length > 0;
+  }
+
+  private loadInactiveStoreIds(): Promise<Set<string>> {
+    return inactiveStoreIdsCache.get('inactive', async () => {
+      const stores = await this.storeRepo.find({
+        where: {or: [{isActive: false}, {isDeleted: true}]} as object,
+        fields: {id: true},
+      });
+      return new Set(stores.map(store => String(store.id)));
+    });
   }
 
   /** Every store this employee is bound to: primary Employee.storeId plus EmployeeStore rows. */
@@ -165,7 +203,11 @@ export class StoreScopeService {
       where: {userId, isDeleted: false},
       fields: {id: true, storeId: true, clusterId: true, regionId: true},
     });
-    const boundStoreIds = employee ? await this.allStoreIdsForEmployee(employee) : [];
+    const assignedStoreIds = employee ? await this.allStoreIdsForEmployee(employee) : [];
+    const boundStoreIds = await this.onlyActiveStoreIds(assignedStoreIds);
+    if (assignedStoreIds.length && !boundStoreIds.length) {
+      throw new HttpErrors.Forbidden('Your store is inactive. Please contact your administrator.');
+    }
 
     if (boundStoreIds.length === 1) return boundStoreIds[0];
     if (boundStoreIds.length > 1) {
@@ -235,7 +277,10 @@ export class StoreScopeService {
       // which binding produced it. Nothing on this per-request hot path reads
       // scopeLevel (only the login flow does, straight off resolveForUser),
       // so this placeholder is never actually consulted.
-      return {global: false, storeIds: claim.map(String).filter(Boolean), scopeLevel: 'store'};
+      const claimed = claim.map(String).filter(Boolean);
+      // The claim is fixed at login; drop stores switched off since then.
+      const inactive = claimed.length ? await this.loadInactiveStoreIds() : new Set<string>();
+      return {global: false, storeIds: claimed.filter(id => !inactive.has(id)), scopeLevel: 'store'};
     }
 
     // Legacy token with no storeScope claim — resolve from the database.

@@ -227,6 +227,9 @@ export class AuthController {
       where: { userId: user.id, isDeleted: false },
       fields: { id: true, storeId: true, clusterId: true, regionId: true, firstName: true, lastName: true },
     });
+    if (await this.storeScopeService.isLockedOutByInactiveStores(storeScope, employee)) {
+      throw new HttpErrors.Unauthorized('Your store is inactive. Please contact your administrator.');
+    }
     // Only a genuinely store-scoped employee has an authoritative "their
     // store(s)" — a cluster/region-scoped employee can carry a stale storeId
     // left over from before their role was re-scoped, and exposing it here
@@ -240,7 +243,7 @@ export class AuthController {
     // new id*s arrays carry the full bound set for a multi-store employee's
     // UI to build a picker from.
     const boundStoreIds =
-      employee && storeScope.scopeLevel === 'store' ? await this.storeScopeService.allStoreIdsForEmployee(employee) : [];
+      employee && storeScope.scopeLevel === 'store' ? storeScope.storeIds : [];
     const boundClusterIds =
       employee && storeScope.scopeLevel === 'cluster' ? await this.storeScopeService.allClusterIdsForEmployee(employee) : [];
     const boundRegionIds =
@@ -374,8 +377,12 @@ export class AuthController {
     // comment for why this is now a bound SET, not just the primary field.
     const roles = (currentUser.roles as string[]) ?? [];
     const storeScope = await this.storeScopeService.resolveForUser(String(userId), roles);
+    // 401 signs an open session out, the same as an expired token.
+    if (await this.storeScopeService.isLockedOutByInactiveStores(storeScope, employee)) {
+      throw new HttpErrors.Unauthorized('Your store is inactive. Please contact your administrator.');
+    }
     const boundStoreIds =
-      employee && storeScope.scopeLevel === 'store' ? await this.storeScopeService.allStoreIdsForEmployee(employee) : [];
+      employee && storeScope.scopeLevel === 'store' ? storeScope.storeIds : [];
     const boundClusterIds =
       employee && storeScope.scopeLevel === 'cluster' ? await this.storeScopeService.allClusterIdsForEmployee(employee) : [];
     const boundRegionIds =

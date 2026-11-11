@@ -19,6 +19,7 @@ function buildController(transferGrantsOrder = false) {
   const storeScopeService = Object.assign(
     Object.create(StoreScopeService.prototype),
     {
+      storeRepo: {find: async () => []},
       orderRepo: {findOne: async () => ({id: 'order-1', storeId: ORDER_STORE})},
       orderItemRepo: {
         find: async () => (transferGrantsOrder ? [{id: 'item-1'}] : []),

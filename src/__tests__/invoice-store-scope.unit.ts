@@ -32,7 +32,7 @@ describe('invoice list store scope', () => {
     const repoCalls = {find: 0, count: 0};
     const scopeService = Object.assign(
       Object.create(StoreScopeService.prototype),
-      {transferGrantedOrderIds: async () => options.grantedOrderIds ?? []},
+      {transferGrantedOrderIds: async () => options.grantedOrderIds ?? [], storeRepo: {find: async () => []}},
     );
     const controller = Object.assign(
       Object.create(InvoiceController.prototype),
