@@ -136,6 +136,34 @@ export class StoreLocationService {
    * nearest first — every active store is a candidate, not just those in
    * the origin's PIN code. Stores with no resolvable location are skipped.
    */
+  /**
+   * Whether GET /rider/stores/nearby?pincode= would list `store`: within
+   * STORE_SEARCH_RADIUS_KM of the PIN code's centre, by the same rule as
+   * findNearby. `fallback` (e.g. the address's own coordinates) is used only
+   * when the PIN code can't be looked up right now, so an outage doesn't
+   * reject a store the picker showed a moment earlier.
+   */
+  async isListedNearPincode(
+    store: StoreCoordinateInput,
+    pincode: string,
+    fallback?: GeocodedPoint | null,
+  ): Promise<boolean> {
+    const [location] = await this.resolveCoordinates([store]);
+    if (location.latitude == null || location.longitude == null || location.coordinateSource == null) {
+      return false;
+    }
+    const lookup = await this.geocodingService.geocodePincode(pincode).catch(() => null);
+    const origin: GeocodedPoint | null =
+      lookup?.status === 'found'
+        ? {latitude: lookup.latitude, longitude: lookup.longitude}
+        : lookup?.status === 'not_found'
+          ? null
+          : fallback ?? null;
+    if (!origin) return false;
+    const located = [{id: '', name: '', ...location}];
+    return rankStoresWithinRadius(origin, located, storeSearchRadiusKm()).length > 0;
+  }
+
   async findNearby(origin: GeocodedPoint): Promise<{radiusKm: number; stores: NearbyStoreResult[]}> {
     const radiusKm = storeSearchRadiusKm();
     const stores = await this.storeRepo.find({

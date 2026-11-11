@@ -170,7 +170,7 @@ list. All four return only active, non-deleted rows.
 | `itemCategoryEstimate[].itemCategoryId` | `GET /rider/item-categories`, with `GET /rider/service-categories` as a fallback — see note below |
 | `itemCategoryEstimate[].serviceId` | `GET /rider/services` |
 | `slotId` | `GET /rider/pickup-slots?type&date` |
-| `storeId` | `GET /rider/stores/by-pincode?addressId=` — only stores serving the selected address's pincode (see below) |
+| `storeId` | `GET /rider/stores/by-pincode?addressId=` — stores serving the selected address's pincode (see below); stores from `GET /rider/stores/nearby?pincode=` are accepted too |
 | `addressId` | `GET /rider/customers/{customerId}/addresses` (above) |
 | `customerId` | `GET /rider/customers?search=` (above) |
 
@@ -368,8 +368,11 @@ Notes:
     whichever rider makes sense — `storeId` required.
 - **`handoverBy`**: `self` | `family_member` | `household_help` — if
   not `self`, `handoverPersonName` is required.
-- **`storeId`** must be active and one of the stores
-  `GET /rider/stores/by-pincode` returns for the address's pincode.
+- **`storeId`** must be active and either one of the stores
+  `GET /rider/stores/by-pincode` returns for the address's pincode, or a
+  store `GET /rider/stores/nearby?pincode=` lists for that pincode (within
+  the configured radius of the pincode's centre). Only while the pincode
+  lookup is down is the radius measured from the address's coordinates.
   Otherwise the request fails with `400`, and the message lists the valid stores.
   If no store serves the pincode, any active `storeId` is still
   accepted as a manual override. Leaving out `storeId` auto-assigns

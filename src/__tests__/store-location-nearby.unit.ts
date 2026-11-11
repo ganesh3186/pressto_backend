@@ -325,3 +325,37 @@ describe('GET /rider/transfers store coordinates', () => {
     });
   });
 });
+
+describe('StoreLocationService.isListedNearPincode (pickup storeId check)', () => {
+  // 400013 centre ≈ Lower Parel; ~0.9 km and ~25 km away stores.
+  const centre = {latitude: 19.0, longitude: 72.83};
+  const near = {pincode: '400013', latitude: 19.008, longitude: 72.83};
+  const far = {pincode: '400101', latitude: 19.225, longitude: 72.83};
+
+  it('accepts a store within the radius of the PIN code centre', async () => {
+    const {service} = geocoder({'400013': {status: 'found', ...centre}});
+    const locations = new StoreLocationService({} as never, service);
+    expect(await locations.isListedNearPincode(near, '400013')).to.be.true();
+  });
+
+  it('rejects a store beyond the radius, even if the address is next to it', async () => {
+    const {service} = geocoder({'400013': {status: 'found', ...centre}});
+    const locations = new StoreLocationService({} as never, service);
+    const nextToFar = {latitude: 19.2251, longitude: 72.8301};
+    expect(await locations.isListedNearPincode(far, '400013', nextToFar)).to.be.false();
+  });
+
+  it('falls back to the address coordinates only while the lookup is unavailable', async () => {
+    const {service} = geocoder({'400013': {status: 'unavailable'}});
+    const locations = new StoreLocationService({} as never, service);
+    expect(await locations.isListedNearPincode(near, '400013', centre)).to.be.true();
+    expect(await locations.isListedNearPincode(near, '400013')).to.be.false();
+  });
+
+  it('rejects for an unknown PIN code and for a store with no location', async () => {
+    const {service} = geocoder({'400013': {status: 'found', ...centre}});
+    const locations = new StoreLocationService({} as never, service);
+    expect(await locations.isListedNearPincode(near, '999999', centre)).to.be.false();
+    expect(await locations.isListedNearPincode({pincode: null}, '400013')).to.be.false();
+  });
+});
