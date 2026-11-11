@@ -21,6 +21,8 @@ import {Coupon} from './coupon.model';
         keys: {couponId: 1, serviceId: 1, itemId: 1},
         options: {unique: true},
       },
+      // Order pricing looks rows up by (serviceId, itemId) across coupons.
+      couponPriceOverrideByPair: {keys: ['serviceId', 'itemId']},
     },
   },
 })

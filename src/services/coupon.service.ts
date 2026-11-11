@@ -162,6 +162,12 @@ export class CouponService {
       return fail('This coupon can only be applied through referral registration, not entered manually.');
     }
 
+    // Price-override coupons set item prices on their own while pricing the
+    // order (OrderService.resolvePricing); they are never applied by code.
+    if (coupon.discountType === CouponDiscountType.PRICE_OVERRIDE && !existingRedemption) {
+      return fail('This coupon applies its prices automatically and cannot be entered as a code.');
+    }
+
     if (!existingRedemption) {
       if (!this.isWithinValidityWindow(coupon)) return fail('This coupon is not currently valid.');
       const usageReason = await this.usageCapacityReason(coupon, input.customerId, input.excludeOrderId);
@@ -510,6 +516,8 @@ export class CouponService {
       // ever get attached via registration (resolveReferralCoupon below)
       // and auto-apply on that customer's first order.
       if (coupon.isReferralCode) continue;
+      // A price-override coupon is a store price list, not an offer.
+      if (coupon.discountType === CouponDiscountType.PRICE_OVERRIDE) continue;
       if (!this.isWithinValidityWindow(coupon)) continue;
       if (await this.usageCapacityReason(coupon, customerId)) continue;
       if (coupon.newCustomerOrderLimit != null && priorOrderCount >= coupon.newCustomerOrderLimit) continue;

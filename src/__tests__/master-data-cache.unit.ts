@@ -46,10 +46,15 @@ function buildController(opts: {customerLabels: Record<string, string[]>}) {
         {id: 'starch', name: 'Starch', code: 'S'},
       ],
     },
-    couponPriceOverrideRepository: {find: async () => overrides},
+    couponPriceOverrideRepository: {
+      find: async (filter: {where: {couponId?: {inq: string[]}}}) =>
+        overrides.filter(o => !filter.where.couponId || filter.where.couponId.inq.includes(o.couponId)),
+    },
     couponRepository: {
-      find: async (filter: {where: {id: {inq: string[]}}}) =>
-        coupons.filter(c => filter.where.id.inq.includes(c.id)),
+      find: async (filter: {where: {id?: {inq: string[]}; discountType?: string}}) =>
+        coupons.filter(c =>
+          (!filter.where.id || filter.where.id.inq.includes(c.id)) &&
+          (!filter.where.discountType || c.discountType === filter.where.discountType)),
     },
     customerLabelAssignmentRepository: {
       find: async (filter: {where: {customerId: string}}) =>

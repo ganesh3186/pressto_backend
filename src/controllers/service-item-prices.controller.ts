@@ -310,15 +310,12 @@ export class ServiceItemPricesController {
     regionId: string,
     customerId?: string,
   ): Promise<Map<string, number>> {
-    const overrides = await this.couponPriceOverrideRepository.find({
-      where: {isActive: true, isDeleted: false},
-    });
-    if (!overrides.length) return new Map();
-
-    const couponIds = [...new Set(overrides.map(o => o.couponId))];
+    // Coupons first, then only their rows: override rows for other stores'
+    // coupons can run to tens of thousands and are never needed here.
     const coupons = await this.couponRepository.find({
-      where: {id: {inq: couponIds}, isActive: true, isDeleted: false},
+      where: {discountType: CouponDiscountType.PRICE_OVERRIDE, isActive: true, isDeleted: false},
     });
+    if (!coupons.length) return new Map();
     // Fetched once, up front — same audience gate as
     // OrderService.resolveCouponOverridePrice(), minus its individual-grant
     // fallback (CouponCustomer is never populated for a price-override
@@ -352,10 +349,14 @@ export class ServiceItemPricesController {
         })
         .map(c => c.id),
     );
+    if (!eligibleCouponIds.size) return new Map();
 
+    const overrides = await this.couponPriceOverrideRepository.find({
+      where: {couponId: {inq: [...eligibleCouponIds]}, isActive: true, isDeleted: false},
+      fields: {serviceId: true, itemId: true, overridePrice: true},
+    });
     const map = new Map<string, number>();
     for (const row of overrides) {
-      if (!eligibleCouponIds.has(row.couponId)) continue;
       const key = `${row.serviceId}:${row.itemId}`;
       const price = Number(row.overridePrice);
       const existing = map.get(key);
