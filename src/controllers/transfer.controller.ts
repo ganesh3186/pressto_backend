@@ -1016,12 +1016,15 @@ export class TransferController {
   async lookup(
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
     @param.query.string('scan') scan: string,
-    @param.query.string('status') status?: TransferStatus,
+    // One status, or several comma-separated (e.g. in_transit,delivered —
+    // everything the destination store can receive).
+    @param.query.string('status') status?: string,
   ): Promise<object> {
     const value = String(scan ?? '').trim().toLowerCase();
     if (!value || value.length > 200) throw new HttpErrors.BadRequest('Enter a valid transit or bag code.');
+    const statuses = [...new Set(String(status ?? '').split(',').map(s => s.trim()).filter(Boolean))];
     const scope = await this.storeScopeService.resolve(currentUser);
-    const and: object[] = [{isDeleted: false}, ...(status ? [{status}] : [])];
+    const and: object[] = [{isDeleted: false}, ...(statuses.length ? [{status: {inq: statuses}}] : [])];
     if (!scope.global) and.push({or: [{fromStoreId: {inq: scope.storeIds}}, {toStoreId: {inq: scope.storeIds}}]});
     const bag = value.replace(/^bag[-:\s]*/, '').replace(/^0+(?=\d)/, '');
     const match = `(lower(transitid) = ? OR transfer.id::text = ? OR EXISTS (

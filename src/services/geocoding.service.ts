@@ -23,6 +23,14 @@ export const INDIAN_PINCODE_PATTERN = /^[1-9]\d{5}$/;
 /** A PIN code's centroid doesn't move, so successful lookups are kept for a day. */
 const PINCODE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const PINCODE_CACHE_MAX_ENTRIES = 5000;
+// Failures are remembered too, so a store with a bad PIN code or a provider
+// outage doesn't put a Google call (and its timeout) on every list request:
+// an unknown PIN code for a day, an outage only briefly.
+const PINCODE_NOT_FOUND_TTL_MS = 24 * 60 * 60 * 1000;
+const PINCODE_UNAVAILABLE_TTL_MS = 60 * 1000;
+// PIN lookups sit on rider list paths, so they get a tighter deadline than
+// the 8 s used for address geocoding.
+const PINCODE_LOOKUP_TIMEOUT_MS = 3000;
 
 class PincodeNotFound extends Error {}
 class PincodeLookupUnavailable extends Error {}
@@ -67,7 +75,17 @@ export class GeocodingService {
   private readonly pincodeCache = new ShortLivedCache<GeocodedPoint>(
     PINCODE_CACHE_TTL_MS,
     PINCODE_CACHE_MAX_ENTRIES,
+    () => this.now(),
   );
+  private readonly pincodeMisses = new Map<
+    string,
+    {status: 'not_found' | 'unavailable'; expiresAt: number}
+  >();
+
+  /** Clock, overridable in tests. */
+  protected now(): number {
+    return Date.now();
+  }
 
   private apiKey(): string | null {
     const key = process.env.GOOGLE_GEOCODING_API_KEY;
@@ -87,14 +105,14 @@ export class GeocodingService {
   // already used in email.service.ts/razorpay.service.ts for a third-party
   // shape).
   /* eslint-disable @typescript-eslint/naming-convention */
-  private fetchJson(url: string): Promise<{status: string; results?: Array<{
+  private fetchJson(url: string, timeoutMs = 8000): Promise<{status: string; results?: Array<{
     geometry: {location: {lat: number; lng: number}; location_type?: string};
     partial_match?: boolean;
     types?: string[];
   }>}> {
   /* eslint-enable @typescript-eslint/naming-convention */
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => request.destroy(new Error('Geocoding deadline exceeded')), 8000);
+      const timer = setTimeout(() => request.destroy(new Error('Geocoding deadline exceeded')), timeoutMs);
       const request = https
         .get(url, res => {
           let data = '';
@@ -147,18 +165,34 @@ export class GeocodingService {
    * Shared PIN-code → coordinates lookup (the PIN code's centroid, so an
    * approximate location). Used wherever a store has no usable coordinates
    * of its own (rider transfer list, nearby-store search). Never throws.
-   * Successful results are cached per process; failures are not, so a
-   * provider outage or a newly-added key recovers on the next call.
+   * Results are cached per process: a found PIN code for a day, an unknown
+   * one for a day, and an outage (no key, quota, network, timeout) for a
+   * minute, so the lookup recovers soon after the provider does.
    */
   async geocodePincode(pincode: string): Promise<PincodeLookupResult> {
     const pin = String(pincode ?? '').trim();
     if (!INDIAN_PINCODE_PATTERN.test(pin)) return {status: 'not_found'};
+    const miss = this.pincodeMisses.get(pin);
+    if (miss && miss.expiresAt > this.now()) return {status: miss.status};
     try {
       const point = await this.pincodeCache.get(pin, () => this.loadPincode(pin));
+      this.pincodeMisses.delete(pin);
       return {status: 'found', ...point};
     } catch (error) {
-      return error instanceof PincodeNotFound ? {status: 'not_found'} : {status: 'unavailable'};
+      const status = error instanceof PincodeNotFound ? 'not_found' : 'unavailable';
+      this.rememberMiss(pin, status);
+      return {status};
     }
+  }
+
+  private rememberMiss(pin: string, status: 'not_found' | 'unavailable') {
+    this.pincodeMisses.delete(pin);
+    if (this.pincodeMisses.size >= PINCODE_CACHE_MAX_ENTRIES) {
+      // A Map iterates in insertion order, so this is the oldest entry.
+      this.pincodeMisses.delete(this.pincodeMisses.keys().next().value as string);
+    }
+    const ttl = status === 'not_found' ? PINCODE_NOT_FOUND_TTL_MS : PINCODE_UNAVAILABLE_TTL_MS;
+    this.pincodeMisses.set(pin, {status, expiresAt: this.now() + ttl});
   }
 
   private async loadPincode(pin: string): Promise<GeocodedPoint> {
@@ -172,7 +206,7 @@ export class GeocodingService {
         encodeURIComponent(`postal_code:${pin}|country:IN`) +
         '&key=' +
         key;
-      response = await this.fetchJson(url);
+      response = await this.fetchJson(url, PINCODE_LOOKUP_TIMEOUT_MS);
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('[GeocodingService] PIN code lookup failed.', error);

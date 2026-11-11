@@ -62,6 +62,26 @@ describe('StoreLocationService.resolveCoordinates (coordinate fallback)', () => 
     expect(calls.sort()).to.deepEqual(['400001', '400002', '400003']);
   });
 
+  it('looks up at most five PIN codes at a time', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const locations = new StoreLocationService({} as never, {
+      geocodePincode: async () => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        inFlight--;
+        return {status: 'found', latitude: 19, longitude: 72.8};
+      },
+    } as unknown as GeocodingService);
+    const stores = Array.from({length: 12}, (_, i) => ({pincode: String(400001 + i)}));
+
+    const result = await locations.resolveCoordinates(stores);
+
+    expect(result.every(r => r.coordinateSource === 'pincode')).to.be.true();
+    expect(peak).to.equal(5);
+  });
+
   it('never throws when the lookup itself fails', async () => {
     const locations = new StoreLocationService({} as never, {
       geocodePincode: async () => { throw new Error('boom'); },
@@ -83,7 +103,10 @@ describe('GeocodingService.geocodePincode', () => {
   function withResponses(...responses: Array<Row | Error>) {
     const service = new GeocodingService();
     const urls: string[] = [];
+    let time = 1_000_000;
+    const clock = {advance: (ms: number) => { time += ms; }};
     Object.assign(service, {
+      now: () => time,
       fetchJson: async (url: string) => {
         urls.push(url);
         const next = responses.shift();
@@ -91,7 +114,7 @@ describe('GeocodingService.geocodePincode', () => {
         return next;
       },
     });
-    return {service, urls};
+    return {service, urls, clock};
   }
   const postalCode = (lat: number, lng: number) => ({
     status: 'OK',
@@ -115,16 +138,27 @@ describe('GeocodingService.geocodePincode', () => {
     expect(await service.geocodePincode('999998')).to.deepEqual({status: 'not_found'});
   });
 
-  it('maps provider errors, network failures and a missing key to unavailable, without caching them', async () => {
-    const {service, urls} = withResponses(
+  it('remembers an outage for a minute and an unknown PIN code for a day, then asks again', async () => {
+    const {service, urls, clock} = withResponses(
       {status: 'OVER_QUERY_LIMIT'},
       new Error('socket hang up'),
       postalCode(18.94, 72.83),
+      {status: 'ZERO_RESULTS', results: []},
     );
     expect(await service.geocodePincode('400001')).to.deepEqual({status: 'unavailable'});
     expect(await service.geocodePincode('400001')).to.deepEqual({status: 'unavailable'});
+    expect(urls).to.have.length(1);
+    clock.advance(61_000);
+    expect(await service.geocodePincode('400001')).to.deepEqual({status: 'unavailable'});
+    expect(urls).to.have.length(2);
+    clock.advance(61_000);
     expect(await service.geocodePincode('400001')).to.containDeep({status: 'found'});
     expect(urls).to.have.length(3);
+
+    expect(await service.geocodePincode('999999')).to.deepEqual({status: 'not_found'});
+    clock.advance(60 * 60 * 1000);
+    expect(await service.geocodePincode('999999')).to.deepEqual({status: 'not_found'});
+    expect(urls).to.have.length(4);
 
     delete process.env.GOOGLE_GEOCODING_API_KEY;
     expect(await new GeocodingService().geocodePincode('400001')).to.deepEqual({status: 'unavailable'});
