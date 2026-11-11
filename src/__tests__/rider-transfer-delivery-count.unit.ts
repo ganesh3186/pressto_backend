@@ -1,4 +1,6 @@
 import {expect} from '@loopback/testlab';
+import {getControllerSpec} from '@loopback/openapi-v3';
+import {RequestBodyObject, SchemaObject, validateRequestBody} from '@loopback/rest';
 import {securityId, UserProfile} from '@loopback/security';
 import {compareItemCounts, RiderTransferController} from '../controllers/rider-transfer.controller';
 import {TransferStatus} from '../models/transfer-status.enum';
@@ -127,6 +129,19 @@ describe('rider transfer delivery item count', () => {
     expect(events).to.have.length(0);
   });
 
+  it('accepts a null reason on a matched count, as Dart and Kotlin clients send it', async () => {
+    const {deliver} = setup();
+    expect(await deliver({deliveredItemCount: 10, discrepancyReason: null}))
+      .to.containDeep({countVerificationStatus: 'matched', discrepancyReason: null});
+  });
+
+  it('treats a null reason on a mismatch as missing (422)', async () => {
+    const {deliver} = setup();
+    const error = await rejection(deliver({deliveredItemCount: 8, discrepancyReason: null}));
+    expect(error.statusCode).to.equal(422);
+    expect(error.code).to.equal('DISCREPANCY_REASON_REQUIRED');
+  });
+
   it('treats a blank reason as missing', async () => {
     const {deliver} = setup();
     const error = await rejection(deliver({deliveredItemCount: 8, discrepancyReason: '   '}));
@@ -213,7 +228,7 @@ describe('rider transfer delivery item count', () => {
   });
 
   it('validates deliveredItemCount as a non-negative integer (400)', async () => {
-    for (const deliveredItemCount of [undefined, null, -1, 1.5, '8', Number.NaN, Infinity]) {
+    for (const deliveredItemCount of [undefined, null, -1, 1.5, '8', Number.NaN, Infinity, 2147483648]) {
       const {transfer, deliver} = setup();
       const error = await rejection(deliver({deliveredItemCount}));
       expect(error.statusCode).to.equal(400);
@@ -283,6 +298,17 @@ describe('rider transfer delivery item count', () => {
     expect(transfer.status).to.equal(TransferStatus.IN_TRANSIT);
   });
 
+  it('treats a null itemCount on in_transit as not sent', async () => {
+    const {controller, transfer, user} = setup({transfer: {status: TransferStatus.RIDER_ASSIGNED}});
+    const result = await controller.updateTransferStatus(user, String(transfer.id), {
+      status: TransferStatus.IN_TRANSIT,
+      bagIds: ['bag-1'],
+      itemCount: null,
+    });
+    expect(result).to.containDeep({riderVerifiedItemCount: null, shortageCount: null});
+    expect(transfer.status).to.equal(TransferStatus.IN_TRANSIT);
+  });
+
   it('rejects an in_transit request without bagIds as before (422)', async () => {
     const {controller, transfer, user} = setup({transfer: {status: TransferStatus.RIDER_ASSIGNED}});
     const error = await rejection(
@@ -290,5 +316,42 @@ describe('rider transfer delivery item count', () => {
     );
     expect(error.statusCode).to.equal(422);
     expect(transfer.status).to.equal(TransferStatus.RIDER_ASSIGNED);
+  });
+});
+
+describe('PATCH /rider/transfers/{id}/status request body schema', () => {
+  // The schema LoopBack validates every request against, read from the controller itself.
+  const operation = (getControllerSpec(RiderTransferController).paths as Record<
+    string,
+    Record<string, {requestBody: RequestBodyObject}>
+  >)['/rider/transfers/{id}/status'].patch;
+  const requestBody = operation.requestBody;
+  const schema = requestBody.content['application/json'].schema as SchemaObject;
+  const validate = (value: object) => validateRequestBody({value, schema}, requestBody, {});
+  const bagId = '11111111-1111-4111-8111-111111111111';
+
+  it('accepts the existing in_transit payload and the new delivered payloads', async () => {
+    await validate({status: 'in_transit', bagIds: [bagId]});
+    await validate({status: 'in_transit', bagIds: [bagId], itemCount: 10});
+    await validate({status: 'delivered', deliveredItemCount: 10});
+    await validate({status: 'delivered', deliveredItemCount: 8, discrepancyReason: 'Two missing'});
+  });
+
+  it('accepts null for every optional field, as Dart and Kotlin clients serialise them', async () => {
+    await validate({status: 'delivered', deliveredItemCount: 10, discrepancyReason: null, bagIds: null, itemCount: null});
+    await validate({status: 'in_transit', bagIds: [bagId], itemCount: null, deliveredItemCount: null, discrepancyReason: null});
+  });
+
+  it('still rejects unknown statuses and wrong types with 422', async () => {
+    for (const body of [
+      {status: 'received'},
+      {deliveredItemCount: 10},
+      {status: 'delivered', deliveredItemCount: 8, discrepancyReason: 5},
+      {status: 'in_transit', bagIds: ['not-a-uuid']},
+      {status: 'in_transit', bagIds: [bagId], itemCount: -1},
+    ]) {
+      const error = await rejection(validate(body));
+      expect(error.statusCode).to.equal(422);
+    }
   });
 });

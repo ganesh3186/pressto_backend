@@ -28,8 +28,13 @@ async function addStorePincodeCoverage() {
   const storeArg = arg('store');
   const pincode = arg('pincode');
   const km = Number(arg('km'));
-  const radiusRaw = Number(process.env.STORE_ASSIGNMENT_RADIUS_KM);
-  const radiusKm = Number.isFinite(radiusRaw) && radiusRaw > 0 ? radiusRaw : 15;
+  // Same setting as the API's storeSearchRadiusKm() (src/utils/config.ts).
+  const radiusSetting = [process.env.STORE_SEARCH_RADIUS_KM, process.env.STORE_ASSIGNMENT_RADIUS_KM]
+    .find(value => value != null && value.trim() !== '');
+  const radiusKm = radiusSetting === undefined ? 15 : Number(radiusSetting.trim());
+  if (!Number.isFinite(radiusKm) || radiusKm <= 0) {
+    throw new Error(`STORE_SEARCH_RADIUS_KM must be a finite positive number; got "${radiusSetting}".`);
+  }
 
   if (!storeArg) throw new Error('--store is required (store code or exact name).');
   if (!/^\d{6}$/.test(pincode ?? '')) throw new Error('--pincode must be 6 digits.');

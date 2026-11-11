@@ -37,6 +37,10 @@ export type NearbyStoreResult = {
 
 type LocatedStore = {id: string; name: string} & StoreCoordinates;
 
+// Google lookups run at most this many at a time, so a first request over
+// many un-geocoded stores doesn't burst past the provider's rate limit.
+const MAX_PARALLEL_PINCODE_LOOKUPS = 5;
+
 /**
  * Keeps only stores at or below `radiusKm` from `origin`, nearest first.
  * The radius check runs on the unrounded distance — a store at 15.004 km
@@ -83,37 +87,48 @@ export class StoreLocationService {
   ) {}
 
   async resolveCoordinates(stores: StoreCoordinateInput[]): Promise<StoreCoordinates[]> {
-    // One lookup per distinct PIN code, however many stores share it.
-    const pending = new Map<string, Promise<GeocodedPoint | null>>();
-    const lookup = (pincode: string) => {
-      let result = pending.get(pincode);
-      if (!result) {
-        result = this.geocodingService
-          .geocodePincode(pincode)
-          .then(r => (r.status === 'found' ? {latitude: r.latitude, longitude: r.longitude} : null))
-          .catch(() => null);
-        pending.set(pincode, result);
-      }
-      return result;
-    };
+    const pincodeOf = (store: StoreCoordinateInput) =>
+      store.pincode == null ? null : String(store.pincode).trim() || null;
 
-    return Promise.all(
-      stores.map(async (store): Promise<StoreCoordinates> => {
-        const pincode = store.pincode == null ? null : String(store.pincode).trim() || null;
-        if (hasRealCoordinates(store.latitude, store.longitude)) {
-          return {
-            pincode,
-            latitude: Number(store.latitude),
-            longitude: Number(store.longitude),
-            coordinateSource: 'store',
-          };
-        }
-        const point = pincode ? await lookup(pincode) : null;
-        return point
-          ? {pincode, ...point, coordinateSource: 'pincode'}
-          : {pincode, latitude: null, longitude: null, coordinateSource: null};
-      }),
-    );
+    // One lookup per distinct PIN code, however many stores share it, and
+    // only for stores without usable coordinates of their own.
+    const needed = [
+      ...new Set(
+        stores
+          .filter(store => !hasRealCoordinates(store.latitude, store.longitude))
+          .map(pincodeOf)
+          .filter((pincode): pincode is string => pincode !== null),
+      ),
+    ];
+    const points = new Map<string, GeocodedPoint | null>();
+    for (let i = 0; i < needed.length; i += MAX_PARALLEL_PINCODE_LOOKUPS) {
+      const batch = needed.slice(i, i + MAX_PARALLEL_PINCODE_LOOKUPS);
+      const results = await Promise.all(
+        batch.map(pincode =>
+          this.geocodingService
+            .geocodePincode(pincode)
+            .then(r => (r.status === 'found' ? {latitude: r.latitude, longitude: r.longitude} : null))
+            .catch(() => null),
+        ),
+      );
+      batch.forEach((pincode, j) => points.set(pincode, results[j]));
+    }
+
+    return stores.map((store): StoreCoordinates => {
+      const pincode = pincodeOf(store);
+      if (hasRealCoordinates(store.latitude, store.longitude)) {
+        return {
+          pincode,
+          latitude: Number(store.latitude),
+          longitude: Number(store.longitude),
+          coordinateSource: 'store',
+        };
+      }
+      const point = pincode ? points.get(pincode) ?? null : null;
+      return point
+        ? {pincode, ...point, coordinateSource: 'pincode'}
+        : {pincode, latitude: null, longitude: null, coordinateSource: null};
+    });
   }
 
   /**

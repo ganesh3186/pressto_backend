@@ -23,11 +23,15 @@ export type CountVerificationStatus = 'matched' | 'short' | 'excess';
 
 type StatusUpdateBody = {
   status: TransferStatus;
-  bagIds?: string[];
-  itemCount?: number;
+  bagIds?: string[] | null;
+  itemCount?: number | null;
   deliveredItemCount?: unknown;
   discrepancyReason?: unknown;
 };
+
+// The INTEGER column's limit: a larger count is rejected as a 400 instead of
+// failing in Postgres as a 500.
+const MAX_ITEM_COUNT = 2147483647;
 
 /** deliveredItemCount vs the dispatched baseline. */
 export function compareItemCounts(expectedItemCount: number, deliveredItemCount: number) {
@@ -60,17 +64,6 @@ export class RiderTransferController {
     @inject('datasources.pressto') private dataSource: PresstoDataSource,
     @inject('services.store-location') private storeLocationService: StoreLocationService,
   ) {}
-
-  private storeLocation(store?: {id: string; name: string; latitude?: number; longitude?: number}) {
-    return store
-      ? {
-          id: store.id,
-          name: store.name,
-          latitude: store.latitude == null ? null : Number(store.latitude),
-          longitude: store.longitude == null ? null : Number(store.longitude),
-        }
-      : null;
-  }
 
   /**
    * id/name/pincode/latitude/longitude/coordinateSource per store. Coordinates
@@ -239,17 +232,13 @@ export class RiderTransferController {
     const bags = uniqueBagIds.length
       ? await this.bagRepository.find({where: {id: {inq: uniqueBagIds}} as object})
       : [];
-    const stores = await this.storeRepository.find({
-      where: {id: {inq: [transfer.fromStoreId, transfer.toStoreId]}, isDeleted: false} as object,
-      fields: {id: true, name: true, latitude: true, longitude: true} as object,
-    });
-    const storeById = new Map(stores.map(store => [store.id, store]));
+    const storeLocation = await this.storeLocations([transfer.fromStoreId, transfer.toStoreId]);
 
     return {
       transfer: {
         ...transfer,
-        fromStore: this.storeLocation(storeById.get(transfer.fromStoreId)),
-        toStore: this.storeLocation(storeById.get(transfer.toStoreId)),
+        fromStore: storeLocation(transfer.fromStoreId),
+        toStore: storeLocation(transfer.toStoreId),
       },
       items,
       bags: bags.map(b => ({id: b.id, bagNumber: b.bagNumber})),
@@ -279,6 +268,7 @@ export class RiderTransferController {
               status: {type: 'string', enum: [TransferStatus.IN_TRANSIT, TransferStatus.DELIVERED]},
               bagIds: {
                 type: 'array',
+                nullable: true,
                 items: {type: 'string', format: 'uuid'},
                 description:
                   'status=in_transit (required): every bag belonging to this transfer, scanned by the ' +
@@ -287,6 +277,7 @@ export class RiderTransferController {
               },
               itemCount: {
                 type: 'integer',
+                nullable: true,
                 minimum: 0,
                 description: 'status=in_transit (optional): physical item count verified by the rider before transit.',
               },
@@ -297,6 +288,7 @@ export class RiderTransferController {
               },
               discrepancyReason: {
                 type: 'string',
+                nullable: true,
                 description:
                   'status=delivered: required when deliveredItemCount differs from the dispatched count.',
               },
@@ -342,7 +334,8 @@ export class RiderTransferController {
     // bagId of their own and fall back to the transfer's own primary bagId.
     const items = await this.transferItemRepository.find({where: {transferId: transfer.id} as object});
     const expectedItemCount = Number(transfer.itemCount ?? items.length);
-    const verifiedItemCount = body.itemCount;
+    // null is "not sent", like an absent field.
+    const verifiedItemCount = body.itemCount ?? undefined;
     if (
       verifiedItemCount !== undefined &&
       (!Number.isInteger(verifiedItemCount) || verifiedItemCount < 0 || verifiedItemCount > expectedItemCount)
@@ -488,7 +481,12 @@ export class RiderTransferController {
 
   async markDelivered(currentUser: UserProfile, id: string, body: StatusUpdateBody): Promise<object> {
     const deliveredItemCount = body.deliveredItemCount;
-    if (typeof deliveredItemCount !== 'number' || !Number.isSafeInteger(deliveredItemCount) || deliveredItemCount < 0) {
+    if (
+      typeof deliveredItemCount !== 'number' ||
+      !Number.isInteger(deliveredItemCount) ||
+      deliveredItemCount < 0 ||
+      deliveredItemCount > MAX_ITEM_COUNT
+    ) {
       throw Object.assign(
         new HttpErrors.BadRequest('deliveredItemCount is required and must be a non-negative integer.'),
         {code: 'INVALID_DELIVERED_ITEM_COUNT'},
