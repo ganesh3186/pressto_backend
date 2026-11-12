@@ -49,6 +49,7 @@ import {BcryptHasher} from '../services/hash.password.bcrypt';
 import {GeocodingService, hasRealCoordinates} from '../services/geocoding.service';
 import {SecurityDepositService} from '../services/security-deposit.service';
 import {PincodeStore, ResolvedStore, StoreAssignmentService} from '../services/store-assignment.service';
+import {StoreLocationService} from '../services/store-location.service';
 import {WalletService} from '../services/wallet.service';
 import {DeliveryGroupingPreference} from '../models/delivery-grouping-preference.enum';
 import {DeliveryType} from '../models/delivery-type.enum';
@@ -139,6 +140,8 @@ export class RiderPickupController {
     private geocodingService: GeocodingService,
     @repository(CustomerAddressRepository)
     private customerAddressRepository: CustomerAddressRepository,
+    @inject('services.store-location')
+    private storeLocationService: StoreLocationService,
   ) {}
 
   // ─── Identity ─────────────────────────────────────────────────────────────
@@ -1221,8 +1224,18 @@ export class RiderPickupController {
       if (!store) throw new HttpErrors.NotFound('Store not found.');
       if (!store.isActive) throw new HttpErrors.BadRequest('That store is inactive.');
       // A pincode no store serves has nothing to pick from, so a manual
-      // storeId is still accepted there, as before.
-      if (pincodeStores.length && !pincodeStores.some(s => s.id === storeId)) {
+      // storeId is still accepted there, as before. The app's picker lists
+      // stores by distance (GET /rider/stores/nearby), so a store it offered
+      // is accepted even when the coverage table doesn't list it.
+      if (
+        pincodeStores.length &&
+        !pincodeStores.some(s => s.id === storeId) &&
+        !(await this.storeLocationService.isListedNearPincode(
+          store,
+          pincode!,
+          latitude != null && longitude != null ? {latitude, longitude} : null,
+        ))
+      ) {
         throw new HttpErrors.BadRequest(
           `${store.name} does not serve pincode ${pincode}. Choose one of: ` +
             pincodeStores.map(s => s.name).join(', ') + '.',
