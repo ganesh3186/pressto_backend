@@ -249,6 +249,10 @@ type ShiftClosingSnapshot = {
   itpv?: {
     pReport?: {revenue?: ShiftRevenueCell; salesReturn?: ShiftRevenueCell};
     zReport?: {revenue?: ShiftRevenueCell; salesReturn?: ShiftRevenueCell};
+    // QSST's own P2D / PMU figures saved at this shift close (iTPV ShiftCloserB2B),
+    // added to migrated shifts by the migration (src/138). The QSST Daily Sales
+    // Report shows exactly these, so a migrated shift reports them as saved.
+    b2b?: {p2dGross?: number; pmuGross?: number};
   };
 };
 
@@ -1681,6 +1685,9 @@ export class ReportsService {
     // group; cumulative-diff figures are running totals, so only the
     // LAST shift closed that day carries the up-to-date number.
     const closureNumbers = new Map<string, string[]>();
+    // Migrated shifts' saved Total Sales (QSST net sales, rounded per ticket by
+    // QSST) and the revenue less discount they cover, per (store, day) group.
+    const savedTotalSales = new Map<string, {total: number; net: number}>();
     const openRemarks = new Map<string, string[]>();
     const closeRemarks = new Map<string, string[]>();
 
@@ -1700,14 +1707,23 @@ export class ReportsService {
       const isMigratedItpvShift = closing.itpv?.zReport != null;
       const usesStoredItpvSplit =
         isMigratedItpvShift && day >= ITPV_PZ_SPLIT_EFFECTIVE_DATE;
+      // Before the agreed split date, a migrated shift carrying QSST's saved
+      // P2D/PMU reports them as saved instead of re-deriving them from invoices,
+      // which counted tickets QSST's close did not (ST007 9 Sep 2026: Rs 25,093
+      // re-derived vs Rs 4,845 saved and shown by QSST's own DSR).
+      const savedB2b =
+        isMigratedItpvShift && !usesStoredItpvSplit ? closing.itpv?.b2b : undefined;
+      const usesSavedItpvB2b = savedB2b != null;
       let psbRevenue = isMigratedItpvShift
         ? Number(closing.itpv?.zReport?.revenue?.revenue) || 0
         : 0;
-      let pmuRevenue = 0;
-      let p2dRevenue = usesStoredItpvSplit
-        ? Number(closing.itpv?.pReport?.revenue?.revenue) || 0
-        : 0;
-      for (const link of invoiceOrders) {
+      let pmuRevenue = usesSavedItpvB2b ? Number(savedB2b.pmuGross) || 0 : 0;
+      let p2dRevenue = usesSavedItpvB2b
+        ? Number(savedB2b.p2dGross) || 0
+        : usesStoredItpvSplit
+          ? Number(closing.itpv?.pReport?.revenue?.revenue) || 0
+          : 0;
+      for (const link of usesSavedItpvB2b ? [] : invoiceOrders) {
         const order = revenueOrderById.get(link.orderId);
         if (!order || order.storeId !== shift.storeId) continue;
         const invoice = revenueInvoiceById.get(link.invoiceId);
@@ -1839,6 +1855,12 @@ export class ReportsService {
       const discount = Number(revenueCell.discount) || 0;
       row.revenue += revenue;
       row.discount += discount;
+      if (isMigratedItpvShift && revenueCell.totalSales != null) {
+        const saved = savedTotalSales.get(key) ?? {total: 0, net: 0};
+        saved.total += Number(revenueCell.totalSales) || 0;
+        saved.net += revenue - discount;
+        savedTotalSales.set(key, saved);
+      }
       row.noOfTickets += Number(revenueCell.tickets) || 0;
       row.noOfItems += Number(revenueCell.items) || 0;
       row.noOfServices += Number(revenueCell.services) || 0;
@@ -1904,7 +1926,16 @@ export class ReportsService {
     for (const [key, row] of grouped) {
       row.discountedRevenue = Math.round((row.revenue - row.discount) * 100) / 100;
       row.taxes = Math.round(row.discountedRevenue * gstRate * 100) / 100;
-      row.totalSales = Math.round(row.revenue - row.discount + row.taxes);
+      // Migrated shifts report QSST's saved Total Sales (its own per-ticket
+      // rounding, as QSST's DSR does); any Pulse shift in the same group keeps
+      // the revenue less discount plus GST calculation.
+      const saved = savedTotalSales.get(key);
+      if (saved) {
+        const pulseNet = row.discountedRevenue - saved.net;
+        row.totalSales = Math.round(saved.total + pulseNet + pulseNet * gstRate);
+      } else {
+        row.totalSales = Math.round(row.revenue - row.discount + row.taxes);
+      }
       row.closureNo = (closureNumbers.get(key) ?? []).join(', ');
       row.shiftOpenRemark = (openRemarks.get(key) ?? []).join(', ') || '—';
       row.shiftClosingRemark = (closeRemarks.get(key) ?? []).join(', ') || '—';

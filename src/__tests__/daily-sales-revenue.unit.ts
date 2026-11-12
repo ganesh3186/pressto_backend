@@ -314,6 +314,74 @@ describe('daily sales revenue', () => {
     expect(report.rows[0]).to.containEql({psbRevenue: 18, p2dRevenue: 0, revenue: 100});
   });
 
+  it('reports QSST saved P2D/PMU for a migrated shift before 1 October 2026, not invoices', async () => {
+    const openedAt = new Date('2026-09-09T02:30:00Z');
+    const closedAt = new Date('2026-09-09T10:40:00Z');
+    const service = Object.assign(Object.create(ReportsService.prototype), {
+      shiftRepo: {find: async () => [{
+        id: 'shift-b2b', storeId: 'store-a', status: ShiftStatus.CLOSED,
+        openedAt, closedAt, openingNo: 'S-b2b',
+        closing: {
+          revenue: {pressto: {revenue: 30000, discount: 4000, totalSales: 30680}},
+          itpv: {
+            pReport: {revenue: {revenue: 30000}},
+            zReport: {revenue: {revenue: 0}},
+            b2b: {p2dGross: 4845, pmuGross: 120},
+          },
+        },
+      }]},
+      buildStoreContext: async () => new Map(),
+      orderRepo: {find: async () => []},
+      paymentTransactionRepo: {find: async () => []},
+      // a P2D invoice in the window that QSST's close did not count must not be added
+      invoiceRepo: {find: async () => [{
+        id: 'inv-1', orderId: 'order-1', subtotal: 20248, cgst: 0, sgst: 0,
+        totalAmount: 20248, isConsolidated: false, createdAt: new Date('2026-09-09T09:27:00Z'),
+      }]},
+      invoiceOrderLinkRepo: {find: async () => []},
+      salesReturnRepo: {find: async () => []},
+      storeMonthlyTargetRepo: {find: async () => []},
+    }) as ReportsService;
+    Object.assign(service, {
+      orderRepo: {find: async (filter: {fields?: object}) =>
+        filter.fields && 'taxAmount' in filter.fields
+          ? [{id: 'order-1', storeId: 'store-a', orderType: OrderType.HOME_PICKUP_HOME_DELIVERY, status: 'delivered', taxAmount: 0, totalAmount: 20248}]
+          : []},
+    });
+
+    const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
+
+    expect(report.rows[0]).to.containEql({p2dRevenue: 4845, pmuRevenue: 120, psbRevenue: 0});
+  });
+
+  it('reports the saved Total Sales of a migrated shift', async () => {
+    const openedAt = new Date('2026-09-14T02:30:00Z');
+    const closedAt = new Date('2026-09-14T14:00:00Z');
+    const service = Object.assign(Object.create(ReportsService.prototype), {
+      shiftRepo: {find: async () => [{
+        id: 'shift-ts', storeId: 'store-a', status: ShiftStatus.CLOSED,
+        openedAt, closedAt, openingNo: 'S-ts',
+        // QSST ST086 14 Sep 2026: revenue 21,156, discount 4,733.60, saved net sales 19,380
+        closing: {
+          revenue: {pressto: {revenue: 21156, discount: 4733.6, totalSales: 19380}},
+          itpv: {zReport: {revenue: {revenue: 0}}, b2b: {p2dGross: 0, pmuGross: 0}},
+        },
+      }]},
+      buildStoreContext: async () => new Map(),
+      orderRepo: {find: async () => []},
+      paymentTransactionRepo: {find: async () => []},
+      invoiceRepo: {find: async () => []},
+      invoiceOrderLinkRepo: {find: async () => []},
+      salesReturnRepo: {find: async () => []},
+      storeMonthlyTargetRepo: {find: async () => []},
+    }) as ReportsService;
+
+    const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
+
+    // recalculating would give round(16,422.40 * 1.18) = 19,378
+    expect(report.rows[0]).to.containEql({totalSales: 19380, taxes: 2956.03});
+  });
+
   it('calculates tax from net revenue even when invoice tax was zero', async () => {
     const openedAt = new Date('2026-10-05T09:00:00Z');
     const closedAt = new Date('2026-10-05T17:00:00Z');
