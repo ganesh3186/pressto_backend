@@ -7,6 +7,7 @@ export enum TransferStatus {
   // receive() will accept it.
   RIDER_ASSIGNED = 'rider_assigned',
   IN_TRANSIT = 'in_transit',
+  CANCELLED = 'cancelled',
   // The rider has handed the bag(s) over at the destination and recorded
   // how many items they handed over (PATCH /rider/transfers/{id}/status).
   // The destination store's receive() still does the item-level check —
@@ -28,9 +29,10 @@ export enum TransferStatus {
 // state); from there it must be handed to a rider and marked in transit
 // before the destination can receive it — see TransferStatus.RIDER_ASSIGNED.
 export const TRANSFER_STATUS_TRANSITIONS: Record<TransferStatus, TransferStatus[]> = {
-  [TransferStatus.SENT]: [TransferStatus.RIDER_ASSIGNED],
-  [TransferStatus.RIDER_ASSIGNED]: [TransferStatus.IN_TRANSIT],
-  [TransferStatus.IN_TRANSIT]: [TransferStatus.DELIVERED, TransferStatus.RECEIVED, TransferStatus.DISCREPANCY],
+  [TransferStatus.SENT]: [TransferStatus.RIDER_ASSIGNED, TransferStatus.CANCELLED],
+  [TransferStatus.RIDER_ASSIGNED]: [TransferStatus.IN_TRANSIT, TransferStatus.CANCELLED],
+  [TransferStatus.IN_TRANSIT]: [TransferStatus.DELIVERED, TransferStatus.RECEIVED, TransferStatus.DISCREPANCY, TransferStatus.CANCELLED],
+  [TransferStatus.CANCELLED]: [],
   [TransferStatus.DELIVERED]: [TransferStatus.RECEIVED, TransferStatus.DISCREPANCY],
   [TransferStatus.RECEIVED]: [],
   [TransferStatus.DISCREPANCY]: [TransferStatus.RESOLVED],

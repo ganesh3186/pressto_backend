@@ -819,20 +819,36 @@ export class TransferController {
     }
 
     const now = new Date();
-    await this.transferRepo.updateById(id, {
-      status: TransferStatus.IN_TRANSIT,
-      inTransitAt: now,
-      inTransitBy: currentUser[securityId],
-    });
-
     const {v4} = await import('uuid');
-    await this.custodyEventRepo.create({
-      id: v4(),
-      transferId: id,
-      eventType: TransferCustodyEventType.IN_TRANSIT,
-      performedBy: currentUser[securityId],
-      remarks: 'Marked in transit via admin test shortcut (no rider app yet).',
-    });
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      const updated = await this.transferRepo.updateAll(
+        {
+          status: TransferStatus.IN_TRANSIT,
+          inTransitAt: now,
+          inTransitBy: currentUser[securityId],
+        },
+        {id, status: TransferStatus.RIDER_ASSIGNED, isDeleted: false},
+        {transaction: tx},
+      );
+      if (updated.count !== 1) {
+        throw new HttpErrors.Conflict('This transfer can no longer be marked in transit.');
+      }
+      await this.custodyEventRepo.create(
+        {
+          id: v4(),
+          transferId: id,
+          eventType: TransferCustodyEventType.IN_TRANSIT,
+          performedBy: currentUser[securityId],
+          remarks: 'Marked in transit via admin test shortcut (no rider app yet).',
+        },
+        {transaction: tx},
+      );
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
 
     return {message: 'Transfer marked in transit (test).', transfer: await this.transferRepo.findById(id)};
   }
@@ -1164,6 +1180,83 @@ export class TransferController {
   // fixing it.
 
   @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:update']})
+  @post('/transfers/{id}/cancel')
+  @response(200, {description: 'Transfer cancelled; items, bags and rider released'})
+  async cancel(
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+    @param.path.string('id') id: string,
+  ): Promise<object> {
+    const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
+    if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
+    const cancellable = [TransferStatus.SENT, TransferStatus.RIDER_ASSIGNED, TransferStatus.IN_TRANSIT];
+    if (!cancellable.includes(transfer.status ?? TransferStatus.SENT)) {
+      throw new HttpErrors.BadRequest(`Cannot cancel a transfer that is ${transfer.status}.`);
+    }
+
+    const scope = await this.storeScopeService.resolve(currentUser);
+    if (!this.storeScopeService.allows(scope, transfer.fromStoreId)) {
+      throw new HttpErrors.NotFound('Transfer not found.');
+    }
+
+    const items = await this.transferItemRepo.find({where: {transferId: id} as object});
+    const bagIds = [...new Set(items.map(item => item.bagId ?? transfer.bagId))];
+    const {v4} = await import('uuid');
+    const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
+    try {
+      const updated = await this.transferRepo.updateAll(
+        {status: TransferStatus.CANCELLED, riderId: null as unknown as string},
+        {id, status: {inq: cancellable}, isDeleted: false} as object,
+        {transaction: tx},
+      );
+      if (updated.count !== 1) throw new HttpErrors.Conflict('This transfer can no longer be cancelled.');
+
+      await this.garmentRepo.updateAll(
+        {activeTransferId: null as unknown as string},
+        {activeTransferId: id} as object,
+        {transaction: tx},
+      );
+      for (const bagId of bagIds) {
+        await this.bagRepo.updateById(
+          bagId,
+          {
+            status: BagStatus.AVAILABLE,
+            itemCount: 0,
+            currentTransferId: null as unknown as string,
+            currentStoreId: transfer.fromStoreId,
+          },
+          {transaction: tx},
+        );
+        await this.custodyEventRepo.create(
+          {id: v4(), transferId: id, eventType: TransferCustodyEventType.BAG_RELEASED, bagId, performedBy: currentUser[securityId]},
+          {transaction: tx},
+        );
+      }
+      await this.custodyEventRepo.create(
+        {id: v4(), transferId: id, eventType: TransferCustodyEventType.CANCELLED, performedBy: currentUser[securityId]},
+        {transaction: tx},
+      );
+      await tx.commit();
+    } catch (error) {
+      await tx.rollback();
+      throw error;
+    }
+
+    if (transfer.riderId) {
+      void this.notificationService.notifyRider(transfer.riderId, {
+        type: RIDER_NOTIFICATION_TYPES.TRANSFER_CANCELLED,
+        title: 'Transfer cancelled',
+        body: `Transfer ${transfer.transitId} has been cancelled.`,
+        data: {transferId: id},
+      }).catch(() => undefined);
+    }
+    return {
+      message: 'Transfer cancelled. Bags, items and rider released.',
+      transfer: await this.transferRepo.findById(id),
+    };
+  }
+
+  @authenticate('jwt')
   @authorize({roles: ['super_admin'], permissions: ['transfer:create']})
   @post('/transfers/{id}/receive')
   @response(200, {description: 'Transfer received (clean or with discrepancies)'})
@@ -1277,8 +1370,7 @@ export class TransferController {
 
       const isClean = missingCount === 0 && extraCount === 0;
       const newStatus = isClean ? TransferStatus.RECEIVED : TransferStatus.DISCREPANCY;
-      await this.transferRepo.updateById(
-        id,
+      const statusUpdate = await this.transferRepo.updateAll(
         {
           status: newStatus,
           receivedAt: now,
@@ -1286,8 +1378,12 @@ export class TransferController {
           remarks: body.remarks ?? transfer.remarks,
           discrepancyCount: missingCount + extraCount,
         },
+        {id, status: {inq: [TransferStatus.IN_TRANSIT, TransferStatus.DELIVERED]}, isDeleted: false} as object,
         {transaction: tx},
       );
+      if (statusUpdate.count !== 1) {
+        throw new HttpErrors.Conflict('This transfer can no longer be received.');
+      }
 
       await this.custodyEventRepo.create(
         {
