@@ -8,6 +8,7 @@ export enum TransferCustodyEventType {
   SENT_OUT = 'sent_out',
   RIDER_ASSIGNED = 'rider_assigned',
   IN_TRANSIT = 'in_transit',
+  CANCELLED = 'cancelled',
   RECEIVED = 'received',
   DISCREPANCY = 'discrepancy',
   BAG_RELEASED = 'bag_released',
