@@ -5375,12 +5375,13 @@ export class OrderService {
     if (terms.invoiceNumber) {
       const invoiceLike = `%${terms.invoiceNumber}%`;
       sqlConditions.push(
-        '(EXISTS (SELECT 1 FROM public.invoice i WHERE i.orderid = o.id AND i.invoicenumber ILIKE ?)' +
+        '(o.itpvid ILIKE ?' +
+          ' OR EXISTS (SELECT 1 FROM public.invoice i WHERE i.orderid = o.id AND i.invoicenumber ILIKE ?)' +
           ' OR EXISTS (SELECT 1 FROM public.invoice_order_link l' +
           ' JOIN public.invoice i ON i.id = l.invoiceid' +
           ' WHERE l.orderid = o.id AND i.invoicenumber ILIKE ?))',
       );
-      sqlParams.push(invoiceLike, invoiceLike);
+      sqlParams.push(invoiceLike, invoiceLike, invoiceLike);
     }
 
     if (terms.orderNumber) {

@@ -31,6 +31,7 @@ import {PickupRequestSource} from './pickup-request-source.enum';
       orderReprocessOfOrderId: {keys: ['reprocessOfOrderId']},
       // Order-number search uses ILIKE '%q%', which only a trigram index can serve.
       orderOrderNumberTrgm: {keys: 'orderNumber gin_trgm_ops', type: 'gin'},
+      orderItpvIdTrgm: {keys: 'itpvId gin_trgm_ops', type: 'gin'},
     },
   },
 })

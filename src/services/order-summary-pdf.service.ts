@@ -86,6 +86,16 @@ export function orderSummaryPaymentStatus(
   return 'Unpaid';
 }
 
+export function requireStoreGstNumber(store: Pick<Store, 'gstNumber'>): string {
+  const gstNumber = store.gstNumber?.trim();
+  if (!gstNumber) {
+    throw new HttpErrors.UnprocessableEntity(
+      'Store GSTN is unavailable. Update Store Master and retry.',
+    );
+  }
+  return gstNumber;
+}
+
 /** Shared 80 mm ticket/challan/invoice PDFs; no Media or order relation writes. */
 export class OrderSummaryPdfService {
   constructor(
@@ -260,6 +270,7 @@ export class OrderSummaryPdfService {
     const store = await (
       await this.getStores()
     ).findById(details.order.storeId);
+    requireStoreGstNumber(store);
     const customerId = details.order.customerId;
     const garments = details.items.flatMap(item => item.garments ?? []);
     const brandIds = [
@@ -645,7 +656,7 @@ export class OrderSummaryPdfService {
       center('Tel No: 1800229199', false, 7.5);
       rule();
       pair('Store Name: ' + store.name, 'State Code: -');
-      center('GSTN: 27AAECP3228Q2ZX', false, 7.5);
+      center(`GSTN: ${store.gstNumber}`, false, 7.5);
       rule();
       center(
         invoice

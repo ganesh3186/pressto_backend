@@ -4,7 +4,7 @@ import {orderListCountCache, OrderService} from '../services/order.service';
 describe('Manage Ticket invoice filter', () => {
   beforeEach(() => orderListCountCache.clear());
 
-  it('matches invoice numbers and consolidated links before pagination, within store scope', async () => {
+  it('matches QSST IDs, invoice numbers and consolidated links before pagination, within store scope', async () => {
     let scopedWhere: object | undefined;
     const queries: {sql: string; params: unknown[]}[] = [];
     const service = Object.assign(Object.create(OrderService.prototype), {
@@ -41,11 +41,13 @@ describe('Manage Ticket invoice filter', () => {
     });
     for (const query of queries) {
       expect(query.sql).to.containEql('public.invoice_order_link');
+      expect(query.sql).to.containEql('o.itpvid ILIKE ?');
       expect(query.sql).to.containEql('isdeleted = ? AND storeid = ?');
       expect(query.sql).not.to.containEql('ST008/069942');
-      expect(query.params.slice(0, 4)).to.eql([
+      expect(query.params.slice(0, 5)).to.eql([
         false,
         'store-1',
+        '%ST008/069942%',
         '%ST008/069942%',
         '%ST008/069942%',
       ]);

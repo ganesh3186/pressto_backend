@@ -51,7 +51,7 @@ export const MASTER_DATA_TABLES = [
 export const MASTER_DATA_CONTENT_COLUMNS: Partial<Record<(typeof MASTER_DATA_TABLES)[number], string[]>> = {
   store: [
     'id', 'clusterid', 'name', 'code', 'storeprefix', 'storetype', 'address', 'city', 'state', 'country',
-    'pincode', 'latitude', 'longitude', 'email', 'phone', 'isactive', 'isdeleted', 'deletedat',
+    'pincode', 'latitude', 'longitude', 'email', 'phone', 'gstnumber', 'isactive', 'isdeleted', 'deletedat',
   ],
   coupon: [
     'id', 'code', 'name', 'description', 'colortag', 'discounttype', 'discountvalue', 'maxdiscountamount',
