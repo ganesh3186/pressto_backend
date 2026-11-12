@@ -30,6 +30,16 @@ export class StoreController {
     public orderRepository: OrderRepository,
   ) {}
 
+  private normalizeAndValidateGstNumber(gstNumber: string | undefined): string {
+    const normalized = String(gstNumber ?? '')
+      .trim()
+      .toUpperCase();
+    if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(normalized)) {
+      throw new HttpErrors.BadRequest('Enter a valid 15-character GST number.');
+    }
+    return normalized;
+  }
+
   // Client-chosen (unlike `code`, which is server-generated), so it needs
   // its own normalize/validate/duplicate-check pass — mirrors the existing
   // duplicate-`name` check below, keyed on `storePrefix` instead.
@@ -84,6 +94,7 @@ export class StoreController {
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
     store.name = (store.name as string).trim();
+    store.gstNumber = this.normalizeAndValidateGstNumber(store.gstNumber);
     const duplicate = await this.storeRepository.findOne({where: {name: {ilike: store.name}, isDeleted: false}});
     if (duplicate) throw new HttpErrors.Conflict(`A store with name "${store.name}" already exists.`);
     const normalizedPrefix = await this.normalizeAndValidateStorePrefix(store.storePrefix);
@@ -148,6 +159,9 @@ export class StoreController {
     if (store.storePrefix !== undefined || store.isPrefixLocked !== undefined || store.orderNumberSequence !== undefined) {
       throw new HttpErrors.BadRequest('Store numbering cannot be changed in bulk.');
     }
+    if (store.gstNumber !== undefined) {
+      store.gstNumber = this.normalizeAndValidateGstNumber(store.gstNumber);
+    }
     return this.storeRepository.updateAll(store, where);
   }
 
@@ -191,6 +205,9 @@ export class StoreController {
       throw new HttpErrors.BadRequest('Store numbering cannot be changed directly.');
     }
     const current = await this.storeRepository.findById(id);
+    if (store.gstNumber !== undefined) {
+      store.gstNumber = this.normalizeAndValidateGstNumber(store.gstNumber);
+    }
     if (store.name) {
       store.name = (store.name as string).trim();
       if (store.name.toLowerCase() !== current.name.trim().toLowerCase()) {

@@ -12,7 +12,19 @@ describe('store prefix lock', () => {
       },
     }) as StoreController;
 
-    await expect(controller.create({name: 'New Store', storePrefix: ''} as Store)).to.be.rejectedWith(/prefix is required/i);
+    await expect(controller.create({
+      name: 'New Store',
+      storePrefix: '',
+      gstNumber: '27AAECP3228Q2ZX',
+    } as Store)).to.be.rejectedWith(/prefix is required/i);
+  });
+
+  it('requires a valid GST number when creating a store', async () => {
+    const controller = Object.assign(Object.create(StoreController.prototype), {
+      storeRepository: {find: async () => []},
+    }) as StoreController;
+
+    await expect(controller.create({name: 'New Store', storePrefix: 'NEW'} as Store)).to.be.rejectedWith(/valid 15-character GST/i);
   });
 
   it('rejects a changed prefix after an order exists, even before backfill', async () => {
@@ -86,6 +98,22 @@ describe('store prefix lock', () => {
     await expect(controller.updateById('store-1', {orderNumberSequence: 0})).to.be.rejectedWith(/cannot be changed directly/);
     await expect(controller.updateAll({storePrefix: 'NEW'} as Store)).to.be.rejectedWith(/cannot be changed in bulk/);
     await expect(controller.updateAll({orderNumberSequence: 0} as Store)).to.be.rejectedWith(/cannot be changed in bulk/);
+  });
+
+  it('validates and normalizes GST numbers in bulk updates', async () => {
+    let saved: Store | undefined;
+    const controller = Object.assign(Object.create(StoreController.prototype), {
+      storeRepository: {
+        updateAll: async (data: Store) => {
+          saved = data;
+          return {count: 1};
+        },
+      },
+    }) as StoreController;
+
+    await expect(controller.updateAll({gstNumber: 'bad'} as Store)).to.be.rejectedWith(/valid 15-character GST/i);
+    await controller.updateAll({gstNumber: ' 27aaecp3228q2zx '} as Store);
+    expect(saved?.gstNumber).to.equal('27AAECP3228Q2ZX');
   });
 
   it('refuses order numbers when the prefix is blank', async () => {

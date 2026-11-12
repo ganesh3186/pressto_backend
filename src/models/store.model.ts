@@ -91,6 +91,9 @@ export class Store extends Entity {
   @property({type: 'string'})
   phone?: string;
 
+  @property({type: 'string'})
+  gstNumber?: string;
+
   @property({type: 'boolean', default: true})
   isActive?: boolean;
 

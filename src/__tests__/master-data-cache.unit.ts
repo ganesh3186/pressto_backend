@@ -134,6 +134,7 @@ describe('master data caching', () => {
       expect(part('coupon')).to.not.containEql(counter);
     }
     expect(part('store')).to.containEql('storeprefix');
+    expect(part('store')).to.containEql('gstnumber');
     expect(part('coupon')).to.containEql('enddate');
     expect(part('brand')).to.containEql('max(updatedat)');
   });
