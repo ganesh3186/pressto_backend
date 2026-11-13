@@ -1700,7 +1700,7 @@ export class ReportsService {
       const isMigratedItpvShift = closing.itpv?.zReport != null;
       const usesStoredItpvSplit =
         isMigratedItpvShift && day >= ITPV_PZ_SPLIT_EFFECTIVE_DATE;
-      let psbRevenue = isMigratedItpvShift
+      let psbRevenue = isMigratedItpvShift && !usesStoredItpvSplit
         ? Number(closing.itpv?.zReport?.revenue?.revenue) || 0
         : 0;
       let pmuRevenue = 0;
@@ -1718,8 +1718,6 @@ export class ReportsService {
         // specific shift's window it lands in, same as the store check above.
         const invoiceCreatedAt = invoice.createdAt ? new Date(invoice.createdAt).getTime() : null;
         if (invoiceCreatedAt == null || invoiceCreatedAt < windowStart || invoiceCreatedAt > windowEnd) continue;
-        if (usesStoredItpvSplit) continue;
-
         const orderTotal = Number(link.orderTotal) || 0;
         const laterReturns = (returnsByOrderId.get(link.orderId) ?? []).filter(salesReturn => {
           const resolvedAt = salesReturn.resolvedAt ?? salesReturn.updatedAt ?? salesReturn.createdAt;
@@ -1762,8 +1760,11 @@ export class ReportsService {
           if ((Number(returnCell.revenue) || 0) > 0 && order.status === OrderStatus.RETURNED) {
             continue;
           }
-          if (order.orderType === OrderType.HOME_PICKUP) pmuRevenue += value;
+          if (usesStoredItpvSplit) {
+            if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
+          } else if (order.orderType === OrderType.HOME_PICKUP) pmuRevenue += value;
           else if (order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY) p2dRevenue += value;
+          else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
         } else if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
         else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
       }
