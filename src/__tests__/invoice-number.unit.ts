@@ -11,13 +11,15 @@ import {CustomerBillingController} from '../controllers/customer-billing.control
 describe('store financial-year invoice numbers', () => {
   it('continues the six-digit legacy series with the store prefix', () => {
     expect(formatInvoiceNumber('DLG11', '1026', '69943')).to.equal(
-      'DLG11-1026-069943',
+      'DLG11-1026069943',
     );
+    // GST allows at most 16 characters; a 5-character prefix gives exactly 16.
+    expect(formatInvoiceNumber('DLG11', '1026', '69943')).to.have.length(16);
     expect(formatInvoiceNumber('DLG11', '0427', '1')).to.equal(
-      'DLG11-0427-000001',
+      'DLG11-0427000001',
     );
     expect(formatInvoiceNumber('DLG11', '0427', '1000000')).to.equal(
-      'DLG11-0427-1000000',
+      'DLG11-04271000000',
     );
   });
 
@@ -80,7 +82,7 @@ describe('store financial-year invoice numbers', () => {
         'store-1',
         new Date('2026-10-31T12:00:00Z'),
       ),
-    ).to.equal('DLG11-1026-069943');
+    ).to.equal('DLG11-1026069943');
   });
 
   it('does not fall back to an internal code when a store has no configured prefix', async () => {

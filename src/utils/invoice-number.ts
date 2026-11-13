@@ -24,5 +24,5 @@ export function formatInvoiceNumber(
       'A store prefix and positive invoice sequence are required.',
     );
   }
-  return `${prefix.trim()}-${monthYear}-${normalizedSequence.padStart(6, '0')}`;
+  return `${prefix.trim()}-${monthYear}${normalizedSequence.padStart(6, '0')}`;
 }
