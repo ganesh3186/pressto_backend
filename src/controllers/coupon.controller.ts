@@ -405,12 +405,23 @@ export class CouponController {
     @param.path.string('id') id: string,
     @param.query.number('skip') skip?: number,
     @param.query.number('limit') limit?: number,
+    @param.query.string('serviceId') serviceId?: string,
+    @param.query.string('itemId') itemId?: string,
   ): Promise<object> {
-    const where = {couponId: id, isDeleted: false} as object;
+    // Optional exact-match filters for the admin table's Service / Item
+    // dropdowns; totalCount uses the same where so pagination stays right.
+    const where = {
+      couponId: id,
+      isDeleted: false,
+      ...(serviceId ? {serviceId} : {}),
+      ...(itemId ? {itemId} : {}),
+    } as object;
     const [rows, totalCount] = await Promise.all([
       this.couponPriceOverrideRepository.find({
         where,
-        order: ['createdAt DESC'],
+        // id tie-breaks rows the by-category bulk insert gives the same createdAt,
+        // so pages don't repeat or skip them.
+        order: ['createdAt DESC', 'id ASC'],
         skip,
         limit,
       }),
