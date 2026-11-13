@@ -30,7 +30,7 @@ describe('Manage Ticket invoice filter', () => {
     }) as OrderService;
     expect(
       await service.listOrders({
-        invoiceNumber: ' ST008/069942 ',
+        invoiceNumber: ' ST008/%_069942\\ ',
         storeIds: ['store-1'],
         limit: 10,
         skip: 10,
@@ -41,15 +41,17 @@ describe('Manage Ticket invoice filter', () => {
     });
     for (const query of queries) {
       expect(query.sql).to.containEql('public.invoice_order_link');
-      expect(query.sql).to.containEql('o.itpvid ILIKE ?');
+      expect(query.sql).to.containEql('SELECT id FROM public.orders WHERE itpvid ILIKE ?');
+      expect(query.sql).to.containEql('UNION SELECT orderid FROM public.invoice');
+      expect(query.sql).not.to.containEql(' OR EXISTS');
       expect(query.sql).to.containEql('isdeleted = ? AND storeid = ?');
-      expect(query.sql).not.to.containEql('ST008/069942');
+      expect(query.sql).not.to.containEql('ST008/%_069942');
       expect(query.params.slice(0, 5)).to.eql([
         false,
         'store-1',
-        '%ST008/069942%',
-        '%ST008/069942%',
-        '%ST008/069942%',
+        '%ST008/\\%\\_069942\\\\%',
+        '%ST008/\\%\\_069942\\\\%',
+        '%ST008/\\%\\_069942\\\\%',
       ]);
     }
     expect(queries[0].params.slice(-2)).to.eql([10, 10]);

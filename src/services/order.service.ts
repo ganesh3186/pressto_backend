@@ -1,6 +1,7 @@
 import {createHash} from 'crypto';
 import {findInBatches} from '../utils/batch-find';
 import {formatInvoiceNumber, invoiceNumberPeriod} from '../utils/invoice-number';
+import {literalContains} from '../utils/search-pattern';
 import {ShortLivedCache} from '../utils/short-lived-cache';
 import {ticketNumberPeriod} from '../utils/ticket-number';
 import {dispatchWhatsApp, WalletWhatsAppNotification, WhatsAppService} from './whatsapp.service';
@@ -5371,22 +5372,23 @@ export class OrderService {
 
     // Invoice number filter (Manage Ticket). Invoice numbers start with the
     // store code ("ST013/…"), so a partial value can match 50K+ invoices;
-    // resolving those to an order-id IN list froze live. Check per order.
+    // resolving one broad invoice match in Node froze live. Let each indexed
+    // lookup produce order IDs, then combine the small result in PostgreSQL.
     if (terms.invoiceNumber) {
-      const invoiceLike = `%${terms.invoiceNumber}%`;
+      const invoiceLike = literalContains(terms.invoiceNumber);
       sqlConditions.push(
-        '(o.itpvid ILIKE ?' +
-          ' OR EXISTS (SELECT 1 FROM public.invoice i WHERE i.orderid = o.id AND i.invoicenumber ILIKE ?)' +
-          ' OR EXISTS (SELECT 1 FROM public.invoice_order_link l' +
-          ' JOIN public.invoice i ON i.id = l.invoiceid' +
-          ' WHERE l.orderid = o.id AND i.invoicenumber ILIKE ?))',
+        'o.id IN (' +
+          'SELECT id FROM public.orders WHERE itpvid ILIKE ?' +
+          ' UNION SELECT orderid FROM public.invoice WHERE invoicenumber ILIKE ? AND orderid IS NOT NULL' +
+          ' UNION SELECT l.orderid FROM public.invoice_order_link l' +
+          ' JOIN public.invoice i ON i.id = l.invoiceid WHERE i.invoicenumber ILIKE ?)',
       );
       sqlParams.push(invoiceLike, invoiceLike, invoiceLike);
     }
 
     if (terms.orderNumber) {
       sqlConditions.push('o.ordernumber ILIKE ?');
-      sqlParams.push(`%${terms.orderNumber}%`);
+      sqlParams.push(literalContains(terms.orderNumber));
     }
 
     if (terms.search) {
@@ -5459,11 +5461,11 @@ export class OrderService {
 
   /** SQL condition (with `?` placeholders) for listOrders' free-text search. */
   private async orderSearchCondition(q: string): Promise<[string, unknown[]]> {
-    const like = `%${q}%`;
+    const like = literalContains(q);
     // A full name ("ganesh verma") spans firstname and lastname, so neither
     // column contains it whole. Each word must match one of the two.
     const words = q.split(/\s+/).filter(Boolean);
-    const wordLikes = words.length > 1 ? words.map(word => `%${word}%`) : [];
+    const wordLikes = words.length > 1 ? words.map(literalContains) : [];
     const fullName = (alias: string, first: number) => wordLikes.length
       ? ' OR (' + wordLikes.map((_, i) => `(${alias}.firstname ILIKE $${first + i} OR ${alias}.lastname ILIKE $${first + i})`).join(' AND ') + ')'
       : '';
