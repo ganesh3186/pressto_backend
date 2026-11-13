@@ -56,3 +56,4 @@ export * from './dashboard.controller';
 export * from './reports.controller';
 export * from './warehouse.controller';
 export * from './system-notification.controller';
+export * from './qsst-challan.controller';
