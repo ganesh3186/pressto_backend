@@ -281,6 +281,10 @@ function orderInvoiceTotals(order: Order, invoice: Invoice): Pick<Invoice, 'subt
   return {subtotal, discount, cgst, sgst: parseFloat((tax - cgst).toFixed(2)), totalAmount};
 }
 
+// Whether challan_number_sequence exists. Cached per process once true;
+// rechecked on each challan until the migration has run.
+let challanSequenceReady = false;
+
 @injectable({scope: BindingScope.TRANSIENT})
 export class OrderService {
   constructor(
@@ -975,8 +979,7 @@ export class OrderService {
       Number(order.totalAmount) || subtotal - discount + taxAmount,
     );
 
-    const totalCount = await this.challanRepo.count();
-    const challanNumber = `CHL-${String(totalCount.count + 1).padStart(6, '0')}`;
+    const challanNumber = await this.nextChallanNumber(order.storeId, tx);
 
     const {v4} = await import('uuid');
     return this.challanRepo.create(
@@ -1522,6 +1525,44 @@ export class OrderService {
 
     const remaining = Math.max(0, limit - used);
     return {limit, used, remaining};
+  }
+
+  // ─── Challan numbering ──────────────────────────────────────────────────────
+  // Per store and per month, like ticket numbers: CHL-PUKP1-1126-000001. The
+  // counter row is updated atomically, so tickets saved at the same moment, in
+  // the same or different stores, never get the same number. The old global
+  // "count challans + 1" gave two simultaneous tickets the same number, and the
+  // unique index then failed one of them.
+  private async nextChallanNumber(storeId: string | undefined, tx?: unknown): Promise<string> {
+    const txOpt = tx ? {transaction: tx} : undefined;
+    if (!challanSequenceReady) {
+      // to_regclass returns null instead of failing, so the transaction stays usable.
+      const rows = await this.dataSource.execute(
+        "SELECT to_regclass('public.challan_number_sequence') IS NOT NULL AS ready", [], txOpt,
+      );
+      challanSequenceReady = Boolean(rows?.[0]?.ready);
+    }
+    const store = storeId && challanSequenceReady
+      ? await this.storeRepo.findOne({where: {id: storeId} as object}, txOpt)
+      : null;
+    const prefix = store?.storePrefix?.trim();
+    if (!challanSequenceReady || !prefix) {
+      // Until `npm run migrate:challan-number-sequences` runs, keep the old
+      // numbering rather than failing every ticket.
+      if (!challanSequenceReady) console.warn(JSON.stringify({event: 'challan_sequence_table_missing'}));
+      const totalCount = await this.challanRepo.count(undefined, txOpt);
+      return `CHL-${String(totalCount.count + 1).padStart(6, '0')}`;
+    }
+    const {period, monthYear} = ticketNumberPeriod();
+    const rows = await this.dataSource.execute(
+      `INSERT INTO public.challan_number_sequence AS counter (storeid,period,lastnumber)
+       VALUES ($1,$2,1)
+       ON CONFLICT (storeid,period) DO UPDATE SET
+         lastnumber=counter.lastnumber+1,updatedat=CURRENT_TIMESTAMP
+       RETURNING lastnumber::text AS sequence`,
+      [storeId, period], txOpt,
+    );
+    return `CHL-${prefix}-${monthYear}-${String(rows[0].sequence).padStart(6, '0')}`;
   }
 
   // ─── Order numbering ────────────────────────────────────────────────────────

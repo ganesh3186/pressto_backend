@@ -44,6 +44,7 @@
     "migrate:store-prefix-lock": "node scripts/add-store-prefix-lock.cjs",
     "migrate:store-order-sequence": "node scripts/add-store-order-sequence.cjs",
     "migrate:ticket-number-sequences": "node scripts/add-ticket-number-sequences.cjs",
+    "migrate:challan-number-sequences": "node scripts/add-challan-number-sequences.cjs",
     "migrate:garment-tags": "node scripts/add-garment-tag-sequence.cjs",
     "migrate:dashboard-indexes": "node scripts/add-dashboard-indexes.cjs",
     "migrate:invoice-number-trgm": "node scripts/add-invoice-number-trgm-index.cjs",

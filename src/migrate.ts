@@ -16,6 +16,7 @@ export async function migrate(args: string[]) {
   await app.migrateSchema({ existingSchema });
   await require('../scripts/add-invoice-number-sequences.cjs').addInvoiceNumberSequences();
   await require('../scripts/add-ticket-number-sequences.cjs').addTicketNumberSequences();
+  await require('../scripts/add-challan-number-sequences.cjs').addChallanNumberSequences();
   await require('../scripts/add-garment-tag-sequence.cjs').addGarmentTagSequence();
 
   // Connectors usually keep a pool of opened connections,
