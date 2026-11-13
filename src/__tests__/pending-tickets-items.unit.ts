@@ -38,6 +38,9 @@ describe('pending tickets report items', () => {
         },
       },
       deliveryOrderRepo: {find: async () => []},
+      buildCollectedByOrder: async (orderIds: string[]) => new Map(
+        orderIds.map(id => [id, id === 'order-1' ? 100 : 20]),
+      ),
       buildStoreContext: async () => new Map(),
       buildCustomerContext: async () => new Map(),
     }) as ReportsService;
@@ -55,6 +58,7 @@ describe('pending tickets report items', () => {
     expect(first.totals.items).to.equal(5);
     expect(first.rows[0]).to.containEql({
       itemCount: 4,
+      pendingAmount: 0,
       items: [
         {name: 'Shirt', quantity: 2},
         {name: 'Shirt', quantity: 1},
@@ -63,6 +67,7 @@ describe('pending tickets report items', () => {
     });
     expect(second.rows[0]).to.containEql({
       itemCount: 1,
+      pendingAmount: 30,
       items: [{name: 'Coat', quantity: 1}],
     });
     expect(catalogQueries).to.deepEqual([['shirt', 'trouser'], ['coat']]);

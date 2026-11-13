@@ -953,12 +953,13 @@ export class ReportsService {
     if (!resultPage.count) return emptyPaged();
     const orders = resultPage.orders;
     const orderIds = orders.map(o => o.id);
-    const [orderItems, deliveryStatuses, storeCtx, customerCtx] = await Promise.all([
+    const [orderItems, collected, deliveryStatuses, storeCtx, customerCtx] = await Promise.all([
       this.orderItemRepo.find({
         where: {orderId: {inq: orderIds}} as object,
         fields: {id: true, orderId: true, itemId: true, quantity: true} as object,
         order: ['createdAt ASC', 'id ASC'],
       }),
+      this.buildCollectedByOrder(orderIds),
       this.buildDeliveryStatusByOrder(orderIds),
       this.buildStoreContext(storeIds),
       this.buildCustomerContext([...new Set(orders.map(o => String(o.customerId)))]),
@@ -1024,6 +1025,8 @@ export class ReportsService {
         ticketStatus: order.status ?? '—',
         deliveryStatus: deliveryStatuses.get(String(order.id)) ?? '—',
         amount: Number(order.totalAmount) || 0,
+        pendingAmount: Math.max(0, Math.round(((Number(order.totalAmount) || 0) -
+          (collected.get(String(order.id)) ?? 0)) * 100) / 100),
       };
     });
 
