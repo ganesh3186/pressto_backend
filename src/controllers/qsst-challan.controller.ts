@@ -26,13 +26,43 @@ const CALENDAR_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
  * Item/service names prefer the order-line snapshot over the catalog row,
  * same as the rest of the app, so a later catalog rename never rewrites
  * what was physically received.
+ *
+ * A re-cleaning (rework) order is created in Pulse without a QSST number
+ * of its own, so it takes the number of the nearest ticket up its
+ * reprocessOfOrderId chain — a rework can itself be reworked, so this walks
+ * up (capped at 10 levels against a bad cycle) rather than one step. That
+ * keeps reworks of QSST tickets in section B while plain Pulse orders, and
+ * reworks of them, have no QSST number anywhere up the chain and stay out.
  */
 const QSST_CHALLAN_SQL = `
+WITH RECURSIVE base AS (
+  SELECT o.*
+  FROM public.orders o
+  WHERE o.storeid = $1::uuid
+    AND o.isdeleted = false
+    AND o.status = $2
+    AND o.createdat BETWEEN $3 AND $4
+),
+chain AS (
+  SELECT b.id AS order_id, b.reprocessoforderid AS parent_id,
+         NULLIF(btrim(b.itpvid), '') AS qsst_no, 0 AS depth
+  FROM base b
+  UNION ALL
+  SELECT c.order_id, p.reprocessoforderid, NULLIF(btrim(p.itpvid), ''), c.depth + 1
+  FROM chain c
+  JOIN public.orders p ON p.id = c.parent_id
+  WHERE c.qsst_no IS NULL AND c.depth < 10
+),
+ticket AS (
+  SELECT b.*, ch.qsst_no
+  FROM base b
+  JOIN chain ch ON ch.order_id = b.id AND ch.qsst_no IS NOT NULL
+)
 SELECT
   oi.id                                         AS "id",
   o.id                                          AS "orderId",
   o.ordernumber                                 AS "orderNumber",
-  btrim(o.itpvid)                               AS "ticketNo",
+  o.qsst_no                                     AS "ticketNo",
   o.createdat                                   AS "receivingDate",
   o.deliverydate                                AS "deliveryDate",
   (o.reprocessoforderid IS NOT NULL)            AS "isRecleaning",
@@ -42,21 +72,17 @@ SELECT
   COALESCE(sc.name, 'Uncategorised')            AS "serviceCategoryName",
   oi.quantity::int                              AS "quantity",
   NULLIF(btrim(concat_ws(' ', c.firstname, c.lastname)), '') AS "customerName"
-FROM public.orders o
+FROM ticket o
 JOIN public.order_item oi ON oi.orderid = o.id
 LEFT JOIN public.service sv ON sv.id = oi.serviceid
 LEFT JOIN public.service_category sc ON sc.id::text = sv.servicecategoryid
 LEFT JOIN public.item i ON i.id = oi.itemid
 LEFT JOIN public.customer c ON c.id = o.customerid
-WHERE o.storeid = $1::uuid
-  AND o.isdeleted = false
-  AND o.status = $2
-  AND o.itpvid IS NOT NULL AND btrim(o.itpvid) <> ''
-  AND o.createdat BETWEEN $3 AND $4
+WHERE o.qsst_no IS NOT NULL
   AND COALESCE(oi.rejectedatintake, false) = false
   AND oi.quantity > 0
   AND ($5::text IS NULL OR sv.servicecategoryid = $5::text)
-ORDER BY sc.name NULLS LAST, length(btrim(o.itpvid)), btrim(o.itpvid), oi.createdat, oi.id
+ORDER BY sc.name NULLS LAST, length(o.qsst_no), o.qsst_no, oi.createdat, oi.id
 LIMIT $6`;
 
 type QsstChallanRow = {

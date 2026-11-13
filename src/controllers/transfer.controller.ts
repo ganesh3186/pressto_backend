@@ -30,6 +30,83 @@ import {
   UsersRepository,
 } from '../repositories';
 import {StoreScopeService} from '../services/store-scope.service';
+
+/**
+ * Transfers that send garments of transfer $1 back to where they came from
+ * ($2 = its destination → $3 = its origin), each with how many of $1's
+ * garments it returned.
+ *
+ * Every garment counts ONCE, against its FIRST return after $1 — and only if
+ * it was not sent $3 → $2 again in between. Without that, a garment doing the
+ * store ⇄ store round trip twice would be "returned" twice against the first
+ * transfer, and Returned could exceed Items sent.
+ *
+ * Only garments $1 actually sent count (its EXTRA finds are not in Items
+ * sent), and only what a return sent back (not EXTRA finds on the return's
+ * own receive). Cancelled and deleted transfers never count.
+ */
+const TRANSFER_RETURNS_SQL = `
+WITH sent AS (
+  SELECT DISTINCT garmentid FROM public.transfer_item
+  WHERE transferid = $1::uuid AND scanstatus <> 'extra'
+),
+first_return AS (
+  SELECT DISTINCT ON (ti2.garmentid) ti2.garmentid, t2.id
+  FROM public.transfer_item ti2
+  JOIN sent s ON s.garmentid = ti2.garmentid
+  JOIN public.transfer t2 ON t2.id = ti2.transferid
+  WHERE t2.id <> $1::uuid
+    AND t2.isdeleted = false
+    AND t2.status <> 'cancelled'
+    AND t2.fromstoreid = $2::uuid
+    AND t2.tostoreid = $3::uuid
+    AND t2.createdat >= $4
+    AND ti2.scanstatus <> 'extra'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.transfer_item ti3
+      JOIN public.transfer t3 ON t3.id = ti3.transferid
+      WHERE ti3.garmentid = ti2.garmentid
+        AND t3.id <> $1::uuid
+        AND t3.isdeleted = false
+        AND t3.status <> 'cancelled'
+        AND t3.fromstoreid = $3::uuid
+        AND t3.tostoreid = $2::uuid
+        AND t3.createdat > $4
+        AND t3.createdat < t2.createdat
+    )
+  ORDER BY ti2.garmentid, t2.createdat, t2.id
+)
+SELECT id AS "id", count(*)::int AS "returnedItemCount"
+FROM first_return
+GROUP BY id`;
+
+/**
+ * One row per garment on a transfer, for the printed challan. An item with
+ * no bag of its own (EXTRA items found at receive) belongs to the
+ * transfer's bag. Ticket No prefers the QSST number and falls back to the
+ * Pulse order number; the item name prefers the order-line snapshot.
+ */
+const TRANSFER_CHALLAN_LINES_SQL = `
+SELECT
+  ti.id                                                   AS "id",
+  ti.scanstatus                                           AS "scanStatus",
+  ti.garmenttagnumber                                     AS "garmentTagNumber",
+  COALESCE(ti.bagid, t.bagid)                             AS "bagId",
+  b.bagnumber                                             AS "bagNumber",
+  COALESCE(NULLIF(btrim(o.itpvid), ''), o.ordernumber)    AS "ticketNo",
+  o.createdat                                             AS "receivingDate",
+  o.deliverydate                                          AS "deliveryDate",
+  COALESCE(NULLIF(oi.itemname, ''), i.name, '—')          AS "itemName"
+FROM public.transfer_item ti
+JOIN public.transfer t ON t.id = ti.transferid
+LEFT JOIN public.bag b ON b.id = COALESCE(ti.bagid, t.bagid)
+LEFT JOIN public.garment g ON g.id = ti.garmentid
+LEFT JOIN public.order_item oi ON oi.id = g.orderitemid
+LEFT JOIN public.item i ON i.id = oi.itemid
+LEFT JOIN public.orders o ON o.id = COALESCE(oi.orderid, ti.orderid)
+WHERE ti.transferid = $1::uuid
+ORDER BY b.bagnumber NULLS LAST, "ticketNo", "itemName", ti.garmenttagnumber`;
 import {NotificationService, RIDER_NOTIFICATION_TYPES} from '../services/notification.service';
 import {SystemNotificationService} from '../services/system-notification.service';
 
@@ -710,14 +787,28 @@ export class TransferController {
   ): Promise<object> {
     const transfer = await this.transferRepo.findOne({where: {id, isDeleted: false}});
     if (!transfer) throw new HttpErrors.NotFound('Transfer not found.');
-    const assignableFrom: TransferStatus[] = [TransferStatus.SENT, TransferStatus.RIDER_ASSIGNED];
-    if (!assignableFrom.includes(transfer.status ?? TransferStatus.SENT)) {
-      throw new HttpErrors.BadRequest(`Cannot assign a rider to a transfer that is ${transfer.status}.`);
-    }
-
+    // Scope first: an out-of-scope transfer must 404 before any status or
+    // rider message could reveal that it exists. Only the sending store
+    // dispatches riders, so scope is checked on fromStoreId.
     const scope = await this.storeScopeService.resolve(currentUser);
     if (!this.storeScopeService.allows(scope, transfer.fromStoreId)) {
       throw new HttpErrors.NotFound('Transfer not found.');
+    }
+    // Reassignment is allowed right up to IN_TRANSIT (e.g. the rider breaks
+    // down mid-route). Past that the bag has been handed over at the
+    // destination, so there is nothing left for a rider to do.
+    const assignableFrom: TransferStatus[] = [
+      TransferStatus.SENT,
+      TransferStatus.RIDER_ASSIGNED,
+      TransferStatus.IN_TRANSIT,
+    ];
+    const currentStatus = transfer.status ?? TransferStatus.SENT;
+    if (!assignableFrom.includes(currentStatus)) {
+      throw new HttpErrors.BadRequest(`Cannot assign a rider to a transfer that is ${transfer.status}.`);
+    }
+    const isInTransit = currentStatus === TransferStatus.IN_TRANSIT;
+    if (transfer.riderId && transfer.riderId === body.riderId) {
+      throw new HttpErrors.BadRequest('This rider is already assigned to the transfer.');
     }
 
     const rider = await this.assertRiderAssignable(body.riderId);
@@ -725,20 +816,25 @@ export class TransferController {
     const {v4} = await import('uuid');
     const now = new Date();
     const riderName = `${rider.firstName} ${rider.lastName}`;
-    const assignmentWhere = transfer.status === TransferStatus.SENT
+    // Guard on the exact state we read, so a concurrent assign, pickup or
+    // delivery makes this a 409 instead of silently overwriting it.
+    const assignmentWhere = currentStatus === TransferStatus.SENT
       ? {id, status: TransferStatus.SENT, isDeleted: false}
       : {
           id,
-          status: TransferStatus.RIDER_ASSIGNED,
+          status: currentStatus,
           riderId: transfer.riderId ?? null,
           riderAssignedAt: transfer.riderAssignedAt ?? null,
           isDeleted: false,
         };
+    const previousRiderName = transfer.riderName;
     const tx = await this.dataSource.beginTransaction(IsolationLevel.READ_COMMITTED);
     try {
       const {count} = await this.transferRepo.updateAll(
         {
-          status: TransferStatus.RIDER_ASSIGNED,
+          // An in-transit bag stays in transit: the new rider takes it over
+          // on the road and completes the delivery leg from there.
+          status: isInTransit ? TransferStatus.IN_TRANSIT : TransferStatus.RIDER_ASSIGNED,
           riderId: rider.id,
           riderName,
           riderAssignedAt: now,
@@ -756,7 +852,10 @@ export class TransferController {
           transferId: id,
           eventType: TransferCustodyEventType.RIDER_ASSIGNED,
           performedBy: currentUser[securityId],
-          remarks: `Assigned to ${riderName}.`,
+          remarks: transfer.riderId
+            ? `Reassigned from ${previousRiderName ?? 'previous rider'} to ${riderName}` +
+              `${isInTransit ? ' while in transit' : ''}.`
+            : `Assigned to ${riderName}.`,
         },
         {transaction: tx},
       );
@@ -787,7 +886,10 @@ export class TransferController {
           : []),
       ]).catch(() => {});
 
-      return {message: 'Rider assigned.', transfer: await this.transferRepo.findById(id)};
+      return {
+        message: transfer.riderId ? 'Rider reassigned.' : 'Rider assigned.',
+        transfer: await this.transferRepo.findById(id),
+      };
     } catch (error) {
       await tx.rollback();
       throw error;
@@ -1121,11 +1223,107 @@ export class TransferController {
     @param.path.string('id') id: string,
     @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
   ): Promise<object> {
-    // Accept either the real uuid or the human-readable transitId (the
-    // frontend's transit-details route is keyed by transitId, not id) —
-    // same dual-lookup posture as GarmentController.lookupGarment, so a
-    // non-uuid value resolves cleanly instead of Postgres throwing on a
-    // malformed uuid literal.
+    const transfer = await this.findVisibleTransfer(id, currentUser);
+
+    const [items, custodyEvents] = await Promise.all([
+      this.transferItemRepo.find({where: {transferId: transfer.id} as object}),
+      this.custodyEventRepo.find({where: {transferId: transfer.id} as object, order: ['performedAt ASC']}),
+    ]);
+
+    const orderIds = [...new Set(items.map(i => i.orderId))];
+    const orders = orderIds.length
+      ? await this.orderRepo.find({where: {id: {inq: orderIds}} as object})
+      : [];
+    const orderById = new Map(orders.map(o => [o.id, o]));
+
+    const [enriched] = await this.enrichTransfers([transfer]);
+
+    // Returns: every later, non-cancelled transfer going back the other way
+    // (this transfer's destination → its origin) that carries any of this
+    // transfer's garments. That covers a formal returnBatch() AND garments
+    // simply sent back through an ordinary Transfer out, which carries no
+    // returnOfTransferId. returnedItemCount counts only THIS transfer's
+    // garments in each return, never the whole return bag.
+    // A cancelled transfer never delivered anything, so nothing came back.
+    const returnCounts = transfer.status === TransferStatus.CANCELLED
+      ? []
+      : ((await this.dataSource.execute(TRANSFER_RETURNS_SQL, [
+          transfer.id,
+          transfer.toStoreId,
+          transfer.fromStoreId,
+          transfer.createdAt ?? transfer.sentAt,
+        ])) as {id: string; returnedItemCount: number}[]);
+    const returnedById = new Map(returnCounts.map(r => [String(r.id), Number(r.returnedItemCount) || 0]));
+    const returnBatches = returnedById.size
+      ? await this.transferRepo.find({
+          where: {id: {inq: [...returnedById.keys()]}} as object,
+          order: ['createdAt DESC'],
+        })
+      : [];
+    const enrichedReturns = (await this.enrichTransfers(returnBatches)) as {id: string}[];
+
+    return {
+      transfer: enriched,
+      items: items.map(item => ({...item, orderNumber: orderById.get(item.orderId)?.orderNumber ?? null})),
+      custodyEvents,
+      returnBatches: enrichedReturns.map(batch => ({
+        ...batch,
+        returnedItemCount: returnedById.get(String(batch.id)) ?? 0,
+      })),
+    };
+  }
+
+  // ─── Challan (print) ────────────────────────────────────────────────────────
+  // Everything the printed Inter Store Transfer challan needs in one call:
+  // the enriched header, who sent/received it, and one line per garment with
+  // its ticket, dates, item name, bag and scan outcome. Same visibility rule
+  // as findById — either end of the route must be in the caller's scope.
+
+  @authenticate('jwt')
+  @authorize({roles: ['super_admin'], permissions: ['transfer:read']})
+  @get('/transfers/{id}/challan')
+  @response(200, {description: 'Printable challan for one transfer'})
+  async challan(
+    @param.path.string('id') id: string,
+    @inject(AuthenticationBindings.CURRENT_USER) currentUser: UserProfile,
+  ): Promise<object> {
+    const transfer = await this.findVisibleTransfer(id, currentUser);
+
+    const userIds = [transfer.sentBy, transfer.receivedBy].filter(Boolean) as string[];
+    const [[enriched], lines, users] = await Promise.all([
+      this.enrichTransfers([transfer]),
+      this.dataSource.execute(TRANSFER_CHALLAN_LINES_SQL, [transfer.id]),
+      userIds.length
+        ? this.usersRepo.find({
+            where: {id: {inq: userIds}} as object,
+            fields: {id: true, fullName: true, username: true} as object,
+          })
+        : Promise.resolve([]),
+    ]);
+    const userName = (userId?: string) => {
+      const user = users.find(u => String(u.id) === String(userId));
+      return user ? user.fullName ?? user.username ?? null : null;
+    };
+
+    return {
+      transfer: {
+        ...enriched,
+        sentByName: userName(transfer.sentBy),
+        receivedByName: userName(transfer.receivedBy),
+      },
+      lines,
+    };
+  }
+
+  /**
+   * Load a live transfer by uuid or human-readable transitId, visible only
+   * when the caller's store scope covers either end of its route. Accepting
+   * either key is the same dual-lookup posture as
+   * GarmentController.lookupGarment, so a non-uuid value resolves cleanly
+   * instead of Postgres throwing on a malformed uuid literal. Out-of-scope
+   * transfers 404 rather than 403 so their existence is not leaked.
+   */
+  private async findVisibleTransfer(id: string, currentUser: UserProfile): Promise<Transfer> {
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const isUuid = uuidRegex.test(id.trim());
     const transfer = await this.transferRepo.findOne({
@@ -1141,34 +1339,7 @@ export class TransferController {
     ) {
       throw new HttpErrors.NotFound('Transfer not found.');
     }
-
-    const [items, custodyEvents] = await Promise.all([
-      this.transferItemRepo.find({where: {transferId: transfer.id} as object}),
-      this.custodyEventRepo.find({where: {transferId: transfer.id} as object, order: ['performedAt ASC']}),
-    ]);
-
-    const orderIds = [...new Set(items.map(i => i.orderId))];
-    const orders = orderIds.length
-      ? await this.orderRepo.find({where: {id: {inq: orderIds}} as object})
-      : [];
-    const orderById = new Map(orders.map(o => [o.id, o]));
-
-    const [enriched] = await this.enrichTransfers([transfer]);
-
-    // Return batches sent back against this transfer (see returnBatch()) —
-    // only ever non-empty for a RECEIVED/RESOLVED transfer, but cheap to
-    // query unconditionally rather than special-casing by status here.
-    const returnBatches = await this.transferRepo.find({
-      where: {returnOfTransferId: transfer.id, isDeleted: false} as object,
-      order: ['createdAt DESC'],
-    });
-
-    return {
-      transfer: enriched,
-      items: items.map(item => ({...item, orderNumber: orderById.get(item.orderId)?.orderNumber ?? null})),
-      custodyEvents,
-      returnBatches: await this.enrichTransfers(returnBatches),
-    };
+    return transfer;
   }
 
   // ─── Receive ────────────────────────────────────────────────────────────────
