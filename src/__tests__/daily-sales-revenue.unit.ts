@@ -251,7 +251,7 @@ describe('daily sales revenue', () => {
     expect(report.rows[0]).to.containEql({discountedRevenue: 90, taxes: 0, totalSales: 90});
   });
 
-  it('uses migrated P/Z report revenue for the P2D/PSB split', async () => {
+  it('does not treat migrated Z-report revenue as PSB after the category cutover', async () => {
     const openedAt = new Date('2026-10-04T09:00:00Z');
     const closedAt = new Date('2026-10-04T17:00:00Z');
     const service = Object.assign(Object.create(ReportsService.prototype), {
@@ -267,9 +267,21 @@ describe('daily sales revenue', () => {
         },
       }]},
       buildStoreContext: async () => new Map(),
-      orderRepo: {find: async () => []},
+      orderRepo: {find: async () => [
+        {id: 'psb-order', storeId: 'store-a', orderType: OrderType.STORE_DROPOFF},
+        {id: 'pmu-order', storeId: 'store-a', orderType: OrderType.HOME_PICKUP},
+      ]},
       paymentTransactionRepo: {find: async () => []},
-      invoiceRepo: {find: async () => []},
+      invoiceRepo: {find: async () => [
+        {
+          id: 'psb-invoice', orderId: 'psb-order', subtotal: 25, totalAmount: 25,
+          createdAt: new Date('2026-10-04T10:00:00Z'),
+        },
+        {
+          id: 'pmu-invoice', orderId: 'pmu-order', subtotal: 40, totalAmount: 40,
+          createdAt: new Date('2026-10-04T11:00:00Z'),
+        },
+      ]},
       invoiceOrderLinkRepo: {find: async () => []},
       salesReturnRepo: {find: async () => []},
       storeMonthlyTargetRepo: {find: async () => []},
@@ -278,7 +290,7 @@ describe('daily sales revenue', () => {
     const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
 
     expect(report.rows[0]).to.containEql({
-      psbRevenue: 18,
+      psbRevenue: 25,
       p2dRevenue: 82,
       revenue: 100,
       taxes: 18,
@@ -312,6 +324,48 @@ describe('daily sales revenue', () => {
     const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
 
     expect(report.rows[0]).to.containEql({psbRevenue: 18, p2dRevenue: 0, revenue: 100});
+  });
+
+  it('does not add PSB invoices on top of the Z report before 1 October 2026', async () => {
+    const openedAt = new Date('2026-09-20T09:00:00Z');
+    const closedAt = new Date('2026-09-20T17:00:00Z');
+    const service = Object.assign(Object.create(ReportsService.prototype), {
+      shiftRepo: {find: async () => [{
+        id: 'shift-pre', storeId: 'store-a', status: ShiftStatus.CLOSED,
+        openedAt, closedAt, openingNo: 'S-pre',
+        closing: {
+          revenue: {pressto: {revenue: 100, taxes: 18, totalSales: 118}},
+          itpv: {
+            pReport: {revenue: {revenue: 82}},
+            zReport: {revenue: {revenue: 18}},
+          },
+        },
+      }]},
+      buildStoreContext: async () => new Map(),
+      orderRepo: {find: async () => [
+        {id: 'psb-order', storeId: 'store-a', orderType: OrderType.STORE_DROPOFF},
+        {id: 'pmu-order', storeId: 'store-a', orderType: OrderType.HOME_PICKUP},
+      ]},
+      paymentTransactionRepo: {find: async () => []},
+      invoiceRepo: {find: async () => [
+        {
+          id: 'psb-invoice', orderId: 'psb-order', subtotal: 25, totalAmount: 25,
+          createdAt: new Date('2026-09-20T10:00:00Z'),
+        },
+        {
+          id: 'pmu-invoice', orderId: 'pmu-order', subtotal: 40, totalAmount: 40,
+          createdAt: new Date('2026-09-20T11:00:00Z'),
+        },
+      ]},
+      invoiceOrderLinkRepo: {find: async () => []},
+      salesReturnRepo: {find: async () => []},
+      storeMonthlyTargetRepo: {find: async () => []},
+    }) as ReportsService;
+
+    const report = await service.buildDailySales({storeIds: ['store-a'], from: openedAt, to: closedAt});
+
+    // PSB is the Z-report figure only; the PSB invoice is not counted again.
+    expect(report.rows[0]).to.containEql({psbRevenue: 18, pmuRevenue: 40});
   });
 
   it('reports QSST saved P2D/PMU for a migrated shift before 1 October 2026, not invoices', async () => {

@@ -23,6 +23,20 @@ A `Transfer` is created already `sent` from the source store (admin panel,
 scan bag + scan items). An admin then assigns a rider
 (`POST /transfers/{id}/assign-rider`, admin-side) — rider assignment is
 mandatory, a transfer can no longer be received straight out of `sent`.
+
+**Reassignment.** The admin can move a transfer to a different rider with the
+same endpoint while it is `sent`, `rider_assigned` or `in_transit`:
+
+- From `rider_assigned`, it stays `rider_assigned` under the new rider, who
+  then marks themself in transit as usual.
+- From `in_transit`, it **stays `in_transit`**. The new rider takes the bag
+  over on the road and completes the delivery leg from there. They do not
+  mark in transit again.
+
+Either way the previous rider gets a `transfer_reassigned` notification. The
+transfer drops out of that rider's list, and their status calls on it get
+`403`. The custody trail records `Reassigned from <old> to <new>`.
+
 From there:
 
 - The **rider's own leg** is just one action: mark yourself in transit (§3).

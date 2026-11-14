@@ -957,12 +957,13 @@ export class ReportsService {
     if (!resultPage.count) return emptyPaged();
     const orders = resultPage.orders;
     const orderIds = orders.map(o => o.id);
-    const [orderItems, deliveryStatuses, storeCtx, customerCtx] = await Promise.all([
+    const [orderItems, collected, deliveryStatuses, storeCtx, customerCtx] = await Promise.all([
       this.orderItemRepo.find({
         where: {orderId: {inq: orderIds}} as object,
         fields: {id: true, orderId: true, itemId: true, quantity: true} as object,
         order: ['createdAt ASC', 'id ASC'],
       }),
+      this.buildCollectedByOrder(orderIds),
       this.buildDeliveryStatusByOrder(orderIds),
       this.buildStoreContext(storeIds),
       this.buildCustomerContext([...new Set(orders.map(o => String(o.customerId)))]),
@@ -1028,6 +1029,8 @@ export class ReportsService {
         ticketStatus: order.status ?? '—',
         deliveryStatus: deliveryStatuses.get(String(order.id)) ?? '—',
         amount: Number(order.totalAmount) || 0,
+        pendingAmount: Math.max(0, Math.round(((Number(order.totalAmount) || 0) -
+          (collected.get(String(order.id)) ?? 0)) * 100) / 100),
       };
     });
 
@@ -1714,7 +1717,9 @@ export class ReportsService {
       const savedB2b =
         isMigratedItpvShift && !usesStoredItpvSplit ? closing.itpv?.b2b : undefined;
       const usesSavedItpvB2b = savedB2b != null;
-      let psbRevenue = isMigratedItpvShift
+      // From the category cutover, a migrated Z report is no longer PSB-only:
+      // PSB comes from PSB invoices instead (see the loop below).
+      let psbRevenue = isMigratedItpvShift && !usesStoredItpvSplit
         ? Number(closing.itpv?.zReport?.revenue?.revenue) || 0
         : 0;
       let pmuRevenue = usesSavedItpvB2b ? Number(savedB2b.pmuGross) || 0 : 0;
@@ -1734,8 +1739,6 @@ export class ReportsService {
         // specific shift's window it lands in, same as the store check above.
         const invoiceCreatedAt = invoice.createdAt ? new Date(invoice.createdAt).getTime() : null;
         if (invoiceCreatedAt == null || invoiceCreatedAt < windowStart || invoiceCreatedAt > windowEnd) continue;
-        if (usesStoredItpvSplit) continue;
-
         const orderTotal = Number(link.orderTotal) || 0;
         const laterReturns = (returnsByOrderId.get(link.orderId) ?? []).filter(salesReturn => {
           const resolvedAt = salesReturn.resolvedAt ?? salesReturn.updatedAt ?? salesReturn.createdAt;
@@ -1778,8 +1781,12 @@ export class ReportsService {
           if ((Number(returnCell.revenue) || 0) > 0 && order.status === OrderStatus.RETURNED) {
             continue;
           }
-          if (order.orderType === OrderType.HOME_PICKUP) pmuRevenue += value;
+          if (usesStoredItpvSplit) {
+            if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
+          } else if (order.orderType === OrderType.HOME_PICKUP) pmuRevenue += value;
           else if (order.orderType === OrderType.HOME_PICKUP_HOME_DELIVERY) p2dRevenue += value;
+          // Before the cutover PSB is the Z-report figure above, so PSB invoices
+          // are not added again here.
         } else if (P2D_ORDER_TYPES.includes(order.orderType as OrderType)) p2dRevenue += value;
         else if (PSB_ORDER_TYPES.includes(order.orderType as OrderType)) psbRevenue += value;
       }
