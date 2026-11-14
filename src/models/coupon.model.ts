@@ -56,11 +56,11 @@ export class Coupon extends Entity {
   @property({type: 'number', postgresql: {dataType: 'numeric'}})
   maxDiscountAmount?: number;
 
-  // Only meaningful when discountType === cheapest_item_free — the minimum
-  // count of qualifying items (by quantity, not by line — a qty-3 line
-  // counts as 3) required in the order before the single cheapest one is
-  // made free. Unset/0 means no minimum (even a single qualifying item
-  // gets freed) — see CouponService.evaluate().
+  // Only meaningful when discountType === cheapest_item_free — the group
+  // size N of a "Get N, pay N-1" offer, counted by quantity (a qty-3 line
+  // counts as 3). The order needs at least N qualifying items, and every
+  // full group of N frees one item: the cheapest ones in the order. Unset
+  // means a single cheapest item is freed — see CouponService.evaluate().
   @property({type: 'number'})
   minQualifyingItems?: number;
 

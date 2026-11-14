@@ -101,6 +101,33 @@ function roundRupee(value: unknown): number {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
+/**
+ * Total price of the `count` cheapest units across these lines. A line's
+ * totalPrice covers its whole quantity, so every unit on it costs
+ * totalPrice / quantity.
+ */
+export function cheapestUnitsTotal(
+  lines: {quantity?: number | string; totalPrice?: number | string}[],
+  count: number,
+): number {
+  const byUnitPrice = lines
+    .map(line => {
+      const quantity = Number(line.quantity) || 0;
+      return {quantity, unitPrice: quantity > 0 ? Number(line.totalPrice) / quantity : 0};
+    })
+    .filter(line => line.quantity > 0 && Number.isFinite(line.unitPrice))
+    .sort((a, b) => a.unitPrice - b.unitPrice);
+  let remaining = Math.max(0, count);
+  let total = 0;
+  for (const line of byUnitPrice) {
+    if (remaining <= 0) break;
+    const units = Math.min(remaining, line.quantity);
+    total += units * line.unitPrice;
+    remaining -= units;
+  }
+  return Math.round(total * 100) / 100;
+}
+
 function fail(reason: string): CouponEvaluationFailure {
   return {valid: false, reason};
 }
@@ -283,20 +310,16 @@ export class CouponService {
         return fail(`This coupon needs at least ${minRequired} qualifying item(s) in the order.`);
       }
 
-      // Per-unit price of each qualifying line (totalPrice is the whole
-      // line, quantity included — units within one line share the same
-      // price, so comparing per-line per-unit prices is equivalent to
-      // comparing every individual unit without actually expanding the
-      // list). The cheapest single unit anywhere in scope is freed.
-      let cheapestUnitPrice = Infinity;
-      for (const idx of qualifyingItemIndexes) {
-        const line = input.items[idx];
-        const qty = Number(line.quantity) || 0;
-        if (qty <= 0) continue;
-        const unitPrice = Number(line.totalPrice) / qty;
-        if (unitPrice < cheapestUnitPrice) cheapestUnitPrice = unitPrice;
-      }
-      discountAmount = Number.isFinite(cheapestUnitPrice) ? Math.round(cheapestUnitPrice * 100) / 100 : 0;
+      // "Get N, pay N-1": every full group of N qualifying items (N is
+      // minQualifyingItems) makes one item free, and the free ones are the
+      // cheapest qualifying items in the whole order. 15 items on a
+      // Get 3, Pay 2 coupon free the 5 cheapest. A coupon without a group
+      // size (unset or 1) frees a single item, as it always has.
+      const freeCount = minRequired >= 2 ? Math.floor(qualifyingUnitCount / minRequired) : 1;
+      discountAmount = cheapestUnitsTotal(
+        qualifyingItemIndexes.map(idx => input.items[idx]),
+        freeCount,
+      );
     } else {
       discountAmount = Math.min(roundRupee(coupon.discountValue), eligibleSubtotal);
     }
